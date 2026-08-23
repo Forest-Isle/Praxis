@@ -167,7 +167,7 @@ export interface ModelProvider {
 }
 
 export type RuntimeEvent =
-  | { type: 'state'; state: Exclude<RuntimeState, 'idle' | 'failed'> }
+  | { type: 'state'; state: Exclude<RuntimeState, 'idle'> }
   | { type: 'text-delta'; delta: string }
   | {
       type: 'thinking-start'

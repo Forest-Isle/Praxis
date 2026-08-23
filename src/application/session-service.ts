@@ -178,6 +178,7 @@ import {
   ScheduledPromptManager,
   type ScheduledPrompt,
 } from './scheduled-prompt-manager.js'
+import { TurnTerminalController, type TurnRequest } from './turn-lifecycle.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
@@ -2080,15 +2081,20 @@ export class ClaudeSessionService {
     documents?: readonly ModelDocument[],
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(
-      sessionId,
-      prompt,
-      false,
-      signal,
-      name,
-      images,
-      documents,
-    )
+    return this.executeTurn({
+      activation: {
+        kind: 'start',
+        sessionId,
+        ...(name !== undefined ? { name } : {}),
+      },
+      submission: {
+        kind: 'prompt',
+        text: prompt,
+        ...(images ? { images } : {}),
+        ...(documents ? { documents } : {}),
+      },
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async runShell(
@@ -2098,17 +2104,15 @@ export class ClaudeSessionService {
     name?: string,
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(
-      sessionId,
-      `! ${command}`,
-      false,
-      signal,
-      name,
-      [],
-      [],
-      undefined,
-      command,
-    )
+    return this.executeTurn({
+      activation: {
+        kind: 'start',
+        sessionId,
+        ...(name !== undefined ? { name } : {}),
+      },
+      submission: { kind: 'shell', command },
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async resume(
@@ -2121,16 +2125,23 @@ export class ClaudeSessionService {
     resumeSessionAt?: string,
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(
-      sessionId,
-      prompt,
-      true,
-      signal,
-      name,
-      images,
-      documents,
-      resumeSessionAt,
-    )
+    return this.executeTurn({
+      activation: {
+        kind: 'resume',
+        sessionId,
+        ...(name !== undefined ? { name } : {}),
+        ...(resumeSessionAt !== undefined
+          ? { atMessageId: resumeSessionAt }
+          : {}),
+      },
+      submission: {
+        kind: 'prompt',
+        text: prompt,
+        ...(images ? { images } : {}),
+        ...(documents ? { documents } : {}),
+      },
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async resumeShell(
@@ -2141,17 +2152,18 @@ export class ClaudeSessionService {
     resumeSessionAt?: string,
   ): Promise<SessionRunResult> {
     this.worktreeManager?.bindSession(sessionId)
-    return this.executeTurn(
-      sessionId,
-      `! ${command}`,
-      true,
-      signal,
-      name,
-      [],
-      [],
-      resumeSessionAt,
-      command,
-    )
+    return this.executeTurn({
+      activation: {
+        kind: 'resume',
+        sessionId,
+        ...(name !== undefined ? { name } : {}),
+        ...(resumeSessionAt !== undefined
+          ? { atMessageId: resumeSessionAt }
+          : {}),
+      },
+      submission: { kind: 'shell', command },
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async answerSideQuestion(
@@ -3044,18 +3056,11 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
   ): Promise<SessionRunResult> {
     await this.appendPermissionGrant(sessionId, display, true)
-    return this.executeTurn(
-      sessionId,
-      '/permissions',
-      true,
-      signal,
-      undefined,
-      [],
-      [],
-      undefined,
-      undefined,
-      true,
-    )
+    return this.executeTurn({
+      activation: { kind: 'resume', sessionId },
+      submission: { kind: 'retry', prompt: '/permissions' },
+      ...(signal ? { signal } : {}),
+    })
   }
 
   async recordBtwUsage(
@@ -3907,1397 +3912,164 @@ export class ClaudeSessionService {
     return tracker.snapshot()
   }
 
-  private async executeTurn(
-    sessionId: string,
-    prompt: string,
-    requireExisting: boolean,
-    signal?: AbortSignal,
-    name?: string,
-    images: readonly ModelImage[] = [],
-    documents: readonly ModelDocument[] = [],
-    resumeSessionAt?: string,
-    shellCommand?: string,
-    skipUserPrompt = false,
-  ): Promise<SessionRunResult> {
-    this.assertWritable()
-    if (prompt.length === 0 && images.length === 0 && documents.length === 0)
-      throw new Error('Prompt must not be empty')
-    if (name !== undefined && name.length === 0) {
-      throw new Error('Session name must not be empty')
-    }
-    if (shellCommand !== undefined && shellCommand.trim().length === 0) {
-      throw new Error('Shell command must not be empty')
-    }
-
-    await this.activateSessionCostTracker(sessionId)
-    if (this.options.sessionPersistence !== false) {
-      this.durableMetadataSessions.add(sessionId)
-    }
-
-    await this.ensureFileResources(sessionId, signal)
-
-    this.worktreeManager?.bindSession(sessionId)
-    if (this.options.initialWorktree) {
-      await this.worktreeManager?.ensureInitial(
-        this.options.initialWorktreeName,
-      )
-    }
-    const pinnedCwd = this.sessionCwds.get(sessionId) ?? this.activeCwd()
-    this.sessionCwds.set(sessionId, pinnedCwd)
-    if (this.options.workspace?.cwd() !== pinnedCwd) {
-      this.options.workspace?.setCwd(pinnedCwd)
-    }
-    this.runtimeCwd = pinnedCwd
-    if (requireExisting) {
-      await this.discoverProjectRoot(sessionId)
-    }
-    const sessionPaths = this.paths(sessionId)
-    const toolResultDirectory = join(
-      sessionPaths.projectRoot,
-      sessionId,
-      'tool-results',
+  private async executeTurn(request: TurnRequest): Promise<SessionRunResult> {
+    const { activation, submission, signal } = request
+    const sessionId = activation.sessionId
+    const requireExisting = activation.kind === 'resume'
+    const name = activation.name
+    const resumeSessionAt =
+      activation.kind === 'resume' ? activation.atMessageId : undefined
+    const prompt =
+      submission.kind === 'shell'
+        ? `! ${submission.command}`
+        : submission.kind === 'retry'
+          ? submission.prompt
+          : submission.text
+    const images = submission.kind === 'prompt' ? (submission.images ?? []) : []
+    const documents =
+      submission.kind === 'prompt' ? (submission.documents ?? []) : []
+    const shellCommand =
+      submission.kind === 'shell' ? submission.command : undefined
+    const skipUserPrompt = submission.kind === 'retry'
+    const controller = new TurnTerminalController(
+      this.options.eventSink ?? (() => undefined),
     )
-    const store = this.turnStore(sessionId)
-    const leaseResult = await store.withLease(async (lease) => {
-      if (!requireExisting) {
-        const initialization =
-          name === undefined
-            ? await store.reserve()
-            : await store.create(this.sessionNameEntries(sessionId, name))
-        if (initialization.status === 'conflict') {
-          throw new Error(`Session ID ${sessionId} is already in use`)
-        }
+    try {
+      this.assertWritable()
+      if (prompt.length === 0 && images.length === 0 && documents.length === 0)
+        throw new Error('Prompt must not be empty')
+      if (name !== undefined && name.length === 0) {
+        throw new Error('Session name must not be empty')
       }
-      let snapshot = await lease.load()
-      let automaticReplayPrompt: string | undefined
-      if (
-        requireExisting &&
-        this.options.sessionPersistence === false &&
-        snapshot.entries.length === 0
-      ) {
-        const persisted = await this.store(sessionId).load()
-        if (persisted.entries.length > 0) {
-          const imported = await store.create(persisted.entries)
-          if (imported.status === 'created') snapshot = await lease.load()
-        }
+      if (shellCommand !== undefined && shellCommand.trim().length === 0) {
+        throw new Error('Shell command must not be empty')
       }
-      if (requireExisting && snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
+
+      await this.activateSessionCostTracker(sessionId)
+      if (this.options.sessionPersistence !== false) {
+        this.durableMetadataSessions.add(sessionId)
       }
-      this.rememberDurableMetadata(sessionId, snapshot.entries)
-      if (resumeSessionAt !== undefined) {
-        snapshot = {
-          entries: selectClaudeTranscriptAtMessage(
-            snapshot.entries,
-            resumeSessionAt,
-          ),
-          tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
-        }
-      } else if (this.explicitResumeLeafUuids.has(sessionId)) {
-        const selected = selectClaudeTranscriptFromNewestLeaf(snapshot.entries)
-        this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
-        snapshot = {
-          entries: selected.entries,
-          tail: { ...snapshot.tail, branchParentUuid: selected.leafUuid },
-        }
-      }
-      if (
-        requireExisting &&
-        resumeSessionAt === undefined &&
-        this.options.resumeInterruptedTurn === true &&
-        shellCommand === undefined &&
-        !skipUserPrompt &&
-        !(
-          this.options.approveRecovery !== undefined &&
-          findUnresolvedClaudeToolCalls(snapshot.entries).length > 0
+
+      await this.ensureFileResources(sessionId, signal)
+
+      this.worktreeManager?.bindSession(sessionId)
+      if (this.options.initialWorktree) {
+        await this.worktreeManager?.ensureInitial(
+          this.options.initialWorktreeName,
         )
-      ) {
-        const interruption = classifyClaudeInterruption(snapshot.entries)
-        if (
-          (interruption.kind === 'interrupted-prompt' ||
-            interruption.kind === 'interrupted-turn') &&
-          interruption.prompt !== undefined &&
-          interruption.replayEntries !== undefined
-        ) {
-          automaticReplayPrompt = interruption.prompt
-          snapshot = {
-            entries: interruption.replayEntries,
-            tail: {
-              ...snapshot.tail,
-              branchParentUuid: interruption.replayParentUuid ?? null,
-            },
+      }
+      const pinnedCwd = this.sessionCwds.get(sessionId) ?? this.activeCwd()
+      this.sessionCwds.set(sessionId, pinnedCwd)
+      if (this.options.workspace?.cwd() !== pinnedCwd) {
+        this.options.workspace?.setCwd(pinnedCwd)
+      }
+      this.runtimeCwd = pinnedCwd
+      if (requireExisting) {
+        await this.discoverProjectRoot(sessionId)
+      }
+      const sessionPaths = this.paths(sessionId)
+      const toolResultDirectory = join(
+        sessionPaths.projectRoot,
+        sessionId,
+        'tool-results',
+      )
+      const store = this.turnStore(sessionId)
+      const leaseResult = await store.withLease(async (lease) => {
+        if (!requireExisting) {
+          const initialization =
+            name === undefined
+              ? await store.reserve()
+              : await store.create(this.sessionNameEntries(sessionId, name))
+          if (initialization.status === 'conflict') {
+            throw new Error(`Session ID ${sessionId} is already in use`)
           }
         }
-      }
-      const initialTransition =
-        this.worktreeManager?.consumeTransition('__initial__')
-      if (initialTransition && snapshot.entries.length === 0) {
-        const stateEntry: ClaudeTranscriptEntry = {
-          type: 'worktree-state',
-          worktreeSession: initialTransition.state,
-          sessionId,
+        let snapshot = await lease.load()
+        let automaticReplayPrompt: string | undefined
+        if (
+          requireExisting &&
+          this.options.sessionPersistence === false &&
+          snapshot.entries.length === 0
+        ) {
+          const persisted = await this.store(sessionId).load()
+          if (persisted.entries.length > 0) {
+            const imported = await store.create(persisted.entries)
+            if (imported.status === 'created') snapshot = await lease.load()
+          }
         }
-        const stateTail = await this.append(lease, snapshot.tail, stateEntry)
-        snapshot = {
-          entries: [...snapshot.entries, stateEntry],
-          tail: stateTail,
+        if (requireExisting && snapshot.entries.length === 0) {
+          throw new Error(`Claude session not found: ${sessionId}`)
         }
         this.rememberDurableMetadata(sessionId, snapshot.entries)
-      }
-      this.restoreWorktree(snapshot.entries)
-      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
-      if (
-        requireExisting &&
-        name !== undefined &&
-        !this.hasSessionName(snapshot.entries, name)
-      ) {
-        const entries = this.sessionNameEntries(sessionId, name)
-        const appendResult = await lease.appendMany(snapshot.tail, entries)
-        if (appendResult.status === 'conflict') {
-          throw new Error(
-            `Claude transcript append conflict: ${appendResult.reason}`,
-          )
-        }
-        snapshot = {
-          entries: [...snapshot.entries, ...entries],
-          tail: appendResult.tail,
-        }
-        this.rememberDurableMetadata(sessionId, snapshot.entries)
-      }
-      const agentName =
-        this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
-      const agent = this.resolveAgent(agentName)
-      const provider = this.providerForAgent(agent)
-      this.activeProvider = provider
-      const effectivePrompt =
-        automaticReplayPrompt ??
-        (!requireExisting &&
-        !skipUserPrompt &&
-        !this.options.agentInitialPromptHandledExternally &&
-        shellCommand === undefined &&
-        agent?.initialPrompt
-          ? `${agent.initialPrompt}\n\n${prompt}`
-          : prompt)
-      const projectMemoryRecallTurn =
-        !skipUserPrompt && shellCommand === undefined
-          ? this.options.projectMemoryRecall?.prefetch({
-              sessionId,
-              turnId: randomUUID(),
-              prompt: effectivePrompt,
-              ...(signal ? { signal } : {}),
-            })
-          : undefined
-      const initialPricing = this.options.pricing?.resolve(
-        provider.model ?? 'praxis/provider',
-      )
-      if (this.options.maxBudgetUsd !== undefined && !initialPricing) {
-        throw new Error(
-          `Cannot enforce --max-budget-usd: no pricing is configured for model ${provider.model ?? 'praxis/provider'}`,
-        )
-      }
-      const shellInputUuid = shellCommand === undefined ? null : randomUUID()
-      let currentPromptId: string | null = shellInputUuid
-      let lastAssistantUuid: string | null = null
-      const fileHistory =
-        this.options.fileCheckpointing &&
-        this.options.sessionPersistence !== false
-          ? new ClaudeFileHistory(this.options.configRoot, sessionId, [
-              this.activeCwd(),
-              ...(this.options.fileRewindRoots ?? []),
-            ])
-          : null
-      const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
-        snapshot.entries,
-      )
-      const pendingRecoveryToolCallIds = new Set(
-        unresolvedToolCalls.map((call) => call.id),
-      )
-      const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
-      const currentHookCwd = () => this.activeCwd()
-      const hookSession = {
-        session_id: sessionId,
-        transcript_path: sessionPaths.sessionFile,
-        get cwd() {
-          return currentHookCwd()
-        },
-        permission_mode: 'default',
-      }
-      const appendHookOutcome = async (outcome: ClaudeHookOutcome) => {
-        for (const entry of createClaudeHookAttachmentEntries(
-          outcome,
-          this.translationContext(sessionId, snapshot),
-        )) {
-          const tail = await this.append(lease, snapshot.tail, entry)
-          snapshot = { entries: [...snapshot.entries, entry], tail }
-        }
-      }
-      const recordHookOutcome = async (
-        outcome: ClaudeHookOutcome,
-        deferUntilApproval = false,
-      ) => {
-        if (deferUntilApproval) {
-          pendingRecoveryHookOutcomes.push(outcome)
-          return
-        }
-        await appendHookOutcome(outcome)
-      }
-      const flushRecoveryHookOutcomes = async () => {
-        const entries: ClaudeTranscriptEntry[] = []
-        let history = snapshot.entries
-        let parentUuid = this.logicalTailUuid(snapshot.tail)
-        for (const outcome of pendingRecoveryHookOutcomes) {
-          const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
-            ...this.translationContext(sessionId, snapshot),
-            parentUuid,
-            history,
-          })
-          entries.push(...outcomeEntries)
-          history = [...history, ...outcomeEntries]
-          const lastEntry = outcomeEntries.at(-1)
-          if (typeof lastEntry?.uuid === 'string') parentUuid = lastEntry.uuid
-        }
-        if (entries.length === 0) {
-          pendingRecoveryHookOutcomes.length = 0
-          return
-        }
-        const appendResult = await lease.appendMany(snapshot.tail, entries)
-        if (appendResult.status === 'conflict') {
-          throw new Error(
-            `Claude transcript append conflict: ${appendResult.reason}`,
-          )
-        }
-        snapshot = { entries: history, tail: appendResult.tail }
-        pendingRecoveryHookOutcomes.length = 0
-      }
-      const capabilities = this.toolCapabilities()
-      const taskToolNames = this.capabilityToolNames(
-        this.options.taskToolNames,
-        capabilities,
-      )
-      const scheduledToolNames = this.capabilityToolNames(
-        this.options.scheduledToolNames,
-        capabilities,
-      )
-      const taskTools =
-        this.options.tools && taskToolNames.length > 0
-          ? new ClaudeTaskToolRegistry({
-              base: this.options.tools,
-              cwd: this.activeCwd(),
-              cwdProvider: () => this.activeCwd(),
-              praxisRoot: sessionPaths.praxisRoot,
-              sessionId,
-              taskRoot: sessionPaths.taskRoot,
-              ...(this.options.eventSink
-                ? { eventSink: this.options.eventSink }
-                : {}),
-              enabledTools: taskToolNames,
-              ...(this.options.hooks
-                ? {
-                    taskHooks: {
-                      created: async (task, taskSignal) => {
-                        const outcome = await this.options.hooks?.run(
-                          {
-                            ...hookSession,
-                            hook_event_name: 'TaskCreated',
-                            task_id: task.id,
-                            task_subject: task.subject,
-                            task_description: task.description,
-                          },
-                          undefined,
-                          taskSignal,
-                        )
-                        if (!outcome) return
-                        await recordHookOutcome(outcome)
-                        if (outcome.blockedReason) {
-                          throw new Error(
-                            `TaskCreated hook error: ${outcome.blockedReason}`,
-                          )
-                        }
-                      },
-                      completed: async (task, taskSignal) => {
-                        const outcome = await this.options.hooks?.run(
-                          {
-                            ...hookSession,
-                            hook_event_name: 'TaskCompleted',
-                            task_id: task.id,
-                            task_subject: task.subject,
-                            task_description: task.description,
-                          },
-                          undefined,
-                          taskSignal,
-                        )
-                        if (!outcome) return
-                        await recordHookOutcome(outcome)
-                        if (outcome.blockedReason) {
-                          throw new Error(
-                            `TaskCompleted hook error: ${outcome.blockedReason}`,
-                          )
-                        }
-                      },
-                    },
-                  }
-                : {}),
-            })
-          : null
-      const scheduledTools =
-        this.scheduledPrompts &&
-        this.options.tools &&
-        scheduledToolNames.length > 0
-          ? new ClaudeScheduledToolRegistry({
-              base: taskTools ?? this.options.tools,
-              manager: this.scheduledPrompts,
-              sessionId,
-              enabledTools: scheduledToolNames,
-              dataPlane: this.options.dataPlane ?? 'claude',
-            })
-          : null
-      const baseTools = scheduledTools ?? taskTools ?? this.options.tools
-      const turnPermissions =
-        this.options.interactiveTools?.permissions(sessionId) ??
-        this.options.permissions
-      const subagentExecutor =
-        (this.options.enableSubagents || this.options.enableWorkflows) &&
-        baseTools &&
-        turnPermissions
-          ? new ClaudeSubagentExecutor({
-              configRoot: this.options.configRoot,
-              dataPlane: this.options.dataPlane ?? 'claude',
-              cwd: this.activeCwd(),
-              cwdProvider: () => this.activeCwd(),
-              claudeVersion: this.options.claudeVersion,
-              provider,
-              persistence:
-                this.options.sessionPersistence === false ? 'memory' : 'disk',
-              ...(this.options.providerForModel
-                ? { providerForModel: this.options.providerForModel }
-                : {}),
-              baseTools,
-              permissions: turnPermissions,
-              ...(this.options.permissionResolverForMode
-                ? {
-                    permissionResolverForMode:
-                      this.options.permissionResolverForMode,
-                  }
-                : {}),
-              parentPermissionMode: () =>
-                agentPermissionMode(
-                  this.options.interactiveTools?.mode(sessionId) ??
-                    this.options.permissionMode,
-                ),
-              ...(this.options.subagentToolNames
-                ? {
-                    toolNames: this.capabilityToolNames(
-                      this.options.subagentToolNames,
-                      capabilities,
-                    ),
-                  }
-                : {}),
-              ...(this.options.extensions
-                ? { extensions: this.options.extensions }
-                : {}),
-              ...(this.options.mcp ? { mcp: this.options.mcp } : {}),
-              ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
-              ...(this.options.contextAssembler
-                ? { contextAssembler: this.options.contextAssembler }
-                : {}),
-              ...((this.options.contextBudget?.reserveTokens ??
-                this.options.contextReserveTokens) === undefined
-                ? {}
-                : {
-                    contextReserveTokens:
-                      this.options.contextBudget?.reserveTokens ??
-                      this.options.contextReserveTokens,
-                  }),
-              ...(this.options.approveTool
-                ? { approveTool: this.options.approveTool }
-                : {}),
-              permissionUpdates: () =>
-                this.sessionPermissionUpdates.get(sessionId) ?? [],
-              onPermissionUpdates: (updates) =>
-                this.applyPermissionUpdates(sessionId, updates),
-              onLineChanges: (changes) => {
-                const tracker = this.sessionCostTrackers.get(sessionId)
-                if (!tracker) {
-                  throw new Error(
-                    `Session cost tracker is not active for session ${sessionId}`,
-                  )
-                }
-                tracker.recordLineChanges(changes)
-              },
-              ...(this.options.eventSink
-                ? { eventSink: this.options.eventSink }
-                : {}),
-              ...(taskTools
-                ? {
-                    backgroundTaskNotifications: (waitForRunning: boolean) =>
-                      taskTools.notifications(waitForRunning),
-                  }
-                : {}),
-              notificationDelivered: (notification) =>
-                transcriptContainsBackgroundAgentNotification(
-                  snapshot.entries,
-                  notification,
-                ),
-              stopOwnedBackgroundAgent: (ownerSessionId, agentId) =>
-                this.backgroundTasks.stopAgent(ownerSessionId, agentId),
-              outputOwnedBackgroundAgent: (ownerSessionId, agentId, options) =>
-                this.backgroundTasks.outputAgent(
-                  ownerSessionId,
-                  agentId,
-                  options,
-                ),
-              sendOwnedBackgroundAgent: (
-                ownerSessionId,
-                agentId,
-                message,
-                summary,
-                toolUseId,
-              ) =>
-                this.sendOwnedBackgroundAgent(
-                  ownerSessionId,
-                  agentId,
-                  message,
-                  summary,
-                  toolUseId,
-                ),
-            })
-          : null
-      if (subagentExecutor) {
-        this.subagentExecutors.add(subagentExecutor)
-        this.subagentExecutorSessions.set(subagentExecutor, sessionId)
-        this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
-      }
-      const agentTools = subagentExecutor
-        ? subagentExecutor.registry(
-            sessionId,
-            0,
-            (callId) =>
-              currentPromptId ??
-              this.promptIdForToolCall(snapshot.entries, callId),
-          )
-        : baseTools
-      const turnTools =
-        this.workflowManager && subagentExecutor && agentTools
-          ? new ClaudeWorkflowToolRegistry({
-              base: agentTools,
-              manager: this.workflowManager,
-              executor: subagentExecutor,
-              cwd: this.activeCwd(),
-              cwdProvider: () => this.activeCwd(),
-              configRoot: this.options.configRoot,
-              sessionId,
-              promptIdForCall: (callId) =>
-                currentPromptId ??
-                this.promptIdForToolCall(snapshot.entries, callId),
-              defaultModel: provider.model ?? 'praxis/provider',
-              tokenBudget: workflowTokenTarget(effectivePrompt),
-              enabled: capabilities.has('Workflow'),
-              dataPlane: this.options.dataPlane ?? 'claude',
-            })
-          : agentTools
-      const workspaceTools =
-        this.worktreeManager &&
-        turnTools &&
-        this.options.workspace &&
-        (this.options.worktreeToolNames?.length ?? 0) > 0
-          ? new ClaudeWorktreeToolRegistry({
-              base: turnTools,
-              manager: this.worktreeManager,
-              workspace: this.options.workspace,
-              enabledTools: this.options.worktreeToolNames ?? [],
-              dataPlane: this.options.dataPlane ?? 'claude',
-            })
-          : turnTools
-      const messageTools =
-        this.options.brief && workspaceTools
-          ? new ClaudeUserMessageToolRegistry(
-              workspaceTools,
-              (message: UserMessage) =>
-                this.options.eventSink?.({
-                  type: 'user-message',
-                  message: message.message,
-                  status: message.status,
-                  ...(message.attachments.length
-                    ? { attachments: message.attachments }
-                    : {}),
-                }),
-            )
-          : workspaceTools
-      const interactiveMessageTools =
-        this.options.interactiveTools && messageTools
-          ? this.options.interactiveTools.registry(messageTools, sessionId)
-          : messageTools
-      const fileHistoryTools: ToolRegistry | undefined =
-        fileHistory && interactiveMessageTools
-          ? {
-              definitions: () => interactiveMessageTools.definitions(),
-              schedulingPolicy: (call) => ({
-                ...resolveToolSchedulingPolicy(interactiveMessageTools, call),
-                startAfterAssistant: true,
-              }),
-              prepare: (call, context) =>
-                interactiveMessageTools.prepare(call, context),
-              execute: async (call, context) => {
-                const path =
-                  call.name === 'Write' || call.name === 'Edit'
-                    ? call.input.file_path
-                    : call.name === 'NotebookEdit'
-                      ? call.input.notebook_path
-                      : undefined
-                if (typeof path !== 'string') {
-                  return interactiveMessageTools.execute(call, context)
-                }
-                if (
-                  (call.name === 'Write' || call.name === 'Edit') &&
-                  (await this.options.interactiveTools?.isPlanFile(
-                    sessionId,
-                    path,
-                  ))
-                ) {
-                  return interactiveMessageTools.execute(call, context)
-                }
-                const snapshotMessageId =
-                  currentPromptId ??
-                  this.promptIdForToolCall(snapshot.entries, call.id)
-                const assistantMessageId =
-                  lastAssistantUuid ??
-                  this.assistantIdForToolCall(snapshot.entries, call.id)
-                if (!snapshotMessageId || !assistantMessageId) {
-                  throw new Error(
-                    'Claude file history could not link tool call',
-                  )
-                }
-                const prepared = await fileHistory.prepareMutation(
-                  snapshot.entries,
-                  snapshotMessageId,
-                  path,
-                )
-                let result
-                try {
-                  result = await interactiveMessageTools.execute(call, context)
-                } catch (error) {
-                  await prepared.rollback()
-                  throw error
-                }
-                if (result.isError) {
-                  await prepared.rollback()
-                  return result
-                }
-                const entry = prepared.commit(assistantMessageId)
-                if (entry) {
-                  const tail = await this.append(lease, snapshot.tail, entry)
-                  snapshot = { entries: [...snapshot.entries, entry], tail }
-                }
-                return result
-              },
-            }
-          : interactiveMessageTools
-      const capabilityTools = fileHistoryTools
-        ? new ClaudeCapabilityToolRegistry(fileHistoryTools, capabilities)
-        : undefined
-      const structuredCapture = this.options.structuredOutputSchema
-        ? { calls: 0, value: undefined as unknown }
-        : undefined
-      const agentScopedTools =
-        agent && capabilityTools
-          ? new FilteredToolRegistry(capabilityTools, {
-              tools: mainAgentToolNames(capabilityTools, agent),
-            })
-          : capabilityTools
-      const structuredTools =
-        this.options.structuredOutputSchema && structuredCapture
-          ? new StructuredOutputRegistry(
-              agentScopedTools ?? this.options.tools ?? emptyToolRegistry,
-              this.options.structuredOutputSchema,
-              structuredCapture,
-            )
-          : agentScopedTools
-      const hookTools =
-        this.options.hooks && structuredTools && turnPermissions
-          ? new ClaudeHookToolCoordinator({
-              tools: structuredTools,
-              permissions: turnPermissions,
-              hooks: this.options.hooks,
-              session: hookSession,
-              recordOutcome: recordHookOutcome,
-              ...(this.options.eventSink
-                ? {
-                    warn: (message: string) =>
-                      this.options.eventSink?.({ type: 'warning', message }),
-                  }
-                : {}),
-              deferPreToolUseOutcome: (call) =>
-                pendingRecoveryToolCallIds.has(call.id),
-            })
-          : null
-      const runtime = new AgentRuntime(provider, this.options.eventSink, {
-        emitInitialContextState: false,
-        ...(this.options.emitToolUseSummaries
-          ? {
-              generateToolUseSummary: ({ tools, lastAssistantText, signal }) =>
-                generateToolUseSummary(
-                  provider,
-                  tools,
-                  signal,
-                  lastAssistantText,
-                  (metrics) => this.recordAuxiliaryMetrics(sessionId, metrics),
-                ),
-            }
-          : {}),
-        ...(this.options.pricing
-          ? {
-              costUsd: (usage) => {
-                const pricing = this.options.pricing?.resolve(
-                  provider.model ?? 'praxis/provider',
-                )
-                return pricing ? usageCostUsd(usage, pricing) : undefined
-              },
-            }
-          : {}),
-        ...(this.options.maxBudgetUsd === undefined
-          ? {}
-          : { maxBudgetUsd: this.options.maxBudgetUsd }),
-        ...(hookTools
-          ? { tools: hookTools, permissions: hookTools }
-          : {
-              ...(structuredTools ? { tools: structuredTools } : {}),
-              ...(turnPermissions ? { permissions: turnPermissions } : {}),
-            }),
-      })
-      let currentTurnUserMessages: string[] | null = null
-      let currentTurnToolCalls = 0
-      let projectMemoryMaintained = false
-      let projectMemoryRecallMessages: ModelMessage[] = []
-      const observer = {
-        assistantCompleted: async (message: {
-          content: string
-          thinkingBlocks?: readonly ModelThinkingBlock[]
-          toolCalls?: readonly ModelToolCall[]
-        }) => {
-          const [entry] = translateProviderEvents(
-            [
-              {
-                type: 'assistant-message',
-                text: message.content,
-                ...(message.thinkingBlocks
-                  ? { thinkingBlocks: message.thinkingBlocks }
-                  : {}),
-                toolCalls: message.toolCalls ?? [],
-                providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
-                model: provider.model ?? 'praxis/provider',
-              },
-            ],
-            this.translationContext(sessionId, snapshot),
-          )
-          if (!entry) throw new Error('Could not translate assistant response')
-          const tail = await this.append(lease, snapshot.tail, entry)
-          snapshot = { entries: [...snapshot.entries, entry], tail }
-
-          lastAssistantUuid =
-            typeof entry.uuid === 'string' ? entry.uuid : lastAssistantUuid
-        },
-        toolCompleted: async (
-          call: ModelToolCall,
-          toolResult: {
-            content: string
-            contentBlocks?: readonly ModelContentBlock[]
-            images?: readonly ModelImage[]
-            documents?: readonly ModelDocument[]
-            isError: boolean
-            accessedPaths?: readonly string[]
-            followUpUserMessages?: readonly string[]
-            nativeToolUseResult?: Record<string, unknown>
-            nativeMcpMeta?: Record<string, unknown>
-          },
-        ) => {
-          currentTurnToolCalls += 1
-          const transition = this.worktreeManager?.consumeTransition(call.id)
-          if (transition) {
-            this.options.contextAssembler?.invalidate?.({
-              lifecycleId: sessionId,
-              reason: 'worktree',
-            })
-            const stateEntry: ClaudeTranscriptEntry = {
-              type: 'worktree-state',
-              worktreeSession: transition.state,
-              sessionId,
-            }
-            const stateTail = await this.append(
-              lease,
-              snapshot.tail,
-              stateEntry,
-            )
-            snapshot = {
-              entries: [...snapshot.entries, stateEntry],
-              tail: stateTail,
-            }
-          }
-          const permissionMode =
-            this.options.interactiveTools?.consumeTransition(call.id)
-          if (permissionMode) {
-            const modeEntry: ClaudeTranscriptEntry = {
-              type: 'permission-mode',
-              permissionMode,
-              sessionId,
-            }
-            const modeTail = await this.append(lease, snapshot.tail, modeEntry)
-            snapshot = {
-              entries: [...snapshot.entries, modeEntry],
-              tail: modeTail,
-            }
-          }
-          const [entry] = translateProviderEvents(
-            [
-              {
-                type: 'tool-result',
-                toolCallId: call.id,
-                content: toolResult.content,
-                ...(toolResult.contentBlocks
-                  ? { contentBlocks: toolResult.contentBlocks }
-                  : {}),
-                ...(toolResult.images ? { images: toolResult.images } : {}),
-                ...(toolResult.documents
-                  ? { documents: toolResult.documents }
-                  : {}),
-                isError: toolResult.isError,
-                ...(toolResult.nativeToolUseResult
-                  ? { nativeToolUseResult: toolResult.nativeToolUseResult }
-                  : {}),
-                ...(toolResult.nativeMcpMeta
-                  ? { nativeMcpMeta: toolResult.nativeMcpMeta }
-                  : {}),
-              },
-            ],
-            this.translationContext(sessionId, snapshot),
-          )
-          if (!entry) throw new Error('Could not translate tool result')
-          const tail = await this.append(lease, snapshot.tail, entry)
-          snapshot = { entries: [...snapshot.entries, entry], tail }
-
-          if (!toolResult.isError && this.options.projectMemoryDirectory) {
-            const pathValue = call.input.file_path
-            const path =
-              typeof pathValue === 'string'
-                ? resolve(this.activeCwd(), pathValue)
-                : null
-            if (
-              path &&
-              isPathWithin(this.options.projectMemoryDirectory, path)
-            ) {
-              if (call.name === 'Read') {
-                this.options.projectMemoryRecall?.recordRead(sessionId, path)
-              } else if (call.name === 'Write' || call.name === 'Edit') {
-                projectMemoryMaintained = true
-              }
-            }
-            if (call.name === 'Read') {
-              for (const accessedPath of toolResult.accessedPaths ?? []) {
-                const resolvedAccessedPath = resolve(
-                  this.activeCwd(),
-                  accessedPath,
-                )
-                if (
-                  isPathWithin(
-                    this.options.projectMemoryDirectory,
-                    resolvedAccessedPath,
-                  )
-                ) {
-                  this.options.projectMemoryRecall?.recordRead(
-                    sessionId,
-                    resolvedAccessedPath,
-                  )
-                }
-              }
-            }
-          }
-
-          if (
-            toolResult.isError ||
-            call.name !== 'Read' ||
-            !this.options.conditionalRuleResolver ||
-            !toolResult.accessedPaths
-          ) {
-            return
-          }
-          const attachedRulePaths = this.attachedRulePaths(snapshot.entries)
-          for (const filePath of toolResult.accessedPaths) {
-            const rules = await this.options.conditionalRuleResolver.resolve(
-              filePath,
-              [...attachedRulePaths],
-            )
-            for (const rule of rules) {
-              const attachment = createClaudeRuleAttachmentEntry(
-                rule,
-                this.displayRulePath(rule.path),
-                this.translationContext(sessionId, snapshot),
-              )
-              const attachmentTail = await this.append(
-                lease,
-                snapshot.tail,
-                attachment,
-              )
-              snapshot = {
-                entries: [...snapshot.entries, attachment],
-                tail: attachmentTail,
-              }
-              attachedRulePaths.add(rule.path)
-              await this.instructionLoaded(
-                sessionId,
-                {
-                  path: rule.path,
-                  memoryType:
-                    rule.scope === 'user'
-                      ? 'User'
-                      : rule.scope === 'local'
-                        ? 'Local'
-                        : 'Project',
-                  globs: rule.globs,
-                  triggerFilePath: filePath,
-                  ...(rule.importedFrom === undefined
-                    ? {}
-                    : { parentFilePath: rule.importedFrom }),
-                },
-                'path_glob_match',
-              )
-            }
-          }
-        },
-        followUpUserMessagesCompleted: async (messages: readonly string[]) => {
-          for (const content of messages) {
-            const [followUpEntry] = translateProviderEvents(
-              [{ type: 'user-text-block', text: content }],
-              this.translationContext(sessionId, snapshot),
-            )
-            if (!followUpEntry) {
-              throw new Error('Could not translate tool follow-up message')
-            }
-            const followUpTail = await this.append(
-              lease,
-              snapshot.tail,
-              followUpEntry,
-            )
-            snapshot = {
-              entries: [...snapshot.entries, followUpEntry],
-              tail: followUpTail,
-            }
-            currentTurnUserMessages?.push(content)
-            await Promise.all(
-              this.sessionSubagentExecutors(sessionId, true).map((executor) =>
-                executor.acknowledgeNotifications([content]),
-              ),
-            )
-          }
-        },
-      }
-      let turnCompleted = false
-      try {
-        const outcome = await this.hookLifecycle.start(
-          sessionId,
-          hookSession,
-          requireExisting ? 'resume' : 'startup',
-          signal,
-        )
-        if (outcome) {
-          await recordHookOutcome(outcome, pendingRecoveryToolCallIds.size > 0)
-        }
-        const approveRecovery = this.options.approveRecovery
-        const recoveryRequest = {
-          cwd: this.activeCwd(),
-          toolResultDirectory,
-          messages: projectClaudeModelMessages(snapshot.entries),
-          observer,
-          permissionUpdates: this.sessionPermissionUpdates.get(sessionId) ?? [],
-          onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
-            this.applyPermissionUpdates(sessionId, updates),
-          ...(signal ? { signal } : {}),
-          ...(approveRecovery
-            ? {
-                approveRecovery: async (call: ModelToolCall) => {
-                  if (!(await approveRecovery(call))) {
-                    throw new Error(
-                      `Claude session tool call ${call.id} recovery was declined`,
-                    )
-                  }
-                  if (signal?.aborted) throw new AgentRunCancelledError()
-                  await flushRecoveryHookOutcomes()
-                  pendingRecoveryToolCallIds.delete(call.id)
-                  return true
-                },
-                approveTool: () => true,
-              }
-            : {}),
-        }
-        const unresolvedToolCall = unresolvedToolCalls[0]
-        if (unresolvedToolCall && !approveRecovery) {
-          throw new Error(
-            `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
-          )
-        }
-        const recoveryResults = await runtime.recoverToolCalls(
-          unresolvedToolCalls,
-          recoveryRequest,
-        )
-        const recoveryUsage = recoveryResults.reduce<ModelUsage>(
-          (usage, result) =>
-            result.usage ? mergeUsage(usage, result.usage) : usage,
-          { inputTokens: 0, outputTokens: 0 },
-        )
-        const recoveryModelUsage = mergeSessionRawModelUsage(
-          ...recoveryResults.map((result) =>
-            result.isError ? undefined : result.modelUsage,
-          ),
-        )
-        const foregroundLineChanges = createLineCountAccumulator()
-        for (const result of recoveryResults) {
-          foregroundLineChanges.add(result)
-        }
-
-        if (
-          this.options.agent &&
-          agent &&
-          getClaudeAgentSetting(snapshot.entries) !== this.options.agent
-        ) {
-          const agentSetting = createClaudeAgentSettingEntry(
-            sessionId,
-            this.options.agent,
-          )
-          const settingTail = await this.append(
-            lease,
-            snapshot.tail,
-            agentSetting,
-          )
+        if (resumeSessionAt !== undefined) {
           snapshot = {
-            entries: [...snapshot.entries, agentSetting],
-            tail: settingTail,
-          }
-        }
-
-        const sessionMemory = this.sessionMemoryController(sessionId)
-        let agentSystem: string | null = null
-        let planModeMessage: string | null | undefined
-        let sessionMemoryMessage: string | null = null
-        let contextMessages: ModelMessage[] = []
-        let contextProjection: ContextProjection = {
-          systemMessages: [],
-          stableSystemSectionCount: 0,
-        }
-        let stableSystemMessageCount = 0
-        const refreshRuntimeContext = async () => {
-          agentSystem = await this.mainAgentSystemPrompt(agent)
-          planModeMessage =
-            this.options.interactiveTools?.contextMessage(sessionId)
-          sessionMemoryMessage = sessionMemory
-            ? this.sessionMemoryMessage(await sessionMemory.summary())
-            : null
-          const assembledContext = await assembleContextSnapshot(
-            this.options.contextAssembler,
-            {
-              cwd: this.activeCwd(),
-              lifecycleId: sessionId,
-              ...(agentSystem
-                ? { mode: 'agent', baseSystemPrompt: agentSystem }
-                : {}),
-              turn: {
-                ...(planModeMessage ? { planMode: planModeMessage } : {}),
-                ...(sessionMemoryMessage
-                  ? { sessionMemory: sessionMemoryMessage }
-                  : {}),
-                ...(this.options.brief ? { briefOutput: true } : {}),
-                ...(this.options.structuredOutputSchema
-                  ? { structuredOutput: true }
-                  : {}),
-              },
-            },
-          )
-          contextProjection = projectContextSnapshot(assembledContext)
-          stableSystemMessageCount = contextProjection.stableSystemSectionCount
-          contextMessages = [...contextProjection.systemMessages]
-        }
-        await refreshRuntimeContext()
-
-        const expansion = skipUserPrompt
-          ? { userMessages: [] as string[] }
-          : shellCommand === undefined
-            ? this.options.extensions
-              ? await this.options.extensions.expandPromptAsync(
-                  effectivePrompt,
-                  signal,
-                  toolResultDirectory,
-                )
-              : { userMessages: [effectivePrompt] }
-            : {
-                userMessages: [`<bash-input>${shellCommand}</bash-input>`],
-              }
-        const expandedMessages: readonly ClaudePromptExpansionMessage[] =
-          expansion.messages ?? expansion.userMessages.map((text) => ({ text }))
-        const attachmentIndex = expansion.messages
-          ? expandedMessages.length - 1
-          : 0
-        currentTurnUserMessages = [...expansion.userMessages]
-        this.options.eventSink?.({
-          type: 'state',
-          state: 'assembling-context',
-        })
-        let compactionUsage: ModelUsage = {
-          inputTokens: 0,
-          outputTokens: 0,
-        }
-        let compactionDurationMs: number | undefined
-        let compactionDurationWithoutRetriesMs: number | undefined
-        let compactionModelUsage:
-          Readonly<Record<string, ModelUsage>> | undefined
-        const definitions = provider.capabilities.tools
-          ? (structuredTools?.definitions() ?? [])
-          : []
-        const budget = this.contextBudget(provider)
-        const recoveryPlanner = new ContextRecoveryPlanner()
-        const pendingUserMessages = expandedMessages.map((message, index) => ({
-          role: 'user' as const,
-          content: message.text,
-          ...(message.contentBlocks?.length
-            ? { contentBlocks: message.contentBlocks }
-            : {}),
-          ...((index === attachmentIndex && images.length > 0) ||
-          message.images?.length
-            ? {
-                images: [
-                  ...(index === attachmentIndex ? images : []),
-                  ...(message.images ?? []),
-                ],
-              }
-            : {}),
-          ...(index === attachmentIndex && documents.length > 0
-            ? { documents }
-            : {}),
-        }))
-        const agentMentionMessages =
-          shellCommand === undefined && !skipUserPrompt
-            ? (this.options.extensions?.agentMentionMessages(effectivePrompt) ??
-              [])
-            : []
-        const injectAgentMentionContext = (
-          messages: readonly ModelMessage[],
-        ): ModelMessage[] => {
-          if (agentMentionMessages.length === 0) return [...messages]
-          let insertionIndex = messages.length
-          let foundPrompt = false
-          for (let index = messages.length - 1; index >= 0; index -= 1) {
-            const message = messages[index]
-            if (
-              message?.role === 'user' &&
-              typeof message.content === 'string' &&
-              message.content.endsWith(effectivePrompt)
-            ) {
-              insertionIndex = index
-              foundPrompt = true
-              break
-            }
-          }
-          if (!foundPrompt) return [...messages]
-          return [
-            ...messages.slice(0, insertionIndex),
-            ...agentMentionMessages.map((content) => ({
-              role: 'user' as const,
-              content,
-            })),
-            ...messages.slice(insertionIndex),
-          ]
-        }
-        const injectDynamicContext = (
-          messages: readonly ModelMessage[],
-        ): ModelMessage[] =>
-          injectFirstUserMessageContext(
-            messages,
-            contextProjection.firstUserMessageContext,
-          )
-        const injectTurnContext = (
-          messages: readonly ModelMessage[],
-        ): ModelMessage[] =>
-          injectAgentMentionContext(injectDynamicContext(messages))
-        let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
-        const compactIfNeeded = async (
-          pendingMessages: readonly {
-            role: 'user'
-            content: string
-          }[] = [],
-          preservedUserMessages: readonly string[] = [],
-          options: { promptTooLong?: boolean } = {},
-        ) => {
-          if (!budget || this.options.autoCompact === false) return
-          const historyMessages = [
-            ...projectClaudeModelMessages(snapshot.entries),
-            ...projectMemoryRecallMessages,
-          ]
-          const predicted = budget.evaluate(
-            [
-              ...contextMessages,
-              ...injectTurnContext([...historyMessages, ...pendingMessages]),
-            ],
-            definitions,
-            options,
-          )
-          if (!predicted.shouldCompact) return
-          const irreducibleMessages = [
-            ...contextMessages,
-            ...injectTurnContext([
-              ...pendingMessages,
-              ...preservedUserMessages.map((content) => ({
-                role: 'user' as const,
-                content,
-              })),
-            ]),
-          ]
-          const irreducible = budget.evaluate(irreducibleMessages, definitions)
-          budget.assertFits(irreducible)
-          let logicalParentUuid = compactionAnchorUuid
-          if (!logicalParentUuid || historyMessages.length === 0) {
-            budget.assertFits(predicted)
-            throw new Error('Cannot compact an empty Claude transcript')
-          }
-          if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
-            throw new Error(
-              'Cannot compact a Claude session with unresolved tool calls',
-            )
-          }
-          const preCompact = await this.runAdvisoryHook(
-            sessionId,
-            'PreCompact',
-            { trigger: 'auto', custom_instructions: null },
-            'auto',
-            signal,
-          )
-          const memorySelection = sessionMemory
-            ? await this.selectMemoryPreservedCompact(
-                sessionId,
-                selectClaudeActiveTranscript(snapshot.entries),
-              )
-            : null
-          const compactorMessages: ModelMessage[] = memorySelection
-            ? [
-                memorySelection.memoryMessage,
-                ...projectClaudeModelMessages(memorySelection.compactedEntries),
-              ]
-            : historyMessages
-          compactorMessages.push(
-            ...successfulHookOutput(preCompact).map((content) => ({
-              role: 'user' as const,
-              content: `Additional summarization context: ${content}`,
-            })),
-          )
-          if (memorySelection) {
-            logicalParentUuid = memorySelection.logicalParentUuid
-          }
-          this.options.eventSink?.({ type: 'state', state: 'compacting' })
-          const compactEnvelope = budget.evaluate(
-            [
-              ...irreducibleMessages,
-              {
-                role: 'user',
-                content: formatClaudeCompactSummary(''),
-              },
-            ],
-            definitions,
-          )
-          let targetTokens = Math.min(
-            8192,
-            compactEnvelope.availableTokens - compactEnvelope.estimatedTokens,
-          )
-          if (targetTokens < 1) {
-            budget.assertFits(
-              budget.evaluate(
-                [
-                  ...irreducibleMessages,
-                  {
-                    role: 'user',
-                    content: formatClaudeCompactSummary('a'),
-                  },
-                ],
-                definitions,
-              ),
-            )
-            targetTokens = 1
-          }
-          const compacted = await (
-            this.options.compactor ?? new ModelCompactor(provider)
-          ).compact({
-            messages: compactorMessages,
-            targetTokens,
-            contextWindowTokens: budget.contextWindowTokens,
-            ...(signal ? { signal } : {}),
-          })
-          const {
-            durationMs: compactedDurationMs,
-            durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-          } = requireCompactionDurations(compacted)
-          const proposedCompactionDurationMs =
-            (compactionDurationMs ?? 0) + compactedDurationMs
-          if (!Number.isFinite(proposedCompactionDurationMs)) {
-            throw new TypeError('compaction durationMs total overflow')
-          }
-          const proposedCompactionDurationWithoutRetriesMs =
-            (compactionDurationWithoutRetriesMs ?? 0) +
-            compactedDurationWithoutRetriesMs
-          if (!Number.isFinite(proposedCompactionDurationWithoutRetriesMs)) {
-            throw new TypeError(
-              'compaction durationWithoutRetriesMs total overflow',
-            )
-          }
-          const boundaryUuid = randomUUID()
-          const summaryUuid = randomUUID()
-          const timestamp = new Date().toISOString()
-          const preTokens = budget.evaluate(
-            [...contextMessages, ...injectTurnContext(historyMessages)],
-            definitions,
-          ).estimatedTokens
-          const compactEntries = (postTokens: number) => {
-            const uuids = [boundaryUuid, summaryUuid]
-            return createClaudeCompactEntries({
-              sessionId,
-              logicalParentUuid,
-              summary: compacted.summary,
-              preTokens,
-              postTokens,
-              previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
-                snapshot.entries,
-              ),
-              durationMs: compactedDurationMs,
-              cwd: this.activeCwd(),
-              claudeVersion: this.options.claudeVersion,
-              gitBranch: null,
-              ...(memorySelection
-                ? {
-                    preservedUuids: memorySelection.preservedEntries.flatMap(
-                      (entry) =>
-                        typeof entry.uuid === 'string' ? [entry.uuid] : [],
-                    ),
-                  }
-                : {}),
-              createUuid: () => uuids.shift() ?? randomUUID(),
-              now: () => timestamp,
-            })
-          }
-          const provisionalEntries = compactEntries(0)
-          const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
-          if (typeof compactSummaryUuid !== 'string') {
-            throw new Error('Could not create Claude compact summary')
-          }
-          const replayUuids = preservedUserMessages.map(() => randomUUID())
-          const replayEntries = translateProviderEvents(
-            preservedUserMessages.map((text, index) =>
-              index === 0
-                ? { type: 'user-text' as const, text }
-                : { type: 'user-text-block' as const, text },
+            entries: selectClaudeTranscriptAtMessage(
+              snapshot.entries,
+              resumeSessionAt,
             ),
-            {
-              sessionId,
-              parentUuid: compactSummaryUuid,
-              cwd: this.activeCwd(),
-              claudeVersion: this.options.claudeVersion,
-              gitBranch: null,
-              history: [...snapshot.entries, ...provisionalEntries],
-              createUuid: () => replayUuids.shift() ?? randomUUID(),
-              now: () => timestamp,
-            },
+            tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
+          }
+        } else if (this.explicitResumeLeafUuids.has(sessionId)) {
+          const selected = selectClaudeTranscriptFromNewestLeaf(
+            snapshot.entries,
           )
-          const compactedHistory = [
-            ...projectClaudeModelMessages([
-              ...snapshot.entries,
-              ...provisionalEntries,
-              ...replayEntries,
-            ]),
-            ...projectMemoryRecallMessages,
-          ]
-          const afterHistory = budget.evaluate(
-            [...contextMessages, ...injectTurnContext(compactedHistory)],
-            definitions,
+          this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
+          snapshot = {
+            entries: selected.entries,
+            tail: { ...snapshot.tail, branchParentUuid: selected.leafUuid },
+          }
+        }
+        if (
+          requireExisting &&
+          resumeSessionAt === undefined &&
+          this.options.resumeInterruptedTurn === true &&
+          shellCommand === undefined &&
+          !skipUserPrompt &&
+          !(
+            this.options.approveRecovery !== undefined &&
+            findUnresolvedClaudeToolCalls(snapshot.entries).length > 0
           )
-          const afterPending = budget.evaluate(
-            [
-              ...contextMessages,
-              ...injectTurnContext([...compactedHistory, ...pendingMessages]),
-            ],
-            definitions,
-          )
-          budget.assertFits(afterPending)
+        ) {
+          const interruption = classifyClaudeInterruption(snapshot.entries)
           if (
-            options.promptTooLong === true &&
-            !contextRecoveryMadeProgress({
-              beforeOccupancyTokens: predicted.occupancyTokens,
-              afterOccupancyTokens: afterPending.occupancyTokens,
-            })
+            (interruption.kind === 'interrupted-prompt' ||
+              interruption.kind === 'interrupted-turn') &&
+            interruption.prompt !== undefined &&
+            interruption.replayEntries !== undefined
           ) {
-            throw new Error(
-              'Reactive context compaction made no occupancy progress',
-            )
-          }
-          const entries = [
-            ...compactEntries(afterHistory.estimatedTokens),
-            ...replayEntries,
-          ]
-          if (signal?.aborted) throw new AgentRunCancelledError()
-          // Construct the exact tracker mutations for this single committed
-          // boundary and preflight them against a clone of the live tracker so
-          // invalid input or cumulative overflow rejects before the compact
-          // boundary is appended rather than after a half-commit.
-          const tracker = this.sessionCostTrackers.get(sessionId)
-          if (!tracker) {
-            throw new Error(
-              `Session cost tracker is not active for session ${sessionId}`,
-            )
-          }
-          const compactModel =
-            compacted.model !== undefined && compacted.model.trim() !== ''
-              ? compacted.model
-              : provider.model
-          const compactModelNonBlank =
-            compactModel !== undefined && compactModel.trim() !== ''
-          if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
-            throw new Error(
-              'Auto compact usage requires a nonblank model identity',
-            )
-          }
-          let meteringTurnInput: ClaudeSessionTurnInput | undefined
-          if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
-            const pricing = this.options.pricing?.resolve(compactModel)
-            const costUsd = pricing
-              ? usageCostUsd(compacted.usage, pricing)
-              : undefined
-            meteringTurnInput = {
-              model: compactModel,
-              usage: compacted.usage,
-              ...(costUsd === undefined ? {} : { costUsd }),
-              ...(compacted.usage.webSearchRequests === undefined
-                ? {}
-                : { webSearchRequests: compacted.usage.webSearchRequests }),
+            automaticReplayPrompt = interruption.prompt
+            snapshot = {
+              entries: interruption.replayEntries,
+              tail: {
+                ...snapshot.tail,
+                branchParentUuid: interruption.replayParentUuid ?? null,
+              },
             }
           }
-          let meteringDurationsInput: ClaudeSessionDurationsInput | undefined
-          if (
-            compactedDurationMs > 0 ||
-            compactedDurationWithoutRetriesMs > 0
-          ) {
-            meteringDurationsInput = {
-              ...(compactedDurationMs === 0
-                ? {}
-                : { apiDurationMs: compactedDurationMs }),
-              apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-            }
+        }
+        const initialTransition =
+          this.worktreeManager?.consumeTransition('__initial__')
+        if (initialTransition && snapshot.entries.length === 0) {
+          const stateEntry: ClaudeTranscriptEntry = {
+            type: 'worktree-state',
+            worktreeSession: initialTransition.state,
+            sessionId,
           }
-          if (
-            meteringTurnInput !== undefined ||
-            meteringDurationsInput !== undefined
-          ) {
-            const preflight = new ClaudeSessionCostTracker({
-              sessionId,
-              restored: tracker.snapshot(),
-            })
-            if (meteringTurnInput !== undefined) {
-              preflight.recordTurn(meteringTurnInput)
-            }
-            if (meteringDurationsInput !== undefined) {
-              preflight.recordDurations(meteringDurationsInput)
-            }
+          const stateTail = await this.append(lease, snapshot.tail, stateEntry)
+          snapshot = {
+            entries: [...snapshot.entries, stateEntry],
+            tail: stateTail,
           }
+          this.rememberDurableMetadata(sessionId, snapshot.entries)
+        }
+        this.restoreWorktree(snapshot.entries)
+        this.options.interactiveTools?.restore(sessionId, snapshot.entries)
+        if (
+          requireExisting &&
+          name !== undefined &&
+          !this.hasSessionName(snapshot.entries, name)
+        ) {
+          const entries = this.sessionNameEntries(sessionId, name)
           const appendResult = await lease.appendMany(snapshot.tail, entries)
           if (appendResult.status === 'conflict') {
             throw new Error(
@@ -5308,746 +4080,2054 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
-          const metadataEntries = createClaudeDurableMetadataSnapshot(
-            snapshot.entries,
-            sessionId,
-          )
-          if (metadataEntries.length > 0) {
-            const metadataAppend = await lease.appendMany(
-              snapshot.tail,
-              metadataEntries,
-            )
-            if (metadataAppend.status === 'conflict') {
-              throw new Error(
-                `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
-              )
-            }
-            snapshot = {
-              entries: [...snapshot.entries, ...metadataEntries],
-              tail: metadataAppend.tail,
-            }
-          }
           this.rememberDurableMetadata(sessionId, snapshot.entries)
-          await this.runAdvisoryHook(
-            sessionId,
-            'PostCompact',
-            { trigger: 'auto', compact_summary: compacted.summary },
-            'auto',
-            signal,
-          )
-          // The boundary is durable: mirror Claude's full-compact behavior by
-          // rerunning SessionStart with source compact and refreshing the
-          // runtime-only context so the next request retains current
-          // instructions, plan state, session memory, and hook context.
-          if (this.options.hooks) {
-            const outcome = await this.hookLifecycle.refresh(
-              sessionId,
-              hookSession,
-              signal,
-            )
-            if (outcome) await recordHookOutcome(outcome)
-          }
-          this.options.contextAssembler?.invalidate?.({
-            lifecycleId: sessionId,
-            reason: 'compact',
-          })
-          this.options.projectMemoryRecall?.recordCompact(sessionId)
-          await refreshRuntimeContext()
-          this.options.eventSink?.({
-            type: 'compact-boundary',
-            trigger: 'auto',
-            preTokens,
-            uuid: boundaryUuid,
-          })
-          compactionAnchorUuid = compactSummaryUuid
-          compactionUsage = mergeUsage(compactionUsage, compacted.usage)
-          compactionDurationMs = proposedCompactionDurationMs
-          compactionDurationWithoutRetriesMs =
-            proposedCompactionDurationWithoutRetriesMs
-          if (meteringTurnInput !== undefined) {
-            compactionModelUsage = mergeSessionRawModelUsage(
-              compactionModelUsage,
-              { [meteringTurnInput.model]: compacted.usage },
-            )
-          }
-          // Commit the preflighted mutations once the boundary is durable so a
-          // later main-provider failure or cancellation cannot lose the
-          // compactor's usage/cost/API durations.
-          if (meteringTurnInput !== undefined) {
-            tracker.recordTurn(meteringTurnInput)
-          }
-          if (meteringDurationsInput !== undefined) {
-            tracker.recordDurations(meteringDurationsInput)
-          }
         }
-        await compactIfNeeded(pendingUserMessages)
-
-        for (const [index, message] of expandedMessages.entries()) {
-          if (shellCommand !== undefined) break
-          const messageImages = [
-            ...(index === attachmentIndex ? images : []),
-            ...(message.images ?? []),
-          ]
-          const persistenceEvent =
-            messageImages.length > 0 ||
-            (index === attachmentIndex && documents.length > 0)
-              ? ({
-                  type: 'user-message',
-                  text: message.text,
-                  images: messageImages,
-                  ...(index === attachmentIndex && documents.length > 0
-                    ? { documents }
-                    : {}),
-                } as const)
-              : index === 0
-                ? ({ type: 'user-text', text: message.text } as const)
-                : ({ type: 'user-text-block', text: message.text } as const)
-          const [userEntry] = translateProviderEvents(
-            [persistenceEvent],
-            this.translationContext(sessionId, snapshot),
-          )
-          if (!userEntry) throw new Error('Could not translate user prompt')
-          if (currentPromptId === null && typeof userEntry.uuid === 'string') {
-            currentPromptId = userEntry.uuid
-            compactionAnchorUuid ??= userEntry.uuid
-          }
-          const userTail = await this.append(lease, snapshot.tail, userEntry)
-          snapshot = {
-            entries: [...snapshot.entries, userEntry],
-            tail: userTail,
-          }
-        }
-
-        if (fileHistory && currentPromptId) {
-          const historySnapshot = await fileHistory.snapshot(
-            snapshot.entries,
-            currentPromptId,
-          )
-          const historyTail = await this.append(
-            lease,
-            snapshot.tail,
-            historySnapshot,
-          )
-          snapshot = {
-            entries: [...snapshot.entries, historySnapshot],
-            tail: historyTail,
-          }
-        }
-
-        if (this.options.hooks && !skipUserPrompt) {
-          const outcome = await this.options.hooks.run(
-            {
-              ...hookSession,
-              hook_event_name: 'UserPromptSubmit',
-              prompt_id: currentPromptId ?? randomUUID(),
-              prompt: effectivePrompt,
-            },
-            undefined,
-            signal,
-          )
-          await recordHookOutcome(outcome)
-          if (outcome.blockedReason) {
-            throw new Error(
-              `UserPromptSubmit hook error: ${outcome.blockedReason}`,
-            )
-          }
-        }
-        let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
-        let shellModelUsage: Readonly<Record<string, ModelUsage>> | undefined
-        if (shellCommand !== undefined) {
-          const call: ModelToolCall = {
-            id: `shell_${randomUUID().replaceAll('-', '')}`,
-            name: 'Bash',
-            input: { command: shellCommand },
-          }
-          this.options.eventSink?.({
-            type: 'shell-command',
-            callId: call.id,
-            command: shellCommand,
-          })
-          let shellResult
-          try {
-            shellResult = await runtime.executeDirectToolCall(call, {
-              cwd: this.activeCwd(),
-              sessionId,
-              toolResultDirectory,
-              messages: projectClaudeModelMessages(snapshot.entries),
-              observer: {
-                assistantCompleted: async () => undefined,
-                toolCompleted: async () => undefined,
-                followUpUserMessagesCompleted:
-                  observer.followUpUserMessagesCompleted,
-              },
-              ...(this.options.approveTool
-                ? { approveTool: this.options.approveTool }
-                : {}),
-              permissionUpdates:
-                this.sessionPermissionUpdates.get(sessionId) ?? [],
-              onPermissionUpdates: (updates) =>
-                this.applyPermissionUpdates(sessionId, updates),
-              ...(signal ? { signal } : {}),
-            })
-          } catch (error) {
-            this.options.eventSink?.({
-              type: 'shell-cancelled',
-              callId: call.id,
-            })
-            throw error
-          }
-          shellUsage = shellResult.usage ?? shellUsage
-          if (!shellResult.isError) {
-            shellModelUsage = shellResult.modelUsage
-            foregroundLineChanges.add(shellResult)
-          }
-          const stdout =
-            shellResult.processOutput?.stdout ??
-            (shellResult.isError ? '' : shellResult.content)
-          const stderr =
-            shellResult.processOutput?.stderr ??
-            (shellResult.isError ? shellResult.content : '')
-          const shellUuids = [shellInputUuid ?? randomUUID(), randomUUID()]
-          const [inputEntry, outputEntry] = translateProviderEvents(
-            [
-              { type: 'bash-input', command: shellCommand },
-              { type: 'bash-output', stdout, stderr },
-            ],
-            {
-              ...this.translationContext(sessionId, snapshot),
-              createUuid: () => shellUuids.shift() ?? randomUUID(),
-            },
-          )
-          if (!inputEntry || !outputEntry) {
-            throw new Error('Could not translate shell command result')
-          }
-          const shellAppend = await lease.appendMany(snapshot.tail, [
-            inputEntry,
-            outputEntry,
-          ])
-          if (shellAppend.status === 'conflict') {
-            throw new Error(
-              `Claude transcript append conflict: ${shellAppend.reason}`,
-            )
-          }
-          snapshot = {
-            entries: [...snapshot.entries, inputEntry, outputEntry],
-            tail: shellAppend.tail,
-          }
-          currentTurnUserMessages.push(
-            `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
-          )
-          this.options.eventSink?.({
-            type: 'shell-result',
-            callId: call.id,
-            stdout,
-            stderr,
-            isError: shellResult.isError,
-          })
-        }
-        if (budget) {
-          await compactIfNeeded([], currentTurnUserMessages ?? [])
-          budget.assertFits(
-            budget.evaluate(
-              [
-                ...contextMessages,
-                ...injectTurnContext(
-                  projectClaudeModelMessages(snapshot.entries),
-                ),
-              ],
-              definitions,
-            ),
+        const agentName =
+          this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
+        const agent = this.resolveAgent(agentName)
+        const provider = this.providerForAgent(agent)
+        this.activeProvider = provider
+        const effectivePrompt =
+          automaticReplayPrompt ??
+          (!requireExisting &&
+          !skipUserPrompt &&
+          !this.options.agentInitialPromptHandledExternally &&
+          shellCommand === undefined &&
+          agent?.initialPrompt
+            ? `${agent.initialPrompt}\n\n${prompt}`
+            : prompt)
+        const projectMemoryRecallTurn =
+          !skipUserPrompt && shellCommand === undefined
+            ? this.options.projectMemoryRecall?.prefetch({
+                sessionId,
+                turnId: randomUUID(),
+                prompt: effectivePrompt,
+                ...(signal ? { signal } : {}),
+              })
+            : undefined
+        const initialPricing = this.options.pricing?.resolve(
+          provider.model ?? 'praxis/provider',
+        )
+        if (this.options.maxBudgetUsd !== undefined && !initialPricing) {
+          throw new Error(
+            `Cannot enforce --max-budget-usd: no pricing is configured for model ${provider.model ?? 'praxis/provider'}`,
           )
         }
-
-        let stopHookActive = false
-        const runtimeRequest: AgentRunRequest = {
-          sessionId,
-          messages: [
-            ...contextMessages,
-            ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
-          ],
-          stableSystemMessageCount,
-          cwd: this.activeCwd(),
-          toolResultDirectory,
-          observer,
-          ...(this.options.effort ? { effort: this.options.effort } : {}),
-          ...(this.options.maxModelTurns !== undefined
-            ? { maxModelTurns: this.options.maxModelTurns }
-            : {}),
-          ...(this.options.betas?.length ? { betas: this.options.betas } : {}),
-          ...(this.options.collectMetrics || this.options.costStateStore
-            ? { collectMetrics: true }
-            : {}),
-          ...(budget
-            ? { deferFailureKinds: ['prompt_too_long'] as const }
-            : {}),
-          reloadMessages: async () => {
-            const recalled = projectMemoryRecallTurn?.consumeIfSettled()
-            if (recalled) {
-              projectMemoryRecallMessages = [
-                { role: 'user', content: recalled.content },
-              ]
-            }
-            await compactIfNeeded([], currentTurnUserMessages ?? [])
-            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-            return [
-              ...contextMessages,
-              ...injectTurnContext([
-                ...projectClaudeModelMessages(snapshot.entries),
-                ...projectMemoryRecallMessages,
-              ]),
-            ]
+        const shellInputUuid = shellCommand === undefined ? null : randomUUID()
+        let currentPromptId: string | null = shellInputUuid
+        let lastAssistantUuid: string | null = null
+        const fileHistory =
+          this.options.fileCheckpointing &&
+          this.options.sessionPersistence !== false
+            ? new ClaudeFileHistory(this.options.configRoot, sessionId, [
+                this.activeCwd(),
+                ...(this.options.fileRewindRoots ?? []),
+              ])
+            : null
+        const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
+          snapshot.entries,
+        )
+        const pendingRecoveryToolCallIds = new Set(
+          unresolvedToolCalls.map((call) => call.id),
+        )
+        const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
+        const currentHookCwd = () => this.activeCwd()
+        const hookSession = {
+          session_id: sessionId,
+          transcript_path: sessionPaths.sessionFile,
+          get cwd() {
+            return currentHookCwd()
           },
-          ...(this.options.hooks ||
-          subagentExecutor ||
-          taskTools ||
-          this.scheduledPrompts ||
-          this.workflowManager
-            ? {
-                onStop: async (text: string) => {
-                  const messages: string[] = []
-                  const outcome = await this.options.hooks?.run(
-                    {
-                      ...hookSession,
-                      hook_event_name: 'Stop',
-                      stop_hook_active: stopHookActive,
-                      last_assistant_message: text,
-                    },
-                    undefined,
-                    signal,
-                  )
-                  if (outcome) {
-                    await recordHookOutcome(outcome)
-                    if (outcome.blockedReason) {
-                      stopHookActive = true
-                      messages.push(`Stop hook error: ${outcome.blockedReason}`)
-                    }
-                  }
-                  const claimedAgentIds = new Set(
-                    this.sessionSubagentExecutors(sessionId, true).flatMap(
-                      (executor) => executor.notificationClaimAgentIds(),
-                    ),
-                  )
-                  await Promise.all(
-                    this.sessionSubagentExecutors(sessionId, true).map(
-                      (executor) => {
-                        const delivered = (
-                          notification: BackgroundAgentNotificationIdentity,
-                        ) =>
-                          transcriptContainsBackgroundAgentNotification(
-                            snapshot.entries,
-                            notification,
+          permission_mode: 'default',
+        }
+        const appendHookOutcome = async (outcome: ClaudeHookOutcome) => {
+          for (const entry of createClaudeHookAttachmentEntries(
+            outcome,
+            this.translationContext(sessionId, snapshot),
+          )) {
+            const tail = await this.append(lease, snapshot.tail, entry)
+            snapshot = { entries: [...snapshot.entries, entry], tail }
+          }
+        }
+        const recordHookOutcome = async (
+          outcome: ClaudeHookOutcome,
+          deferUntilApproval = false,
+        ) => {
+          if (deferUntilApproval) {
+            pendingRecoveryHookOutcomes.push(outcome)
+            return
+          }
+          await appendHookOutcome(outcome)
+        }
+        const flushRecoveryHookOutcomes = async () => {
+          const entries: ClaudeTranscriptEntry[] = []
+          let history = snapshot.entries
+          let parentUuid = this.logicalTailUuid(snapshot.tail)
+          for (const outcome of pendingRecoveryHookOutcomes) {
+            const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
+              ...this.translationContext(sessionId, snapshot),
+              parentUuid,
+              history,
+            })
+            entries.push(...outcomeEntries)
+            history = [...history, ...outcomeEntries]
+            const lastEntry = outcomeEntries.at(-1)
+            if (typeof lastEntry?.uuid === 'string') parentUuid = lastEntry.uuid
+          }
+          if (entries.length === 0) {
+            pendingRecoveryHookOutcomes.length = 0
+            return
+          }
+          const appendResult = await lease.appendMany(snapshot.tail, entries)
+          if (appendResult.status === 'conflict') {
+            throw new Error(
+              `Claude transcript append conflict: ${appendResult.reason}`,
+            )
+          }
+          snapshot = { entries: history, tail: appendResult.tail }
+          pendingRecoveryHookOutcomes.length = 0
+        }
+        const capabilities = this.toolCapabilities()
+        const taskToolNames = this.capabilityToolNames(
+          this.options.taskToolNames,
+          capabilities,
+        )
+        const scheduledToolNames = this.capabilityToolNames(
+          this.options.scheduledToolNames,
+          capabilities,
+        )
+        const taskTools =
+          this.options.tools && taskToolNames.length > 0
+            ? new ClaudeTaskToolRegistry({
+                base: this.options.tools,
+                cwd: this.activeCwd(),
+                cwdProvider: () => this.activeCwd(),
+                praxisRoot: sessionPaths.praxisRoot,
+                sessionId,
+                taskRoot: sessionPaths.taskRoot,
+                ...(this.options.eventSink
+                  ? { eventSink: this.options.eventSink }
+                  : {}),
+                enabledTools: taskToolNames,
+                ...(this.options.hooks
+                  ? {
+                      taskHooks: {
+                        created: async (task, taskSignal) => {
+                          const outcome = await this.options.hooks?.run(
+                            {
+                              ...hookSession,
+                              hook_event_name: 'TaskCreated',
+                              task_id: task.id,
+                              task_subject: task.subject,
+                              task_description: task.description,
+                            },
+                            undefined,
+                            taskSignal,
                           )
-                        return this.hostedSubagents.has(executor)
-                          ? executor.reconcileDetachedNotifications(delivered)
-                          : executor.reconcileDeliveredNotifications(delivered)
+                          if (!outcome) return
+                          await recordHookOutcome(outcome)
+                          if (outcome.blockedReason) {
+                            throw new Error(
+                              `TaskCreated hook error: ${outcome.blockedReason}`,
+                            )
+                          }
+                        },
+                        completed: async (task, taskSignal) => {
+                          const outcome = await this.options.hooks?.run(
+                            {
+                              ...hookSession,
+                              hook_event_name: 'TaskCompleted',
+                              task_id: task.id,
+                              task_subject: task.subject,
+                              task_description: task.description,
+                            },
+                            undefined,
+                            taskSignal,
+                          )
+                          if (!outcome) return
+                          await recordHookOutcome(outcome)
+                          if (outcome.blockedReason) {
+                            throw new Error(
+                              `TaskCompleted hook error: ${outcome.blockedReason}`,
+                            )
+                          }
+                        },
                       },
-                    ),
-                  )
-                  await subagentExecutor?.hydratePersistedTasks(
-                    sessionId,
-                    this.activeCwd(),
-                    claimedAgentIds,
-                  )
-                  const background = await this.collectSubagentNotifications(
-                    sessionId,
-                    subagentExecutor ?? undefined,
-                  )
-                  if (background) messages.push(...background.messages)
-                  const workflow =
-                    await this.workflowManager?.notifications(true)
-                  if (workflow) messages.push(...workflow.messages)
-                  const bashMessages = await taskTools?.notifications(true)
-                  if (bashMessages) messages.push(...bashMessages)
-                  const scheduled = await this.scheduledPrompts?.drainDue()
-                  if (scheduled) {
-                    messages.push(...scheduled.map(({ prompt }) => prompt))
+                    }
+                  : {}),
+              })
+            : null
+        const scheduledTools =
+          this.scheduledPrompts &&
+          this.options.tools &&
+          scheduledToolNames.length > 0
+            ? new ClaudeScheduledToolRegistry({
+                base: taskTools ?? this.options.tools,
+                manager: this.scheduledPrompts,
+                sessionId,
+                enabledTools: scheduledToolNames,
+                dataPlane: this.options.dataPlane ?? 'claude',
+              })
+            : null
+        const baseTools = scheduledTools ?? taskTools ?? this.options.tools
+        const turnPermissions =
+          this.options.interactiveTools?.permissions(sessionId) ??
+          this.options.permissions
+        const subagentExecutor =
+          (this.options.enableSubagents || this.options.enableWorkflows) &&
+          baseTools &&
+          turnPermissions
+            ? new ClaudeSubagentExecutor({
+                configRoot: this.options.configRoot,
+                dataPlane: this.options.dataPlane ?? 'claude',
+                cwd: this.activeCwd(),
+                cwdProvider: () => this.activeCwd(),
+                claudeVersion: this.options.claudeVersion,
+                provider,
+                persistence:
+                  this.options.sessionPersistence === false ? 'memory' : 'disk',
+                ...(this.options.providerForModel
+                  ? { providerForModel: this.options.providerForModel }
+                  : {}),
+                baseTools,
+                permissions: turnPermissions,
+                ...(this.options.permissionResolverForMode
+                  ? {
+                      permissionResolverForMode:
+                        this.options.permissionResolverForMode,
+                    }
+                  : {}),
+                parentPermissionMode: () =>
+                  agentPermissionMode(
+                    this.options.interactiveTools?.mode(sessionId) ??
+                      this.options.permissionMode,
+                  ),
+                ...(this.options.subagentToolNames
+                  ? {
+                      toolNames: this.capabilityToolNames(
+                        this.options.subagentToolNames,
+                        capabilities,
+                      ),
+                    }
+                  : {}),
+                ...(this.options.extensions
+                  ? { extensions: this.options.extensions }
+                  : {}),
+                ...(this.options.mcp ? { mcp: this.options.mcp } : {}),
+                ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
+                ...(this.options.contextAssembler
+                  ? { contextAssembler: this.options.contextAssembler }
+                  : {}),
+                ...((this.options.contextBudget?.reserveTokens ??
+                  this.options.contextReserveTokens) === undefined
+                  ? {}
+                  : {
+                      contextReserveTokens:
+                        this.options.contextBudget?.reserveTokens ??
+                        this.options.contextReserveTokens,
+                    }),
+                ...(this.options.approveTool
+                  ? { approveTool: this.options.approveTool }
+                  : {}),
+                permissionUpdates: () =>
+                  this.sessionPermissionUpdates.get(sessionId) ?? [],
+                onPermissionUpdates: (updates) =>
+                  this.applyPermissionUpdates(sessionId, updates),
+                onLineChanges: (changes) => {
+                  const tracker = this.sessionCostTrackers.get(sessionId)
+                  if (!tracker) {
+                    throw new Error(
+                      `Session cost tracker is not active for session ${sessionId}`,
+                    )
                   }
-                  const batchUsage =
-                    background || workflow
-                      ? mergeUsage(
-                          background?.usage ?? {
-                            inputTokens: 0,
-                            outputTokens: 0,
-                          },
-                          workflow?.usage ?? {
-                            inputTokens: 0,
-                            outputTokens: 0,
-                          },
-                        )
-                      : undefined
-                  const batchModelUsage = mergeSessionRawModelUsage(
-                    background?.modelUsage,
-                    workflow?.modelUsage,
-                  )
-                  const batchDurationApiMs = addApiDuration(
-                    workflow?.durationApiMs,
-                    addApiDuration(
-                      background?.durationApiMs,
-                      0,
-                      'durationApiMs',
-                    ),
-                    'durationApiMs',
-                  )
-                  const backgroundDurationWithoutRetries =
-                    background?.durationApiWithoutRetriesMs ??
-                    background?.durationApiMs
-                  const workflowDurationWithoutRetries =
-                    workflow?.durationApiWithoutRetriesMs ??
-                    workflow?.durationApiMs
-                  const batchDurationApiWithoutRetriesMs = addApiDuration(
-                    workflowDurationWithoutRetries,
-                    addApiDuration(
-                      backgroundDurationWithoutRetries,
-                      0,
-                      'durationApiWithoutRetriesMs',
-                    ),
-                    'durationApiWithoutRetriesMs',
-                  )
-                  const hasBatchDuration =
-                    background?.durationApiMs !== undefined ||
-                    background?.durationApiWithoutRetriesMs !== undefined ||
-                    workflow?.durationApiMs !== undefined ||
-                    workflow?.durationApiWithoutRetriesMs !== undefined
-                  return {
-                    messages,
-                    ...(batchUsage
-                      ? {
-                          usage: batchUsage,
-                          ...(batchModelUsage
-                            ? { modelUsage: batchModelUsage }
-                            : {}),
-                        }
+                  tracker.recordLineChanges(changes)
+                },
+                ...(this.options.eventSink
+                  ? { eventSink: this.options.eventSink }
+                  : {}),
+                ...(taskTools
+                  ? {
+                      backgroundTaskNotifications: (waitForRunning: boolean) =>
+                        taskTools.notifications(waitForRunning),
+                    }
+                  : {}),
+                notificationDelivered: (notification) =>
+                  transcriptContainsBackgroundAgentNotification(
+                    snapshot.entries,
+                    notification,
+                  ),
+                stopOwnedBackgroundAgent: (ownerSessionId, agentId) =>
+                  this.backgroundTasks.stopAgent(ownerSessionId, agentId),
+                outputOwnedBackgroundAgent: (
+                  ownerSessionId,
+                  agentId,
+                  options,
+                ) =>
+                  this.backgroundTasks.outputAgent(
+                    ownerSessionId,
+                    agentId,
+                    options,
+                  ),
+                sendOwnedBackgroundAgent: (
+                  ownerSessionId,
+                  agentId,
+                  message,
+                  summary,
+                  toolUseId,
+                ) =>
+                  this.sendOwnedBackgroundAgent(
+                    ownerSessionId,
+                    agentId,
+                    message,
+                    summary,
+                    toolUseId,
+                  ),
+              })
+            : null
+        if (subagentExecutor) {
+          this.subagentExecutors.add(subagentExecutor)
+          this.subagentExecutorSessions.set(subagentExecutor, sessionId)
+          this.backgroundTasks.registerAgents(sessionId, subagentExecutor)
+        }
+        const agentTools = subagentExecutor
+          ? subagentExecutor.registry(
+              sessionId,
+              0,
+              (callId) =>
+                currentPromptId ??
+                this.promptIdForToolCall(snapshot.entries, callId),
+            )
+          : baseTools
+        const turnTools =
+          this.workflowManager && subagentExecutor && agentTools
+            ? new ClaudeWorkflowToolRegistry({
+                base: agentTools,
+                manager: this.workflowManager,
+                executor: subagentExecutor,
+                cwd: this.activeCwd(),
+                cwdProvider: () => this.activeCwd(),
+                configRoot: this.options.configRoot,
+                sessionId,
+                promptIdForCall: (callId) =>
+                  currentPromptId ??
+                  this.promptIdForToolCall(snapshot.entries, callId),
+                defaultModel: provider.model ?? 'praxis/provider',
+                tokenBudget: workflowTokenTarget(effectivePrompt),
+                enabled: capabilities.has('Workflow'),
+                dataPlane: this.options.dataPlane ?? 'claude',
+              })
+            : agentTools
+        const workspaceTools =
+          this.worktreeManager &&
+          turnTools &&
+          this.options.workspace &&
+          (this.options.worktreeToolNames?.length ?? 0) > 0
+            ? new ClaudeWorktreeToolRegistry({
+                base: turnTools,
+                manager: this.worktreeManager,
+                workspace: this.options.workspace,
+                enabledTools: this.options.worktreeToolNames ?? [],
+                dataPlane: this.options.dataPlane ?? 'claude',
+              })
+            : turnTools
+        const messageTools =
+          this.options.brief && workspaceTools
+            ? new ClaudeUserMessageToolRegistry(
+                workspaceTools,
+                (message: UserMessage) =>
+                  this.options.eventSink?.({
+                    type: 'user-message',
+                    message: message.message,
+                    status: message.status,
+                    ...(message.attachments.length
+                      ? { attachments: message.attachments }
                       : {}),
-                    ...(hasBatchDuration
-                      ? {
-                          durationApiMs: batchDurationApiMs,
-                          durationApiWithoutRetriesMs:
-                            batchDurationApiWithoutRetriesMs,
-                        }
-                      : {}),
+                  }),
+              )
+            : workspaceTools
+        const interactiveMessageTools =
+          this.options.interactiveTools && messageTools
+            ? this.options.interactiveTools.registry(messageTools, sessionId)
+            : messageTools
+        const fileHistoryTools: ToolRegistry | undefined =
+          fileHistory && interactiveMessageTools
+            ? {
+                definitions: () => interactiveMessageTools.definitions(),
+                schedulingPolicy: (call) => ({
+                  ...resolveToolSchedulingPolicy(interactiveMessageTools, call),
+                  startAfterAssistant: true,
+                }),
+                prepare: (call, context) =>
+                  interactiveMessageTools.prepare(call, context),
+                execute: async (call, context) => {
+                  const path =
+                    call.name === 'Write' || call.name === 'Edit'
+                      ? call.input.file_path
+                      : call.name === 'NotebookEdit'
+                        ? call.input.notebook_path
+                        : undefined
+                  if (typeof path !== 'string') {
+                    return interactiveMessageTools.execute(call, context)
                   }
+                  if (
+                    (call.name === 'Write' || call.name === 'Edit') &&
+                    (await this.options.interactiveTools?.isPlanFile(
+                      sessionId,
+                      path,
+                    ))
+                  ) {
+                    return interactiveMessageTools.execute(call, context)
+                  }
+                  const snapshotMessageId =
+                    currentPromptId ??
+                    this.promptIdForToolCall(snapshot.entries, call.id)
+                  const assistantMessageId =
+                    lastAssistantUuid ??
+                    this.assistantIdForToolCall(snapshot.entries, call.id)
+                  if (!snapshotMessageId || !assistantMessageId) {
+                    throw new Error(
+                      'Claude file history could not link tool call',
+                    )
+                  }
+                  const prepared = await fileHistory.prepareMutation(
+                    snapshot.entries,
+                    snapshotMessageId,
+                    path,
+                  )
+                  let result
+                  try {
+                    result = await interactiveMessageTools.execute(
+                      call,
+                      context,
+                    )
+                  } catch (error) {
+                    await prepared.rollback()
+                    throw error
+                  }
+                  if (result.isError) {
+                    await prepared.rollback()
+                    return result
+                  }
+                  const entry = prepared.commit(assistantMessageId)
+                  if (entry) {
+                    const tail = await this.append(lease, snapshot.tail, entry)
+                    snapshot = { entries: [...snapshot.entries, entry], tail }
+                  }
+                  return result
+                },
+              }
+            : interactiveMessageTools
+        const capabilityTools = fileHistoryTools
+          ? new ClaudeCapabilityToolRegistry(fileHistoryTools, capabilities)
+          : undefined
+        const structuredCapture = this.options.structuredOutputSchema
+          ? { calls: 0, value: undefined as unknown }
+          : undefined
+        const agentScopedTools =
+          agent && capabilityTools
+            ? new FilteredToolRegistry(capabilityTools, {
+                tools: mainAgentToolNames(capabilityTools, agent),
+              })
+            : capabilityTools
+        const structuredTools =
+          this.options.structuredOutputSchema && structuredCapture
+            ? new StructuredOutputRegistry(
+                agentScopedTools ?? this.options.tools ?? emptyToolRegistry,
+                this.options.structuredOutputSchema,
+                structuredCapture,
+              )
+            : agentScopedTools
+        const hookTools =
+          this.options.hooks && structuredTools && turnPermissions
+            ? new ClaudeHookToolCoordinator({
+                tools: structuredTools,
+                permissions: turnPermissions,
+                hooks: this.options.hooks,
+                session: hookSession,
+                recordOutcome: recordHookOutcome,
+                ...(this.options.eventSink
+                  ? {
+                      warn: (message: string) =>
+                        this.options.eventSink?.({
+                          type: 'warning',
+                          message,
+                        }),
+                    }
+                  : {}),
+                deferPreToolUseOutcome: (call) =>
+                  pendingRecoveryToolCallIds.has(call.id),
+              })
+            : null
+        const runtime = new AgentRuntime(provider, controller.emit, {
+          emitInitialContextState: false,
+          ...(this.options.emitToolUseSummaries
+            ? {
+                generateToolUseSummary: ({
+                  tools,
+                  lastAssistantText,
+                  signal: summarySignal,
+                }) =>
+                  generateToolUseSummary(
+                    provider,
+                    tools,
+                    summarySignal,
+                    lastAssistantText,
+                    (metrics) =>
+                      this.recordAuxiliaryMetrics(sessionId, metrics),
+                  ),
+              }
+            : {}),
+          ...(this.options.pricing
+            ? {
+                costUsd: (usage) => {
+                  const pricing = this.options.pricing?.resolve(
+                    provider.model ?? 'praxis/provider',
+                  )
+                  return pricing ? usageCostUsd(usage, pricing) : undefined
                 },
               }
             : {}),
-          ...(this.options.approveTool
-            ? { approveTool: this.options.approveTool }
-            : {}),
-          permissionUpdates: this.sessionPermissionUpdates.get(sessionId) ?? [],
-          onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
-            this.applyPermissionUpdates(sessionId, updates),
-        }
-        const attemptMainTurn = () =>
-          signal
-            ? runtime.run({ ...runtimeRequest, signal })
-            : runtime.run(runtimeRequest)
-        const surfaceExhaustedRecovery = (error: ModelProviderError) => {
-          this.options.eventSink?.({
-            type: 'failed',
-            message: error.message,
-            retryable: false,
-          })
-        }
-        let result: AgentRunResult
-        try {
-          try {
-            result = await attemptMainTurn()
-          } catch (error) {
-            if (!budget || !isPromptTooLongError(error)) throw error
-            if (recoveryPlanner.reactiveRetriesRemaining === 0) {
-              surfaceExhaustedRecovery(error)
-              throw error
-            }
-            const beforeRecovery = budget.evaluate(
-              runtimeRequest.messages,
-              definitions,
+          ...(this.options.maxBudgetUsd === undefined
+            ? {}
+            : { maxBudgetUsd: this.options.maxBudgetUsd }),
+          ...(hookTools
+            ? { tools: hookTools, permissions: hookTools }
+            : {
+                ...(structuredTools ? { tools: structuredTools } : {}),
+                ...(turnPermissions ? { permissions: turnPermissions } : {}),
+              }),
+        })
+        let currentTurnUserMessages: string[] | null = null
+        let currentTurnToolCalls = 0
+        let projectMemoryMaintained = false
+        let projectMemoryRecallMessages: ModelMessage[] = []
+        const observer = {
+          assistantCompleted: async (message: {
+            content: string
+            thinkingBlocks?: readonly ModelThinkingBlock[]
+            toolCalls?: readonly ModelToolCall[]
+          }) => {
+            const [entry] = translateProviderEvents(
+              [
+                {
+                  type: 'assistant-message',
+                  text: message.content,
+                  ...(message.thinkingBlocks
+                    ? { thinkingBlocks: message.thinkingBlocks }
+                    : {}),
+                  toolCalls: message.toolCalls ?? [],
+                  providerMessageId: `msg_${randomUUID().replaceAll('-', '')}`,
+                  model: provider.model ?? 'praxis/provider',
+                },
+              ],
+              this.translationContext(sessionId, snapshot),
             )
-            try {
-              await compactIfNeeded([], currentTurnUserMessages ?? [], {
-                promptTooLong: true,
+            if (!entry)
+              throw new Error('Could not translate assistant response')
+            const tail = await this.append(lease, snapshot.tail, entry)
+            snapshot = { entries: [...snapshot.entries, entry], tail }
+
+            lastAssistantUuid =
+              typeof entry.uuid === 'string' ? entry.uuid : lastAssistantUuid
+          },
+          toolCompleted: async (
+            call: ModelToolCall,
+            toolResult: {
+              content: string
+              contentBlocks?: readonly ModelContentBlock[]
+              images?: readonly ModelImage[]
+              documents?: readonly ModelDocument[]
+              isError: boolean
+              accessedPaths?: readonly string[]
+              followUpUserMessages?: readonly string[]
+              nativeToolUseResult?: Record<string, unknown>
+              nativeMcpMeta?: Record<string, unknown>
+            },
+          ) => {
+            currentTurnToolCalls += 1
+            const transition = this.worktreeManager?.consumeTransition(call.id)
+            if (transition) {
+              this.options.contextAssembler?.invalidate?.({
+                lifecycleId: sessionId,
+                reason: 'worktree',
               })
-            } catch (compactionError) {
-              if (
-                signal?.aborted ||
-                compactionError instanceof AgentRunCancelledError
-              ) {
-                throw new AgentRunCancelledError()
+              const stateEntry: ClaudeTranscriptEntry = {
+                type: 'worktree-state',
+                worktreeSession: transition.state,
+                sessionId,
               }
-              // Compaction could not free the provider-bounded context; surface
-              // the original prompt-too-long error rather than the compaction
-              // failure.
-              surfaceExhaustedRecovery(error)
-              throw error
+              const stateTail = await this.append(
+                lease,
+                snapshot.tail,
+                stateEntry,
+              )
+              snapshot = {
+                entries: [...snapshot.entries, stateEntry],
+                tail: stateTail,
+              }
             }
-            // The single reactive retry must use the compacted transcript, not
-            // the stale request copy captured before the compact boundary.
-            runtimeRequest.messages = [
+            const permissionMode =
+              this.options.interactiveTools?.consumeTransition(call.id)
+            if (permissionMode) {
+              const modeEntry: ClaudeTranscriptEntry = {
+                type: 'permission-mode',
+                permissionMode,
+                sessionId,
+              }
+              const modeTail = await this.append(
+                lease,
+                snapshot.tail,
+                modeEntry,
+              )
+              snapshot = {
+                entries: [...snapshot.entries, modeEntry],
+                tail: modeTail,
+              }
+            }
+            const [entry] = translateProviderEvents(
+              [
+                {
+                  type: 'tool-result',
+                  toolCallId: call.id,
+                  content: toolResult.content,
+                  ...(toolResult.contentBlocks
+                    ? { contentBlocks: toolResult.contentBlocks }
+                    : {}),
+                  ...(toolResult.images ? { images: toolResult.images } : {}),
+                  ...(toolResult.documents
+                    ? { documents: toolResult.documents }
+                    : {}),
+                  isError: toolResult.isError,
+                  ...(toolResult.nativeToolUseResult
+                    ? { nativeToolUseResult: toolResult.nativeToolUseResult }
+                    : {}),
+                  ...(toolResult.nativeMcpMeta
+                    ? { nativeMcpMeta: toolResult.nativeMcpMeta }
+                    : {}),
+                },
+              ],
+              this.translationContext(sessionId, snapshot),
+            )
+            if (!entry) throw new Error('Could not translate tool result')
+            const tail = await this.append(lease, snapshot.tail, entry)
+            snapshot = { entries: [...snapshot.entries, entry], tail }
+
+            if (!toolResult.isError && this.options.projectMemoryDirectory) {
+              const pathValue = call.input.file_path
+              const path =
+                typeof pathValue === 'string'
+                  ? resolve(this.activeCwd(), pathValue)
+                  : null
+              if (
+                path &&
+                isPathWithin(this.options.projectMemoryDirectory, path)
+              ) {
+                if (call.name === 'Read') {
+                  this.options.projectMemoryRecall?.recordRead(sessionId, path)
+                } else if (call.name === 'Write' || call.name === 'Edit') {
+                  projectMemoryMaintained = true
+                }
+              }
+              if (call.name === 'Read') {
+                for (const accessedPath of toolResult.accessedPaths ?? []) {
+                  const resolvedAccessedPath = resolve(
+                    this.activeCwd(),
+                    accessedPath,
+                  )
+                  if (
+                    isPathWithin(
+                      this.options.projectMemoryDirectory,
+                      resolvedAccessedPath,
+                    )
+                  ) {
+                    this.options.projectMemoryRecall?.recordRead(
+                      sessionId,
+                      resolvedAccessedPath,
+                    )
+                  }
+                }
+              }
+            }
+
+            if (
+              toolResult.isError ||
+              call.name !== 'Read' ||
+              !this.options.conditionalRuleResolver ||
+              !toolResult.accessedPaths
+            ) {
+              return
+            }
+            const attachedRulePaths = this.attachedRulePaths(snapshot.entries)
+            for (const filePath of toolResult.accessedPaths) {
+              const rules = await this.options.conditionalRuleResolver.resolve(
+                filePath,
+                [...attachedRulePaths],
+              )
+              for (const rule of rules) {
+                const attachment = createClaudeRuleAttachmentEntry(
+                  rule,
+                  this.displayRulePath(rule.path),
+                  this.translationContext(sessionId, snapshot),
+                )
+                const attachmentTail = await this.append(
+                  lease,
+                  snapshot.tail,
+                  attachment,
+                )
+                snapshot = {
+                  entries: [...snapshot.entries, attachment],
+                  tail: attachmentTail,
+                }
+                attachedRulePaths.add(rule.path)
+                await this.instructionLoaded(
+                  sessionId,
+                  {
+                    path: rule.path,
+                    memoryType:
+                      rule.scope === 'user'
+                        ? 'User'
+                        : rule.scope === 'local'
+                          ? 'Local'
+                          : 'Project',
+                    globs: rule.globs,
+                    triggerFilePath: filePath,
+                    ...(rule.importedFrom === undefined
+                      ? {}
+                      : { parentFilePath: rule.importedFrom }),
+                  },
+                  'path_glob_match',
+                )
+              }
+            }
+          },
+          followUpUserMessagesCompleted: async (
+            messages: readonly string[],
+          ) => {
+            for (const content of messages) {
+              const [followUpEntry] = translateProviderEvents(
+                [{ type: 'user-text-block', text: content }],
+                this.translationContext(sessionId, snapshot),
+              )
+              if (!followUpEntry) {
+                throw new Error('Could not translate tool follow-up message')
+              }
+              const followUpTail = await this.append(
+                lease,
+                snapshot.tail,
+                followUpEntry,
+              )
+              snapshot = {
+                entries: [...snapshot.entries, followUpEntry],
+                tail: followUpTail,
+              }
+              currentTurnUserMessages?.push(content)
+              await Promise.all(
+                this.sessionSubagentExecutors(sessionId, true).map((executor) =>
+                  executor.acknowledgeNotifications([content]),
+                ),
+              )
+            }
+          },
+        }
+        let turnCompleted = false
+        try {
+          const outcome = await this.hookLifecycle.start(
+            sessionId,
+            hookSession,
+            requireExisting ? 'resume' : 'startup',
+            signal,
+          )
+          if (outcome) {
+            await recordHookOutcome(
+              outcome,
+              pendingRecoveryToolCallIds.size > 0,
+            )
+          }
+          const approveRecovery = this.options.approveRecovery
+          const recoveryRequest = {
+            cwd: this.activeCwd(),
+            toolResultDirectory,
+            messages: projectClaudeModelMessages(snapshot.entries),
+            observer,
+            permissionUpdates:
+              this.sessionPermissionUpdates.get(sessionId) ?? [],
+            onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
+              this.applyPermissionUpdates(sessionId, updates),
+            ...(signal ? { signal } : {}),
+            ...(approveRecovery
+              ? {
+                  approveRecovery: async (call: ModelToolCall) => {
+                    if (!(await approveRecovery(call))) {
+                      throw new Error(
+                        `Claude session tool call ${call.id} recovery was declined`,
+                      )
+                    }
+                    if (signal?.aborted) throw new AgentRunCancelledError()
+                    await flushRecoveryHookOutcomes()
+                    pendingRecoveryToolCallIds.delete(call.id)
+                    return true
+                  },
+                  approveTool: () => true,
+                }
+              : {}),
+          }
+          const unresolvedToolCall = unresolvedToolCalls[0]
+          if (unresolvedToolCall && !approveRecovery) {
+            throw new Error(
+              `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
+            )
+          }
+          const recoveryResults = await runtime.recoverToolCalls(
+            unresolvedToolCalls,
+            recoveryRequest,
+          )
+          const recoveryUsage = recoveryResults.reduce<ModelUsage>(
+            (usage, result) =>
+              result.usage ? mergeUsage(usage, result.usage) : usage,
+            { inputTokens: 0, outputTokens: 0 },
+          )
+          const recoveryModelUsage = mergeSessionRawModelUsage(
+            ...recoveryResults.map((result) =>
+              result.isError ? undefined : result.modelUsage,
+            ),
+          )
+          const foregroundLineChanges = createLineCountAccumulator()
+          for (const result of recoveryResults) {
+            foregroundLineChanges.add(result)
+          }
+
+          if (
+            this.options.agent &&
+            agent &&
+            getClaudeAgentSetting(snapshot.entries) !== this.options.agent
+          ) {
+            const agentSetting = createClaudeAgentSettingEntry(
+              sessionId,
+              this.options.agent,
+            )
+            const settingTail = await this.append(
+              lease,
+              snapshot.tail,
+              agentSetting,
+            )
+            snapshot = {
+              entries: [...snapshot.entries, agentSetting],
+              tail: settingTail,
+            }
+          }
+
+          const sessionMemory = this.sessionMemoryController(sessionId)
+          let agentSystem: string | null = null
+          let planModeMessage: string | null | undefined
+          let sessionMemoryMessage: string | null = null
+          let contextMessages: ModelMessage[] = []
+          let contextProjection: ContextProjection = {
+            systemMessages: [],
+            stableSystemSectionCount: 0,
+          }
+          let stableSystemMessageCount = 0
+          const refreshRuntimeContext = async () => {
+            agentSystem = await this.mainAgentSystemPrompt(agent)
+            planModeMessage =
+              this.options.interactiveTools?.contextMessage(sessionId)
+            sessionMemoryMessage = sessionMemory
+              ? this.sessionMemoryMessage(await sessionMemory.summary())
+              : null
+            const assembledContext = await assembleContextSnapshot(
+              this.options.contextAssembler,
+              {
+                cwd: this.activeCwd(),
+                lifecycleId: sessionId,
+                ...(agentSystem
+                  ? { mode: 'agent', baseSystemPrompt: agentSystem }
+                  : {}),
+                turn: {
+                  ...(planModeMessage ? { planMode: planModeMessage } : {}),
+                  ...(sessionMemoryMessage
+                    ? { sessionMemory: sessionMemoryMessage }
+                    : {}),
+                  ...(this.options.brief ? { briefOutput: true } : {}),
+                  ...(this.options.structuredOutputSchema
+                    ? { structuredOutput: true }
+                    : {}),
+                },
+              },
+            )
+            contextProjection = projectContextSnapshot(assembledContext)
+            stableSystemMessageCount =
+              contextProjection.stableSystemSectionCount
+            contextMessages = [...contextProjection.systemMessages]
+          }
+          await refreshRuntimeContext()
+
+          const expansion = skipUserPrompt
+            ? { userMessages: [] as string[] }
+            : shellCommand === undefined
+              ? this.options.extensions
+                ? await this.options.extensions.expandPromptAsync(
+                    effectivePrompt,
+                    signal,
+                    toolResultDirectory,
+                  )
+                : { userMessages: [effectivePrompt] }
+              : {
+                  userMessages: [`<bash-input>${shellCommand}</bash-input>`],
+                }
+          const expansionMessages =
+            'messages' in expansion ? expansion.messages : undefined
+          const userMessages =
+            'userMessages' in expansion ? expansion.userMessages : []
+          const expandedMessages: readonly ClaudePromptExpansionMessage[] =
+            expansionMessages ?? userMessages.map((text) => ({ text }))
+          const attachmentIndex = expansionMessages
+            ? expandedMessages.length - 1
+            : 0
+          currentTurnUserMessages = [...expansion.userMessages]
+          this.options.eventSink?.({
+            type: 'state',
+            state: 'assembling-context',
+          })
+          let compactionUsage: ModelUsage = {
+            inputTokens: 0,
+            outputTokens: 0,
+          }
+          let compactionDurationMs: number | undefined
+          let compactionDurationWithoutRetriesMs: number | undefined
+          let compactionModelUsage:
+            Readonly<Record<string, ModelUsage>> | undefined
+          const definitions = provider.capabilities.tools
+            ? (structuredTools?.definitions() ?? [])
+            : []
+          const budget = this.contextBudget(provider)
+          const recoveryPlanner = new ContextRecoveryPlanner()
+          const pendingUserMessages = expandedMessages.map(
+            (message, index) => ({
+              role: 'user' as const,
+              content: message.text,
+              ...(message.contentBlocks?.length
+                ? { contentBlocks: message.contentBlocks }
+                : {}),
+              ...((index === attachmentIndex && images.length > 0) ||
+              message.images?.length
+                ? {
+                    images: [
+                      ...(index === attachmentIndex ? images : []),
+                      ...(message.images ?? []),
+                    ],
+                  }
+                : {}),
+              ...(index === attachmentIndex && documents.length > 0
+                ? { documents }
+                : {}),
+            }),
+          )
+          const agentMentionMessages =
+            shellCommand === undefined && !skipUserPrompt
+              ? (this.options.extensions?.agentMentionMessages(
+                  effectivePrompt,
+                ) ?? [])
+              : []
+          const injectAgentMentionContext = (
+            messages: readonly ModelMessage[],
+          ): ModelMessage[] => {
+            if (agentMentionMessages.length === 0) return [...messages]
+            let insertionIndex = messages.length
+            let foundPrompt = false
+            for (let index = messages.length - 1; index >= 0; index -= 1) {
+              const message = messages[index]
+              if (
+                message?.role === 'user' &&
+                typeof message.content === 'string' &&
+                message.content.endsWith(effectivePrompt)
+              ) {
+                insertionIndex = index
+                foundPrompt = true
+                break
+              }
+            }
+            if (!foundPrompt) return [...messages]
+            return [
+              ...messages.slice(0, insertionIndex),
+              ...agentMentionMessages.map((content) => ({
+                role: 'user' as const,
+                content,
+              })),
+              ...messages.slice(insertionIndex),
+            ]
+          }
+          const injectDynamicContext = (
+            messages: readonly ModelMessage[],
+          ): ModelMessage[] =>
+            injectFirstUserMessageContext(
+              messages,
+              contextProjection.firstUserMessageContext,
+            )
+          const injectTurnContext = (
+            messages: readonly ModelMessage[],
+          ): ModelMessage[] =>
+            injectAgentMentionContext(injectDynamicContext(messages))
+          let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
+          const compactIfNeeded = async (
+            pendingMessages: readonly {
+              role: 'user'
+              content: string
+            }[] = [],
+            preservedUserMessages: readonly string[] = [],
+            options: { promptTooLong?: boolean } = {},
+          ) => {
+            if (!budget || this.options.autoCompact === false) return
+            const historyMessages = [
+              ...projectClaudeModelMessages(snapshot.entries),
+              ...projectMemoryRecallMessages,
+            ]
+            const predicted = budget.evaluate(
+              [
+                ...contextMessages,
+                ...injectTurnContext([...historyMessages, ...pendingMessages]),
+              ],
+              definitions,
+              options,
+            )
+            if (!predicted.shouldCompact) return
+            const irreducibleMessages = [
               ...contextMessages,
               ...injectTurnContext([
-                ...projectClaudeModelMessages(snapshot.entries),
-                ...projectMemoryRecallMessages,
+                ...pendingMessages,
+                ...preservedUserMessages.map((content) => ({
+                  role: 'user' as const,
+                  content,
+                })),
               ]),
             ]
-            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-            const afterRecovery = budget.evaluate(
-              runtimeRequest.messages,
+            const irreducible = budget.evaluate(
+              irreducibleMessages,
               definitions,
             )
-            if (
-              recoveryPlanner.consumeReactiveRetry({
-                beforeOccupancyTokens: beforeRecovery.occupancyTokens,
-                afterOccupancyTokens: afterRecovery.occupancyTokens,
-              }) !== 'reactive-retry'
-            ) {
-              surfaceExhaustedRecovery(error)
-              throw error
+            budget.assertFits(irreducible)
+            let logicalParentUuid = compactionAnchorUuid
+            if (!logicalParentUuid || historyMessages.length === 0) {
+              budget.assertFits(predicted)
+              throw new Error('Cannot compact an empty Claude transcript')
             }
-            runtimeRequest.deferFailureKinds = true
-            try {
-              result = await attemptMainTurn()
-            } catch (retryError) {
-              // Exactly one reactive retry is consumed; fail deterministically
-              // and surface the original prompt-too-long error.
-              recoveryPlanner.recordFailure()
-              if (
-                signal?.aborted ||
-                retryError instanceof AgentRunCancelledError
-              ) {
-                throw new AgentRunCancelledError()
-              }
-              surfaceExhaustedRecovery(error)
-              throw error
+            if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
+              throw new Error(
+                'Cannot compact a Claude session with unresolved tool calls',
+              )
             }
-          }
-        } catch (error) {
-          if (
-            !signal?.aborted &&
-            !(error instanceof AgentRunCancelledError) &&
-            !(error instanceof ModelProviderError && error.kind === 'cancelled')
-          ) {
-            const failureKind =
-              error instanceof ModelProviderError
-                ? claudeStopFailureError(error.kind)
-                : 'unknown'
-            await this.runAdvisoryHook(
+            const preCompact = await this.runAdvisoryHook(
               sessionId,
-              'StopFailure',
-              {
-                error: failureKind,
-                error_details:
-                  error instanceof Error ? error.message : String(error),
-              },
-              failureKind,
+              'PreCompact',
+              { trigger: 'auto', custom_instructions: null },
+              'auto',
               signal,
             )
+            const memorySelection = sessionMemory
+              ? await this.selectMemoryPreservedCompact(
+                  sessionId,
+                  selectClaudeActiveTranscript(snapshot.entries),
+                )
+              : null
+            const compactorMessages: ModelMessage[] = memorySelection
+              ? [
+                  memorySelection.memoryMessage,
+                  ...projectClaudeModelMessages(
+                    memorySelection.compactedEntries,
+                  ),
+                ]
+              : historyMessages
+            compactorMessages.push(
+              ...successfulHookOutput(preCompact).map((content) => ({
+                role: 'user' as const,
+                content: `Additional summarization context: ${content}`,
+              })),
+            )
+            if (memorySelection) {
+              logicalParentUuid = memorySelection.logicalParentUuid
+            }
+            this.options.eventSink?.({ type: 'state', state: 'compacting' })
+            const compactEnvelope = budget.evaluate(
+              [
+                ...irreducibleMessages,
+                {
+                  role: 'user',
+                  content: formatClaudeCompactSummary(''),
+                },
+              ],
+              definitions,
+            )
+            let targetTokens = Math.min(
+              8192,
+              compactEnvelope.availableTokens - compactEnvelope.estimatedTokens,
+            )
+            if (targetTokens < 1) {
+              budget.assertFits(
+                budget.evaluate(
+                  [
+                    ...irreducibleMessages,
+                    {
+                      role: 'user',
+                      content: formatClaudeCompactSummary('a'),
+                    },
+                  ],
+                  definitions,
+                ),
+              )
+              targetTokens = 1
+            }
+            const compacted = await (
+              this.options.compactor ?? new ModelCompactor(provider)
+            ).compact({
+              messages: compactorMessages,
+              targetTokens,
+              contextWindowTokens: budget.contextWindowTokens,
+              ...(signal ? { signal } : {}),
+            })
+            const {
+              durationMs: compactedDurationMs,
+              durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+            } = requireCompactionDurations(compacted)
+            const proposedCompactionDurationMs =
+              (compactionDurationMs ?? 0) + compactedDurationMs
+            if (!Number.isFinite(proposedCompactionDurationMs)) {
+              throw new TypeError('compaction durationMs total overflow')
+            }
+            const proposedCompactionDurationWithoutRetriesMs =
+              (compactionDurationWithoutRetriesMs ?? 0) +
+              compactedDurationWithoutRetriesMs
+            if (!Number.isFinite(proposedCompactionDurationWithoutRetriesMs)) {
+              throw new TypeError(
+                'compaction durationWithoutRetriesMs total overflow',
+              )
+            }
+            const boundaryUuid = randomUUID()
+            const summaryUuid = randomUUID()
+            const timestamp = new Date().toISOString()
+            const preTokens = budget.evaluate(
+              [...contextMessages, ...injectTurnContext(historyMessages)],
+              definitions,
+            ).estimatedTokens
+            const compactEntries = (postTokens: number) => {
+              const uuids = [boundaryUuid, summaryUuid]
+              return createClaudeCompactEntries({
+                sessionId,
+                logicalParentUuid,
+                summary: compacted.summary,
+                preTokens,
+                postTokens,
+                previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
+                  snapshot.entries,
+                ),
+                durationMs: compactedDurationMs,
+                cwd: this.activeCwd(),
+                claudeVersion: this.options.claudeVersion,
+                gitBranch: null,
+                ...(memorySelection
+                  ? {
+                      preservedUuids: memorySelection.preservedEntries.flatMap(
+                        (entry) =>
+                          typeof entry.uuid === 'string' ? [entry.uuid] : [],
+                      ),
+                    }
+                  : {}),
+                createUuid: () => uuids.shift() ?? randomUUID(),
+                now: () => timestamp,
+              })
+            }
+            const provisionalEntries = compactEntries(0)
+            const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
+            if (typeof compactSummaryUuid !== 'string') {
+              throw new Error('Could not create Claude compact summary')
+            }
+            const replayUuids = preservedUserMessages.map(() => randomUUID())
+            const replayEntries = translateProviderEvents(
+              preservedUserMessages.map((text, index) =>
+                index === 0
+                  ? { type: 'user-text' as const, text }
+                  : { type: 'user-text-block' as const, text },
+              ),
+              {
+                sessionId,
+                parentUuid: compactSummaryUuid,
+                cwd: this.activeCwd(),
+                claudeVersion: this.options.claudeVersion,
+                gitBranch: null,
+                history: [...snapshot.entries, ...provisionalEntries],
+                createUuid: () => replayUuids.shift() ?? randomUUID(),
+                now: () => timestamp,
+              },
+            )
+            const compactedHistory = [
+              ...projectClaudeModelMessages([
+                ...snapshot.entries,
+                ...provisionalEntries,
+                ...replayEntries,
+              ]),
+              ...projectMemoryRecallMessages,
+            ]
+            const afterHistory = budget.evaluate(
+              [...contextMessages, ...injectTurnContext(compactedHistory)],
+              definitions,
+            )
+            const afterPending = budget.evaluate(
+              [
+                ...contextMessages,
+                ...injectTurnContext([...compactedHistory, ...pendingMessages]),
+              ],
+              definitions,
+            )
+            budget.assertFits(afterPending)
+            if (
+              options.promptTooLong === true &&
+              !contextRecoveryMadeProgress({
+                beforeOccupancyTokens: predicted.occupancyTokens,
+                afterOccupancyTokens: afterPending.occupancyTokens,
+              })
+            ) {
+              throw new Error(
+                'Reactive context compaction made no occupancy progress',
+              )
+            }
+            const entries = [
+              ...compactEntries(afterHistory.estimatedTokens),
+              ...replayEntries,
+            ]
+            if (signal?.aborted) throw new AgentRunCancelledError()
+            // Construct the exact tracker mutations for this single committed
+            // boundary and preflight them against a clone of the live tracker so
+            // invalid input or cumulative overflow rejects before the compact
+            // boundary is appended rather than after a half-commit.
+            const tracker = this.sessionCostTrackers.get(sessionId)
+            if (!tracker) {
+              throw new Error(
+                `Session cost tracker is not active for session ${sessionId}`,
+              )
+            }
+            const compactModel =
+              compacted.model !== undefined && compacted.model.trim() !== ''
+                ? compacted.model
+                : provider.model
+            const compactModelNonBlank =
+              compactModel !== undefined && compactModel.trim() !== ''
+            if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
+              throw new Error(
+                'Auto compact usage requires a nonblank model identity',
+              )
+            }
+            let meteringTurnInput: ClaudeSessionTurnInput | undefined
+            if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
+              const pricing = this.options.pricing?.resolve(compactModel)
+              const costUsd = pricing
+                ? usageCostUsd(compacted.usage, pricing)
+                : undefined
+              meteringTurnInput = {
+                model: compactModel,
+                usage: compacted.usage,
+                ...(costUsd === undefined ? {} : { costUsd }),
+                ...(compacted.usage.webSearchRequests === undefined
+                  ? {}
+                  : { webSearchRequests: compacted.usage.webSearchRequests }),
+              }
+            }
+            let meteringDurationsInput: ClaudeSessionDurationsInput | undefined
+            if (
+              compactedDurationMs > 0 ||
+              compactedDurationWithoutRetriesMs > 0
+            ) {
+              meteringDurationsInput = {
+                ...(compactedDurationMs === 0
+                  ? {}
+                  : { apiDurationMs: compactedDurationMs }),
+                apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+              }
+            }
+            if (
+              meteringTurnInput !== undefined ||
+              meteringDurationsInput !== undefined
+            ) {
+              const preflight = new ClaudeSessionCostTracker({
+                sessionId,
+                restored: tracker.snapshot(),
+              })
+              if (meteringTurnInput !== undefined) {
+                preflight.recordTurn(meteringTurnInput)
+              }
+              if (meteringDurationsInput !== undefined) {
+                preflight.recordDurations(meteringDurationsInput)
+              }
+            }
+            const appendResult = await lease.appendMany(snapshot.tail, entries)
+            if (appendResult.status === 'conflict') {
+              throw new Error(
+                `Claude transcript append conflict: ${appendResult.reason}`,
+              )
+            }
+            snapshot = {
+              entries: [...snapshot.entries, ...entries],
+              tail: appendResult.tail,
+            }
+            const metadataEntries = createClaudeDurableMetadataSnapshot(
+              snapshot.entries,
+              sessionId,
+            )
+            if (metadataEntries.length > 0) {
+              const metadataAppend = await lease.appendMany(
+                snapshot.tail,
+                metadataEntries,
+              )
+              if (metadataAppend.status === 'conflict') {
+                throw new Error(
+                  `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+                )
+              }
+              snapshot = {
+                entries: [...snapshot.entries, ...metadataEntries],
+                tail: metadataAppend.tail,
+              }
+            }
+            this.rememberDurableMetadata(sessionId, snapshot.entries)
+            await this.runAdvisoryHook(
+              sessionId,
+              'PostCompact',
+              { trigger: 'auto', compact_summary: compacted.summary },
+              'auto',
+              signal,
+            )
+            // The boundary is durable: mirror Claude's full-compact behavior by
+            // rerunning SessionStart with source compact and refreshing the
+            // runtime-only context so the next request retains current
+            // instructions, plan state, session memory, and hook context.
+            if (this.options.hooks) {
+              const outcome = await this.hookLifecycle.refresh(
+                sessionId,
+                hookSession,
+                signal,
+              )
+              if (outcome) await recordHookOutcome(outcome)
+            }
+            this.options.contextAssembler?.invalidate?.({
+              lifecycleId: sessionId,
+              reason: 'compact',
+            })
+            this.options.projectMemoryRecall?.recordCompact(sessionId)
+            await refreshRuntimeContext()
+            this.options.eventSink?.({
+              type: 'compact-boundary',
+              trigger: 'auto',
+              preTokens,
+              uuid: boundaryUuid,
+            })
+            compactionAnchorUuid = compactSummaryUuid
+            compactionUsage = mergeUsage(compactionUsage, compacted.usage)
+            compactionDurationMs = proposedCompactionDurationMs
+            compactionDurationWithoutRetriesMs =
+              proposedCompactionDurationWithoutRetriesMs
+            if (meteringTurnInput !== undefined) {
+              compactionModelUsage = mergeSessionRawModelUsage(
+                compactionModelUsage,
+                { [meteringTurnInput.model]: compacted.usage },
+              )
+            }
+            // Commit the preflighted mutations once the boundary is durable so a
+            // later main-provider failure or cancellation cannot lose the
+            // compactor's usage/cost/API durations.
+            if (meteringTurnInput !== undefined) {
+              tracker.recordTurn(meteringTurnInput)
+            }
+            if (meteringDurationsInput !== undefined) {
+              tracker.recordDurations(meteringDurationsInput)
+            }
           }
-          throw error
-        }
-        recoveryPlanner.recordSuccess()
-        const mainModel =
-          provider.model !== undefined && provider.model.trim() !== ''
-            ? provider.model
-            : undefined
-        const observedUsage =
-          (mainModel !== undefined
-            ? result.modelUsage?.[mainModel]
-            : undefined) ??
-          Object.values(result.modelUsage ?? {})[0] ??
-          result.usage
-        budget?.observeUsage(
-          observedUsage,
-          runtimeRequest.messages,
-          definitions,
-        )
+          await compactIfNeeded(pendingUserMessages)
 
-        if (structuredCapture && structuredCapture.calls !== 1) {
-          throw new Error(
-            `StructuredOutput must be called exactly once (received ${structuredCapture.calls})`,
-          )
-        }
+          for (const [index, message] of expandedMessages.entries()) {
+            if (shellCommand !== undefined) break
+            const messageImages = [
+              ...(index === attachmentIndex ? images : []),
+              ...(message.images ?? []),
+            ]
+            const persistenceEvent =
+              messageImages.length > 0 ||
+              (index === attachmentIndex && documents.length > 0)
+                ? ({
+                    type: 'user-message',
+                    text: message.text,
+                    images: messageImages,
+                    ...(index === attachmentIndex && documents.length > 0
+                      ? { documents }
+                      : {}),
+                  } as const)
+                : index === 0
+                  ? ({ type: 'user-text', text: message.text } as const)
+                  : ({ type: 'user-text-block', text: message.text } as const)
+            const [userEntry] = translateProviderEvents(
+              [persistenceEvent],
+              this.translationContext(sessionId, snapshot),
+            )
+            if (!userEntry) throw new Error('Could not translate user prompt')
+            if (
+              currentPromptId === null &&
+              typeof userEntry.uuid === 'string'
+            ) {
+              currentPromptId = userEntry.uuid
+              compactionAnchorUuid ??= userEntry.uuid
+            }
+            const userTail = await this.append(lease, snapshot.tail, userEntry)
+            snapshot = {
+              entries: [...snapshot.entries, userEntry],
+              tail: userTail,
+            }
+          }
 
-        const finalLeafUuid = lastAssistantUuid
-        if (!finalLeafUuid) {
-          throw new Error('Could not locate final assistant response')
-        }
-        if (!skipUserPrompt) {
-          const lastPrompt = createClaudeLastPromptEntry({
-            sessionId,
-            lastPrompt: effectivePrompt,
-            leafUuid: finalLeafUuid,
-          })
-          const tail = await this.append(lease, snapshot.tail, lastPrompt)
-          snapshot = {
-            entries: [...snapshot.entries, lastPrompt],
-            tail,
+          if (fileHistory && currentPromptId) {
+            const historySnapshot = await fileHistory.snapshot(
+              snapshot.entries,
+              currentPromptId,
+            )
+            const historyTail = await this.append(
+              lease,
+              snapshot.tail,
+              historySnapshot,
+            )
+            snapshot = {
+              entries: [...snapshot.entries, historySnapshot],
+              tail: historyTail,
+            }
           }
-        }
-        this.rememberDurableMetadata(sessionId, snapshot.entries)
-        const totalUsage = mergeUsage(
-          mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
-          result.usage,
-        )
-        const tracker = this.sessionCostTrackers.get(sessionId)
-        if (!tracker) {
-          throw new Error(
-            `Session cost tracker is not active for session ${sessionId}`,
-          )
-        }
-        const turnModelUsage = mergeSessionRawModelUsage(
-          recoveryModelUsage,
-          compactionModelUsage,
-          shellModelUsage,
-          result.modelUsage,
-        )
-        const combinedDurationMs =
-          compactionDurationMs === undefined &&
-          result.durationApiMs === undefined
-            ? undefined
-            : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
-        let rawCostUsd: number | undefined
-        if (turnModelUsage) {
-          for (const [model, usage] of Object.entries(turnModelUsage)) {
-            const pricing = this.options.pricing?.resolve(model)
-            const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
-            if (costUsd !== undefined) rawCostUsd = (rawCostUsd ?? 0) + costUsd
+
+          if (this.options.hooks && !skipUserPrompt) {
+            const outcome = await this.options.hooks.run(
+              {
+                ...hookSession,
+                hook_event_name: 'UserPromptSubmit',
+                prompt_id: currentPromptId ?? randomUUID(),
+                prompt: effectivePrompt,
+              },
+              undefined,
+              signal,
+            )
+            await recordHookOutcome(outcome)
+            if (outcome.blockedReason) {
+              throw new Error(
+                `UserPromptSubmit hook error: ${outcome.blockedReason}`,
+              )
+            }
           }
-        }
-        // Auto-compaction metering was already recorded atomically with each
-        // committed boundary, and externally metered tool-summary metrics were
-        // committed through the summary callback, so the live tracker receives
-        // only the unrecorded subset here. The inclusive public aggregates
-        // above still contain every row and duration.
-        const trackedModelUsage = mergeSessionRawModelUsage(
-          recoveryModelUsage,
-          shellModelUsage,
-          result.unrecordedModelUsage ?? result.modelUsage,
-        )
-        if (trackedModelUsage) {
-          for (const [model, usage] of Object.entries(trackedModelUsage)) {
-            const pricing = this.options.pricing?.resolve(model)
-            const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
-            tracker.recordTurn({
-              model,
-              usage,
-              ...(costUsd === undefined ? {} : { costUsd }),
-              ...(usage.webSearchRequests === undefined
-                ? {}
-                : { webSearchRequests: usage.webSearchRequests }),
+          let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
+          let shellModelUsage: Readonly<Record<string, ModelUsage>> | undefined
+          if (shellCommand !== undefined) {
+            const call: ModelToolCall = {
+              id: `shell_${randomUUID().replaceAll('-', '')}`,
+              name: 'Bash',
+              input: { command: shellCommand },
+            }
+            this.options.eventSink?.({
+              type: 'shell-command',
+              callId: call.id,
+              command: shellCommand,
+            })
+            let shellResult
+            try {
+              shellResult = await runtime.executeDirectToolCall(call, {
+                cwd: this.activeCwd(),
+                sessionId,
+                toolResultDirectory,
+                messages: projectClaudeModelMessages(snapshot.entries),
+                observer: {
+                  assistantCompleted: async () => undefined,
+                  toolCompleted: async () => undefined,
+                  followUpUserMessagesCompleted:
+                    observer.followUpUserMessagesCompleted,
+                },
+                ...(this.options.approveTool
+                  ? { approveTool: this.options.approveTool }
+                  : {}),
+                permissionUpdates:
+                  this.sessionPermissionUpdates.get(sessionId) ?? [],
+                onPermissionUpdates: (updates) =>
+                  this.applyPermissionUpdates(sessionId, updates),
+                ...(signal ? { signal } : {}),
+              })
+            } catch (error) {
+              this.options.eventSink?.({
+                type: 'shell-cancelled',
+                callId: call.id,
+              })
+              throw error
+            }
+            shellUsage = shellResult.usage ?? shellUsage
+            if (!shellResult.isError) {
+              shellModelUsage = shellResult.modelUsage
+              foregroundLineChanges.add(shellResult)
+            }
+            const stdout =
+              shellResult.processOutput?.stdout ??
+              (shellResult.isError ? '' : shellResult.content)
+            const stderr =
+              shellResult.processOutput?.stderr ??
+              (shellResult.isError ? shellResult.content : '')
+            const shellUuids = [shellInputUuid ?? randomUUID(), randomUUID()]
+            const [inputEntry, outputEntry] = translateProviderEvents(
+              [
+                { type: 'bash-input', command: shellCommand },
+                { type: 'bash-output', stdout, stderr },
+              ],
+              {
+                ...this.translationContext(sessionId, snapshot),
+                createUuid: () => shellUuids.shift() ?? randomUUID(),
+              },
+            )
+            if (!inputEntry || !outputEntry) {
+              throw new Error('Could not translate shell command result')
+            }
+            const shellAppend = await lease.appendMany(snapshot.tail, [
+              inputEntry,
+              outputEntry,
+            ])
+            if (shellAppend.status === 'conflict') {
+              throw new Error(
+                `Claude transcript append conflict: ${shellAppend.reason}`,
+              )
+            }
+            snapshot = {
+              entries: [...snapshot.entries, inputEntry, outputEntry],
+              tail: shellAppend.tail,
+            }
+            currentTurnUserMessages.push(
+              `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
+            )
+            this.options.eventSink?.({
+              type: 'shell-result',
+              callId: call.id,
+              stdout,
+              stderr,
+              isError: shellResult.isError,
             })
           }
-        }
-        let combinedToolDurationMs = 0
-        for (const recoveryResult of recoveryResults) {
+          if (budget) {
+            await compactIfNeeded([], currentTurnUserMessages ?? [])
+            budget.assertFits(
+              budget.evaluate(
+                [
+                  ...contextMessages,
+                  ...injectTurnContext(
+                    projectClaudeModelMessages(snapshot.entries),
+                  ),
+                ],
+                definitions,
+              ),
+            )
+          }
+
+          let stopHookActive = false
+          const runtimeRequest: AgentRunRequest = {
+            sessionId,
+            messages: [
+              ...contextMessages,
+              ...injectTurnContext(
+                projectClaudeModelMessages(snapshot.entries),
+              ),
+            ],
+            stableSystemMessageCount,
+            cwd: this.activeCwd(),
+            toolResultDirectory,
+            observer,
+            ...(this.options.effort ? { effort: this.options.effort } : {}),
+            ...(this.options.maxModelTurns !== undefined
+              ? { maxModelTurns: this.options.maxModelTurns }
+              : {}),
+            ...(this.options.betas?.length
+              ? { betas: this.options.betas }
+              : {}),
+            ...(this.options.collectMetrics || this.options.costStateStore
+              ? { collectMetrics: true }
+              : {}),
+            ...(budget
+              ? { deferFailureKinds: ['prompt_too_long'] as const }
+              : {}),
+            reloadMessages: async () => {
+              const recalled = projectMemoryRecallTurn?.consumeIfSettled()
+              if (recalled) {
+                projectMemoryRecallMessages = [
+                  { role: 'user', content: recalled.content },
+                ]
+              }
+              await compactIfNeeded([], currentTurnUserMessages ?? [])
+              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+              return [
+                ...contextMessages,
+                ...injectTurnContext([
+                  ...projectClaudeModelMessages(snapshot.entries),
+                  ...projectMemoryRecallMessages,
+                ]),
+              ]
+            },
+            ...(this.options.hooks ||
+            subagentExecutor ||
+            taskTools ||
+            this.scheduledPrompts ||
+            this.workflowManager
+              ? {
+                  onStop: async (text: string) => {
+                    const messages: string[] = []
+                    const outcome = await this.options.hooks?.run(
+                      {
+                        ...hookSession,
+                        hook_event_name: 'Stop',
+                        stop_hook_active: stopHookActive,
+                        last_assistant_message: text,
+                      },
+                      undefined,
+                      signal,
+                    )
+                    if (outcome) {
+                      await recordHookOutcome(outcome)
+                      if (outcome.blockedReason) {
+                        stopHookActive = true
+                        messages.push(
+                          `Stop hook error: ${outcome.blockedReason}`,
+                        )
+                      }
+                    }
+                    const claimedAgentIds = new Set(
+                      this.sessionSubagentExecutors(sessionId, true).flatMap(
+                        (executor) => executor.notificationClaimAgentIds(),
+                      ),
+                    )
+                    await Promise.all(
+                      this.sessionSubagentExecutors(sessionId, true).map(
+                        (executor) => {
+                          const delivered = (
+                            notification: BackgroundAgentNotificationIdentity,
+                          ) =>
+                            transcriptContainsBackgroundAgentNotification(
+                              snapshot.entries,
+                              notification,
+                            )
+                          return this.hostedSubagents.has(executor)
+                            ? executor.reconcileDetachedNotifications(delivered)
+                            : executor.reconcileDeliveredNotifications(
+                                delivered,
+                              )
+                        },
+                      ),
+                    )
+                    await subagentExecutor?.hydratePersistedTasks(
+                      sessionId,
+                      this.activeCwd(),
+                      claimedAgentIds,
+                    )
+                    const background = await this.collectSubagentNotifications(
+                      sessionId,
+                      subagentExecutor ?? undefined,
+                    )
+                    if (background) messages.push(...background.messages)
+                    const workflow =
+                      await this.workflowManager?.notifications(true)
+                    if (workflow) messages.push(...workflow.messages)
+                    const bashMessages = await taskTools?.notifications(true)
+                    if (bashMessages) messages.push(...bashMessages)
+                    const scheduled = await this.scheduledPrompts?.drainDue()
+                    if (scheduled) {
+                      messages.push(...scheduled.map(({ prompt }) => prompt))
+                    }
+                    const batchUsage =
+                      background || workflow
+                        ? mergeUsage(
+                            background?.usage ?? {
+                              inputTokens: 0,
+                              outputTokens: 0,
+                            },
+                            workflow?.usage ?? {
+                              inputTokens: 0,
+                              outputTokens: 0,
+                            },
+                          )
+                        : undefined
+                    const batchModelUsage = mergeSessionRawModelUsage(
+                      background?.modelUsage,
+                      workflow?.modelUsage,
+                    )
+                    const batchDurationApiMs = addApiDuration(
+                      workflow?.durationApiMs,
+                      addApiDuration(
+                        background?.durationApiMs,
+                        0,
+                        'durationApiMs',
+                      ),
+                      'durationApiMs',
+                    )
+                    const backgroundDurationWithoutRetries =
+                      background?.durationApiWithoutRetriesMs ??
+                      background?.durationApiMs
+                    const workflowDurationWithoutRetries =
+                      workflow?.durationApiWithoutRetriesMs ??
+                      workflow?.durationApiMs
+                    const batchDurationApiWithoutRetriesMs = addApiDuration(
+                      workflowDurationWithoutRetries,
+                      addApiDuration(
+                        backgroundDurationWithoutRetries,
+                        0,
+                        'durationApiWithoutRetriesMs',
+                      ),
+                      'durationApiWithoutRetriesMs',
+                    )
+                    const hasBatchDuration =
+                      background?.durationApiMs !== undefined ||
+                      background?.durationApiWithoutRetriesMs !== undefined ||
+                      workflow?.durationApiMs !== undefined ||
+                      workflow?.durationApiWithoutRetriesMs !== undefined
+                    return {
+                      messages,
+                      ...(batchUsage
+                        ? {
+                            usage: batchUsage,
+                            ...(batchModelUsage
+                              ? { modelUsage: batchModelUsage }
+                              : {}),
+                          }
+                        : {}),
+                      ...(hasBatchDuration
+                        ? {
+                            durationApiMs: batchDurationApiMs,
+                            durationApiWithoutRetriesMs:
+                              batchDurationApiWithoutRetriesMs,
+                          }
+                        : {}),
+                    }
+                  },
+                }
+              : {}),
+            ...(this.options.approveTool
+              ? { approveTool: this.options.approveTool }
+              : {}),
+            permissionUpdates:
+              this.sessionPermissionUpdates.get(sessionId) ?? [],
+            onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
+              this.applyPermissionUpdates(sessionId, updates),
+          }
+          const attemptMainTurn = () =>
+            signal
+              ? runtime.run({ ...runtimeRequest, signal })
+              : runtime.run(runtimeRequest)
+          const surfaceExhaustedRecovery = (error: ModelProviderError) => {
+            this.options.eventSink?.({
+              type: 'failed',
+              message: error.message,
+              retryable: false,
+            })
+          }
+          let result: AgentRunResult
+          try {
+            try {
+              result = await attemptMainTurn()
+            } catch (error) {
+              if (!budget || !isPromptTooLongError(error)) throw error
+              if (recoveryPlanner.reactiveRetriesRemaining === 0) {
+                surfaceExhaustedRecovery(error)
+                throw error
+              }
+              const beforeRecovery = budget.evaluate(
+                runtimeRequest.messages,
+                definitions,
+              )
+              try {
+                await compactIfNeeded([], currentTurnUserMessages ?? [], {
+                  promptTooLong: true,
+                })
+              } catch (compactionError) {
+                if (
+                  signal?.aborted ||
+                  compactionError instanceof AgentRunCancelledError
+                ) {
+                  throw new AgentRunCancelledError()
+                }
+                // Compaction could not free the provider-bounded context; surface
+                // the original prompt-too-long error rather than the compaction
+                // failure.
+                surfaceExhaustedRecovery(error)
+                throw error
+              }
+              // The single reactive retry must use the compacted transcript, not
+              // the stale request copy captured before the compact boundary.
+              runtimeRequest.messages = [
+                ...contextMessages,
+                ...injectTurnContext([
+                  ...projectClaudeModelMessages(snapshot.entries),
+                  ...projectMemoryRecallMessages,
+                ]),
+              ]
+              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+              const afterRecovery = budget.evaluate(
+                runtimeRequest.messages,
+                definitions,
+              )
+              if (
+                recoveryPlanner.consumeReactiveRetry({
+                  beforeOccupancyTokens: beforeRecovery.occupancyTokens,
+                  afterOccupancyTokens: afterRecovery.occupancyTokens,
+                }) !== 'reactive-retry'
+              ) {
+                surfaceExhaustedRecovery(error)
+                throw error
+              }
+              runtimeRequest.deferFailureKinds = true
+              try {
+                result = await attemptMainTurn()
+              } catch (retryError) {
+                // Exactly one reactive retry is consumed; fail deterministically
+                // and surface the original prompt-too-long error.
+                recoveryPlanner.recordFailure()
+                if (
+                  signal?.aborted ||
+                  retryError instanceof AgentRunCancelledError
+                ) {
+                  throw new AgentRunCancelledError()
+                }
+                surfaceExhaustedRecovery(error)
+                throw error
+              }
+            }
+          } catch (error) {
+            if (
+              !signal?.aborted &&
+              !(error instanceof AgentRunCancelledError) &&
+              !(
+                error instanceof ModelProviderError &&
+                error.kind === 'cancelled'
+              )
+            ) {
+              const failureKind =
+                error instanceof ModelProviderError
+                  ? claudeStopFailureError(error.kind)
+                  : 'unknown'
+              await this.runAdvisoryHook(
+                sessionId,
+                'StopFailure',
+                {
+                  error: failureKind,
+                  error_details:
+                    error instanceof Error ? error.message : String(error),
+                },
+                failureKind,
+                signal,
+              )
+            }
+            throw error
+          }
+          recoveryPlanner.recordSuccess()
+          const mainModel =
+            provider.model !== undefined && provider.model.trim() !== ''
+              ? provider.model
+              : undefined
+          const observedUsage =
+            (mainModel !== undefined
+              ? result.modelUsage?.[mainModel]
+              : undefined) ??
+            Object.values(result.modelUsage ?? {})[0] ??
+            result.usage
+          budget?.observeUsage(
+            observedUsage,
+            runtimeRequest.messages,
+            definitions,
+          )
+
+          if (structuredCapture && structuredCapture.calls !== 1) {
+            throw new Error(
+              `StructuredOutput must be called exactly once (received ${structuredCapture.calls})`,
+            )
+          }
+
+          const finalLeafUuid = lastAssistantUuid
+          if (!finalLeafUuid) {
+            throw new Error('Could not locate final assistant response')
+          }
+          if (!skipUserPrompt) {
+            const lastPrompt = createClaudeLastPromptEntry({
+              sessionId,
+              lastPrompt: effectivePrompt,
+              leafUuid: finalLeafUuid,
+            })
+            const tail = await this.append(lease, snapshot.tail, lastPrompt)
+            snapshot = {
+              entries: [...snapshot.entries, lastPrompt],
+              tail,
+            }
+          }
+          this.rememberDurableMetadata(sessionId, snapshot.entries)
+          const totalUsage = mergeUsage(
+            mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
+            result.usage,
+          )
+          const tracker = this.sessionCostTrackers.get(sessionId)
+          if (!tracker) {
+            throw new Error(
+              `Session cost tracker is not active for session ${sessionId}`,
+            )
+          }
+          const turnModelUsage = mergeSessionRawModelUsage(
+            recoveryModelUsage,
+            compactionModelUsage,
+            shellModelUsage,
+            result.modelUsage,
+          )
+          const combinedDurationMs =
+            compactionDurationMs === undefined &&
+            result.durationApiMs === undefined
+              ? undefined
+              : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
+          let rawCostUsd: number | undefined
+          if (turnModelUsage) {
+            for (const [model, usage] of Object.entries(turnModelUsage)) {
+              const pricing = this.options.pricing?.resolve(model)
+              const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
+              if (costUsd !== undefined)
+                rawCostUsd = (rawCostUsd ?? 0) + costUsd
+            }
+          }
+          // Auto-compaction metering was already recorded atomically with each
+          // committed boundary, and externally metered tool-summary metrics were
+          // committed through the summary callback, so the live tracker receives
+          // only the unrecorded subset here. The inclusive public aggregates
+          // above still contain every row and duration.
+          const trackedModelUsage = mergeSessionRawModelUsage(
+            recoveryModelUsage,
+            shellModelUsage,
+            result.unrecordedModelUsage ?? result.modelUsage,
+          )
+          if (trackedModelUsage) {
+            for (const [model, usage] of Object.entries(trackedModelUsage)) {
+              const pricing = this.options.pricing?.resolve(model)
+              const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
+              tracker.recordTurn({
+                model,
+                usage,
+                ...(costUsd === undefined ? {} : { costUsd }),
+                ...(usage.webSearchRequests === undefined
+                  ? {}
+                  : { webSearchRequests: usage.webSearchRequests }),
+              })
+            }
+          }
+          let combinedToolDurationMs = 0
+          for (const recoveryResult of recoveryResults) {
+            combinedToolDurationMs = addToolDuration(
+              recoveryResult.durationToolMs,
+              combinedToolDurationMs,
+            )
+          }
           combinedToolDurationMs = addToolDuration(
-            recoveryResult.durationToolMs,
+            result.durationToolMs,
             combinedToolDurationMs,
           )
-        }
-        combinedToolDurationMs = addToolDuration(
-          result.durationToolMs,
-          combinedToolDurationMs,
-        )
-        const trackedDurationApiMs =
-          result.unrecordedDurationApiMs ?? result.durationApiMs
-        const trackedDurationApiWithoutRetriesMs =
-          result.unrecordedDurationApiWithoutRetriesMs ??
-          result.durationApiWithoutRetriesMs
-        tracker.recordDurations({
-          ...(trackedDurationApiMs === undefined
-            ? {}
-            : { apiDurationMs: trackedDurationApiMs }),
-          ...(trackedDurationApiWithoutRetriesMs === undefined
-            ? {}
-            : {
-                apiDurationWithoutRetriesMs: trackedDurationApiWithoutRetriesMs,
-              }),
-          ...(combinedToolDurationMs === 0
-            ? {}
-            : { toolDurationMs: combinedToolDurationMs }),
-        })
-        foregroundLineChanges.add({
-          isError: false,
-          ...(result.linesAdded === undefined
-            ? {}
-            : { linesAdded: result.linesAdded }),
-          ...(result.linesRemoved === undefined
-            ? {}
-            : { linesRemoved: result.linesRemoved }),
-        })
-        if (
-          foregroundLineChanges.linesAdded !== 0 ||
-          foregroundLineChanges.linesRemoved !== 0
-        ) {
-          tracker.recordLineChanges({
-            ...(foregroundLineChanges.linesAdded === 0
+          const trackedDurationApiMs =
+            result.unrecordedDurationApiMs ?? result.durationApiMs
+          const trackedDurationApiWithoutRetriesMs =
+            result.unrecordedDurationApiWithoutRetriesMs ??
+            result.durationApiWithoutRetriesMs
+          tracker.recordDurations({
+            ...(trackedDurationApiMs === undefined
               ? {}
-              : { linesAdded: foregroundLineChanges.linesAdded }),
-            ...(foregroundLineChanges.linesRemoved === 0
+              : { apiDurationMs: trackedDurationApiMs }),
+            ...(trackedDurationApiWithoutRetriesMs === undefined
               ? {}
-              : { linesRemoved: foregroundLineChanges.linesRemoved }),
+              : {
+                  apiDurationWithoutRetriesMs:
+                    trackedDurationApiWithoutRetriesMs,
+                }),
+            ...(combinedToolDurationMs === 0
+              ? {}
+              : { toolDurationMs: combinedToolDurationMs }),
           })
-        }
-        if (sessionMemory && finalLeafUuid) {
-          const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
-          const providerVisibleMessages = [
-            ...contextMessages,
-            ...injectTurnContext(memorySnapshot),
-          ]
-          const currentContextTokens = budget
-            ? budget.evaluate(providerVisibleMessages, definitions)
-                .occupancyTokens
-            : estimateModelRequestTokens(providerVisibleMessages, definitions)
-          try {
-            await sessionMemory.observeContext(
-              currentContextTokens,
-              currentTurnToolCalls,
-              finalLeafUuid,
-              memorySnapshot,
-            )
-          } catch (error) {
-            // A failed observation must not fail the user turn; the sidecar
-            // retains a retryable error for the next observation.
-            this.options.eventSink?.({
-              type: 'warning',
-              message: `Session memory observation failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+          foregroundLineChanges.add({
+            isError: false,
+            ...(result.linesAdded === undefined
+              ? {}
+              : { linesAdded: result.linesAdded }),
+            ...(result.linesRemoved === undefined
+              ? {}
+              : { linesRemoved: result.linesRemoved }),
+          })
+          if (
+            foregroundLineChanges.linesAdded !== 0 ||
+            foregroundLineChanges.linesRemoved !== 0
+          ) {
+            tracker.recordLineChanges({
+              ...(foregroundLineChanges.linesAdded === 0
+                ? {}
+                : { linesAdded: foregroundLineChanges.linesAdded }),
+              ...(foregroundLineChanges.linesRemoved === 0
+                ? {}
+                : { linesRemoved: foregroundLineChanges.linesRemoved }),
             })
           }
+          if (sessionMemory && finalLeafUuid) {
+            const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
+            const providerVisibleMessages = [
+              ...contextMessages,
+              ...injectTurnContext(memorySnapshot),
+            ]
+            const currentContextTokens = budget
+              ? budget.evaluate(providerVisibleMessages, definitions)
+                  .occupancyTokens
+              : estimateModelRequestTokens(providerVisibleMessages, definitions)
+            try {
+              await sessionMemory.observeContext(
+                currentContextTokens,
+                currentTurnToolCalls,
+                finalLeafUuid,
+                memorySnapshot,
+              )
+            } catch (error) {
+              // A failed observation must not fail the user turn; the sidecar
+              // retains a retryable error for the next observation.
+              this.options.eventSink?.({
+                type: 'warning',
+                message: `Session memory observation failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              })
+            }
+          }
+          this.options.projectMemoryExtraction?.observe({
+            sessionId,
+            directMaintenance: projectMemoryMaintained,
+            messages: projectMemoryMessages(snapshot.entries),
+          })
+          turnCompleted = true
+          return {
+            sessionId,
+            text:
+              structuredCapture && structuredCapture.calls === 1
+                ? JSON.stringify(structuredCapture.value)
+                : result.text,
+            usage: totalUsage,
+            ...(combinedDurationMs === undefined
+              ? {}
+              : { durationApiMs: combinedDurationMs }),
+            ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
+            ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
+            ...(structuredCapture && structuredCapture.calls === 1
+              ? { structuredOutput: structuredCapture.value }
+              : {}),
+          }
+        } finally {
+          if (!turnCompleted) {
+            await this.hookLifecycle.end(sessionId, 'other')
+          }
         }
-        this.options.projectMemoryExtraction?.observe({
-          sessionId,
-          directMaintenance: projectMemoryMaintained,
-          messages: projectMemoryMessages(snapshot.entries),
-        })
-        turnCompleted = true
-        return {
-          sessionId,
-          text:
-            structuredCapture && structuredCapture.calls === 1
-              ? JSON.stringify(structuredCapture.value)
-              : result.text,
-          usage: totalUsage,
-          ...(combinedDurationMs === undefined
-            ? {}
-            : { durationApiMs: combinedDurationMs }),
-          ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
-          ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
-          ...(structuredCapture && structuredCapture.calls === 1
-            ? { structuredOutput: structuredCapture.value }
-            : {}),
-        }
-      } finally {
-        if (!turnCompleted) {
-          await this.hookLifecycle.end(sessionId, 'other')
-        }
+      })
+      if (leaseResult.status === 'conflict') {
+        throw new Error(
+          `Claude transcript append conflict: ${leaseResult.reason}`,
+        )
       }
-    })
-    if (leaseResult.status === 'conflict') {
-      throw new Error(
-        `Claude transcript append conflict: ${leaseResult.reason}`,
-      )
+      const result = leaseResult.value
+      controller.complete()
+      return result
+    } catch (error) {
+      controller.fail(error, signal)
+      throw error
     }
-    return leaseResult.value
   }
 
   private async ensureFileResources(

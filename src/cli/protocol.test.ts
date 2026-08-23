@@ -1683,6 +1683,30 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('closes a headless turn on a failed lifecycle state', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      false,
+    )
+    output.init()
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'state', state: 'failed' })
+
+    expect(
+      records.filter(
+        (record) =>
+          record.type === 'system' &&
+          record.subtype === 'session_state_changed',
+      ),
+    ).toEqual([
+      expect.objectContaining({ state: 'running' }),
+      expect.objectContaining({ state: 'idle' }),
+    ])
+  })
+
   it('marks and resets a discarded model attempt before the recovered turn', () => {
     const records: Record<string, unknown>[] = []
     const output = new StreamJsonOutput(

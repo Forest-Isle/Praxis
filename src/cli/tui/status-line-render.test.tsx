@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClaudeStatusLineInput, StatusLine } from './status-line.js'
 
@@ -86,7 +86,8 @@ describe('StatusLine', () => {
         width={40}
       />,
     )
-    await delay(450)
-    expect(app.lastFrame()).toContain('width:40')
+    await vi.waitFor(() => expect(app.lastFrame()).toContain('width:40'), {
+      timeout: 3_000,
+    })
   })
 })
