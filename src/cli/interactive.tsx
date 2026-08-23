@@ -5,7 +5,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Box, Text, render, useApp, useInput } from 'ink'
 
@@ -816,11 +816,6 @@ const ZERO_COST_SUMMARY: CostSummary = {
   modelUsage: [],
 }
 
-function selectionPrefix(selected: boolean, screenReader: boolean): string {
-  if (selected) return screenReader ? 'Selected: ' : '❯ '
-  return screenReader ? '' : '  '
-}
-
 type RuntimePreferences = {
   model?: string
   effort: (typeof EFFORT_OPTIONS)[number]
@@ -1046,6 +1041,35 @@ function RewindWarning() {
 function ExitWarning() {
   const theme = useTuiTheme()
   return <Text {...theme.text.warning}>Press Ctrl-C again to exit</Text>
+}
+
+function DecisionOption({
+  selected,
+  screenReader,
+  children,
+  selectedPrefix = '❯ ',
+  unselectedPrefix = '  ',
+}: {
+  selected: boolean
+  screenReader: boolean
+  children: ReactNode
+  selectedPrefix?: string
+  unselectedPrefix?: string
+}) {
+  const theme = useTuiTheme()
+  const accessible = screenReader || theme.noColor
+  return (
+    <Text {...(selected ? theme.text.selectedRow : {})}>
+      {selected
+        ? accessible
+          ? 'Selected: '
+          : selectedPrefix
+        : accessible
+          ? ''
+          : unselectedPrefix}
+      {children}
+    </Text>
+  )
 }
 
 export function InteractiveApp({
@@ -7459,14 +7483,18 @@ export function InteractiveApp({
                     </Text>
                   </Box>
                   <Text>Do you want to proceed?</Text>
-                  <Text inverse={!axScreenReader && permissionSelection === 0}>
-                    {selectionPrefix(permissionSelection === 0, axScreenReader)}
+                  <DecisionOption
+                    selected={permissionSelection === 0}
+                    screenReader={axScreenReader}
+                  >
                     1. Yes
-                  </Text>
-                  <Text inverse={!axScreenReader && permissionSelection === 1}>
-                    {selectionPrefix(permissionSelection === 1, axScreenReader)}
+                  </DecisionOption>
+                  <DecisionOption
+                    selected={permissionSelection === 1}
+                    screenReader={axScreenReader}
+                  >
                     2. No
-                  </Text>
+                  </DecisionOption>
                   {permissionFeedbackMode ? (
                     <Text>
                       ›{' '}
@@ -7501,23 +7529,29 @@ export function InteractiveApp({
                   Praxis has written up a plan and is ready to execute. Would
                   you like to proceed?
                 </Text>
-                <Text inverse={!axScreenReader && planApprovalSelection === 0}>
-                  {selectionPrefix(planApprovalSelection === 0, axScreenReader)}
+                <DecisionOption
+                  selected={planApprovalSelection === 0}
+                  screenReader={axScreenReader}
+                >
                   1.{' '}
                   {runtimeSettings.useAutoModeDuringPlan
                     ? 'Yes, and use auto mode'
                     : allowDangerouslySkipPermissions
                       ? 'Yes, and bypass permissions'
                       : 'Yes, auto-accept edits'}
-                </Text>
-                <Text inverse={!axScreenReader && planApprovalSelection === 1}>
-                  {selectionPrefix(planApprovalSelection === 1, axScreenReader)}
+                </DecisionOption>
+                <DecisionOption
+                  selected={planApprovalSelection === 1}
+                  screenReader={axScreenReader}
+                >
                   2. Yes, manually approve edits
-                </Text>
-                <Text inverse={!axScreenReader && planApprovalSelection === 2}>
-                  {selectionPrefix(planApprovalSelection === 2, axScreenReader)}
+                </DecisionOption>
+                <DecisionOption
+                  selected={planApprovalSelection === 2}
+                  screenReader={axScreenReader}
+                >
                   3. No, keep planning
-                </Text>
+                </DecisionOption>
                 {planApprovalFeedbackMode ? (
                   <Text>
                     ›{' '}
@@ -7656,12 +7690,16 @@ export function InteractiveApp({
                               flexDirection="column"
                               marginBottom={1}
                             >
-                              <Text inverse={menu.selectedIndex === index}>
-                                {menu.selectedIndex === index ? ' ❯ ' : '   '}
+                              <DecisionOption
+                                selected={menu.selectedIndex === index}
+                                screenReader={axScreenReader}
+                                selectedPrefix=" ❯ "
+                                unselectedPrefix="   "
+                              >
                                 {point.prompt
                                   .replace(/\s+/gu, ' ')
                                   .slice(0, 72)}
-                              </Text>
+                              </DecisionOption>
                               <Text dimColor>
                                 {'     '}
                                 {point.fileChanges.length > 0
@@ -7688,10 +7726,14 @@ export function InteractiveApp({
                     </>
                   )
                 })()}
-                <Text inverse={menu.selectedIndex === menu.points.length}>
-                  {menu.selectedIndex === menu.points.length ? ' ❯ ' : '   '}
+                <DecisionOption
+                  selected={menu.selectedIndex === menu.points.length}
+                  screenReader={axScreenReader}
+                  selectedPrefix=" ❯ "
+                  unselectedPrefix="   "
+                >
                   (current)
-                </Text>
+                </DecisionOption>
                 <Text> </Text>
                 <Text dimColor> Enter to continue · Esc to cancel</Text>
               </Box>
@@ -7711,13 +7753,13 @@ export function InteractiveApp({
                 </Text>
                 <Text> </Text>
                 {rewindActions(menu.point).map((option, index) => (
-                  <Text
+                  <DecisionOption
                     key={option.action}
-                    inverse={menu.selectedIndex === index}
+                    selected={menu.selectedIndex === index}
+                    screenReader={axScreenReader}
                   >
-                    {menu.selectedIndex === index ? '❯ ' : '  '}
                     {index + 1}. {option.label}
-                  </Text>
+                  </DecisionOption>
                 ))}
                 <Text> </Text>
                 <RewindWarning />
@@ -7793,14 +7835,18 @@ export function InteractiveApp({
                   Are you sure you want to delete this permission rule?
                 </Text>
                 <Text> </Text>
-                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
-                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                <DecisionOption
+                  selected={menu.selectedIndex === 0}
+                  screenReader={axScreenReader}
+                >
                   1. Yes
-                </Text>
-                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
-                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                </DecisionOption>
+                <DecisionOption
+                  selected={menu.selectedIndex === 1}
+                  screenReader={axScreenReader}
+                >
                   2. No
-                </Text>
+                </DecisionOption>
                 <Text dimColor>Esc to cancel</Text>
               </DialogFrame>
             ) : menu?.kind === 'workspace-directory-delete' ? (
@@ -7813,14 +7859,18 @@ export function InteractiveApp({
                   directory.
                 </Text>
                 <Text> </Text>
-                <Text inverse={!axScreenReader && menu.selectedIndex === 0}>
-                  {selectionPrefix(menu.selectedIndex === 0, axScreenReader)}
+                <DecisionOption
+                  selected={menu.selectedIndex === 0}
+                  screenReader={axScreenReader}
+                >
                   1. Yes
-                </Text>
-                <Text inverse={!axScreenReader && menu.selectedIndex === 1}>
-                  {selectionPrefix(menu.selectedIndex === 1, axScreenReader)}
+                </DecisionOption>
+                <DecisionOption
+                  selected={menu.selectedIndex === 1}
+                  screenReader={axScreenReader}
+                >
                   2. No
-                </Text>
+                </DecisionOption>
                 <Text dimColor>Enter to confirm · Esc to cancel</Text>
               </Box>
             ) : menu ? (

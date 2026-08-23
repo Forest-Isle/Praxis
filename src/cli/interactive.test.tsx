@@ -8126,6 +8126,69 @@ describe('InteractiveApp', () => {
     expect(approval).toEqual({ behavior: 'allow', permissionMode: 'auto' })
   })
 
+  it('announces plan approval selection without color', async () => {
+    const previousNoColor = process.env.NO_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const factory: InteractiveServiceFactory = {
+        async createService({ approvePlan }) {
+          return {
+            async run() {
+              await approvePlan?.({
+                action: 'exit',
+                planPath: '/tmp/plan.md',
+                plan: '# Plan\n\n1. Implement.',
+                previousMode: 'default',
+              })
+              return {
+                sessionId: 'session-no-color-plan',
+                text: 'done',
+                usage: { inputTokens: 1, outputTokens: 1 },
+              }
+            },
+            async resume() {
+              throw new Error('unused')
+            },
+            async fork() {
+              throw new Error('unused')
+            },
+            async sessions() {
+              return []
+            },
+          }
+        },
+      }
+      const app = render(
+        <InteractiveApp
+          factory={factory}
+          initialSessions={[]}
+          axScreenReader={false}
+        />,
+      )
+      await flush()
+      app.stdin.write('start')
+      app.stdin.write('\r')
+      await flush()
+      const first = app.lastFrame() ?? ''
+      const firstDecision = first.slice(first.indexOf('Ready to code?'))
+      expect(first).toContain('Selected: 1. Yes, and use auto mode')
+      expect(firstDecision).not.toContain('❯')
+      expectNoColorSgr(first)
+
+      app.stdin.write('\u001B[B')
+      await flush()
+      const second = app.lastFrame() ?? ''
+      const secondDecision = second.slice(second.indexOf('Ready to code?'))
+      expect(second).toContain('Selected: 2. Yes, manually approve edits')
+      expect(second).not.toContain('Selected: 1. Yes, and use auto mode')
+      expect(secondDecision).not.toContain('❯')
+      expectNoColorSgr(second)
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
+  })
+
   it('declines plan approval when the tool signal aborts', async () => {
     const controller = new AbortController()
     let approval: ClaudePlanApprovalResult | undefined
