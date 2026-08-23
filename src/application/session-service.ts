@@ -104,6 +104,7 @@ import {
   type ModelMessage,
   type ModelThinkingBlock,
   type ModelToolCall,
+  type ModelToolDefinition,
   type ModelProvider,
   ModelProviderError,
   type ModelUsage,
@@ -129,11 +130,11 @@ import type { ModelPricingRegistry } from '../core/usage.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
 import {
   ContextBudget,
-  ContextRecoveryPlanner,
-  contextRecoveryMadeProgress,
   estimateModelRequestTokens,
   isPromptTooLongError,
 } from '../core/context-budget.js'
+import { ContextEngine } from './context-engine.js'
+import { TurnMemoryCoordinator } from './turn-memory-coordinator.js'
 import {
   injectFirstUserMessageContext,
   projectContextSnapshot,
@@ -4096,15 +4097,26 @@ export class ClaudeSessionService {
           agent?.initialPrompt
             ? `${agent.initialPrompt}\n\n${prompt}`
             : prompt)
-        const projectMemoryRecallTurn =
-          !skipUserPrompt && shellCommand === undefined
-            ? this.options.projectMemoryRecall?.prefetch({
-                sessionId,
-                turnId: randomUUID(),
-                prompt: effectivePrompt,
-                ...(signal ? { signal } : {}),
-              })
-            : undefined
+        const sessionMemory = this.sessionMemoryController(sessionId)
+        const turnMemory = new TurnMemoryCoordinator({
+          sessionId,
+          ...(sessionMemory ? { session: sessionMemory } : {}),
+          ...(this.options.projectMemoryRecall
+            ? { projectRecall: this.options.projectMemoryRecall }
+            : {}),
+          ...(this.options.projectMemoryExtraction
+            ? { projectExtraction: this.options.projectMemoryExtraction }
+            : {}),
+          warn: (message) =>
+            this.options.eventSink?.({ type: 'warning', message }),
+        })
+        if (!skipUserPrompt && shellCommand === undefined) {
+          turnMemory.prefetch({
+            turnId: randomUUID(),
+            prompt: effectivePrompt,
+            ...(signal ? { signal } : {}),
+          })
+        }
         const initialPricing = this.options.pricing?.resolve(
           provider.model ?? 'praxis/provider',
         )
@@ -4601,7 +4613,19 @@ export class ClaudeSessionService {
         let currentTurnToolCalls = 0
         let projectMemoryMaintained = false
         let projectMemoryRecallMessages: ModelMessage[] = []
+        let observeModelRequestUsage: (input: {
+          usage: ModelUsage
+          messages: readonly ModelMessage[]
+          tools: readonly ModelToolDefinition[]
+        }) => void = () => undefined
         const observer = {
+          modelRequestCompleted: async (input: {
+            usage: ModelUsage
+            messages: readonly ModelMessage[]
+            tools: readonly ModelToolDefinition[]
+          }) => {
+            observeModelRequestUsage(input)
+          },
           assistantCompleted: async (message: {
             content: string
             thinkingBlocks?: readonly ModelThinkingBlock[]
@@ -4723,7 +4747,7 @@ export class ClaudeSessionService {
                 isPathWithin(this.options.projectMemoryDirectory, path)
               ) {
                 if (call.name === 'Read') {
-                  this.options.projectMemoryRecall?.recordRead(sessionId, path)
+                  turnMemory.recordRead(path)
                 } else if (call.name === 'Write' || call.name === 'Edit') {
                   projectMemoryMaintained = true
                 }
@@ -4740,10 +4764,7 @@ export class ClaudeSessionService {
                       resolvedAccessedPath,
                     )
                   ) {
-                    this.options.projectMemoryRecall?.recordRead(
-                      sessionId,
-                      resolvedAccessedPath,
-                    )
+                    turnMemory.recordRead(resolvedAccessedPath)
                   }
                 }
               }
@@ -4916,7 +4937,6 @@ export class ClaudeSessionService {
             }
           }
 
-          const sessionMemory = this.sessionMemoryController(sessionId)
           let agentSystem: string | null = null
           let planModeMessage: string | null | undefined
           let sessionMemoryMessage: string | null = null
@@ -4930,9 +4950,9 @@ export class ClaudeSessionService {
             agentSystem = await this.mainAgentSystemPrompt(agent)
             planModeMessage =
               this.options.interactiveTools?.contextMessage(sessionId)
-            sessionMemoryMessage = sessionMemory
-              ? this.sessionMemoryMessage(await sessionMemory.summary())
-              : null
+            sessionMemoryMessage = this.sessionMemoryMessage(
+              await turnMemory.sessionSummary(),
+            )
             const assembledContext = await assembleContextSnapshot(
               this.options.contextAssembler,
               {
@@ -4999,7 +5019,17 @@ export class ClaudeSessionService {
             ? (structuredTools?.definitions() ?? [])
             : []
           const budget = this.contextBudget(provider)
-          const recoveryPlanner = new ContextRecoveryPlanner()
+          const contextEngine = new ContextEngine({
+            ...(budget ? { budget } : {}),
+            autoCompact: this.options.autoCompact !== false,
+            memory: {
+              beforeCompact: () => turnMemory.beforeCompact(),
+              afterCompact: () => turnMemory.afterCompact(),
+            },
+          })
+          observeModelRequestUsage = ({ usage, messages, tools }) => {
+            contextEngine.observeUsage(usage, messages, tools)
+          }
           const pendingUserMessages = expandedMessages.map(
             (message, index) => ({
               role: 'user' as const,
@@ -5067,377 +5097,399 @@ export class ClaudeSessionService {
           ): ModelMessage[] =>
             injectAgentMentionContext(injectDynamicContext(messages))
           let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
-          const compactIfNeeded = async (
+          const contextTransitionPort = (
             pendingMessages: readonly {
               role: 'user'
               content: string
             }[] = [],
             preservedUserMessages: readonly string[] = [],
-            options: { promptTooLong?: boolean } = {},
-          ) => {
-            if (!budget || this.options.autoCompact === false) return
-            const historyMessages = [
-              ...projectClaudeModelMessages(snapshot.entries),
-              ...projectMemoryRecallMessages,
-            ]
-            const predicted = budget.evaluate(
-              [
+          ) => ({
+            current: () => {
+              const historyMessages = [
+                ...projectClaudeModelMessages(snapshot.entries),
+                ...projectMemoryRecallMessages,
+              ]
+              return {
+                messages: [
+                  ...contextMessages,
+                  ...injectTurnContext([
+                    ...historyMessages,
+                    ...pendingMessages,
+                  ]),
+                ],
+                tools: definitions,
+              }
+            },
+            irreducible: () => ({
+              messages: [
                 ...contextMessages,
-                ...injectTurnContext([...historyMessages, ...pendingMessages]),
+                ...injectTurnContext([
+                  ...pendingMessages,
+                  ...preservedUserMessages.map((content) => ({
+                    role: 'user' as const,
+                    content,
+                  })),
+                ]),
               ],
-              definitions,
-              options,
-            )
-            if (!predicted.shouldCompact) return
-            const irreducibleMessages = [
-              ...contextMessages,
-              ...injectTurnContext([
-                ...pendingMessages,
-                ...preservedUserMessages.map((content) => ({
-                  role: 'user' as const,
-                  content,
-                })),
-              ]),
-            ]
-            const irreducible = budget.evaluate(
-              irreducibleMessages,
-              definitions,
-            )
-            budget.assertFits(irreducible)
-            let logicalParentUuid = compactionAnchorUuid
-            if (!logicalParentUuid || historyMessages.length === 0) {
-              budget.assertFits(predicted)
-              throw new Error('Cannot compact an empty Claude transcript')
-            }
-            if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
-              throw new Error(
-                'Cannot compact a Claude session with unresolved tool calls',
-              )
-            }
-            const preCompact = await this.runAdvisoryHook(
-              sessionId,
-              'PreCompact',
-              { trigger: 'auto', custom_instructions: null },
-              'auto',
-              signal,
-            )
-            const memorySelection = sessionMemory
-              ? await this.selectMemoryPreservedCompact(
-                  sessionId,
-                  selectClaudeActiveTranscript(snapshot.entries),
-                )
-              : null
-            const compactorMessages: ModelMessage[] = memorySelection
-              ? [
-                  memorySelection.memoryMessage,
-                  ...projectClaudeModelMessages(
-                    memorySelection.compactedEntries,
-                  ),
-                ]
-              : historyMessages
-            compactorMessages.push(
-              ...successfulHookOutput(preCompact).map((content) => ({
-                role: 'user' as const,
-                content: `Additional summarization context: ${content}`,
-              })),
-            )
-            if (memorySelection) {
-              logicalParentUuid = memorySelection.logicalParentUuid
-            }
-            this.options.eventSink?.({ type: 'state', state: 'compacting' })
-            const compactEnvelope = budget.evaluate(
-              [
-                ...irreducibleMessages,
-                {
-                  role: 'user',
-                  content: formatClaudeCompactSummary(''),
-                },
-              ],
-              definitions,
-            )
-            let targetTokens = Math.min(
-              8192,
-              compactEnvelope.availableTokens - compactEnvelope.estimatedTokens,
-            )
-            if (targetTokens < 1) {
-              budget.assertFits(
-                budget.evaluate(
-                  [
-                    ...irreducibleMessages,
-                    {
-                      role: 'user',
-                      content: formatClaudeCompactSummary('a'),
-                    },
-                  ],
-                  definitions,
-                ),
-              )
-              targetTokens = 1
-            }
-            const compacted = await (
-              this.options.compactor ?? new ModelCompactor(provider)
-            ).compact({
-              messages: compactorMessages,
-              targetTokens,
-              contextWindowTokens: budget.contextWindowTokens,
-              ...(signal ? { signal } : {}),
-            })
-            const {
-              durationMs: compactedDurationMs,
-              durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-            } = requireCompactionDurations(compacted)
-            const proposedCompactionDurationMs =
-              (compactionDurationMs ?? 0) + compactedDurationMs
-            if (!Number.isFinite(proposedCompactionDurationMs)) {
-              throw new TypeError('compaction durationMs total overflow')
-            }
-            const proposedCompactionDurationWithoutRetriesMs =
-              (compactionDurationWithoutRetriesMs ?? 0) +
-              compactedDurationWithoutRetriesMs
-            if (!Number.isFinite(proposedCompactionDurationWithoutRetriesMs)) {
-              throw new TypeError(
-                'compaction durationWithoutRetriesMs total overflow',
-              )
-            }
-            const boundaryUuid = randomUUID()
-            const summaryUuid = randomUUID()
-            const timestamp = new Date().toISOString()
-            const preTokens = budget.evaluate(
-              [...contextMessages, ...injectTurnContext(historyMessages)],
-              definitions,
-            ).estimatedTokens
-            const compactEntries = (postTokens: number) => {
-              const uuids = [boundaryUuid, summaryUuid]
-              return createClaudeCompactEntries({
-                sessionId,
-                logicalParentUuid,
-                summary: compacted.summary,
-                preTokens,
-                postTokens,
-                previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
-                  snapshot.entries,
-                ),
-                durationMs: compactedDurationMs,
-                cwd: this.activeCwd(),
-                claudeVersion: this.options.claudeVersion,
-                gitBranch: null,
-                ...(memorySelection
-                  ? {
-                      preservedUuids: memorySelection.preservedEntries.flatMap(
-                        (entry) =>
-                          typeof entry.uuid === 'string' ? [entry.uuid] : [],
-                      ),
-                    }
-                  : {}),
-                createUuid: () => uuids.shift() ?? randomUUID(),
-                now: () => timestamp,
-              })
-            }
-            const provisionalEntries = compactEntries(0)
-            const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
-            if (typeof compactSummaryUuid !== 'string') {
-              throw new Error('Could not create Claude compact summary')
-            }
-            const replayUuids = preservedUserMessages.map(() => randomUUID())
-            const replayEntries = translateProviderEvents(
-              preservedUserMessages.map((text, index) =>
-                index === 0
-                  ? { type: 'user-text' as const, text }
-                  : { type: 'user-text-block' as const, text },
-              ),
-              {
-                sessionId,
-                parentUuid: compactSummaryUuid,
-                cwd: this.activeCwd(),
-                claudeVersion: this.options.claudeVersion,
-                gitBranch: null,
-                history: [...snapshot.entries, ...provisionalEntries],
-                createUuid: () => replayUuids.shift() ?? randomUUID(),
-                now: () => timestamp,
-              },
-            )
-            const compactedHistory = [
-              ...projectClaudeModelMessages([
-                ...snapshot.entries,
-                ...provisionalEntries,
-                ...replayEntries,
-              ]),
-              ...projectMemoryRecallMessages,
-            ]
-            const afterHistory = budget.evaluate(
-              [...contextMessages, ...injectTurnContext(compactedHistory)],
-              definitions,
-            )
-            const afterPending = budget.evaluate(
-              [
+              tools: definitions,
+            }),
+            propose: async () => {
+              if (!budget) {
+                throw new Error('Context budget is unavailable')
+              }
+              const historyMessages = [
+                ...projectClaudeModelMessages(snapshot.entries),
+                ...projectMemoryRecallMessages,
+              ]
+              const irreducibleMessages = [
                 ...contextMessages,
-                ...injectTurnContext([...compactedHistory, ...pendingMessages]),
-              ],
-              definitions,
-            )
-            budget.assertFits(afterPending)
-            if (
-              options.promptTooLong === true &&
-              !contextRecoveryMadeProgress({
-                beforeOccupancyTokens: predicted.occupancyTokens,
-                afterOccupancyTokens: afterPending.occupancyTokens,
-              })
-            ) {
-              throw new Error(
-                'Reactive context compaction made no occupancy progress',
-              )
-            }
-            const entries = [
-              ...compactEntries(afterHistory.estimatedTokens),
-              ...replayEntries,
-            ]
-            if (signal?.aborted) throw new AgentRunCancelledError()
-            // Construct the exact tracker mutations for this single committed
-            // boundary and preflight them against a clone of the live tracker so
-            // invalid input or cumulative overflow rejects before the compact
-            // boundary is appended rather than after a half-commit.
-            const tracker = this.sessionCostTrackers.get(sessionId)
-            if (!tracker) {
-              throw new Error(
-                `Session cost tracker is not active for session ${sessionId}`,
-              )
-            }
-            const compactModel =
-              compacted.model !== undefined && compacted.model.trim() !== ''
-                ? compacted.model
-                : provider.model
-            const compactModelNonBlank =
-              compactModel !== undefined && compactModel.trim() !== ''
-            if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
-              throw new Error(
-                'Auto compact usage requires a nonblank model identity',
-              )
-            }
-            let meteringTurnInput: ClaudeSessionTurnInput | undefined
-            if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
-              const pricing = this.options.pricing?.resolve(compactModel)
-              const costUsd = pricing
-                ? usageCostUsd(compacted.usage, pricing)
-                : undefined
-              meteringTurnInput = {
-                model: compactModel,
-                usage: compacted.usage,
-                ...(costUsd === undefined ? {} : { costUsd }),
-                ...(compacted.usage.webSearchRequests === undefined
-                  ? {}
-                  : { webSearchRequests: compacted.usage.webSearchRequests }),
+                ...injectTurnContext([
+                  ...pendingMessages,
+                  ...preservedUserMessages.map((content) => ({
+                    role: 'user' as const,
+                    content,
+                  })),
+                ]),
+              ]
+              let logicalParentUuid = compactionAnchorUuid
+              if (!logicalParentUuid || historyMessages.length === 0) {
+                throw new Error('Cannot compact an empty Claude transcript')
               }
-            }
-            let meteringDurationsInput: ClaudeSessionDurationsInput | undefined
-            if (
-              compactedDurationMs > 0 ||
-              compactedDurationWithoutRetriesMs > 0
-            ) {
-              meteringDurationsInput = {
-                ...(compactedDurationMs === 0
-                  ? {}
-                  : { apiDurationMs: compactedDurationMs }),
-                apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-              }
-            }
-            if (
-              meteringTurnInput !== undefined ||
-              meteringDurationsInput !== undefined
-            ) {
-              const preflight = new ClaudeSessionCostTracker({
-                sessionId,
-                restored: tracker.snapshot(),
-              })
-              if (meteringTurnInput !== undefined) {
-                preflight.recordTurn(meteringTurnInput)
-              }
-              if (meteringDurationsInput !== undefined) {
-                preflight.recordDurations(meteringDurationsInput)
-              }
-            }
-            const appendResult = await lease.appendMany(snapshot.tail, entries)
-            if (appendResult.status === 'conflict') {
-              throw new Error(
-                `Claude transcript append conflict: ${appendResult.reason}`,
-              )
-            }
-            snapshot = {
-              entries: [...snapshot.entries, ...entries],
-              tail: appendResult.tail,
-            }
-            const metadataEntries = createClaudeDurableMetadataSnapshot(
-              snapshot.entries,
-              sessionId,
-            )
-            if (metadataEntries.length > 0) {
-              const metadataAppend = await lease.appendMany(
-                snapshot.tail,
-                metadataEntries,
-              )
-              if (metadataAppend.status === 'conflict') {
+              if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
                 throw new Error(
-                  `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+                  'Cannot compact a Claude session with unresolved tool calls',
                 )
               }
-              snapshot = {
-                entries: [...snapshot.entries, ...metadataEntries],
-                tail: metadataAppend.tail,
-              }
-            }
-            this.rememberDurableMetadata(sessionId, snapshot.entries)
-            await this.runAdvisoryHook(
-              sessionId,
-              'PostCompact',
-              { trigger: 'auto', compact_summary: compacted.summary },
-              'auto',
-              signal,
-            )
-            // The boundary is durable: mirror Claude's full-compact behavior by
-            // rerunning SessionStart with source compact and refreshing the
-            // runtime-only context so the next request retains current
-            // instructions, plan state, session memory, and hook context.
-            if (this.options.hooks) {
-              const outcome = await this.hookLifecycle.refresh(
+              const preCompact = await this.runAdvisoryHook(
                 sessionId,
-                hookSession,
+                'PreCompact',
+                { trigger: 'auto', custom_instructions: null },
+                'auto',
                 signal,
               )
-              if (outcome) await recordHookOutcome(outcome)
-            }
-            this.options.contextAssembler?.invalidate?.({
-              lifecycleId: sessionId,
-              reason: 'compact',
-            })
-            this.options.projectMemoryRecall?.recordCompact(sessionId)
-            await refreshRuntimeContext()
-            this.options.eventSink?.({
-              type: 'compact-boundary',
-              trigger: 'auto',
-              preTokens,
-              uuid: boundaryUuid,
-            })
-            compactionAnchorUuid = compactSummaryUuid
-            compactionUsage = mergeUsage(compactionUsage, compacted.usage)
-            compactionDurationMs = proposedCompactionDurationMs
-            compactionDurationWithoutRetriesMs =
-              proposedCompactionDurationWithoutRetriesMs
-            if (meteringTurnInput !== undefined) {
-              compactionModelUsage = mergeSessionRawModelUsage(
-                compactionModelUsage,
-                { [meteringTurnInput.model]: compacted.usage },
+              const memorySelection = sessionMemory
+                ? await this.selectMemoryPreservedCompact(
+                    sessionId,
+                    selectClaudeActiveTranscript(snapshot.entries),
+                    { sessionMemoryReady: true },
+                  )
+                : null
+              const compactorMessages: ModelMessage[] = memorySelection
+                ? [
+                    memorySelection.memoryMessage,
+                    ...projectClaudeModelMessages(
+                      memorySelection.compactedEntries,
+                    ),
+                  ]
+                : historyMessages
+              compactorMessages.push(
+                ...successfulHookOutput(preCompact).map((content) => ({
+                  role: 'user' as const,
+                  content: `Additional summarization context: ${content}`,
+                })),
               )
-            }
-            // Commit the preflighted mutations once the boundary is durable so a
-            // later main-provider failure or cancellation cannot lose the
-            // compactor's usage/cost/API durations.
-            if (meteringTurnInput !== undefined) {
-              tracker.recordTurn(meteringTurnInput)
-            }
-            if (meteringDurationsInput !== undefined) {
-              tracker.recordDurations(meteringDurationsInput)
-            }
-          }
-          await compactIfNeeded(pendingUserMessages)
+              if (memorySelection) {
+                logicalParentUuid = memorySelection.logicalParentUuid
+              }
+              this.options.eventSink?.({ type: 'state', state: 'compacting' })
+              const compactEnvelope = budget.evaluate(
+                [
+                  ...irreducibleMessages,
+                  {
+                    role: 'user',
+                    content: formatClaudeCompactSummary(''),
+                  },
+                ],
+                definitions,
+              )
+              let targetTokens = Math.min(
+                8192,
+                compactEnvelope.availableTokens -
+                  compactEnvelope.estimatedTokens,
+              )
+              if (targetTokens < 1) {
+                budget.assertFits(
+                  budget.evaluate(
+                    [
+                      ...irreducibleMessages,
+                      {
+                        role: 'user',
+                        content: formatClaudeCompactSummary('a'),
+                      },
+                    ],
+                    definitions,
+                  ),
+                )
+                targetTokens = 1
+              }
+              const compacted = await (
+                this.options.compactor ?? new ModelCompactor(provider)
+              ).compact({
+                messages: compactorMessages,
+                targetTokens,
+                contextWindowTokens: budget.contextWindowTokens,
+                ...(signal ? { signal } : {}),
+              })
+              const {
+                durationMs: compactedDurationMs,
+                durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
+              } = requireCompactionDurations(compacted)
+              const proposedCompactionDurationMs =
+                (compactionDurationMs ?? 0) + compactedDurationMs
+              if (!Number.isFinite(proposedCompactionDurationMs)) {
+                throw new TypeError('compaction durationMs total overflow')
+              }
+              const proposedCompactionDurationWithoutRetriesMs =
+                (compactionDurationWithoutRetriesMs ?? 0) +
+                compactedDurationWithoutRetriesMs
+              if (
+                !Number.isFinite(proposedCompactionDurationWithoutRetriesMs)
+              ) {
+                throw new TypeError(
+                  'compaction durationWithoutRetriesMs total overflow',
+                )
+              }
+              const boundaryUuid = randomUUID()
+              const summaryUuid = randomUUID()
+              const timestamp = new Date().toISOString()
+              const preTokens = budget.evaluate(
+                [...contextMessages, ...injectTurnContext(historyMessages)],
+                definitions,
+              ).estimatedTokens
+              const compactEntries = (postTokens: number) => {
+                const uuids = [boundaryUuid, summaryUuid]
+                return createClaudeCompactEntries({
+                  sessionId,
+                  logicalParentUuid,
+                  summary: compacted.summary,
+                  preTokens,
+                  postTokens,
+                  previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
+                    snapshot.entries,
+                  ),
+                  durationMs: compactedDurationMs,
+                  cwd: this.activeCwd(),
+                  claudeVersion: this.options.claudeVersion,
+                  gitBranch: null,
+                  ...(memorySelection
+                    ? {
+                        preservedUuids:
+                          memorySelection.preservedEntries.flatMap((entry) =>
+                            typeof entry.uuid === 'string' ? [entry.uuid] : [],
+                          ),
+                      }
+                    : {}),
+                  createUuid: () => uuids.shift() ?? randomUUID(),
+                  now: () => timestamp,
+                })
+              }
+              const provisionalEntries = compactEntries(0)
+              const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
+              if (typeof compactSummaryUuid !== 'string') {
+                throw new Error('Could not create Claude compact summary')
+              }
+              const replayUuids = preservedUserMessages.map(() => randomUUID())
+              const replayEntries = translateProviderEvents(
+                preservedUserMessages.map((text, index) =>
+                  index === 0
+                    ? { type: 'user-text' as const, text }
+                    : { type: 'user-text-block' as const, text },
+                ),
+                {
+                  sessionId,
+                  parentUuid: compactSummaryUuid,
+                  cwd: this.activeCwd(),
+                  claudeVersion: this.options.claudeVersion,
+                  gitBranch: null,
+                  history: [...snapshot.entries, ...provisionalEntries],
+                  createUuid: () => replayUuids.shift() ?? randomUUID(),
+                  now: () => timestamp,
+                },
+              )
+              const compactedHistory = [
+                ...projectClaudeModelMessages([
+                  ...snapshot.entries,
+                  ...provisionalEntries,
+                  ...replayEntries,
+                ]),
+                ...projectMemoryRecallMessages,
+              ]
+              const afterHistory = budget.evaluate(
+                [...contextMessages, ...injectTurnContext(compactedHistory)],
+                definitions,
+              )
+              const proposedMessages = [
+                ...contextMessages,
+                ...injectTurnContext([...compactedHistory, ...pendingMessages]),
+              ]
+              const entries = [
+                ...compactEntries(afterHistory.estimatedTokens),
+                ...replayEntries,
+              ]
+              if (signal?.aborted) throw new AgentRunCancelledError()
+              // Construct the exact tracker mutations for this single committed
+              // boundary and preflight them against a clone of the live tracker so
+              // invalid input or cumulative overflow rejects before the compact
+              // boundary is appended rather than after a half-commit.
+              const tracker = this.sessionCostTrackers.get(sessionId)
+              if (!tracker) {
+                throw new Error(
+                  `Session cost tracker is not active for session ${sessionId}`,
+                )
+              }
+              const compactModel =
+                compacted.model !== undefined && compacted.model.trim() !== ''
+                  ? compacted.model
+                  : provider.model
+              const compactModelNonBlank =
+                compactModel !== undefined && compactModel.trim() !== ''
+              if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
+                throw new Error(
+                  'Auto compact usage requires a nonblank model identity',
+                )
+              }
+              let meteringTurnInput: ClaudeSessionTurnInput | undefined
+              if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
+                const pricing = this.options.pricing?.resolve(compactModel)
+                const costUsd = pricing
+                  ? usageCostUsd(compacted.usage, pricing)
+                  : undefined
+                meteringTurnInput = {
+                  model: compactModel,
+                  usage: compacted.usage,
+                  ...(costUsd === undefined ? {} : { costUsd }),
+                  ...(compacted.usage.webSearchRequests === undefined
+                    ? {}
+                    : { webSearchRequests: compacted.usage.webSearchRequests }),
+                }
+              }
+              let meteringDurationsInput:
+                ClaudeSessionDurationsInput | undefined
+              if (
+                compactedDurationMs > 0 ||
+                compactedDurationWithoutRetriesMs > 0
+              ) {
+                meteringDurationsInput = {
+                  ...(compactedDurationMs === 0
+                    ? {}
+                    : { apiDurationMs: compactedDurationMs }),
+                  apiDurationWithoutRetriesMs:
+                    compactedDurationWithoutRetriesMs,
+                }
+              }
+              if (
+                meteringTurnInput !== undefined ||
+                meteringDurationsInput !== undefined
+              ) {
+                const preflight = new ClaudeSessionCostTracker({
+                  sessionId,
+                  restored: tracker.snapshot(),
+                })
+                if (meteringTurnInput !== undefined) {
+                  preflight.recordTurn(meteringTurnInput)
+                }
+                if (meteringDurationsInput !== undefined) {
+                  preflight.recordDurations(meteringDurationsInput)
+                }
+              }
+              return {
+                envelope: {
+                  messages: proposedMessages,
+                  tools: definitions,
+                },
+                commit: async () => {
+                  if (signal?.aborted) throw new AgentRunCancelledError()
+                  const appendResult = await lease.appendMany(
+                    snapshot.tail,
+                    entries,
+                  )
+                  if (appendResult.status === 'conflict') {
+                    throw new Error(
+                      `Claude transcript append conflict: ${appendResult.reason}`,
+                    )
+                  }
+                  snapshot = {
+                    entries: [...snapshot.entries, ...entries],
+                    tail: appendResult.tail,
+                  }
+                  const metadataEntries = createClaudeDurableMetadataSnapshot(
+                    snapshot.entries,
+                    sessionId,
+                  )
+                  if (metadataEntries.length > 0) {
+                    const metadataAppend = await lease.appendMany(
+                      snapshot.tail,
+                      metadataEntries,
+                    )
+                    if (metadataAppend.status === 'conflict') {
+                      throw new Error(
+                        `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+                      )
+                    }
+                    snapshot = {
+                      entries: [...snapshot.entries, ...metadataEntries],
+                      tail: metadataAppend.tail,
+                    }
+                  }
+                  this.rememberDurableMetadata(sessionId, snapshot.entries)
+                  await this.runAdvisoryHook(
+                    sessionId,
+                    'PostCompact',
+                    { trigger: 'auto', compact_summary: compacted.summary },
+                    'auto',
+                    signal,
+                  )
+                  // The boundary is durable: mirror Claude's full-compact behavior by
+                  // rerunning SessionStart with source compact and refreshing the
+                  // runtime-only context so the next request retains current
+                  // instructions, plan state, session memory, and hook context.
+                  if (this.options.hooks) {
+                    const outcome = await this.hookLifecycle.refresh(
+                      sessionId,
+                      hookSession,
+                      signal,
+                    )
+                    if (outcome) await recordHookOutcome(outcome)
+                  }
+                  this.options.contextAssembler?.invalidate?.({
+                    lifecycleId: sessionId,
+                    reason: 'compact',
+                  })
+                  await refreshRuntimeContext()
+                  this.options.eventSink?.({
+                    type: 'compact-boundary',
+                    trigger: 'auto',
+                    preTokens,
+                    uuid: boundaryUuid,
+                  })
+                  compactionAnchorUuid = compactSummaryUuid
+                  compactionUsage = mergeUsage(compactionUsage, compacted.usage)
+                  compactionDurationMs = proposedCompactionDurationMs
+                  compactionDurationWithoutRetriesMs =
+                    proposedCompactionDurationWithoutRetriesMs
+                  if (meteringTurnInput !== undefined) {
+                    compactionModelUsage = mergeSessionRawModelUsage(
+                      compactionModelUsage,
+                      { [meteringTurnInput.model]: compacted.usage },
+                    )
+                  }
+                  // Commit the preflighted mutations once the boundary is durable so a
+                  // later main-provider failure or cancellation cannot lose the
+                  // compactor's usage/cost/API durations.
+                  if (meteringTurnInput !== undefined) {
+                    tracker.recordTurn(meteringTurnInput)
+                  }
+                  if (meteringDurationsInput !== undefined) {
+                    tracker.recordDurations(meteringDurationsInput)
+                  }
+                },
+              }
+            },
+          })
+          await contextEngine.prepare(
+            contextTransitionPort(pendingUserMessages),
+            signal,
+          )
 
           for (const [index, message] of expandedMessages.entries()) {
             if (shellCommand !== undefined) break
@@ -5604,7 +5656,10 @@ export class ClaudeSessionService {
             })
           }
           if (budget) {
-            await compactIfNeeded([], currentTurnUserMessages ?? [])
+            await contextEngine.prepare(
+              contextTransitionPort([], currentTurnUserMessages ?? []),
+              signal,
+            )
             budget.assertFits(
               budget.evaluate(
                 [
@@ -5645,13 +5700,16 @@ export class ClaudeSessionService {
               ? { deferFailureKinds: ['prompt_too_long'] as const }
               : {}),
             reloadMessages: async () => {
-              const recalled = projectMemoryRecallTurn?.consumeIfSettled()
+              const recalled = turnMemory.consumeRecall()
               if (recalled) {
                 projectMemoryRecallMessages = [
                   { role: 'user', content: recalled.content },
                 ]
               }
-              await compactIfNeeded([], currentTurnUserMessages ?? [])
+              await contextEngine.prepare(
+                contextTransitionPort([], currentTurnUserMessages ?? []),
+                signal,
+              )
               runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
               return [
                 ...contextMessages,
@@ -5822,28 +5880,12 @@ export class ClaudeSessionService {
               result = await attemptMainTurn()
             } catch (error) {
               if (!budget || !isPromptTooLongError(error)) throw error
-              if (recoveryPlanner.reactiveRetriesRemaining === 0) {
-                surfaceExhaustedRecovery(error)
-                throw error
-              }
-              const beforeRecovery = budget.evaluate(
-                runtimeRequest.messages,
-                definitions,
+              const recovery = await contextEngine.recover(
+                error,
+                contextTransitionPort([], currentTurnUserMessages ?? []),
+                signal,
               )
-              try {
-                await compactIfNeeded([], currentTurnUserMessages ?? [], {
-                  promptTooLong: true,
-                })
-              } catch (compactionError) {
-                if (
-                  signal?.aborted ||
-                  compactionError instanceof AgentRunCancelledError
-                ) {
-                  throw new AgentRunCancelledError()
-                }
-                // Compaction could not free the provider-bounded context; surface
-                // the original prompt-too-long error rather than the compaction
-                // failure.
+              if (recovery.kind !== 'retry') {
                 surfaceExhaustedRecovery(error)
                 throw error
               }
@@ -5857,26 +5899,12 @@ export class ClaudeSessionService {
                 ]),
               ]
               runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-              const afterRecovery = budget.evaluate(
-                runtimeRequest.messages,
-                definitions,
-              )
-              if (
-                recoveryPlanner.consumeReactiveRetry({
-                  beforeOccupancyTokens: beforeRecovery.occupancyTokens,
-                  afterOccupancyTokens: afterRecovery.occupancyTokens,
-                }) !== 'reactive-retry'
-              ) {
-                surfaceExhaustedRecovery(error)
-                throw error
-              }
               runtimeRequest.deferFailureKinds = true
               try {
                 result = await attemptMainTurn()
               } catch (retryError) {
                 // Exactly one reactive retry is consumed; fail deterministically
                 // and surface the original prompt-too-long error.
-                recoveryPlanner.recordFailure()
                 if (
                   signal?.aborted ||
                   retryError instanceof AgentRunCancelledError
@@ -5914,23 +5942,6 @@ export class ClaudeSessionService {
             }
             throw error
           }
-          recoveryPlanner.recordSuccess()
-          const mainModel =
-            provider.model !== undefined && provider.model.trim() !== ''
-              ? provider.model
-              : undefined
-          const observedUsage =
-            (mainModel !== undefined
-              ? result.modelUsage?.[mainModel]
-              : undefined) ??
-            Object.values(result.modelUsage ?? {})[0] ??
-            result.usage
-          budget?.observeUsage(
-            observedUsage,
-            runtimeRequest.messages,
-            definitions,
-          )
-
           if (structuredCapture && structuredCapture.calls !== 1) {
             throw new Error(
               `StructuredOutput must be called exactly once (received ${structuredCapture.calls})`,
@@ -6060,38 +6071,24 @@ export class ClaudeSessionService {
                 : { linesRemoved: foregroundLineChanges.linesRemoved }),
             })
           }
-          if (sessionMemory && finalLeafUuid) {
-            const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
-            const providerVisibleMessages = [
-              ...contextMessages,
-              ...injectTurnContext(memorySnapshot),
-            ]
-            const currentContextTokens = budget
-              ? budget.evaluate(providerVisibleMessages, definitions)
-                  .occupancyTokens
-              : estimateModelRequestTokens(providerVisibleMessages, definitions)
-            try {
-              await sessionMemory.observeContext(
-                currentContextTokens,
-                currentTurnToolCalls,
-                finalLeafUuid,
-                memorySnapshot,
-              )
-            } catch (error) {
-              // A failed observation must not fail the user turn; the sidecar
-              // retains a retryable error for the next observation.
-              this.options.eventSink?.({
-                type: 'warning',
-                message: `Session memory observation failed: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              })
-            }
-          }
-          this.options.projectMemoryExtraction?.observe({
-            sessionId,
+          const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
+          const providerVisibleMessages = [
+            ...contextMessages,
+            ...injectTurnContext(memorySnapshot),
+          ]
+          const currentContextTokens =
+            contextEngine.report({
+              messages: providerVisibleMessages,
+              tools: definitions,
+            })?.occupancyTokens ??
+            estimateModelRequestTokens(providerVisibleMessages, definitions)
+          await turnMemory.observeSuccess({
+            ...(finalLeafUuid ? { messageId: finalLeafUuid } : {}),
+            occupancyTokens: currentContextTokens,
+            toolCalls: currentTurnToolCalls,
+            messages: memorySnapshot,
+            projectMessages: projectMemoryMessages(snapshot.entries),
             directMaintenance: projectMemoryMaintained,
-            messages: projectMemoryMessages(snapshot.entries),
           })
           turnCompleted = true
           return {
@@ -6245,10 +6242,11 @@ export class ClaudeSessionService {
   private async selectMemoryPreservedCompact(
     sessionId: string,
     activeEntries: readonly ClaudeTranscriptEntry[],
+    options: { sessionMemoryReady?: boolean } = {},
   ): Promise<MemoryPreservedCompactSelection | null> {
     const controller = this.sessionMemoryController(sessionId)
     if (controller === null) return null
-    await controller.waitForCompact()
+    if (options.sessionMemoryReady !== true) await controller.waitForCompact()
     let watermark: string | null = null
     let memorySummary = ''
     try {

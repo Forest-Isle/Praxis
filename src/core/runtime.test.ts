@@ -50,6 +50,83 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('reports each provider usage with the exact request snapshot', async () => {
+    let providerCalls = 0
+    const observations: {
+      inputTokens: number
+      roles: string[]
+      toolNames: string[]
+    }[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        providerCalls += 1
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call-1', name: 'Read', input: { path: 'a.ts' } },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 6_000, outputTokens: 10 },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 7_000, outputTokens: 20 },
+        }
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [
+            {
+              name: 'Read',
+              description: 'Read a file',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            return { content: 'file', isError: false }
+          },
+        },
+      },
+    )
+
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'inspect' }],
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted() {},
+        async modelRequestCompleted({ usage, messages, tools }) {
+          observations.push({
+            inputTokens: usage.inputTokens,
+            roles: messages.map((message) => message.role),
+            toolNames: tools.map((tool) => tool.name),
+          })
+        },
+      },
+    })
+
+    expect(result.usage.inputTokens).toBe(13_000)
+    expect(observations).toEqual([
+      {
+        inputTokens: 6_000,
+        roles: ['user'],
+        toolNames: ['Read'],
+      },
+      {
+        inputTokens: 7_000,
+        roles: ['user', 'assistant', 'tool'],
+        toolNames: ['Read'],
+      },
+    ])
+  })
+
   it('passes the stable system prefix boundary to the provider', async () => {
     let captured: ModelRequest | undefined
     const runtime = new AgentRuntime(
