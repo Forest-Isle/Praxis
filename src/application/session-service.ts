@@ -136,9 +136,11 @@ import {
 } from '../core/context-budget.js'
 import {
   injectFirstUserMessageContext,
-  type AssembledContext,
+  projectContextSnapshot,
+  type ContextProjection,
   type ContextAssembler,
 } from '../core/context.js'
+import { assembleContextSnapshot } from '../core/prompt-composer.js'
 import type {
   ClaudeAgentRuntimeDefinition,
   ClaudeExtensionCatalog,
@@ -217,7 +219,6 @@ import {
 import { generateToolUseSummary } from './tool-use-summary.js'
 import {
   ClaudeUserMessageToolRegistry,
-  CLAUDE_USER_MESSAGE_PROMPT,
   type UserMessage,
 } from '../tools/claude-user-message.js'
 import type {
@@ -2188,18 +2189,22 @@ export class ClaudeSessionService {
       entries = loaded.value.entries
       this.restoreWorktree(entries)
     }
-    const assembledContext = await this.options.contextAssembler?.assemble({
-      cwd: this.activeCwd(),
-      lifecycleId: activeSessionId,
-    })
+    const assembledContext = await assembleContextSnapshot(
+      this.options.contextAssembler,
+      {
+        cwd: this.activeCwd(),
+        lifecycleId: activeSessionId,
+      },
+    )
+    const contextProjection = projectContextSnapshot(assembledContext)
     const messages = [
-      ...(assembledContext?.systemMessages ?? []),
+      ...contextProjection.systemMessages,
       ...injectFirstUserMessageContext(
         [
           ...projectClaudeModelMessages(entries),
           { role: 'user' as const, content: prompt },
         ],
-        assembledContext?.firstUserMessageContext,
+        contextProjection.firstUserMessageContext,
       ),
     ]
     const budget = this.contextBudget(provider)
@@ -2213,6 +2218,7 @@ export class ClaudeSessionService {
       provider,
       {
         messages,
+        stableSystemMessageCount: contextProjection.stableSystemSectionCount,
         ...(this.options.effort ? { effort: this.options.effort } : {}),
         ...(signal ? { signal } : {}),
       },
@@ -2386,24 +2392,18 @@ export class ClaudeSessionService {
     const provider = this.providerForAgent(agent)
     this.activeProvider = provider
     const agentSystem = await this.mainAgentSystemPrompt(agent)
-    const assembledContext = await this.options.contextAssembler?.assemble({
-      cwd: this.activeCwd(),
-      lifecycleId: sessionId,
-      ...(agentSystem ? { mode: 'agent', baseSystemPrompt: agentSystem } : {}),
-    })
-    const hasPromptManifest = assembledContext?.promptSections !== undefined
-    const assembledSystemMessages = hasPromptManifest
-      ? (assembledContext?.systemMessages ?? [])
-      : this.assembledSystemMessages(
-          agent,
-          assembledContext?.systemMessages ?? [],
-        )
-    const contextMessages = [
-      ...(!hasPromptManifest && agentSystem
-        ? [{ role: 'system' as const, content: agentSystem }]
-        : []),
-      ...assembledSystemMessages,
-    ]
+    const assembledContext = await assembleContextSnapshot(
+      this.options.contextAssembler,
+      {
+        cwd: this.activeCwd(),
+        lifecycleId: sessionId,
+        ...(agentSystem
+          ? { mode: 'agent', baseSystemPrompt: agentSystem }
+          : {}),
+      },
+    )
+    const contextProjection = projectContextSnapshot(assembledContext)
+    const contextMessages = [...contextProjection.systemMessages]
     const messages = [
       ...contextMessages,
       ...injectFirstUserMessageContext(
@@ -2411,7 +2411,7 @@ export class ClaudeSessionService {
           ...projectClaudeModelMessages(entries.entries),
           { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
         ],
-        assembledContext?.firstUserMessageContext,
+        contextProjection.firstUserMessageContext,
       ),
     ]
     const suggestionTools =
@@ -2425,6 +2425,7 @@ export class ClaudeSessionService {
       provider,
       {
         messages,
+        stableSystemMessageCount: contextProjection.stableSystemSectionCount,
         ...(provider.capabilities.tools
           ? { tools: suggestionTools?.definitions() ?? [] }
           : {}),
@@ -4872,12 +4873,15 @@ export class ClaudeSessionService {
         }
 
         const sessionMemory = this.sessionMemoryController(sessionId)
-        let assembledContext: AssembledContext | undefined
         let agentSystem: string | null = null
         let planModeMessage: string | null | undefined
         let sessionMemoryMessage: string | null = null
         let contextMessages: ModelMessage[] = []
-        let stableSystemMessageCount: number | undefined
+        let contextProjection: ContextProjection = {
+          systemMessages: [],
+          stableSystemSectionCount: 0,
+        }
+        let stableSystemMessageCount = 0
         const refreshRuntimeContext = async () => {
           agentSystem = await this.mainAgentSystemPrompt(agent)
           planModeMessage =
@@ -4885,97 +4889,29 @@ export class ClaudeSessionService {
           sessionMemoryMessage = sessionMemory
             ? this.sessionMemoryMessage(await sessionMemory.summary())
             : null
-          const additionalSections = [
-            ...(planModeMessage
-              ? [
-                  {
-                    id: 'plan-mode',
-                    placement: 'system' as const,
-                    stability: 'volatile' as const,
-                    content: planModeMessage,
-                  },
-                ]
-              : []),
-            ...(sessionMemoryMessage
-              ? [
-                  {
-                    id: 'session-memory',
-                    placement: 'system' as const,
-                    stability: 'volatile' as const,
-                    content: sessionMemoryMessage,
-                  },
-                ]
-              : []),
-            ...(this.options.brief
-              ? [
-                  {
-                    id: 'brief-output',
-                    placement: 'system' as const,
-                    stability: 'volatile' as const,
-                    content: CLAUDE_USER_MESSAGE_PROMPT,
-                  },
-                ]
-              : []),
-            ...(this.options.structuredOutputSchema
-              ? [
-                  {
-                    id: 'structured-output',
-                    placement: 'system' as const,
-                    stability: 'volatile' as const,
-                    content:
-                      'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
-                  },
-                ]
-              : []),
-          ]
-          assembledContext = await this.options.contextAssembler?.assemble({
-            cwd: this.activeCwd(),
-            lifecycleId: sessionId,
-            ...(agentSystem
-              ? { mode: 'agent', baseSystemPrompt: agentSystem }
-              : {}),
-            additionalSections,
-          })
-          const hasPromptManifest =
-            assembledContext?.promptSections !== undefined
-          stableSystemMessageCount = hasPromptManifest
-            ? assembledContext?.stableSystemSectionCount
-            : undefined
-          const assembledSystemMessages = hasPromptManifest
-            ? (assembledContext?.systemMessages ?? [])
-            : this.assembledSystemMessages(
-                agent,
-                assembledContext?.systemMessages ?? [],
-              )
-          contextMessages = [
-            ...(!hasPromptManifest && agentSystem
-              ? [{ role: 'system' as const, content: agentSystem }]
-              : []),
-            ...assembledSystemMessages,
-            ...(!hasPromptManifest && planModeMessage
-              ? [{ role: 'system' as const, content: planModeMessage }]
-              : []),
-            ...(!hasPromptManifest && sessionMemoryMessage
-              ? [{ role: 'system' as const, content: sessionMemoryMessage }]
-              : []),
-            ...(!hasPromptManifest && this.options.brief
-              ? [
-                  {
-                    role: 'system' as const,
-                    content: CLAUDE_USER_MESSAGE_PROMPT,
-                  },
-                ]
-              : []),
-            ...(!hasPromptManifest && this.options.structuredOutputSchema
-              ? [
-                  {
-                    role: 'system' as const,
-                    content:
-                      'You MUST call StructuredOutput exactly once at the end with a value matching the requested JSON Schema.',
-                  },
-                ]
-              : []),
-          ]
+          const assembledContext = await assembleContextSnapshot(
+            this.options.contextAssembler,
+            {
+              cwd: this.activeCwd(),
+              lifecycleId: sessionId,
+              ...(agentSystem
+                ? { mode: 'agent', baseSystemPrompt: agentSystem }
+                : {}),
+              turn: {
+                ...(planModeMessage ? { planMode: planModeMessage } : {}),
+                ...(sessionMemoryMessage
+                  ? { sessionMemory: sessionMemoryMessage }
+                  : {}),
+                ...(this.options.brief ? { briefOutput: true } : {}),
+                ...(this.options.structuredOutputSchema
+                  ? { structuredOutput: true }
+                  : {}),
+              },
+            },
+          )
+          contextProjection = projectContextSnapshot(assembledContext)
+          stableSystemMessageCount = contextProjection.stableSystemSectionCount
+          contextMessages = [...contextProjection.systemMessages]
         }
         await refreshRuntimeContext()
 
@@ -5072,7 +5008,7 @@ export class ClaudeSessionService {
         ): ModelMessage[] =>
           injectFirstUserMessageContext(
             messages,
-            assembledContext?.firstUserMessageContext,
+            contextProjection.firstUserMessageContext,
           )
         const injectTurnContext = (
           messages: readonly ModelMessage[],
@@ -5629,9 +5565,7 @@ export class ClaudeSessionService {
             ...contextMessages,
             ...injectTurnContext(projectClaudeModelMessages(snapshot.entries)),
           ],
-          ...(stableSystemMessageCount === undefined
-            ? {}
-            : { stableSystemMessageCount }),
+          stableSystemMessageCount,
           cwd: this.activeCwd(),
           toolResultDirectory,
           observer,
@@ -5654,11 +5588,7 @@ export class ClaudeSessionService {
               ]
             }
             await compactIfNeeded([], currentTurnUserMessages ?? [])
-            if (stableSystemMessageCount === undefined) {
-              delete runtimeRequest.stableSystemMessageCount
-            } else {
-              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-            }
+            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
             return [
               ...contextMessages,
               ...injectTurnContext([
@@ -5857,11 +5787,7 @@ export class ClaudeSessionService {
                 ...projectMemoryRecallMessages,
               ]),
             ]
-            if (stableSystemMessageCount === undefined) {
-              delete runtimeRequest.stableSystemMessageCount
-            } else {
-              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-            }
+            runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
             const afterRecovery = budget.evaluate(
               runtimeRequest.messages,
               definitions,
@@ -7098,17 +7024,6 @@ export class ClaudeSessionService {
     )
     const system = memory ? `${agent.body}\n\n${memory}` : agent.body
     return system.trim() ? system : null
-  }
-
-  private assembledSystemMessages(
-    agent: ClaudeAgentRuntimeDefinition | null,
-    messages: readonly ModelMessage[],
-  ): readonly ModelMessage[] {
-    return agent &&
-      this.options.explicitSystemPrompt &&
-      this.options.agentSystemPromptOverridesExplicit
-      ? messages.slice(1)
-      : messages
   }
 
   private contextBudget(provider: ModelProvider): ContextBudget | null {

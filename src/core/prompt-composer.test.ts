@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { projectContextSnapshot } from './context.js'
 import { PromptComposer, type PromptSection } from './prompt-composer.js'
 
 const section = (
@@ -33,14 +34,17 @@ describe('PromptComposer', () => {
       { id: 'environment', stability: 'session', placement: 'system' },
       { id: 'runtime-tail', stability: 'volatile', placement: 'system' },
     ])
-    expect(composed.stableSystemSectionCount).toBe(3)
-    expect(composed.systemMessages.map((message) => message.content)).toEqual([
-      expect.stringContaining('Praxis'),
-      'INSTRUCTIONS',
-      'ENVIRONMENT',
-      'RUNTIME-TAIL',
-    ])
-    const policy = composed.systemMessages[0]?.content ?? ''
+    const projection = projectContextSnapshot(composed)
+    expect(projection.stableSystemSectionCount).toBe(3)
+    expect(projection.systemMessages.map((message) => message.content)).toEqual(
+      [
+        expect.stringContaining('Praxis'),
+        'INSTRUCTIONS',
+        'ENVIRONMENT',
+        'RUNTIME-TAIL',
+      ],
+    )
+    const policy = projection.systemMessages[0]?.content ?? ''
     expect(policy).toMatch(/coding agent/iu)
     expect(policy).toMatch(/scratch or work area/iu)
     expect(policy).toMatch(/summarize or clear/iu)
@@ -92,11 +96,14 @@ describe('PromptComposer', () => {
       'skills',
       'relocated-runtime',
     ])
-    expect(composed.systemMessages.map((message) => message.content)).toEqual([
-      'SUBAGENT_POLICY',
-      'SKILLS',
-    ])
-    expect(composed.firstUserMessageContext).toBe('RELOCATED-RUNTIME')
+    expect(
+      projectContextSnapshot(composed).systemMessages.map(
+        (message) => message.content,
+      ),
+    ).toEqual(['SUBAGENT_POLICY', 'SKILLS'])
+    expect(projectContextSnapshot(composed).firstUserMessageContext).toBe(
+      'RELOCATED-RUNTIME',
+    )
   })
 
   it('identifies a selected main-agent policy without duplicating product policy', () => {
@@ -113,6 +120,46 @@ describe('PromptComposer', () => {
     expect(JSON.stringify(composed.sections)).not.toContain('product-policy')
   })
 
+  it('owns identities, placement, and lifetime for every turn context input', () => {
+    const composed = new PromptComposer().compose({
+      mode: 'default',
+      turn: {
+        planMode: 'PLAN',
+        sessionMemory: 'MEMORY',
+        briefOutput: true,
+        structuredOutput: true,
+      },
+    })
+
+    expect(composed.sections.slice(-4)).toEqual([
+      {
+        id: 'plan-mode',
+        content: 'PLAN',
+        placement: 'system',
+        stability: 'volatile',
+      },
+      {
+        id: 'session-memory',
+        content: 'MEMORY',
+        placement: 'system',
+        stability: 'volatile',
+      },
+      {
+        id: 'brief-output',
+        content: expect.stringContaining('SendUserMessage'),
+        placement: 'system',
+        stability: 'volatile',
+      },
+      {
+        id: 'structured-output',
+        content: expect.stringContaining('requested JSON Schema'),
+        placement: 'system',
+        stability: 'volatile',
+      },
+    ])
+    expect(projectContextSnapshot(composed).stableSystemSectionCount).toBe(1)
+  })
+
   it('rejects duplicate identities and invalid stability ordering', () => {
     const composer = new PromptComposer()
 
@@ -121,7 +168,7 @@ describe('PromptComposer', () => {
         mode: 'default',
         sessionSections: [section('duplicate'), section('duplicate')],
       }),
-    ).toThrow('Duplicate prompt section duplicate')
+    ).toThrow('Duplicate context section duplicate')
     expect(() =>
       composer.compose({
         mode: 'default',

@@ -22,9 +22,6 @@ interface AttachmentMetadata {
   isImage: boolean
 }
 
-export const CLAUDE_USER_MESSAGE_PROMPT =
-  'When brief mode is enabled, SendUserMessage is the primary user-visible reply channel. Use it for the answer, progress checkpoints, and blockers. Set status to normal for a direct reply and proactive for an unsolicited update.'
-
 const DEFINITION: ModelToolDefinition = {
   name: 'SendUserMessage',
   description:

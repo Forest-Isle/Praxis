@@ -1,9 +1,9 @@
 import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path'
 
 import type {
-  AssembledContext,
   ContextAssembler,
   ContextAssemblyOptions,
+  ContextSnapshot,
   ContextInvalidationOptions,
 } from '../../core/context.js'
 import {
@@ -69,7 +69,7 @@ export interface ClaudeMcpInstruction {
   instructions: string
 }
 
-interface ContextSnapshot {
+interface ClaudeLoaderSnapshot {
   lifecycleId: string
   cwd?: string
   resources?: Promise<ClaudeContextResources>
@@ -113,13 +113,13 @@ export class ClaudeConditionalRuleResolver {
 
 export class ClaudeContextAssembler implements ContextAssembler {
   private readonly composer = new PromptComposer()
-  private readonly snapshots = new Map<string, ContextSnapshot>()
+  private readonly snapshots = new Map<string, ClaudeLoaderSnapshot>()
 
   constructor(private readonly options: ClaudeContextAssemblerOptions) {}
 
   async assemble(
     options: ContextAssemblyOptions = {},
-  ): Promise<AssembledContext> {
+  ): Promise<ContextSnapshot> {
     const snapshot = this.snapshot(options)
     const mode =
       options.mode ??
@@ -213,13 +213,6 @@ ${sections.join('\n\n')}`,
         })
       }
     }
-    for (const section of options.additionalSections ?? []) {
-      const target =
-        section.stability === 'volatile' || section.placement === 'first-user'
-          ? tailSections
-          : sessionSections
-      target.push(section)
-    }
     const composition = this.composer.compose({
       mode,
       ...(options.baseSystemPrompt !== undefined
@@ -232,15 +225,9 @@ ${sections.join('\n\n')}`,
         : {}),
       sessionSections,
       tailSections,
+      ...(options.turn === undefined ? {} : { turn: options.turn }),
     })
-    return {
-      systemMessages: composition.systemMessages,
-      promptSections: composition.sections,
-      stableSystemSectionCount: composition.stableSystemSectionCount,
-      ...(composition.firstUserMessageContext
-        ? { firstUserMessageContext: composition.firstUserMessageContext }
-        : {}),
-    }
+    return composition
   }
 
   invalidate(options: ContextInvalidationOptions): void {
@@ -270,7 +257,7 @@ ${sections.join('\n\n')}`,
 
   private snapshot(
     options: ContextAssemblyOptions,
-  ): ContextSnapshot | undefined {
+  ): ClaudeLoaderSnapshot | undefined {
     if (!options.lifecycleId) return undefined
     const key = JSON.stringify([options.lifecycleId, options.cwd ?? null])
     let snapshot = this.snapshots.get(key)
@@ -285,7 +272,7 @@ ${sections.join('\n\n')}`,
   }
 
   private loadResources(
-    snapshot: ContextSnapshot | undefined,
+    snapshot: ClaudeLoaderSnapshot | undefined,
     cwd: string | undefined,
   ): Promise<ClaudeContextResources> {
     if (!snapshot) return this.options.loadResources(cwd)
@@ -311,7 +298,7 @@ ${sections.join('\n\n')}`,
   }
 
   private loadDynamicContext(
-    snapshot: ContextSnapshot | undefined,
+    snapshot: ClaudeLoaderSnapshot | undefined,
     cwd: string | undefined,
   ): Promise<ClaudeDynamicContextSections> {
     const load = this.options.loadDynamicContext
@@ -328,7 +315,7 @@ ${sections.join('\n\n')}`,
   }
 
   private loadMcpInstructions(
-    snapshot: ContextSnapshot | undefined,
+    snapshot: ClaudeLoaderSnapshot | undefined,
   ): Promise<readonly ClaudeMcpInstruction[]> {
     const load = this.options.loadMcpInstructions
     if (!load) return Promise.resolve([])
@@ -345,7 +332,7 @@ ${sections.join('\n\n')}`,
   }
 
   private loadSessionGuidance(
-    snapshot: ContextSnapshot | undefined,
+    snapshot: ClaudeLoaderSnapshot | undefined,
   ): Promise<string | undefined> {
     const load = this.options.loadSessionGuidance
     if (!load) return Promise.resolve(undefined)
@@ -361,7 +348,7 @@ ${sections.join('\n\n')}`,
     return snapshot.sessionGuidance
   }
 
-  private currentDate(snapshot: ContextSnapshot | undefined): string {
+  private currentDate(snapshot: ClaudeLoaderSnapshot | undefined): string {
     if (snapshot?.currentDate) return snapshot.currentDate
     const now = (this.options.now ?? (() => new Date()))()
     const date = [

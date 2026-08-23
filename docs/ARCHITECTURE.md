@@ -235,16 +235,19 @@ JSONL file, is an identity collision. A claimed ID remains claimed if later
 startup fails; retry must resume a valid transcript or choose a new ID, never
 silently reuse the path.
 
-`PromptComposer` owns one ordered, provider-neutral manifest for product,
-custom/agent, shared-resource, runtime, MCP, plan, Session-memory, and output
-sections. Each section has a stable identity, placement (`system` or the first
-user message), and lifetime (`static`, `session`, or `volatile`). The manifest
-projects to ordinary model messages; provider cache fields are not part of this
-module. The model request carries the number of leading stable system messages
-so capability-aware adapters can consume the boundary without teaching the
-composer any provider wire format.
+`PromptComposer` owns one ordered, provider-neutral `ContextSnapshot` for
+product, custom/agent, shared-resource, runtime, MCP, plan, Session-memory, and
+output sections. Each section has a stable identity, placement (`system` or the
+first user message), and lifetime (`static`, `session`, or `volatile`). The
+ordered sections are the only authoritative representation; ordinary model
+messages, first-user context, and the leading stable-system count are derived
+together by a pure core projection. Provider cache fields are not part of the
+snapshot. Main turns, side questions, prompt suggestions, compaction refreshes,
+and subagents carry the derived stable count to capability-aware adapters
+without teaching the composer any provider wire format.
 
-`ContextAssembler` loads the composer inputs into a lifecycle-scoped snapshot.
+`ContextAssembler` loads the composer inputs and always returns the canonical
+lifecycle-scoped snapshot.
 Ordinary turns and subagent model rounds reuse byte-identical session sections.
 Compact and explicit resource reload refresh shared resources; tool-pool
 changes refresh capability guidance and the volatile per-server MCP suffix;

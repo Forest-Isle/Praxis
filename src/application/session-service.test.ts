@@ -23,6 +23,11 @@ import type {
   ToolRegistry,
 } from '../core/runtime.js'
 import { ContextBudget } from '../core/context-budget.js'
+import type {
+  ContextAssemblyOptions,
+  ContextSnapshot,
+} from '../core/context.js'
+import { assembleContextSnapshot } from '../core/prompt-composer.js'
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
 import { ModelPricingRegistry } from '../core/usage.js'
 import {
@@ -65,6 +70,35 @@ import {
 import { WorkspaceContext } from './session-worktree.js'
 
 const roots: string[] = []
+
+function contextSnapshot({
+  system = [],
+  firstUser,
+}: {
+  system?: readonly string[]
+  firstUser?: string
+} = {}): ContextSnapshot {
+  return {
+    sections: [
+      ...system.map((content, index) => ({
+        id: `test-system-${index}`,
+        content,
+        placement: 'system' as const,
+        stability: 'session' as const,
+      })),
+      ...(firstUser === undefined
+        ? []
+        : [
+            {
+              id: 'test-first-user',
+              content: firstUser,
+              placement: 'first-user' as const,
+              stability: 'session' as const,
+            },
+          ]),
+    ],
+  }
+}
 
 function queuedProvider(responses: string[]): ModelProvider {
   return {
@@ -3605,16 +3639,17 @@ describe('ClaudeSessionService', () => {
       hooks,
       contextReserveTokens: 1_500,
       contextAssembler: {
-        async assemble() {
+        async assemble(options) {
           contextVersion += 1
+          const snapshot = contextSnapshot({
+            system: [`SYSTEM_CONTEXT_${contextVersion}`],
+            firstUser: `DYNAMIC_CONTEXT_${contextVersion}`,
+          })
+          const turnSnapshot = await assembleContextSnapshot(undefined, {
+            ...(options?.turn === undefined ? {} : { turn: options.turn }),
+          })
           return {
-            systemMessages: [
-              {
-                role: 'system' as const,
-                content: `SYSTEM_CONTEXT_${contextVersion}`,
-              },
-            ],
-            firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
+            sections: [...snapshot.sections, ...turnSnapshot.sections],
           }
         },
         invalidate({ reason }) {
@@ -4556,7 +4591,7 @@ describe('ClaudeSessionService', () => {
       },
       contextAssembler: {
         async assemble() {
-          return { systemMessages: [] }
+          return contextSnapshot()
         },
         invalidate({ reason }) {
           contextInvalidations.push(reason)
@@ -4821,6 +4856,7 @@ describe('ClaudeSessionService', () => {
 
     expect(deltas).toEqual(['side', ' answer'])
     expect(requests[1]?.tools).toBeUndefined()
+    expect(requests[1]?.stableSystemMessageCount).toBe(0)
     expect(requests[1]?.messages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -7589,6 +7625,7 @@ describe('ClaudeSessionService', () => {
     expect(after).toEqual(before)
     expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
     expect(requests).toHaveLength(2)
+    expect(requests[1]?.stableSystemMessageCount).toBe(0)
     expect(requests[1]?.messages.at(-1)).toEqual({
       role: 'user',
       content: expect.stringContaining('[SUGGESTION MODE:'),
@@ -9630,10 +9667,9 @@ describe('ClaudeSessionService', () => {
       contextReserveTokens: 1_500,
       contextAssembler: {
         async assemble() {
-          return {
-            systemMessages: [],
-            firstUserMessageContext: 'DYNAMIC_COMPACTION_CONTEXT',
-          }
+          return contextSnapshot({
+            firstUser: 'DYNAMIC_COMPACTION_CONTEXT',
+          })
         },
       },
     })
@@ -10280,7 +10316,7 @@ describe('ClaudeSessionService', () => {
       claudeVersion: '2.1.208',
       provider: queuedProvider(['answer']),
       contextAssembler: {
-        assemble: async () => ({ systemMessages: [] }),
+        assemble: async () => contextSnapshot(),
         invalidate: (options) => invalidations.push(options),
       },
     })
@@ -10417,15 +10453,10 @@ describe('ClaudeSessionService', () => {
         async assemble(options) {
           contextCwds.push(options?.cwd ?? '')
           contextVersion += 1
-          return {
-            systemMessages: [
-              {
-                role: 'system' as const,
-                content: `SYSTEM_CONTEXT_${contextVersion}`,
-              },
-            ],
-            firstUserMessageContext: `DYNAMIC_CONTEXT_${contextVersion}`,
-          }
+          return contextSnapshot({
+            system: [`SYSTEM_CONTEXT_${contextVersion}`],
+            firstUser: `DYNAMIC_CONTEXT_${contextVersion}`,
+          })
         },
       },
     })
@@ -10465,6 +10496,61 @@ describe('ClaudeSessionService', () => {
     const transcript = await readFile(paths.sessionFile, 'utf8')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
+  })
+
+  it('delegates brief and structured-output section policy to canonical context assembly', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-turn-context-policy-'))
+    roots.push(root)
+    const snapshots: ContextSnapshot[] = []
+    const assemblyOptions: ContextAssemblyOptions[] = []
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      brief: true,
+      structuredOutputSchema: {
+        type: 'object',
+        properties: { answer: { type: 'string' } },
+        required: ['answer'],
+        additionalProperties: false,
+      },
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      contextAssembler: {
+        async assemble(options) {
+          assemblyOptions.push(options ?? {})
+          const snapshot = await assembleContextSnapshot(undefined, options)
+          snapshots.push(snapshot)
+          return snapshot
+        },
+      },
+    })
+
+    await expect(service.run('return structured output')).rejects.toThrow(
+      'StructuredOutput must be called exactly once',
+    )
+    expect(assemblyOptions[0]?.turn).toMatchObject({
+      briefOutput: true,
+      structuredOutput: true,
+    })
+    expect(snapshots[0]?.sections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'brief-output',
+          placement: 'system',
+          stability: 'volatile',
+        }),
+        expect.objectContaining({
+          id: 'structured-output',
+          placement: 'system',
+          stability: 'volatile',
+        }),
+      ]),
+    )
   })
 
   it('keeps imported instructions stable until an explicit resource reload', async () => {
@@ -10557,10 +10643,9 @@ describe('ClaudeSessionService', () => {
       contextReserveTokens: 20,
       contextAssembler: {
         async assemble() {
-          return {
-            systemMessages: [],
-            firstUserMessageContext: 'DYNAMIC_CONTEXT '.repeat(500),
-          }
+          return contextSnapshot({
+            firstUser: 'DYNAMIC_CONTEXT '.repeat(500),
+          })
         },
       },
     })
@@ -10784,11 +10869,10 @@ describe('ClaudeSessionService', () => {
       explicitModel: true,
       explicitSystemPrompt: true,
       contextAssembler: {
-        assemble: async () => ({
-          systemMessages: [
-            { role: 'system', content: 'EXPLICIT_SYSTEM_MARKER' },
-          ],
-        }),
+        assemble: async (options) =>
+          contextSnapshot({
+            system: [options?.baseSystemPrompt ?? 'EXPLICIT_SYSTEM_MARKER'],
+          }),
       },
       tools,
       extensions,
@@ -10826,11 +10910,10 @@ describe('ClaudeSessionService', () => {
       agentInitialPromptHandledExternally: true,
       agentSystemPromptOverridesExplicit: true,
       contextAssembler: {
-        assemble: async () => ({
-          systemMessages: [
-            { role: 'system', content: 'EXPLICIT_SYSTEM_MARKER' },
-          ],
-        }),
+        assemble: async (options) =>
+          contextSnapshot({
+            system: [options?.baseSystemPrompt ?? 'EXPLICIT_SYSTEM_MARKER'],
+          }),
       },
       tools,
       extensions,
@@ -12038,7 +12121,7 @@ describe('ClaudeSessionService', () => {
         'fourth answer',
       ]),
       contextAssembler: {
-        assemble: async () => ({ systemMessages: [] }),
+        assemble: async () => contextSnapshot(),
         invalidate: ({ reason }) => contextInvalidations.push(reason),
       },
       hooks: new ClaudeHookRunner({
