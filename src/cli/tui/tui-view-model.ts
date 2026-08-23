@@ -76,7 +76,7 @@ export function projectTuiView(input: TuiViewInput): TuiViewModel {
       : 'normal'
   const fullEntries = projectTranscriptPresentation(input.history, mode)
   const transcriptPageRows = Math.max(
-    1,
+    2,
     (input.rows ?? 0) - FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
   )
   const maxTranscriptScrollOffset = Math.max(

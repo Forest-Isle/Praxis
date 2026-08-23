@@ -160,6 +160,34 @@ describe('projectTuiView', () => {
     ).toBe(true)
   })
 
+  it('retains a finalized assistant marker at the minimum fullscreen height', () => {
+    const marker = 'BACKGROUND_CONTEXT_READY'
+    const history: TranscriptItem[] = [assistant(marker)]
+    const view = projectTuiView({
+      ...base,
+      fixedViewport: true,
+      rows: FULLSCREEN_TRANSCRIPT_RESERVED_ROWS,
+      width: 32,
+      initialHistory: [],
+      history,
+      resume: false,
+    })
+
+    expect(view.transcriptPageRows).toBe(2)
+    expect(view.maxTranscriptScrollOffset).toBe(0)
+    expect(view.transcriptEntries).toHaveLength(1)
+    expect(view.transcriptEntries[0]).toMatchObject({
+      kind: 'item',
+      key: 'item-0',
+      item: { kind: 'assistant', text: marker },
+    })
+    expect(
+      view.transcriptEntries[0]?.kind === 'item' &&
+        view.transcriptEntries[0].item,
+    ).toBe(history[0])
+    expect(history).toEqual([assistant(marker)])
+  })
+
   it('keeps screen-reader history complete and ungrouped outside the viewport', () => {
     const history: readonly TranscriptItem[] = [
       user('inspect both files'),
