@@ -155,6 +155,10 @@ import {
   type ComposerKeyTransition,
 } from './tui/composer-key-router.js'
 import {
+  routeTuiInteraction,
+  type TuiScrollIntent,
+} from './tui/tui-interaction-router.js'
+import {
   applyMentionReference,
   fileReferenceAtCursor,
   filterTuiMentionEntries,
@@ -1413,7 +1417,12 @@ export function InteractiveApp({
   )
   const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
   const activeAttemptThinkingItemsRef = useRef<TranscriptItem[]>([])
-  const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
+  const [transcriptScrollOffset, setTranscriptScrollOffsetState] = useState(0)
+  const transcriptScrollOffsetRef = useRef(0)
+  const setTranscriptScrollOffset = (offset: number) => {
+    transcriptScrollOffsetRef.current = offset
+    setTranscriptScrollOffsetState(offset)
+  }
   // The pure TUI view model classifies the session identity (fresh/resumed/
   // started) and projects the rendered transcript. Startup diagnostics are
   // useful before the first prompt, but they are not conversation history and
@@ -4290,10 +4299,27 @@ export function InteractiveApp({
       armExitConfirmation()
       return
     }
-    if (controlKey('z')) {
-      if (!processSuspendRequestedRef.current) {
-        processSuspendRequestedRef.current = true
-        setProcessSuspendRequested(true)
+    const suspendIntent = controlKey('z')
+    if (suspendIntent) {
+      const interaction = routeTuiInteraction(
+        {
+          suspensionPending: processSuspendRequestedRef.current,
+          blockingLayerActive: false,
+          busy,
+          viewport: {
+            enabled: false,
+            offset: 0,
+            maxOffset: 0,
+            pageRows: 0,
+          },
+        },
+        { suspend: true, scrollIntent: 'none', action: undefined },
+      )
+      for (const effect of interaction.effects) {
+        if (effect.kind === 'request-process-suspension') {
+          processSuspendRequestedRef.current = true
+          setProcessSuspendRequested(true)
+        }
       }
       return
     }
@@ -4344,49 +4370,62 @@ export function InteractiveApp({
         inputChord,
       )
     }
-    if (
+    const scrollIntent: TuiScrollIntent = key.pageUp
+      ? 'page-older'
+      : key.pageDown
+        ? 'page-newer'
+        : controlKey('u') || controlKey('b')
+          ? 'half-page-older'
+          : controlKey('f') || controlKey('n')
+            ? 'half-page-newer'
+            : inputRef.current.length === 0 && key.upArrow
+              ? 'line-older'
+              : inputRef.current.length === 0 && key.downArrow
+                ? 'line-newer'
+                : 'none'
+    const hasPendingPrefix =
       !keybindingAction &&
-      inputChord &&
+      inputChord !== null &&
       hasTuiKeybindingPrefix(keybindings, keybindingContexts, inputChord)
-    ) {
+    if (hasPendingPrefix) {
       keySequenceRef.current = { chord: inputChord, at: Date.now() }
+    }
+    const interaction = routeTuiInteraction(
+      {
+        suspensionPending: processSuspendRequestedRef.current,
+        blockingLayerActive:
+          hasPendingPrefix ||
+          menuRef.current !== null ||
+          permission !== null ||
+          planApproval !== null ||
+          question !== null ||
+          elicitation !== null ||
+          selectingSession,
+        busy,
+        viewport: {
+          enabled: fixedViewport,
+          offset: transcriptScrollOffsetRef.current,
+          maxOffset: maxTranscriptScrollOffset,
+          pageRows: transcriptPageRows,
+        },
+      },
+      { suspend: suspendIntent, scrollIntent, action: keybindingAction },
+    )
+    if (interaction.disposition === 'handled') {
+      for (const effect of interaction.effects) {
+        if (effect.kind === 'request-process-suspension') {
+          processSuspendRequestedRef.current = true
+          setProcessSuspendRequested(true)
+        } else if (effect.kind === 'set-transcript-scroll-offset') {
+          setTranscriptScrollOffset(effect.offset)
+        } else if (effect.kind === 'interrupt-turn') {
+          turnControllerRef.current?.abort()
+        }
+      }
       return
     }
     const isKeybinding = (action: string) => keybindingAction === action
-
-    if (
-      fixedViewport &&
-      menuRef.current === null &&
-      !permission &&
-      !planApproval &&
-      !question &&
-      !elicitation &&
-      !selectingSession
-    ) {
-      const page = transcriptPageRows
-      const scrollDelta = key.pageUp
-        ? page
-        : key.pageDown
-          ? -page
-          : controlKey('u') || controlKey('b')
-            ? page / 2
-            : controlKey('f') || controlKey('n')
-              ? -page / 2
-              : inputRef.current.length === 0 && key.upArrow
-                ? 1
-                : inputRef.current.length === 0 && key.downArrow
-                  ? -1
-                  : 0
-      if (scrollDelta !== 0) {
-        setTranscriptScrollOffset((current) =>
-          Math.min(
-            Math.max(0, maxTranscriptScrollOffset),
-            Math.max(0, current + Math.trunc(scrollDelta)),
-          ),
-        )
-        return
-      }
-    }
+    if (hasPendingPrefix) return
 
     if (
       runtimeSettingsRef.current.editor === 'vim' &&
@@ -6725,7 +6764,6 @@ export function InteractiveApp({
         void backgrounding
         return
       }
-      if (isKeybinding('chat:cancel')) turnControllerRef.current?.abort()
       return
     }
     if (isKeybinding('chat:imagePaste')) {
