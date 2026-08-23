@@ -1713,6 +1713,47 @@ describe('InteractiveApp', () => {
     ).toBeLessThanOrEqual(1)
   })
 
+  it('routes fullscreen transcript scrolling through the interaction seam', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[
+          { kind: 'user', text: 'scroll prompt' },
+          {
+            kind: 'assistant',
+            text: [
+              'older marker',
+              ...Array.from({ length: 40 }, (_, i) => `line ${i}`),
+              'newer marker',
+            ].join('\n'),
+          },
+        ]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+      />,
+    )
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+    const before = await waitFor(() => {
+      const frame = app.lastFrame() ?? ''
+      return frame.includes('newer marker') ? frame : undefined
+    })
+    for (let index = 0; index < 12; index += 1) app.stdin.write('\u0015')
+    await waitFor(() => {
+      const frame = app.lastFrame() ?? ''
+      return frame.includes('older marker') ? frame : undefined
+    })
+    expect(app.lastFrame()).not.toBe(before)
+  })
+
   it('keeps the composer and status anchored when the fullscreen transcript grows', async () => {
     const longText = Array.from(
       { length: 120 },
@@ -2095,6 +2136,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('delegate now')
     app.stdin.write('\r')
     await flush()
+    app.stdin.write('\u0018')
     app.stdin.write('\u0002')
 
     await expect.poll(() => backgroundForegroundTask.mock.calls.length).toBe(1)
@@ -8778,6 +8820,11 @@ describe('InteractiveApp', () => {
 
     expect(cancelled).toBe(false)
     expect(app.lastFrame()).toContain('Press Ctrl-C again to exit')
+    app.stdin.write('\u0018')
+    await flush()
+    app.stdin.write('\u0003')
+    await flush()
+    expect(cancelled).toBe(false)
     app.stdin.write('\u0003')
     await flush()
     expect(cancelled).toBe(true)
