@@ -24,7 +24,7 @@ import {
   composerEditorSegments,
   type ComposerEditorState,
 } from './composer-editor.js'
-import { useTuiPalette } from './theme.js'
+import { useTuiTheme } from './theme.js'
 
 export type TuiToolPermissionAction =
   | 'allow-once'
@@ -525,18 +525,16 @@ export function ToolPermissionDialog({
   ruleEditor?: ComposerEditorState | null
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   return (
     <Box
       flexDirection="column"
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor={palette.warning}
+      {...theme.surface.decision}
       paddingX={screenReader ? 0 : 1}
       marginTop={1}
     >
-      <Text bold color={palette.warning}>
-        {model.title}
-      </Text>
+      <Text {...theme.text.permission}>{model.title}</Text>
       {model.subtitle ? <Text dimColor>{model.subtitle}</Text> : null}
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         {model.detail.map((line, index) => {
@@ -544,7 +542,9 @@ export function ToolPermissionDialog({
           return line.prefix ? (
             <Text
               key={`${index}-${line.prefix}`}
-              color={line.prefix === '+' ? palette.success : palette.error}
+              {...(line.prefix === '+'
+                ? theme.text.diffAdded
+                : theme.text.diffRemoved)}
             >
               {content}
             </Text>
@@ -569,7 +569,7 @@ export function ToolPermissionDialog({
           <Text
             key={`${option.action}-${index}`}
             bold={selected}
-            {...(selected ? { color: palette.brand } : {})}
+            {...(selected ? theme.text.selectedRow : {})}
           >
             {selected ? (screenReader ? 'Selected: ' : '❯ ') : '  '}
             {index + 1}. {option.label}
@@ -579,7 +579,11 @@ export function ToolPermissionDialog({
               ) : (
                 <Text>
                   : {segments.before}
-                  <Text inverse>{segments.current ?? ' '}</Text>
+                  <Text {...theme.text.inputCursor}>
+                    {theme.noColor
+                      ? `${segments.current ?? ' '}\u0332`
+                      : (segments.current ?? ' ')}
+                  </Text>
                   {segments.after}
                 </Text>
               )

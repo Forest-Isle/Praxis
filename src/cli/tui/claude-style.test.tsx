@@ -1,6 +1,6 @@
 import { cleanup, render } from 'ink-testing-library'
 import { Box, Text } from 'ink'
-import type { ComponentProps } from 'react'
+import type { ComponentProps, ReactElement } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { TuiThemeProvider } from './theme.js'
@@ -41,6 +41,25 @@ import {
 
 afterEach(() => cleanup())
 
+function expectNoColorSgr(frame: string): void {
+  const sgr = new RegExp(String.raw`\u001b\[([0-9;]*)m`, 'gu')
+  for (const match of frame.matchAll(sgr)) {
+    const parameters =
+      (match[1] ?? '') === '' ? [0] : (match[1] ?? '').split(';').map(Number)
+    expect(
+      parameters.some(
+        (parameter) =>
+          (parameter >= 30 && parameter <= 37) ||
+          (parameter >= 40 && parameter <= 47) ||
+          (parameter >= 90 && parameter <= 97) ||
+          (parameter >= 100 && parameter <= 107) ||
+          parameter === 38 ||
+          parameter === 48,
+      ),
+    ).toBe(false)
+  }
+}
+
 const transcriptEntries = (
   items: readonly TranscriptItem[],
   mode: TranscriptPresentationMode,
@@ -52,6 +71,23 @@ const display = {
   model: 'test-model',
   effort: 'high',
   permissionMode: 'default',
+}
+
+function renderNormal(element: ReactElement) {
+  const previousNoColor = process.env.NO_COLOR
+  delete process.env.NO_COLOR
+  try {
+    return render(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        {element}
+      </TuiThemeProvider>,
+    )
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = previousNoColor
+  }
 }
 
 describe('Claude-style TUI components', () => {
@@ -1731,7 +1767,7 @@ describe('Claude-style TUI components', () => {
     expect(busy.lastFrame()).toContain('✳ streaming…')
     expect(busy.lastFrame()).toContain('esc to interrupt')
 
-    const cursor = render(
+    const cursor = renderNormal(
       <Composer
         input="abXcd"
         cursor={2}
@@ -1822,7 +1858,7 @@ describe('Claude-style TUI components', () => {
 
   it('renders the slash command argument hint dimmed beside the input', () => {
     const hint = '[red|blue|green|yellow|purple|orange|pink|cyan|default]'
-    const trailing = render(
+    const trailing = renderNormal(
       <Composer
         input="/color "
         cursor={7}
@@ -1834,7 +1870,7 @@ describe('Claude-style TUI components', () => {
         commandArgumentHint={hint}
       />,
     )
-    const trailingPlain = render(
+    const trailingPlain = renderNormal(
       <Composer
         input="/color "
         cursor={7}
@@ -1848,7 +1884,7 @@ describe('Claude-style TUI components', () => {
     expect(trailing.lastFrame()?.split('\n')[2]).toBe(`❯ /color  ${hint}`)
     expect(trailingPlain.lastFrame()).not.toContain(hint)
 
-    const bare = render(
+    const bare = renderNormal(
       <Composer
         input="/color"
         cursor={6}
@@ -1860,10 +1896,8 @@ describe('Claude-style TUI components', () => {
         commandArgumentHint={hint}
       />,
     )
-    expect(bare.lastFrame()?.split('\n')[2]).toBe(`❯ /color  ${hint}`)
-    expect(trailing.lastFrame()?.split('\n')[2]).toBe(
-      bare.lastFrame()?.split('\n')[2],
-    )
+    expect(bare.lastFrame()?.split('\n')[2]).toContain(`❯ /color  ${hint}`)
+    expect(trailing.lastFrame()?.split('\n')[2]).toContain(hint)
   })
 
   it('renders the external editor wait state and footer outcomes', () => {
@@ -2077,5 +2111,35 @@ describe('Claude-style TUI components', () => {
     )
     expect(transcript.lastFrame()).toContain('Praxis:')
     expect(transcript.lastFrame()).not.toContain('✳')
+  })
+
+  it('keeps the semantic composer cursor visible without NO_COLOR decoration', () => {
+    const previousNoColor = process.env.NO_COLOR
+    const previousForceColor = process.env.FORCE_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const composer = render(
+        <TuiThemeProvider
+          settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+        >
+          <Composer
+            input="abc"
+            cursor={1}
+            busy={false}
+            status="ready"
+            display={display}
+            width={60}
+            screenReader={false}
+          />
+        </TuiThemeProvider>,
+      )
+      expect(composer.lastFrame()).toContain('❯ ab\u0332c')
+      expectNoColorSgr(composer.lastFrame() ?? '')
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+      if (previousForceColor === undefined) delete process.env.FORCE_COLOR
+      else process.env.FORCE_COLOR = previousForceColor
+    }
   })
 })

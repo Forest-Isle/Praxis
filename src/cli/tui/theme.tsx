@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
 
 import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import type { TuiCustomTheme } from './custom-themes.js'
@@ -51,25 +51,110 @@ export interface TuiPalette {
   syntax: TuiSyntaxPalette
 }
 
-export type TuiSyntaxToken = 'text' | 'keyword' | 'identifier' | 'string'
+/** Ink-compatible text attributes owned by the Praxis semantic theme. */
+export interface TuiTextStyle {
+  readonly color?: string
+  readonly backgroundColor?: string
+  readonly bold?: boolean
+  readonly dimColor?: boolean
+  readonly italic?: boolean
+  readonly underline?: boolean
+  readonly inverse?: boolean
+}
+
+/** Ink-compatible surface attributes owned by the Praxis semantic theme. */
+export interface TuiSurfaceStyle {
+  readonly borderColor?: string
+  readonly backgroundColor?: string
+}
+
+export const TUI_TEXT_ROLES = [
+  'body',
+  'productIdentity',
+  'heading',
+  'navigation',
+  'selectedRow',
+  'selectedTab',
+  'focusMarker',
+  'inputMarker',
+  'inputCursor',
+  'muted',
+  'link',
+  'active',
+  'info',
+  'success',
+  'warning',
+  'permission',
+  'error',
+  'diffAdded',
+  'diffRemoved',
+  'shellMode',
+] as const
+
+export type TuiTextRole = (typeof TUI_TEXT_ROLES)[number]
+
+export const TUI_SURFACE_ROLES = [
+  'neutralBorder',
+  'separator',
+  'selectedRow',
+  'selectedTab',
+  'input',
+  'decision',
+  'error',
+] as const
+
+export type TuiSurfaceRole = (typeof TUI_SURFACE_ROLES)[number]
+
+export interface TuiSemanticTheme {
+  readonly profile: TuiTheme
+  readonly dark: boolean
+  readonly ansiOnly: boolean
+  readonly terminalColorCapability: TerminalColorCapability
+  readonly syntaxHighlightingDisabled: boolean
+  readonly screenReader: boolean
+  readonly noColor: boolean
+  readonly syntaxTheme: TuiPalette['syntaxTheme']
+  readonly text: Readonly<Record<TuiTextRole, TuiTextStyle>>
+  readonly surface: Readonly<Record<TuiSurfaceRole, TuiSurfaceStyle>>
+  syntax(
+    token: TuiSyntaxToken,
+    change?: 'added' | 'removed',
+  ): Readonly<{ color?: string; backgroundColor?: string }>
+  session(agentColor: AgentColorName): string | undefined
+}
+
+export interface TuiThemePresentationOptions {
+  environment?: TerminalEnvironment
+  screenReader?: boolean
+}
+
+export type TuiSyntaxToken =
+  'text' | 'keyword' | 'identifier' | 'string' | 'addedHighlight'
 export type TerminalColorCapability = 'ansi16' | 'ansi256' | 'truecolor'
 
 type TerminalEnvironment = Readonly<Record<string, string | undefined>>
 
 export function tuiSyntaxStyle(
-  palette: TuiPalette,
+  palette: TuiPalette | TuiSemanticTheme,
   token: TuiSyntaxToken,
   change?: 'added' | 'removed',
 ): { color?: string; backgroundColor?: string } {
+  if (typeof palette.syntax === 'function') return palette.syntax(token, change)
   if (palette.syntaxHighlightingDisabled) return {}
+  const syntax = palette.syntax as TuiSyntaxPalette
+  if (token === 'addedHighlight') {
+    return syntax.addedHighlight === undefined
+      ? {}
+      : { backgroundColor: syntax.addedHighlight }
+  }
   const backgroundColor =
     change === 'added'
-      ? palette.syntax.addedBackground
+      ? syntax.addedBackground
       : change === 'removed'
-        ? palette.syntax.removedBackground
+        ? syntax.removedBackground
         : undefined
   return {
-    color: palette.syntax[token],
+    color: syntax[token],
     ...(backgroundColor === undefined ? {} : { backgroundColor }),
   }
 }
@@ -182,6 +267,42 @@ export function terminalColorCapability(
 }
 
 const ANSI_256_LEVELS = [0, 95, 135, 175, 215, 255] as const
+const ANSI_16_RGB = [
+  [0, 0, 0],
+  [128, 0, 0],
+  [0, 128, 0],
+  [128, 128, 0],
+  [0, 0, 128],
+  [128, 0, 128],
+  [0, 128, 128],
+  [192, 192, 192],
+  [128, 128, 128],
+  [255, 0, 0],
+  [0, 255, 0],
+  [255, 255, 0],
+  [0, 0, 255],
+  [255, 0, 255],
+  [0, 255, 255],
+  [255, 255, 255],
+] as const
+const ANSI_16_NAMES = [
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'blackBright',
+  'redBright',
+  'greenBright',
+  'yellowBright',
+  'blueBright',
+  'magentaBright',
+  'cyanBright',
+  'whiteBright',
+] as const
 const ansi256ColorCache = new Map<string, string>()
 const ANSI_16_COLORS: Readonly<Record<string, string>> = {
   '#ffffff': 'whiteBright',
@@ -191,6 +312,7 @@ const ANSI_16_COLORS: Readonly<Record<string, string>> = {
   '#5f0000': 'black',
   '#005f00': 'black',
   '#008700': 'green',
+  '#16a34a': 'green',
   '#d97757': 'redBright',
   '#b8a1ff': 'whiteBright',
   '#5fafff': 'cyanBright',
@@ -211,8 +333,128 @@ const ANSI_16_COLORS: Readonly<Record<string, string>> = {
   '#585858': 'black',
 }
 
-function ansi16Color(hex: string): string {
-  return ANSI_16_COLORS[hex.toLowerCase()] ?? hex
+function ansi16Color(value: string): string {
+  const normalized = normalizeAnsiName(value)
+  const directAnsi = /^ansi256\((\d+)\)$/iu.exec(normalized)
+  if (directAnsi) {
+    const index = Number(directAnsi[1])
+    if (index >= 0 && index < ANSI_16_NAMES.length)
+      return ANSI_16_NAMES[index] ?? 'black'
+  }
+  const known = ANSI_16_COLORS[normalized.toLowerCase()]
+  if (known) return known
+  const hex = hexFromRgb(normalized) ?? ansi256ToHex(normalized)
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/iu.exec(
+    hex ?? normalized,
+  )
+  if (!match) return normalized
+  const rgb = [
+    Number.parseInt(match[1] ?? '0', 16),
+    Number.parseInt(match[2] ?? '0', 16),
+    Number.parseInt(match[3] ?? '0', 16),
+  ]
+  let bestIndex = 0
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const [index, candidate] of ANSI_16_RGB.entries()) {
+    const distance = candidate.reduce(
+      (total: number, component, componentIndex) =>
+        total + ((rgb[componentIndex] ?? 0) - component) ** 2,
+      0,
+    )
+    if (distance < bestDistance) {
+      bestDistance = distance
+      bestIndex = index
+    }
+  }
+  return ANSI_16_NAMES[bestIndex] ?? 'black'
+}
+
+function hexFromRgb(value: string): string | undefined {
+  const match = /^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/iu.exec(value)
+  if (!match) return undefined
+  return `#${[match[1], match[2], match[3]]
+    .map((component) => Number(component).toString(16).padStart(2, '0'))
+    .join('')}`
+}
+
+function ansi256ToHex(value: string): string | undefined {
+  const match = /^ansi256\((\d+)\)$/iu.exec(value)
+  if (!match) return undefined
+  const index = Number(match[1])
+  if (index < 0 || index > 255) return undefined
+  if (index < 16) {
+    const [red, green, blue] = ANSI_16_RGB[index] ?? []
+    if (red === undefined || green === undefined || blue === undefined)
+      return undefined
+    return `#${[red, green, blue]
+      .map((component) => component.toString(16).padStart(2, '0'))
+      .join('')}`
+  }
+  if (index >= 232) {
+    const level = 8 + (index - 232) * 10
+    return `#${[level, level, level]
+      .map((component) => component.toString(16).padStart(2, '0'))
+      .join('')}`
+  }
+  const offset = index - 16
+  const red = Math.floor(offset / 36)
+  const green = Math.floor((offset % 36) / 6)
+  const blue = offset % 6
+  const levels = [0, 95, 135, 175, 215, 255]
+  return `#${[levels[red], levels[green], levels[blue]]
+    .map((component) => (component ?? 0).toString(16).padStart(2, '0'))
+    .join('')}`
+}
+
+function normalizeAnsiName(value: string): string {
+  return value.startsWith('ansi:') ? value.slice('ansi:'.length) : value
+}
+
+function adaptEffectiveColor(
+  value: string,
+  capability: TerminalColorCapability,
+): string {
+  const normalized = normalizeAnsiName(value)
+  if (capability === 'truecolor') return normalized
+  if (
+    capability === 'ansi256' &&
+    /^ansi256\((?:\d|[1-9]\d|1\d\d|2[0-4]\d|25[0-5])\)$/u.test(normalized)
+  )
+    return normalized
+  const rgb = hexFromRgb(normalized)
+  const hex = rgb ?? ansi256ToHex(normalized) ?? normalized
+  if (capability === 'ansi16') {
+    if (!hex.startsWith('#')) return hex
+    return ansi16Color(hex)
+  }
+  if (hex.startsWith('#')) return ansi256Color(hex)
+  return hex
+}
+
+function projectPalette(
+  palette: TuiPalette,
+  capability: TerminalColorCapability,
+): TuiPalette {
+  const adapt = (value: string) => adaptEffectiveColor(value, capability)
+  return {
+    ...palette,
+    brand: adapt(palette.brand),
+    accent: adapt(palette.accent),
+    info: adapt(palette.info),
+    link: adapt(palette.link),
+    error: adapt(palette.error),
+    success: adapt(palette.success),
+    warning: adapt(palette.warning),
+    muted: adapt(palette.muted),
+    selectionText: adapt(palette.selectionText),
+    sessionColors: Object.fromEntries(
+      Object.entries(palette.sessionColors).map(([name, value]) => [
+        name,
+        adapt(value),
+      ]),
+    ) as Readonly<Record<AgentColorName, string>>,
+    syntax: adaptSyntaxColors(palette.syntax, adapt),
+  }
 }
 
 function ansi256Color(hex: string): string {
@@ -278,7 +520,7 @@ function adaptSyntaxColors(
   }
 }
 
-export function tuiPalette(
+function resolveRawPalette(
   profile: TuiTheme,
   syntaxHighlightingDisabled = false,
   environment: TerminalEnvironment = process.env,
@@ -318,19 +560,6 @@ export function tuiPalette(
               }
             : {}),
         }
-  const terminalCapability = terminalColorCapability(environment)
-  const adaptAutoColor =
-    terminalCapability === 'ansi16'
-      ? ansi16Color
-      : terminalCapability === 'ansi256'
-        ? ansi256Color
-        : (color: string) => color
-  const syntax =
-    profile === 'auto'
-      ? adaptSyntaxColors(syntaxBase, adaptAutoColor)
-      : syntaxBase
-  const autoColor = (color: string) =>
-    profile === 'auto' ? adaptAutoColor(color) : color
   const sessionColors = ansiOnly
     ? dark
       ? DARK_ANSI_SESSION_COLORS
@@ -340,14 +569,14 @@ export function tuiPalette(
         ? DARK_DALTONIZED_SESSION_COLORS
         : LIGHT_DALTONIZED_SESSION_COLORS
       : {
-          red: autoColor(NORMAL_SESSION_COLORS.red),
-          blue: autoColor(NORMAL_SESSION_COLORS.blue),
-          green: autoColor(NORMAL_SESSION_COLORS.green),
-          yellow: autoColor(NORMAL_SESSION_COLORS.yellow),
-          purple: autoColor(NORMAL_SESSION_COLORS.purple),
-          orange: autoColor(NORMAL_SESSION_COLORS.orange),
-          pink: autoColor(NORMAL_SESSION_COLORS.pink),
-          cyan: autoColor(NORMAL_SESSION_COLORS.cyan),
+          red: NORMAL_SESSION_COLORS.red,
+          blue: NORMAL_SESSION_COLORS.blue,
+          green: NORMAL_SESSION_COLORS.green,
+          yellow: NORMAL_SESSION_COLORS.yellow,
+          purple: NORMAL_SESSION_COLORS.purple,
+          orange: NORMAL_SESSION_COLORS.orange,
+          pink: NORMAL_SESSION_COLORS.pink,
+          cyan: NORMAL_SESSION_COLORS.cyan,
         }
   const palette: TuiPalette = {
     profile,
@@ -355,31 +584,17 @@ export function tuiPalette(
     ansiOnly,
     syntaxHighlightingDisabled,
     sessionColors,
-    brand: ansiOnly ? 'redBright' : autoColor('#D97757'),
-    accent: ansiOnly
-      ? 'magentaBright'
-      : daltonized
-        ? dark
-          ? '#5fd7ff'
-          : '#005f87'
-        : dark
-          ? autoColor('#B8A1FF')
-          : autoColor('#875faf'),
-    info: ansiOnly ? 'cyanBright' : autoColor(dark ? '#5fd7ff' : '#005f87'),
-    link: ansiOnly ? 'blueBright' : autoColor(dark ? '#5fafff' : '#005faf'),
-    error: ansiOnly ? 'redBright' : autoColor(dark ? '#ff5f5f' : '#af0000'),
-    success: ansiOnly ? 'greenBright' : autoColor(dark ? '#5fd75f' : '#008700'),
-    warning: ansiOnly
-      ? 'yellowBright'
-      : autoColor(dark ? '#ffd75f' : '#875f00'),
-    muted: ansiOnly
-      ? dark
-        ? 'white'
-        : 'black'
-      : autoColor(dark ? '#a8a8a8' : '#585858'),
+    brand: ansiOnly ? 'redBright' : '#D97757',
+    accent: ansiOnly ? 'redBright' : '#D97757',
+    info: ansiOnly ? 'cyanBright' : dark ? '#5fd7ff' : '#005f87',
+    link: ansiOnly ? 'blueBright' : dark ? '#5fafff' : '#005faf',
+    error: ansiOnly ? 'redBright' : dark ? '#ff5f5f' : '#af0000',
+    success: ansiOnly ? 'greenBright' : dark ? '#5fd75f' : '#008700',
+    warning: ansiOnly ? 'yellowBright' : dark ? '#ffd75f' : '#875f00',
+    muted: ansiOnly ? (dark ? 'white' : 'black') : dark ? '#a8a8a8' : '#585858',
     selectionText: dark ? 'black' : 'white',
     syntaxTheme: ansiOnly ? 'ansi' : dark ? 'Monokai Extended' : 'GitHub',
-    syntax,
+    syntax: syntaxBase,
   }
   if (customTheme) {
     const overrides = customTheme.overrides
@@ -403,50 +618,320 @@ export function tuiPalette(
       ),
       identifier: override('suggestion', palette.syntax.identifier),
       string: override('success', palette.syntax.string),
-      removedBackground: override(
-        'diffRemoved',
-        palette.syntax.removedBackground ?? '',
-      ),
-      addedBackground: override(
-        'diffAdded',
-        palette.syntax.addedBackground ?? '',
-      ),
-      addedHighlight: override(
-        'diffAddedWord',
-        palette.syntax.addedHighlight ?? '',
-      ),
+      ...(palette.syntax.removedBackground !== undefined ||
+      overrides.diffRemoved !== undefined
+        ? {
+            removedBackground: override(
+              'diffRemoved',
+              palette.syntax.removedBackground ?? '',
+            ),
+          }
+        : {}),
+      ...(palette.syntax.addedBackground !== undefined ||
+      overrides.diffAdded !== undefined
+        ? {
+            addedBackground: override(
+              'diffAdded',
+              palette.syntax.addedBackground ?? '',
+            ),
+          }
+        : {}),
+      ...(palette.syntax.addedHighlight !== undefined ||
+      overrides.diffAddedWord !== undefined
+        ? {
+            addedHighlight: override(
+              'diffAddedWord',
+              palette.syntax.addedHighlight ?? '',
+            ),
+          }
+        : {}),
     }
     palette.profile = customTheme.base
   }
   return palette
 }
 
+export function tuiPalette(
+  profile: TuiTheme,
+  syntaxHighlightingDisabled = false,
+  environment: TerminalEnvironment = process.env,
+  customTheme?: TuiCustomTheme,
+): TuiPalette {
+  return resolvedThemeBundle(
+    {
+      theme: profile,
+      syntaxHighlightingDisabled,
+      ...(customTheme === undefined ? {} : { customTheme }),
+    },
+    { environment },
+  ).palette
+}
+
+function frozen<T extends object>(value: T): Readonly<T> {
+  return Object.freeze(value)
+}
+
+function semanticText(
+  color: string | undefined,
+  options: TuiThemePresentationOptions,
+  attributes: Omit<TuiTextStyle, 'color'> = {},
+): TuiTextStyle {
+  const withoutBackground = { ...attributes }
+  delete withoutBackground.backgroundColor
+  if (
+    color === undefined ||
+    options.screenReader ||
+    options.environment?.NO_COLOR !== undefined
+  )
+    return frozen(withoutBackground)
+  return frozen({ color, ...attributes })
+}
+
+function semanticSurface(
+  colors: TuiSurfaceStyle,
+  options: TuiThemePresentationOptions,
+): TuiSurfaceStyle {
+  if (options.screenReader || options.environment?.NO_COLOR !== undefined)
+    return frozen({})
+  return frozen(colors)
+}
+
+interface SemanticDiffColors {
+  readonly added: string
+  readonly removed: string
+}
+
+const EMPTY_STYLE: Readonly<{
+  color?: string
+  backgroundColor?: string
+}> = Object.freeze({})
+
+function buildSemanticTheme(
+  settings: TuiThemeSettings,
+  palette: TuiPalette,
+  options: TuiThemePresentationOptions = {},
+  capability: TerminalColorCapability = palette.ansiOnly
+    ? 'ansi16'
+    : terminalColorCapability(options.environment ?? process.env),
+  diffColors: SemanticDiffColors = {
+    added: palette.success,
+    removed: palette.error,
+  },
+): TuiSemanticTheme {
+  const environment = options.environment ?? process.env
+  const noColor = environment.NO_COLOR !== undefined
+  const screenReader = options.screenReader === true
+  const suppressColor = noColor || screenReader
+  const productColor = palette.brand
+  const focusColor = palette.accent
+  const infoColor = palette.info
+  const linkColor = palette.link
+  const errorColor = palette.error
+  const successColor = palette.success
+  const warningColor = palette.warning
+  const mutedColor = palette.muted
+  const selectionTextColor = palette.selectionText
+  const syntaxPalette = palette.syntax
+  const sessionColors = palette.sessionColors
+  const color = (value: string): string | undefined =>
+    suppressColor ? undefined : value
+  const diffAdded = diffColors.added
+  const diffRemoved = diffColors.removed
+  const text = {
+    body: semanticText(undefined, options),
+    productIdentity: semanticText(color(productColor), options, {
+      bold: true,
+    }),
+    heading: semanticText(undefined, options, { bold: true }),
+    navigation: semanticText(color(focusColor), options, { bold: true }),
+    selectedRow: semanticText(color(selectionTextColor), options, {
+      ...(suppressColor ? {} : { backgroundColor: focusColor }),
+      bold: true,
+    }),
+    selectedTab: semanticText(color(selectionTextColor), options, {
+      ...(suppressColor ? {} : { backgroundColor: focusColor }),
+      bold: true,
+    }),
+    focusMarker: semanticText(color(focusColor), options, { bold: true }),
+    inputMarker: semanticText(color(focusColor), options),
+    inputCursor: frozen(suppressColor ? {} : { inverse: true }),
+    muted: semanticText(color(mutedColor), options, { dimColor: true }),
+    link: semanticText(color(linkColor), options, { underline: true }),
+    active: semanticText(color(infoColor), options, { bold: true }),
+    info: semanticText(color(infoColor), options),
+    success: semanticText(color(successColor), options),
+    warning: semanticText(color(warningColor), options),
+    permission: semanticText(color(warningColor), options, { bold: true }),
+    error: semanticText(color(errorColor), options, { bold: true }),
+    diffAdded: semanticText(color(diffAdded), options),
+    diffRemoved: semanticText(color(diffRemoved), options),
+    shellMode: semanticText(color(infoColor), options, { bold: true }),
+  } satisfies Record<TuiTextRole, TuiTextStyle>
+  const border = (value: string): TuiSurfaceStyle => {
+    const resolved = color(value)
+    return resolved === undefined ? {} : { borderColor: resolved }
+  }
+  const background = (value: string): TuiSurfaceStyle => {
+    const resolved = color(value)
+    return resolved === undefined ? {} : { backgroundColor: resolved }
+  }
+  const surface = {
+    neutralBorder: semanticSurface(border(mutedColor), options),
+    separator: semanticSurface(border(mutedColor), options),
+    selectedRow: semanticSurface(background(focusColor), options),
+    selectedTab: semanticSurface(background(focusColor), options),
+    input: semanticSurface(border(focusColor), options),
+    decision: semanticSurface(border(warningColor), options),
+    error: semanticSurface(border(errorColor), options),
+  } satisfies Record<TuiSurfaceRole, TuiSurfaceStyle>
+  const syntaxStyle = (token: TuiSyntaxToken, change?: 'added' | 'removed') => {
+    if (settings.syntaxHighlightingDisabled || suppressColor) return EMPTY_STYLE
+    const backgroundColor =
+      change === 'added'
+        ? syntaxPalette.addedBackground
+        : change === 'removed'
+          ? syntaxPalette.removedBackground
+          : token === 'addedHighlight'
+            ? syntaxPalette.addedHighlight
+            : undefined
+    if (token === 'addedHighlight')
+      return backgroundColor === undefined
+        ? frozen({})
+        : frozen({ backgroundColor })
+    return frozen({
+      color: syntaxPalette[token],
+      ...(backgroundColor === undefined ? {} : { backgroundColor }),
+    })
+  }
+  const syntaxStyles = new Map<
+    string,
+    Readonly<{ color?: string; backgroundColor?: string }>
+  >()
+  for (const token of [
+    'text',
+    'keyword',
+    'identifier',
+    'string',
+    'addedHighlight',
+  ] as const) {
+    for (const change of [undefined, 'added', 'removed'] as const) {
+      syntaxStyles.set(
+        change === undefined ? token : `${token}:${change}`,
+        syntaxStyle(token, change),
+      )
+    }
+  }
+  return {
+    profile: palette.profile,
+    dark: palette.dark,
+    ansiOnly: palette.ansiOnly,
+    terminalColorCapability: capability,
+    syntaxHighlightingDisabled: settings.syntaxHighlightingDisabled,
+    screenReader,
+    noColor,
+    syntaxTheme: palette.syntaxTheme,
+    text: frozen(text),
+    surface: frozen(surface),
+    syntax: (token, change) =>
+      syntaxStyles.get(change === undefined ? token : `${token}:${change}`) ??
+      EMPTY_STYLE,
+    session: (agentColor: AgentColorName) =>
+      suppressColor ? undefined : sessionColors[agentColor],
+  }
+}
+
+interface ResolvedThemeBundle {
+  readonly palette: TuiPalette
+  readonly theme: TuiSemanticTheme
+}
+
+function resolvedThemeBundle(
+  settings: TuiThemeSettings,
+  options: TuiThemePresentationOptions = {},
+): ResolvedThemeBundle {
+  const profile = TUI_THEMES.includes(settings.theme as TuiTheme)
+    ? (settings.theme as TuiTheme)
+    : (settings.customTheme?.base ?? 'dark')
+  const environment = options.environment ?? process.env
+  const capability = profile.endsWith('-ansi')
+    ? 'ansi16'
+    : terminalColorCapability(environment)
+  const rawPalette = resolveRawPalette(
+    profile,
+    settings.syntaxHighlightingDisabled,
+    environment,
+    settings.customTheme,
+  )
+  const palette = projectPalette(rawPalette, capability)
+  const adapt = (value: string) => adaptEffectiveColor(value, capability)
+  return {
+    palette,
+    theme: buildSemanticTheme(settings, palette, options, capability, {
+      added: adapt(
+        settings.customTheme?.overrides.diffAdded ?? rawPalette.success,
+      ),
+      removed: adapt(
+        settings.customTheme?.overrides.diffRemoved ?? rawPalette.error,
+      ),
+    }),
+  }
+}
+
+export function resolveTuiTheme(
+  settings: TuiThemeSettings,
+  options: TuiThemePresentationOptions = {},
+): TuiSemanticTheme {
+  return resolvedThemeBundle(settings, options).theme
+}
+
 const TuiPaletteContext = createContext<TuiPalette>(tuiPalette('auto'))
+const TuiThemeContext = createContext<TuiSemanticTheme>(
+  resolveTuiTheme(DEFAULT_TUI_THEME_SETTINGS),
+)
 
 export function TuiThemeProvider({
   settings,
+  screenReader = false,
   children,
 }: {
   settings: TuiThemeSettings
+  screenReader?: boolean
   children: ReactNode
 }) {
-  const baseTheme = TUI_THEMES.includes(settings.theme as TuiTheme)
-    ? (settings.theme as TuiTheme)
-    : 'dark'
+  const environment = process.env
+  const environmentKey = [
+    environment.COLORFGBG,
+    environment.FORCE_COLOR,
+    environment.COLORTERM,
+    environment.TERM,
+    environment.TERM_PROGRAM,
+    environment.NO_COLOR,
+  ]
+    .map((value) => value ?? '')
+    .join('\u0000')
+  const bundle = useMemo(
+    () => resolvedThemeBundle(settings, { environment, screenReader }),
+    [
+      settings.theme,
+      settings.syntaxHighlightingDisabled,
+      settings.customTheme,
+      screenReader,
+      environmentKey,
+    ],
+  )
   return (
-    <TuiPaletteContext.Provider
-      value={tuiPalette(
-        baseTheme,
-        settings.syntaxHighlightingDisabled,
-        process.env,
-        settings.customTheme,
-      )}
-    >
-      {children}
-    </TuiPaletteContext.Provider>
+    <TuiThemeContext.Provider value={bundle.theme}>
+      <TuiPaletteContext.Provider value={bundle.palette}>
+        {children}
+      </TuiPaletteContext.Provider>
+    </TuiThemeContext.Provider>
   )
 }
 
 export function useTuiPalette(): TuiPalette {
   return useContext(TuiPaletteContext)
+}
+
+export function useTuiTheme(): TuiSemanticTheme {
+  return useContext(TuiThemeContext)
 }

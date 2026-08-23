@@ -19,6 +19,17 @@ const flush = async () => {
   await setImmediate()
 }
 
+function renderWithColor(element: ReactElement) {
+  const previousNoColor = process.env.NO_COLOR
+  delete process.env.NO_COLOR
+  try {
+    return render(element)
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = previousNoColor
+  }
+}
+
 const activeAgent: TopLevelAgentSummary = {
   id: 'abcd1234',
   cwd: '/workspace',
@@ -162,6 +173,39 @@ describe('AgentsDashboardApp', () => {
     app.stdin.write('\u0012')
     await flush()
     expect(app.lastFrame()).toContain('inspect release notes')
+  })
+
+  it('applies semantic product and selected-row styles to the dashboard', async () => {
+    const manager: AgentsDashboardManager = {
+      async launch() {
+        throw new Error('unused')
+      },
+      async list() {
+        return [activeAgent]
+      },
+      async stop() {
+        throw new Error('unused')
+      },
+      async attach() {
+        throw new Error('unused')
+      },
+    }
+    const app = renderWithColor(
+      <TuiThemeProvider
+        settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+      >
+        <AgentsDashboardApp
+          manager={manager}
+          defaults={{ argv: [], cwd: '/workspace' }}
+          refreshIntervalMs={60_000}
+        />
+      </TuiThemeProvider>,
+    )
+
+    await flush()
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Praxis agents')
+    expect(frame).toContain('› review release · idle · abcd1234')
   })
 
   it('dispatches defaults, attaches a selected agent, and stops it', async () => {

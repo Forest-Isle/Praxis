@@ -20,10 +20,10 @@ import type {
   TranscriptPresentationEntry,
 } from './transcript-presentation.js'
 import {
-  tuiPalette,
+  resolveTuiTheme,
   tuiSyntaxStyle,
-  useTuiPalette,
-  type TuiPalette,
+  useTuiTheme,
+  type TuiSemanticTheme,
   type TuiSyntaxToken,
   type TuiTheme,
 } from './theme.js'
@@ -172,7 +172,7 @@ export function WelcomePanel({
   showTips: boolean
   dataPlane?: DataPlane
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   if (!showTips) return null
   const panelWidth = Math.min(100, Math.max(32, width))
   const wide = panelWidth >= 72
@@ -190,9 +190,9 @@ export function WelcomePanel({
   const rightWidth = Math.max(12, panelWidth - leftWidth - 4)
   return (
     <Box flexDirection="column" width={panelWidth}>
-      <Text color={palette.muted}>
+      <Text {...theme.text.muted}>
         {'╭───'}
-        <Text color={palette.brand} bold>
+        <Text {...theme.text.productIdentity} bold>
           {brand}
         </Text>
         {` Code v${display.version} `}
@@ -201,7 +201,7 @@ export function WelcomePanel({
       </Text>
       <Box
         borderStyle="round"
-        borderColor={palette.muted}
+        {...theme.surface.neutralBorder}
         borderTop={false}
         flexDirection={wide ? 'row' : 'column'}
         width={panelWidth}
@@ -215,11 +215,11 @@ export function WelcomePanel({
           <Text> </Text>
           <Text bold>Welcome to {brand}</Text>
           <Text> </Text>
-          <Text color={palette.brand} bold>
+          <Text {...theme.text.productIdentity} bold>
             ▐▛███▜▌
           </Text>
-          <Text color={palette.brand}>▝▜█████▛▘</Text>
-          <Text color={palette.brand}> ▘▘ ▝▝</Text>
+          <Text {...theme.text.productIdentity}>▝▜█████▛▘</Text>
+          <Text {...theme.text.productIdentity}> ▘▘ ▝▝</Text>
           <Text> </Text>
           <Text wrap="truncate-end">
             {model}
@@ -264,7 +264,7 @@ export function SessionIdentity({
   display: TuiDisplayMetadata
   width: number
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const identityWidth = Math.max(1, Math.floor(width))
   const model = display.model ?? 'provider default'
   const effort = display.effort ? ` · ${display.effort} effort` : ''
@@ -272,7 +272,7 @@ export function SessionIdentity({
   return (
     <Box flexDirection="column" width={identityWidth}>
       <Text wrap="truncate-end">
-        <Text color={palette.brand} bold>
+        <Text {...theme.text.productIdentity} bold>
           {`Praxis Code v${display.version}`}
         </Text>
       </Text>
@@ -320,13 +320,16 @@ function cachedInlineSegments(text: string): readonly InlineSegment[] {
   return segments
 }
 
-function inlineTextElement(text: string, palette: TuiPalette): ReactElement {
+function inlineTextElement(
+  text: string,
+  theme: TuiSemanticTheme,
+): ReactElement {
   return (
     <Text>
       {cachedInlineSegments(text).map((segment, index) => {
         if (segment.kind === 'code')
           return (
-            <Text key={index} color={palette.info}>
+            <Text key={index} {...theme.text.info}>
               {segment.text}
             </Text>
           )
@@ -338,7 +341,7 @@ function inlineTextElement(text: string, palette: TuiPalette): ReactElement {
           )
         if (segment.kind === 'link')
           return (
-            <Text key={index} color={palette.link} underline>
+            <Text key={index} {...theme.text.link} underline>
               {segment.text}
             </Text>
           )
@@ -386,66 +389,72 @@ function cachedMarkdownLineShape(line: string): MarkdownLineShape {
 
 const ELEMENT_CACHE_KEY_SEPARATOR = String.fromCharCode(0)
 
-function markdownLineStyleSignature(palette: TuiPalette): string {
-  return [palette.accent, palette.brand, palette.info, palette.link].join(
-    ELEMENT_CACHE_KEY_SEPARATOR,
-  )
+function markdownLineStyleSignature(theme: TuiSemanticTheme): string {
+  return [
+    theme.text.focusMarker.color,
+    theme.text.productIdentity.color,
+    theme.text.info.color,
+    theme.text.link.color,
+  ].join(ELEMENT_CACHE_KEY_SEPARATOR)
 }
 
 const MARKDOWN_LINE_ELEMENT_CACHE_MAX = 4096
 const markdownLineElementCache = new Map<string, ReactElement>()
 
-function buildMarkdownLine(line: string, palette: TuiPalette): ReactElement {
+function buildMarkdownLine(
+  line: string,
+  theme: TuiSemanticTheme,
+): ReactElement {
   const shape = cachedMarkdownLineShape(line)
   if (shape.role === 'h3')
-    return <Text bold>{inlineTextElement(shape.content, palette)}</Text>
+    return <Text bold>{inlineTextElement(shape.content, theme)}</Text>
   if (shape.role === 'h2')
     return (
-      <Text bold color={palette.accent}>
-        {inlineTextElement(shape.content, palette)}
+      <Text bold {...theme.text.focusMarker}>
+        {inlineTextElement(shape.content, theme)}
       </Text>
     )
   if (shape.role === 'h1')
     return (
-      <Text bold color={palette.brand}>
-        {inlineTextElement(shape.content, palette)}
+      <Text bold {...theme.text.productIdentity}>
+        {inlineTextElement(shape.content, theme)}
       </Text>
     )
   if (shape.role === 'bullet')
     return (
       <Text>
         {'  • '}
-        {inlineTextElement(shape.content, palette)}
+        {inlineTextElement(shape.content, theme)}
       </Text>
     )
   if (shape.role === 'ordered')
     return (
       <Text>
         {'  '}
-        {inlineTextElement(shape.content, palette)}
+        {inlineTextElement(shape.content, theme)}
       </Text>
     )
   if (shape.role === 'quote')
     return (
       <Text dimColor>
         {'│ '}
-        {inlineTextElement(shape.content, palette)}
+        {inlineTextElement(shape.content, theme)}
       </Text>
     )
-  if (shape.role === 'plain') return inlineTextElement(shape.content, palette)
+  if (shape.role === 'plain') return inlineTextElement(shape.content, theme)
   return <Text> </Text>
 }
 
 function cachedMarkdownLineElement(
   line: string,
-  palette: TuiPalette,
+  theme: TuiSemanticTheme,
 ): ReactElement {
-  const key = [line, markdownLineStyleSignature(palette)].join(
+  const key = [line, markdownLineStyleSignature(theme)].join(
     ELEMENT_CACHE_KEY_SEPARATOR,
   )
   const cached = markdownLineElementCache.get(key)
   if (cached) return cached
-  const element = buildMarkdownLine(line, palette)
+  const element = buildMarkdownLine(line, theme)
   markdownLineElementCache.set(key, element)
   if (markdownLineElementCache.size > MARKDOWN_LINE_ELEMENT_CACHE_MAX) {
     const oldest = markdownLineElementCache.keys().next().value
@@ -485,6 +494,7 @@ interface CachedSyntaxToken {
 
 const SYNTAX_TOKEN_CACHE_MAX = 2048
 const syntaxTokenCache = new Map<string, readonly CachedSyntaxToken[]>()
+const syntaxStyleSignatureCache = new WeakMap<TuiSemanticTheme, string>()
 
 function cachedSyntaxTokens(text: string): readonly CachedSyntaxToken[] {
   const cached = syntaxTokenCache.get(text)
@@ -508,17 +518,21 @@ function cachedSyntaxTokens(text: string): readonly CachedSyntaxToken[] {
   return tokens
 }
 
-function syntaxStyleSignature(palette: TuiPalette): string {
-  const syntax = palette.syntax
-  return [
-    palette.syntaxHighlightingDisabled ? '1' : '0',
-    syntax.text,
-    syntax.keyword,
-    syntax.identifier,
-    syntax.string,
-    syntax.removedBackground ?? '',
-    syntax.addedBackground ?? '',
+function syntaxStyleSignature(theme: TuiSemanticTheme): string {
+  const cached = syntaxStyleSignatureCache.get(theme)
+  if (cached) return cached
+  const signature = [
+    theme.syntaxHighlightingDisabled ? '1' : '0',
+    JSON.stringify(theme.syntax('text')),
+    JSON.stringify(theme.syntax('keyword')),
+    JSON.stringify(theme.syntax('identifier')),
+    JSON.stringify(theme.syntax('string')),
+    JSON.stringify(theme.syntax('text', 'removed')),
+    JSON.stringify(theme.syntax('text', 'added')),
+    JSON.stringify(theme.syntax('addedHighlight')),
   ].join(ELEMENT_CACHE_KEY_SEPARATOR)
+  syntaxStyleSignatureCache.set(theme, signature)
+  return signature
 }
 
 const SYNTAX_LINE_ELEMENT_CACHE_MAX = 4096
@@ -528,9 +542,9 @@ function buildSyntaxCodeLine(
   text: string,
   prefix: string,
   change: 'added' | 'removed' | undefined,
-  palette: TuiPalette,
+  theme: TuiSemanticTheme,
 ): ReactElement {
-  if (palette.syntaxHighlightingDisabled) {
+  if (theme.syntaxHighlightingDisabled) {
     return (
       <Text>
         {prefix}
@@ -538,7 +552,7 @@ function buildSyntaxCodeLine(
       </Text>
     )
   }
-  const lineStyle = tuiSyntaxStyle(palette, 'text', change)
+  const lineStyle = tuiSyntaxStyle(theme, 'text', change)
   return (
     <Text>
       {prefix}
@@ -546,7 +560,7 @@ function buildSyntaxCodeLine(
         {cachedSyntaxTokens(text).map(({ kind, token }, index) => {
           if (kind === 'text') return token
           return (
-            <Text key={index} {...tuiSyntaxStyle(palette, kind)}>
+            <Text key={index} {...tuiSyntaxStyle(theme, kind)}>
               {token}
             </Text>
           )
@@ -560,14 +574,14 @@ function cachedSyntaxCodeLine(
   text: string,
   prefix: string,
   change: 'added' | 'removed' | undefined,
-  palette: TuiPalette,
+  theme: TuiSemanticTheme,
 ): ReactElement {
-  const key = [text, prefix, change ?? '', syntaxStyleSignature(palette)].join(
+  const key = [text, prefix, change ?? '', syntaxStyleSignature(theme)].join(
     ELEMENT_CACHE_KEY_SEPARATOR,
   )
   const cached = syntaxLineElementCache.get(key)
   if (cached) return cached
-  const element = buildSyntaxCodeLine(text, prefix, change, palette)
+  const element = buildSyntaxCodeLine(text, prefix, change, theme)
   syntaxLineElementCache.set(key, element)
   if (syntaxLineElementCache.size > SYNTAX_LINE_ELEMENT_CACHE_MAX) {
     const oldest = syntaxLineElementCache.keys().next().value
@@ -585,8 +599,8 @@ function SyntaxCodeLine({
   prefix?: string
   change?: 'added' | 'removed'
 }) {
-  const palette = useTuiPalette()
-  return cachedSyntaxCodeLine(text, prefix, change, palette)
+  const theme = useTuiTheme()
+  return cachedSyntaxCodeLine(text, prefix, change, theme)
 }
 
 function ToolResultText({
@@ -596,7 +610,7 @@ function ToolResultText({
   text: string
   prefix?: string
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   return (
     <Box flexDirection="column">
       {text.split('\n').map((line, index) =>
@@ -617,9 +631,7 @@ function ToolResultText({
         ) : (
           <Text
             key={index}
-            {...(line.startsWith('@@')
-              ? { color: palette.info }
-              : { dimColor: true })}
+            {...(line.startsWith('@@') ? theme.text.info : { dimColor: true })}
           >
             {index === 0 ? prefix : prefix ? '   ' : ''}
             {line || ' '}
@@ -659,7 +671,7 @@ function ToolTranscriptEntry({
   result?: Extract<TranscriptItem, { kind: 'tool-result' }>
   detailed: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const displayResult =
     call.name === 'Read' &&
     result?.text.startsWith('Wasted call — file unchanged since your last Read')
@@ -689,7 +701,7 @@ function ToolTranscriptEntry({
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text>
-        <Text color={palette.accent}>⏺</Text>{' '}
+        <Text {...theme.text.focusMarker}>⏺</Text>{' '}
         <Text bold>{toolHeading(call)}</Text>
       </Text>
       {!['Bash', 'Read', 'Edit'].includes(call.name) && detail ? (
@@ -698,7 +710,7 @@ function ToolTranscriptEntry({
       {result ? (
         <Box marginLeft={2} flexDirection="column">
           {result.isError ? (
-            <Text color={palette.error}>⎿ Error: {errorText}</Text>
+            <Text {...theme.text.error}>⎿ Error: {errorText}</Text>
           ) : call.name === 'Edit' ? (
             <>
               <Text dimColor>
@@ -759,13 +771,13 @@ function ThinkingBlock({
   expanded: boolean
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const summary = text.replace(/\s+/gu, ' ').trim()
   const showFull = screenReader || active || expanded
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text
-        {...(!screenReader ? { color: palette.accent } : {})}
+        {...(!screenReader ? theme.text.focusMarker : {})}
         dimColor={!screenReader}
         italic={!screenReader}
       >
@@ -931,17 +943,19 @@ function cachedMarkdownText(text: string): readonly ParsedMarkdownLine[] {
   return parsed
 }
 
-function markdownTextStyleSignature(palette: TuiPalette): string {
-  return [
-    syntaxStyleSignature(palette),
-    markdownLineStyleSignature(palette),
-  ].join(ELEMENT_CACHE_KEY_SEPARATOR)
+function markdownTextStyleSignature(theme: TuiSemanticTheme): string {
+  return [syntaxStyleSignature(theme), markdownLineStyleSignature(theme)].join(
+    ELEMENT_CACHE_KEY_SEPARATOR,
+  )
 }
 
 const MARKDOWN_TEXT_ELEMENT_CACHE_MAX = 4096
 const markdownTextElementCache = new Map<string, ReactElement>()
 
-function buildMarkdownText(text: string, palette: TuiPalette): ReactElement {
+function buildMarkdownText(
+  text: string,
+  theme: TuiSemanticTheme,
+): ReactElement {
   return (
     <Box flexDirection="column">
       {cachedMarkdownText(text).map((line, index) => {
@@ -959,10 +973,10 @@ function buildMarkdownText(text: string, palette: TuiPalette): ReactElement {
           )
         if (line.type === 'code')
           return cloneElement(
-            cachedSyntaxCodeLine(line.text, '│ ', undefined, palette),
+            cachedSyntaxCodeLine(line.text, '│ ', undefined, theme),
             { key: index },
           )
-        return cloneElement(cachedMarkdownLineElement(line.line, palette), {
+        return cloneElement(cachedMarkdownLineElement(line.line, theme), {
           key: index,
         })
       })}
@@ -972,14 +986,14 @@ function buildMarkdownText(text: string, palette: TuiPalette): ReactElement {
 
 function cachedMarkdownTextElement(
   text: string,
-  palette: TuiPalette,
+  theme: TuiSemanticTheme,
 ): ReactElement {
-  const key = [text, markdownTextStyleSignature(palette)].join(
+  const key = [text, markdownTextStyleSignature(theme)].join(
     ELEMENT_CACHE_KEY_SEPARATOR,
   )
   const cached = markdownTextElementCache.get(key)
   if (cached) return cached
-  const element = buildMarkdownText(text, palette)
+  const element = buildMarkdownText(text, theme)
   markdownTextElementCache.set(key, element)
   if (markdownTextElementCache.size > MARKDOWN_TEXT_ELEMENT_CACHE_MAX) {
     const oldest = markdownTextElementCache.keys().next().value
@@ -989,8 +1003,8 @@ function cachedMarkdownTextElement(
 }
 
 export function MarkdownText({ text }: { text: string }) {
-  const palette = useTuiPalette()
-  return cachedMarkdownTextElement(text, palette)
+  const theme = useTuiTheme()
+  return cachedMarkdownTextElement(text, theme)
 }
 
 // Bounded streaming-text presentation. While a turn is in progress the active
@@ -1061,7 +1075,7 @@ export function Transcript({
   detailedTranscript?: boolean
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const detailed = thinkingExpanded || detailedTranscript
   return (
     <Box flexDirection="column">
@@ -1078,7 +1092,7 @@ export function Transcript({
         if (item.kind === 'user') {
           return (
             <Box key={entry.key} marginTop={index === 0 ? 0 : 1}>
-              <Text color={palette.brand} bold>
+              <Text {...theme.text.productIdentity} bold>
                 {screenReader ? 'You: ' : '❯ '}
               </Text>
               <Text bold>{item.text}</Text>
@@ -1089,7 +1103,9 @@ export function Transcript({
           return (
             <Box key={entry.key} marginTop={1}>
               {screenReader ? <Text>Praxis:</Text> : null}
-              {!screenReader ? <Text color={palette.accent}>⏺ </Text> : null}
+              {!screenReader ? (
+                <Text {...theme.text.focusMarker}>⏺ </Text>
+              ) : null}
               <MarkdownText text={item.text} />
             </Box>
           )
@@ -1108,7 +1124,7 @@ export function Transcript({
         if (item.kind === 'compact') {
           return (
             <Box key={entry.key} flexDirection="column" marginTop={1}>
-              <Text color={palette.accent} italic>
+              <Text {...theme.text.focusMarker} italic>
                 {screenReader
                   ? 'Conversation compacted'
                   : '✻ Conversation compacted (ctrl+o for history)'}
@@ -1148,11 +1164,11 @@ export function Transcript({
             item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
           return (
             <Box key={entry.key} marginLeft={2} flexDirection="column">
-              <Text color={item.isError ? palette.error : palette.muted}>
+              <Text {...(item.isError ? theme.text.error : theme.text.muted)}>
                 {item.isError ? '└ Error' : '└ Result'}
               </Text>
               {item.isError ? (
-                <Text color={palette.error}>{text}</Text>
+                <Text {...theme.text.error}>{text}</Text>
               ) : (
                 <ToolResultText text={text} />
               )}
@@ -1191,7 +1207,7 @@ export function Transcript({
                     visible.map((line, lineIndex) => (
                       <Text
                         key={lineIndex}
-                        {...(result.isError ? { color: palette.error } : {})}
+                        {...(result.isError ? theme.text.error : {})}
                         dimColor={!result.isError}
                       >
                         {lineIndex === 0 ? '⎿ ' : '   '}
@@ -1212,10 +1228,7 @@ export function Transcript({
         if (item.kind === 'shell-result') {
           const output = [item.stdout, item.stderr].filter(Boolean).join('\n')
           return (
-            <Text
-              key={entry.key}
-              {...(item.isError ? { color: palette.error } : {})}
-            >
+            <Text key={entry.key} {...(item.isError ? theme.text.error : {})}>
               ⎿ {output}
             </Text>
           )
@@ -1230,7 +1243,7 @@ export function Transcript({
         return (
           <Text
             key={entry.key}
-            {...(item.kind === 'warning' ? { color: palette.error } : {})}
+            {...(item.kind === 'warning' ? theme.text.error : {})}
             dimColor={item.kind === 'notice'}
           >
             {item.kind === 'warning' ? '⚠ ' : '· '}
@@ -1250,7 +1263,7 @@ export function Transcript({
           {screenReader ? (
             <Text>Praxis: </Text>
           ) : (
-            <Text color={palette.accent}>✳ </Text>
+            <Text {...theme.text.focusMarker}>✳ </Text>
           )}
           {screenReader ? (
             <MarkdownText text={activeText} />
@@ -1280,7 +1293,7 @@ export function DiffDashboard({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const source = snapshots[sourceIndex]
   const snapshot = source?.snapshot ?? { files: [], additions: 0, deletions: 0 }
   const selected = snapshot.files[selectedIndex]
@@ -1300,7 +1313,7 @@ export function DiffDashboard({
           {snapshots.map((item, index) => (
             <Text
               key={item.label}
-              inverse={!screenReader && index === sourceIndex}
+              {...(index === sourceIndex ? theme.text.selectedTab : {})}
             >
               {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
               {item.label}{' '}
@@ -1348,7 +1361,7 @@ export function DiffDashboard({
         {snapshots.map((item, index) => (
           <Text
             key={item.label}
-            inverse={!screenReader && index === sourceIndex}
+            {...(index === sourceIndex ? theme.text.selectedTab : {})}
           >
             {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
             {item.label}{' '}
@@ -1359,8 +1372,8 @@ export function DiffDashboard({
       <Text>
         {'  '}
         {snapshot.files.length} file{snapshot.files.length === 1 ? '' : 's'}{' '}
-        changed <Text color={palette.success}>+{snapshot.additions}</Text>{' '}
-        <Text color={palette.error}>-{snapshot.deletions}</Text>
+        changed <Text {...theme.text.diffAdded}>+{snapshot.additions}</Text>{' '}
+        <Text {...theme.text.diffRemoved}>-{snapshot.deletions}</Text>
       </Text>
       <Text> </Text>
       {snapshot.files.length === 0 ? (
@@ -1369,14 +1382,14 @@ export function DiffDashboard({
         snapshot.files.map((file, index) => (
           <Text
             key={file.path}
-            inverse={!screenReader && index === selectedIndex}
+            {...(index === selectedIndex ? theme.text.selectedRow : {})}
           >
             {selectionPrefix(index === selectedIndex, screenReader)}
             {file.path}{' '}
-            <Text {...(!screenReader ? { color: palette.success } : {})}>
+            <Text {...(!screenReader ? theme.text.diffAdded : {})}>
               +{file.additions}
             </Text>{' '}
-            <Text {...(!screenReader ? { color: palette.error } : {})}>
+            <Text {...(!screenReader ? theme.text.diffRemoved : {})}>
               -{file.deletions}
             </Text>
           </Text>
@@ -1411,6 +1424,7 @@ export function PermissionDashboard({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   const tabs = ['Recently denied', 'Allow', 'Ask', 'Deny', 'Workspace'] as const
   const behavior = (['allow', 'ask', 'deny'] as const)[tabIndex - 1]
   const normalizedQuery = query.trim().toLowerCase()
@@ -1451,7 +1465,10 @@ export function PermissionDashboard({
       <Text>
         {'  '}
         {tabs.map((tab, index) => (
-          <Text key={tab} inverse={!screenReader && index === tabIndex}>
+          <Text
+            key={tab}
+            {...(index === tabIndex ? theme.text.selectedTab : {})}
+          >
             {screenReader && index === tabIndex ? 'Current tab: ' : ' '}
             {tab}{' '}
           </Text>
@@ -1477,7 +1494,7 @@ export function PermissionDashboard({
         ['Add a new rule…', ...rows].map((row, index) => (
           <Text
             key={`${index}-${row}`}
-            inverse={!screenReader && index === selectedIndex}
+            {...(index === selectedIndex ? theme.text.selectedRow : {})}
           >
             {selectionPrefix(index === selectedIndex, screenReader)}
             {index + 1}. {row}
@@ -1487,7 +1504,7 @@ export function PermissionDashboard({
         recentDenied.map((action, index) => (
           <Text
             key={action.id}
-            inverse={!screenReader && index === selectedIndex}
+            {...(index === selectedIndex ? theme.text.selectedRow : {})}
           >
             {selectionPrefix(index === selectedIndex, screenReader)}
             {index + 1}. {action.id === retryingDeniedId ? '✔' : '✘'}{' '}
@@ -1507,16 +1524,16 @@ export function PermissionDashboard({
           {additionalWorkspaces.map((directory, index) => (
             <Text
               key={directory.path}
-              inverse={!screenReader && selectedIndex === index}
+              {...(selectedIndex === index ? theme.text.selectedRow : {})}
             >
               {selectionPrefix(selectedIndex === index, screenReader)}
               {index + 1}. {directory.path}
             </Text>
           ))}
           <Text
-            inverse={
-              !screenReader && selectedIndex === additionalWorkspaces.length
-            }
+            {...(selectedIndex === additionalWorkspaces.length
+              ? theme.text.selectedRow
+              : {})}
           >
             {selectionPrefix(
               selectedIndex === additionalWorkspaces.length,
@@ -1529,7 +1546,7 @@ export function PermissionDashboard({
         rows.map((row, index) => (
           <Text
             key={`${index}-${row}`}
-            inverse={!screenReader && index === selectedIndex}
+            {...(index === selectedIndex ? theme.text.selectedRow : {})}
           >
             {selectionPrefix(index === selectedIndex, screenReader)}
             {index + 1}. {row}
@@ -1575,6 +1592,7 @@ export function ThemePicker({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   const options = [
     ...THEME_OPTIONS.map((option) => ({ ...option, customTheme: undefined })),
     ...customThemes.map((theme) => ({
@@ -1596,15 +1614,18 @@ export function ThemePicker({
         ? 'dark'
         : (selected?.theme ??
           (currentTheme.startsWith('custom:') ? 'dark' : currentTheme))
-  const preview = tuiPalette(
-    previewTheme as TuiTheme,
-    syntaxHighlightingDisabled,
-    process.env,
-    selectedCustomTheme,
+  const preview = resolveTuiTheme(
+    {
+      theme: previewTheme as TuiTheme,
+      syntaxHighlightingDisabled,
+      ...(selectedCustomTheme === undefined
+        ? {}
+        : { customTheme: selectedCustomTheme }),
+    },
+    { environment: process.env, screenReader },
   )
-  const syntax = preview.syntax
-  const syntaxColor = (color: string) =>
-    syntaxHighlightingDisabled ? {} : { color }
+  const syntaxColor = (token: TuiSyntaxToken, change?: 'added' | 'removed') =>
+    preview.syntax(token, change)
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? <Text>{'▔'.repeat(Math.min(100, width))}</Text> : null}
@@ -1620,7 +1641,10 @@ export function ThemePicker({
             {index === selectedIndex ? ' (focused)' : ''}
           </Text>
         ) : (
-          <Text key={option.theme} inverse={index === selectedIndex}>
+          <Text
+            key={option.theme}
+            {...(index === selectedIndex ? theme.text.selectedRow : {})}
+          >
             {index === selectedIndex ? ' ❯ ' : '   '}
             {index + 1}. {option.label}
             {option.theme === currentTheme ? ' ✔' : ''}
@@ -1639,48 +1663,32 @@ export function ThemePicker({
           </Text>
           <Text>
             <Text dimColor> 1 </Text>
-            <Text {...syntaxColor(syntax.keyword)}>function</Text>
-            <Text {...syntaxColor(syntax.text)}> </Text>
-            <Text {...syntaxColor(syntax.identifier)}>greet</Text>
-            <Text {...syntaxColor(syntax.text)}>() {'{'}</Text>
+            <Text {...syntaxColor('keyword')}>function</Text>
+            <Text {...syntaxColor('text')}> </Text>
+            <Text {...syntaxColor('identifier')}>greet</Text>
+            <Text {...syntaxColor('text')}>{'() {'}</Text>
           </Text>
           <Text>
             <Text dimColor> 2 - </Text>
-            <Text
-              {...syntaxColor(syntax.text)}
-              {...(syntaxHighlightingDisabled || !syntax.removedBackground
-                ? {}
-                : { backgroundColor: syntax.removedBackground })}
-            >
+            <Text {...syntaxColor('text', 'removed')}>
               {' console.log("Hello, World!"); '}
             </Text>
           </Text>
           <Text>
             <Text dimColor> 2 + </Text>
-            <Text
-              {...syntaxColor(syntax.text)}
-              {...(syntaxHighlightingDisabled || !syntax.addedBackground
-                ? {}
-                : { backgroundColor: syntax.addedBackground })}
-            >
+            <Text {...syntaxColor('text', 'added')}>
               {' console.'}
-              <Text {...syntaxColor(syntax.identifier)}>log</Text>
+              <Text {...syntaxColor('identifier')}>log</Text>
               {'('}
-              <Text {...syntaxColor(syntax.string)}>&quot;Hello, </Text>
-              <Text
-                {...(syntaxHighlightingDisabled || !syntax.addedHighlight
-                  ? {}
-                  : { backgroundColor: syntax.addedHighlight })}
-              >
-                Claude
-              </Text>
-              <Text {...syntaxColor(syntax.string)}>!&quot;</Text>
+              <Text {...syntaxColor('string')}>&quot;Hello, </Text>
+              <Text {...syntaxColor('addedHighlight')}>Claude</Text>
+              <Text {...syntaxColor('string')}>!&quot;</Text>
               {'); '}
             </Text>
           </Text>
           <Text>
             <Text dimColor> 3 </Text>
-            <Text {...syntaxColor(syntax.text)}>{'}'}</Text>
+            <Text {...syntaxColor('text')}>{'}'}</Text>
           </Text>
           <Text dimColor>
             {' '}
@@ -1720,6 +1728,7 @@ export function CustomThemeEditor({
   width: number
   screenReader: boolean
 }) {
+  const semanticTheme = useTuiTheme()
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       <Text bold>{theme.name}</Text>
@@ -1741,7 +1750,10 @@ export function CustomThemeEditor({
           {tokens
             .slice(selectedIndex, selectedIndex + 8)
             .map((entry, index) => (
-              <Text key={entry} inverse={index === 0}>
+              <Text
+                key={entry}
+                {...(index === 0 ? semanticTheme.text.selectedRow : {})}
+              >
                 {index === 0 ? '❯ ' : '  '}██ {entry}
                 {theme.overrides[entry] === undefined ? '' : ' (custom)'}
               </Text>
@@ -1771,6 +1783,7 @@ export function ListDashboard({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {!screenReader ? (
@@ -1783,7 +1796,7 @@ export function ListDashboard({
       ) : (
         rows.map((row, index) => (
           <Box key={`${index}-${row.label}`} flexDirection="column">
-            <Text inverse={index === selectedIndex}>
+            <Text {...(index === selectedIndex ? theme.text.selectedRow : {})}>
               {index === selectedIndex ? '❯ ' : '  '}
               {row.label}
             </Text>
@@ -1816,12 +1829,12 @@ export function MemoryDashboard({
   screenReader: boolean
   dataPlane?: DataPlane
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const panelWidth = Math.min(100, width)
   return (
     <Box flexDirection="column" width={panelWidth}>
       {!screenReader ? (
-        <Text color={palette.accent}>{'─'.repeat(panelWidth)}</Text>
+        <Text {...theme.text.focusMarker}>{'─'.repeat(panelWidth)}</Text>
       ) : null}
       <Text bold> Memory</Text>
       <Text> </Text>
@@ -1834,7 +1847,9 @@ export function MemoryDashboard({
           {entries.map((entry, index) => (
             <Box key={`${entry.kind}-${entry.path}`}>
               <Box width={Math.max(24, Math.min(52, panelWidth - 28))}>
-                <Text inverse={index === selectedIndex}>
+                <Text
+                  {...(index === selectedIndex ? theme.text.selectedRow : {})}
+                >
                   {index === selectedIndex ? '❯ ' : '  '}
                   {index + 1}. {entry.label}
                   {openedIndex === index ? ' ✔' : ''}
@@ -1886,6 +1901,7 @@ export function HookDashboard({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   const event = configuration.events[eventIndex]
   const matcher = event?.matchers[matcherIndex]
   const hook = matcher?.hooks[hookIndex]
@@ -1980,7 +1996,7 @@ export function HookDashboard({
             return (
               <Box key={item.name}>
                 <Box width={30}>
-                  <Text inverse={!screenReader && selected}>
+                  <Text {...(selected ? theme.text.selectedRow : {})}>
                     {screenReader && selected
                       ? 'Selected: '
                       : selected
@@ -2001,7 +2017,7 @@ export function HookDashboard({
             return (
               <Text
                 key={`${item.scope}-${item.matcher}-${index}`}
-                inverse={!screenReader && selected}
+                {...(selected ? theme.text.selectedRow : {})}
               >
                 {screenReader && selected
                   ? 'Selected: '
@@ -2017,7 +2033,10 @@ export function HookDashboard({
           return (
             <Box key={`${item.path}-${index}`}>
               <Box flexGrow={1}>
-                <Text inverse={!screenReader && selected} wrap="truncate-end">
+                <Text
+                  {...(selected ? theme.text.selectedRow : {})}
+                  wrap="truncate-end"
+                >
                   {screenReader && selected
                     ? 'Selected: '
                     : selected
@@ -2062,7 +2081,7 @@ export function BtwPanel({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const selected = entries[selectedIndex]
   const lines = selected?.answer.split('\n') ?? []
   const visibleLines = lines.slice(scrollOffset, scrollOffset + 16)
@@ -2111,7 +2130,7 @@ export function BtwPanel({
       ) : selected?.status === 'forking' ? (
         <Text> {'  '}· Forking…</Text>
       ) : selected?.status === 'error' ? (
-        <Text color={palette.error}>
+        <Text {...theme.text.error}>
           {' '}
           {'  '}
           {selected.error ?? 'Side question failed'}
@@ -2147,7 +2166,7 @@ export function SessionPicker({
   screenReader: boolean
   query?: string
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const maxVisible = 8
   const start = Math.max(
     0,
@@ -2163,7 +2182,7 @@ export function SessionPicker({
       <Text bold> Resume session</Text>
       <Box
         borderStyle={screenReader ? undefined : 'round'}
-        borderColor={palette.muted}
+        {...theme.surface.neutralBorder}
         paddingX={screenReader ? 0 : 1}
         marginY={1}
       >
@@ -2178,7 +2197,7 @@ export function SessionPicker({
         return (
           <Box key={session?.sessionId ?? 'new'}>
             <Text
-              {...(index === selectedIndex ? { color: palette.brand } : {})}
+              {...(index === selectedIndex ? theme.text.selectedRow : {})}
               bold={index === selectedIndex}
             >
               {index === selectedIndex ? '❯ ' : '  '}
@@ -2218,7 +2237,7 @@ export function CommandPalette({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const paletteWidth = Math.max(1, Math.min(100, width))
   const nameWidth = Math.min(30, paletteWidth)
   const descriptionWidth = Math.max(0, paletteWidth - nameWidth)
@@ -2260,7 +2279,7 @@ export function CommandPalette({
               <Box width={nameWidth} flexShrink={0}>
                 <Text
                   wrap="truncate-end"
-                  {...(selected ? { color: palette.brand, bold: true } : {})}
+                  {...(selected ? theme.text.selectedRow : {})}
                 >
                   /{command.name}
                 </Text>
@@ -2289,6 +2308,7 @@ export function FilePicker({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   const maxVisible = 12
   const start = Math.max(
     0,
@@ -2308,7 +2328,7 @@ export function FilePicker({
           return (
             <Text
               key={entry.path}
-              inverse={!screenReader && index === selectedIndex}
+              {...(index === selectedIndex ? theme.text.selectedRow : {})}
             >
               {screenReader && index === selectedIndex ? 'Selected: ' : '+ '}
               {entry.path}
@@ -2331,6 +2351,7 @@ export function MentionPicker({
   width: number
   screenReader: boolean
 }) {
+  const theme = useTuiTheme()
   const maxVisible = 12
   const start = Math.max(
     0,
@@ -2352,7 +2373,7 @@ export function MentionPicker({
             return (
               <Text
                 key={`agent:${entry.name}`}
-                inverse={!screenReader && selected}
+                {...(selected ? theme.text.selectedRow : {})}
                 {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
               >
                 {screenReader && selected ? 'Selected agent: ' : '* '}
@@ -2365,7 +2386,7 @@ export function MentionPicker({
           return (
             <Text
               key={`file:${entry.path}`}
-              inverse={!screenReader && selected}
+              {...(selected ? theme.text.selectedRow : {})}
               {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
             >
               {screenReader && selected ? 'Selected: ' : '+ '}
@@ -2441,7 +2462,7 @@ export function HelpMenu({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const tabs = ['General', 'Commands', 'Custom commands'] as const
   const commands = tabIndex === 1 ? builtinCommands : customCommands
   const maxVisible = 10
@@ -2462,9 +2483,7 @@ export function HelpMenu({
         {tabs.map((tab, index) => (
           <Text
             key={tab}
-            {...(index === tabIndex
-              ? { color: palette.brand, bold: true }
-              : {})}
+            {...(index === tabIndex ? theme.text.selectedTab : {})}
           >
             {' '}
             {tab}{' '}
@@ -2497,7 +2516,7 @@ export function HelpMenu({
                   <Box key={command.name} flexDirection="column">
                     <Text
                       {...(index === selectedIndex
-                        ? { color: palette.brand, bold: true }
+                        ? theme.text.selectedRow
                         : {})}
                     >
                       {index === selectedIndex ? '↓ ' : '  '}/{command.name}
@@ -2538,7 +2557,7 @@ export function SelectionMenu({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const maxVisible = 7
   const start = Math.max(
     0,
@@ -2557,7 +2576,7 @@ export function SelectionMenu({
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor={palette.muted}
+      {...theme.surface.neutralBorder}
       flexDirection="column"
       marginTop={1}
       paddingX={screenReader ? 0 : 1}
@@ -2577,9 +2596,7 @@ export function SelectionMenu({
             marginTop={1}
           >
             <Text
-              {...(!screenReader && selected
-                ? { color: palette.brand, bold: true }
-                : {})}
+              {...(!screenReader && selected ? theme.text.selectedRow : {})}
             >
               {selectionPrefix(selected, screenReader)}
               {rowLabel}
@@ -2628,7 +2645,7 @@ export function ModelMenu({
   width: number
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const current = options.find((option) => option.selected)
   const maxLabelWidth = options.reduce(
     (max, option, index) =>
@@ -2638,7 +2655,7 @@ export function ModelMenu({
   return (
     <Box
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor={palette.muted}
+      {...theme.surface.neutralBorder}
       flexDirection="column"
       marginTop={1}
       paddingX={screenReader ? 0 : 1}
@@ -2661,9 +2678,7 @@ export function ModelMenu({
             marginTop={1}
           >
             <Text
-              {...(!screenReader && selected
-                ? { color: palette.brand, bold: true }
-                : {})}
+              {...(!screenReader && selected ? theme.text.selectedRow : {})}
             >
               {selectionPrefix(selected, screenReader)}
               {rowLabel}
@@ -2687,7 +2702,7 @@ export function ModelMenu({
       })}
       <Box marginTop={1}>
         <Text>
-          <Text color={palette.accent}>● </Text>
+          <Text {...theme.text.focusMarker}>● </Text>
           {effort.charAt(0).toUpperCase() + effort.slice(1)} effort (default)
           <Text dimColor> ←/→ to adjust</Text>
         </Text>
@@ -2700,17 +2715,19 @@ export function ModelMenu({
 }
 
 function ComposerInput({ input, cursor }: { input: string; cursor: number }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const { before, current, after } = composerEditorSegments({
     text: input,
     cursor,
   })
   const cursorText = current === '\n' ? '↵' : (current ?? ' ')
+  const noColorCursorText =
+    current === undefined ? ` ${'\u0332'}` : `${cursorText}\u0332`
   return (
     <Text>
       {before}
-      <Text color={palette.selectionText} backgroundColor={palette.accent}>
-        {cursorText}
+      <Text {...theme.text.inputCursor}>
+        {theme.noColor ? noColorCursorText : cursorText}
       </Text>
       {after}
     </Text>
@@ -2780,7 +2797,7 @@ export function Composer({
   sessionColor?: AgentColorName
   commandArgumentHint?: string
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   const [spinnerIndex, setSpinnerIndex] = useState(0)
   useEffect(() => {
     if (!busy || screenReader || reduceMotion) return
@@ -2806,7 +2823,7 @@ export function Composer({
     composerLayoutForWidth(width)
   const line = '─'.repeat(lineWidth)
   const separatorColor =
-    sessionColor === undefined ? undefined : palette.sessionColors[sessionColor]
+    sessionColor === undefined ? undefined : theme.session(sessionColor)
   const footerMode = `⏵⏵ ${permissionLabel(display.permissionMode)}`
   const footerCompactMode = `⏵⏵ ${compactPermissionLabel(display.permissionMode)}`
   const footerLeft = composerFooterLeft(
@@ -2859,7 +2876,7 @@ export function Composer({
       ) : busy ? (
         <Text>
           {progressBar ? (
-            <Text color={palette.accent}>
+            <Text {...theme.text.focusMarker}>
               {reduceMotion ? '•' : SPINNER[spinnerIndex]}
             </Text>
           ) : null}{' '}
@@ -2867,7 +2884,9 @@ export function Composer({
         </Text>
       ) : (
         <Text>
-          <Text {...(shellMode ? {} : { color: palette.brand })} bold>
+          <Text
+            {...(shellMode ? theme.text.shellMode : theme.text.inputMarker)}
+          >
             {shellMode ? '! ' : '❯ '}
           </Text>
           {input ? (
@@ -2910,7 +2929,7 @@ export function Composer({
               <Text>
                 <Text dimColor>{footerMessageLeft} · </Text>
                 {footerMessage.isError ? (
-                  <Text color={palette.error}>{footerMessage.text}</Text>
+                  <Text {...theme.text.error}>{footerMessage.text}</Text>
                 ) : (
                   <Text dimColor>{footerMessage.text}</Text>
                 )}
@@ -2929,7 +2948,7 @@ export function Composer({
               <Text>
                 <Text dimColor>{footerLeft}</Text>
                 <Text dimColor> · </Text>
-                <Text color={palette.accent}>● {display.effort}</Text>
+                <Text {...theme.text.focusMarker}>● {display.effort}</Text>
                 {showEditorHint ? (
                   <Text dimColor>
                     {' '}
@@ -2956,16 +2975,16 @@ export function DialogFrame({
   children: React.ReactNode
   screenReader: boolean
 }) {
-  const palette = useTuiPalette()
+  const theme = useTuiTheme()
   return (
     <Box
       flexDirection="column"
       borderStyle={screenReader ? undefined : 'round'}
-      borderColor={palette.warning}
+      {...theme.surface.decision}
       paddingX={screenReader ? 0 : 1}
       marginTop={1}
     >
-      <Text color={palette.warning} bold>
+      <Text {...theme.text.warning} bold>
         {title}
       </Text>
       {children}

@@ -210,7 +210,7 @@ import {
   DEFAULT_TUI_THEME_SETTINGS,
   TUI_THEMES,
   TuiThemeProvider,
-  tuiPalette,
+  useTuiTheme,
   type TuiThemeSettings,
 } from './tui/theme.js'
 import {
@@ -1034,6 +1034,20 @@ const HIDDEN_TUI_SLASH_COMMANDS = new Set([
   'usage',
 ])
 
+function RewindWarning() {
+  const theme = useTuiTheme()
+  return (
+    <Text {...theme.text.warning}>
+      ⚠ Rewinding does not affect files edited manually or via bash.
+    </Text>
+  )
+}
+
+function ExitWarning() {
+  const theme = useTuiTheme()
+  return <Text {...theme.text.warning}>Press Ctrl-C again to exit</Text>
+}
+
 export function InteractiveApp({
   dataPlane = resolveDataPlane(),
   configRoot: suppliedConfigRoot,
@@ -1233,14 +1247,6 @@ export function InteractiveApp({
   runtimeSettingsRef.current = runtimeSettings
   runtimeGitignoreRef.current = runtimeSettings.gitignore
   const [vimInsertMode, setVimInsertMode] = useState(true)
-  const activePalette = tuiPalette(
-    TUI_THEMES.includes(themeSettings.theme as (typeof TUI_THEMES)[number])
-      ? (themeSettings.theme as (typeof TUI_THEMES)[number])
-      : 'dark',
-    themeSettings.syntaxHighlightingDisabled,
-    process.env,
-    themeSettings.customTheme,
-  )
   const choices = useMemo(
     () =>
       allowNewSession ? ([null, ...initialSessions] as const) : initialSessions,
@@ -7379,7 +7385,7 @@ export function InteractiveApp({
   })
 
   return (
-    <TuiThemeProvider settings={themeSettings}>
+    <TuiThemeProvider settings={themeSettings} screenReader={axScreenReader}>
       <Box
         flexDirection="column"
         {...(!fixedViewport
@@ -7714,9 +7720,7 @@ export function InteractiveApp({
                   </Text>
                 ))}
                 <Text> </Text>
-                <Text color={activePalette.warning}>
-                  ⚠ Rewinding does not affect files edited manually or via bash.
-                </Text>
+                <RewindWarning />
               </DialogFrame>
             ) : menu?.kind === 'rewind-context' ? (
               <DialogFrame
@@ -8103,11 +8107,7 @@ export function InteractiveApp({
                     screenReader={axScreenReader}
                   />
                 ) : null}
-                {exitConfirmation ? (
-                  <Text color={activePalette.warning}>
-                    Press Ctrl-C again to exit
-                  </Text>
-                ) : null}
+                {exitConfirmation ? <ExitWarning /> : null}
                 {fixedViewport ? <Box flexGrow={1} /> : null}
                 <Composer
                   input={shellMode ? input.slice(1) : input}
