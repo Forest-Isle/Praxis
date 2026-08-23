@@ -724,6 +724,37 @@ describe('InteractiveApp', () => {
     await rm(configRoot, { recursive: true, force: true })
   })
 
+  it('opens the agents menu before Vim normal mode consumes empty-composer Left Arrow', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        agents={[
+          {
+            name: 'reviewer',
+            description: 'Reviews code for subtle regressions.',
+          },
+        ]}
+        runtimeSettings={projectRuntimeSettings({
+          settings: { editorMode: 'vim' },
+          state: { leftArrowOpensAgents: true },
+        })}
+      />,
+    )
+
+    app.stdin.write('\u001B')
+    await flush()
+    app.stdin.write('\u001B[D')
+    await flush()
+
+    expect(app.lastFrame()).toContain('Agents')
+    expect(app.lastFrame()).toContain('reviewer')
+  })
+
   it('keeps hidden /output-style compatibility local and out of the palette', async () => {
     const calls: string[] = []
     const app = render(
@@ -4877,6 +4908,101 @@ describe('InteractiveApp', () => {
     expect(calls).toEqual(['shift first\nshift second'])
   })
 
+  it('applies ordinary composer text and submission exactly once', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('single')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ single')
+    expect(app.lastFrame()).not.toContain('singlesingle')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['single'])
+  })
+
+  it('preserves Chat keybindings while the command palette is open', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(prompt)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        keybindingsLoader={async () =>
+          new Map([
+            [
+              'Chat',
+              new Map([
+                ['ctrl+y', 'chat:newline'],
+                ['enter', 'chat:submit'],
+              ]),
+            ],
+          ])
+        }
+      />,
+    )
+
+    await flush()
+    app.stdin.write('/unknown-command')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ /unknown-command')
+
+    app.stdin.write('\u0019')
+    app.stdin.write('continued')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['/unknown-command\ncontinued'])
+  })
+
   it('accepts the ESC+Return sequence installed by terminal setup', async () => {
     const calls: string[] = []
     const app = render(
@@ -5027,6 +5153,76 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001F')
     await flush()
     expect(app.lastFrame()).toContain('❯ review @src')
+  })
+
+  it('continues editing the composer after the file picker is open', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        fileLoader={async () => [
+          { path: 'alpha.ts', directory: false },
+          { path: 'src/agent.ts', directory: false },
+        ]}
+      />,
+    )
+
+    app.stdin.write('@')
+    await waitFor(() =>
+      app.lastFrame()?.includes('alpha.ts') ? true : undefined,
+    )
+    app.stdin.write('s')
+    await flush()
+
+    expect(app.lastFrame()).toContain('❯ @s')
+    expect(app.lastFrame()).toContain('src/agent.ts')
+  })
+
+  it('dismisses command and file pickers without clearing the composer', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        slashCommands={[
+          {
+            name: 'inspect-fixture',
+            description: 'Inspect the fixture',
+            source: 'command',
+          },
+        ]}
+        fileLoader={async () => [{ path: 'alpha.ts', directory: false }]}
+      />,
+    )
+
+    app.stdin.write('/ins')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Inspect the fixture') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+    expect(app.lastFrame()).toContain('❯ /ins')
+    expect(app.lastFrame()).not.toContain('Inspect the fixture')
+
+    app.stdin.write('\u000c')
+    await flush()
+    app.stdin.write('@')
+    await waitFor(() =>
+      app.lastFrame()?.includes('alpha.ts') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+    expect(app.lastFrame()).toContain('❯ @')
+    expect(app.lastFrame()).not.toContain('alpha.ts')
   })
 
   it('shows Pasting… and inserts clipboard text at the real cursor', async () => {
@@ -7479,6 +7675,104 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('ready…')
   })
 
+  it('routes Escape through each Decision surface resolver exactly once', async () => {
+    let permissionResult: PermissionApproval | undefined
+    let questionResult: unknown = 'pending'
+    let planResult: ClaudePlanApprovalResult | undefined
+    let elicitationResult: unknown = 'pending'
+    const call: ModelToolCall = {
+      id: 'decision-cancel',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({
+            approveTool,
+            askUser,
+            approvePlan,
+            onElicitation,
+          }) {
+            return {
+              async run() {
+                permissionResult = await approveTool?.(call)
+                questionResult = await askUser?.([
+                  {
+                    question: 'Continue?',
+                    header: 'Confirm',
+                    options: [{ label: 'Yes', description: 'Continue' }],
+                    multiSelect: false,
+                  },
+                ])
+                planResult = await approvePlan?.({
+                  action: 'exit',
+                  planPath: '/tmp/plan.md',
+                  plan: '# Plan\n\n1. Implement.',
+                  previousMode: 'default',
+                })
+                elicitationResult = await onElicitation?.({
+                  serverName: 'fixture',
+                  message: 'Provide a value',
+                  mode: 'form',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: { code: { type: 'string' } },
+                  },
+                })
+                return {
+                  sessionId: 'decision-session',
+                  text: 'all decisions cancelled',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Bash command') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    app.stdin.write('\u001B')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Confirm: Continue?') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Ready to code?') ? true : undefined,
+    )
+    app.stdin.write('\u001B')
+    await waitFor(() =>
+      app.lastFrame()?.includes('MCP server “fixture” requests your input')
+        ? true
+        : undefined,
+    )
+    app.stdin.write('\u001B')
+    await waitFor(() =>
+      app.lastFrame()?.includes('all decisions cancelled') ? true : undefined,
+    )
+
+    expect(permissionResult).toBe(false)
+    expect(questionResult).toBeNull()
+    expect(planResult).toEqual({ behavior: 'deny' })
+    expect(elicitationResult).toEqual({ action: 'cancel' })
+  })
+
   it('asks before an ask-permission tool and forwards the decision', async () => {
     let approval: PermissionApproval | undefined
     const notifications: unknown[][] = []
@@ -8480,6 +8774,68 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('configured')
   })
 
+  it('collapses expanded elicitation options before cancelling the form', async () => {
+    let result: unknown = 'pending'
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ onElicitation }) {
+            return {
+              async run() {
+                result = await onElicitation?.({
+                  serverName: 'fixture',
+                  message: 'Choose a color',
+                  mode: 'form',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: {
+                      color: { type: 'string', enum: ['red', 'blue'] },
+                    },
+                  },
+                })
+                return {
+                  sessionId: 'elicitation-options-session',
+                  text: 'elicitation finished',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Choose a color') ? true : undefined,
+    )
+    app.stdin.write('\u001B[C')
+    await flush()
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+    expect(result).toBe('pending')
+    expect(app.lastFrame()).toContain('Choose a color')
+
+    app.stdin.write('\u001B')
+    await delay(75)
+    await waitFor(() =>
+      app.lastFrame()?.includes('elicitation finished') ? true : undefined,
+    )
+    expect(result).toEqual({ action: 'cancel' })
+  })
+
   it('opens URL elicitations and waits for the matching completion event', async () => {
     let result: unknown
     let eventSink: RuntimeEventSink | undefined
@@ -8555,6 +8911,63 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).not.toContain('waiting for completion')
     expect(app.lastFrame()).toContain('MCP elicitation completed')
+  })
+
+  it('dismisses an accepted URL waiting surface without resolving it again', async () => {
+    let result: unknown = 'pending'
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ onElicitation }) {
+            return {
+              async run() {
+                result = await onElicitation?.({
+                  serverName: 'browser-fixture',
+                  message: 'Authorize access',
+                  mode: 'url',
+                  url: 'https://example.com/authorize',
+                  elicitationId: 'elicit-escape',
+                })
+                return {
+                  sessionId: 'url-waiting-session',
+                  text: 'accepted once',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        elicitationUrlOpener={() => undefined}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('wants to open a URL') ? true : undefined,
+    )
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('waiting for completion') ? true : undefined,
+    )
+    expect(result).toEqual({ action: 'accept' })
+
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+    expect(result).toEqual({ action: 'accept' })
+    expect(app.lastFrame()).not.toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('accepted once')
   })
 
   it('asks before retrying an interrupted tool during resume', async () => {
@@ -8740,6 +9153,40 @@ describe('InteractiveApp', () => {
     await flush()
 
     expect(approval).toBe(false)
+  })
+
+  it('lets the session picker own Escape before the Vim composer', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'session-1',
+            lastPrompt: 'previous task',
+            updatedAt: '2026-08-04T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        resume={{ requireSession: true }}
+        runtimeSettings={projectRuntimeSettings({
+          settings: { editorMode: 'vim' },
+          state: {},
+        })}
+      />,
+    )
+
+    expect(app.lastFrame()).toContain('previous task')
+    app.stdin.write('\u001B')
+    await delay(75)
+    await flush()
+
+    expect(app.lastFrame()).toContain('Welcome to Praxis')
+    expect(app.lastFrame()).not.toContain('previous task')
   })
 
   it('selects an existing session before accepting a prompt', async () => {
