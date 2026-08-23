@@ -882,6 +882,91 @@ describe('ClaudeSessionService', () => {
     await service.close()
   })
 
+  it('anchors multi-round occupancy to the matching final provider request', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-context-multi-round-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let providerCalls = 0
+    let memoryCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'foreground-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: true,
+          contextWindowTokens: 200_000,
+        },
+        async *complete() {
+          providerCalls += 1
+          if (providerCalls === 1) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'call-1', name: 'test_tool', input: {} },
+            }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 6_000, outputTokens: 10 },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'done' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 11_000, outputTokens: 20 },
+          }
+        },
+      },
+      sessionMemoryProviderFactory: () => ({
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          memoryCalls += 1
+          yield { type: 'text-delta', delta: 'memory' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 5 },
+          }
+        },
+      }),
+      tools: {
+        definitions: () => [
+          {
+            name: 'test_tool',
+            description: 'Test tool',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        async prepare(call) {
+          return call
+        },
+        async execute() {
+          return { content: 'tool result', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    })
+
+    const run = await service.run('inspect')
+    try {
+      const state = await waitForSessionMemoryCommit(
+        configRoot,
+        'praxis',
+        run.sessionId,
+      )
+      expect(providerCalls).toBe(2)
+      expect(run.usage.inputTokens).toBe(17_000)
+      expect(state.lastObservedTokens).toBeGreaterThanOrEqual(11_000)
+      expect(state.lastObservedTokens).toBeLessThan(12_000)
+      expect(memoryCalls).toBe(1)
+    } finally {
+      await service.close()
+    }
+  })
+
   it('constructs the isolated memory provider lazily at extraction time', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-memory-lazy-'))
     roots.push(root)

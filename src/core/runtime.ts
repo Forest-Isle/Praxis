@@ -489,6 +489,11 @@ export function autoModePermissionOutcome(
 }
 
 export interface AgentRunObserver {
+  modelRequestCompleted?(input: {
+    usage: ModelUsage
+    messages: readonly ModelMessage[]
+    tools: readonly ModelToolDefinition[]
+  }): Promise<void>
   assistantCompleted(message: {
     content: string
     thinkingBlocks?: readonly ModelThinkingBlock[]
@@ -1095,6 +1100,7 @@ export class AgentRuntime {
         let textBytes = 0
         const thinkingBlocks: ModelThinkingBlock[] = []
         let turnUsage = emptyUsage()
+        let turnUsageSeen = false
         let streaming = false
         const toolCalls: ModelToolCall[] = []
         let terminalReason: ModelTerminalReason | undefined
@@ -1234,9 +1240,10 @@ export class AgentRuntime {
               activeAttemptHasPresentation = true
               terminalReason = event.reason
               this.emit(event)
-            } else {
+            } else if (event.type === 'usage') {
               activeAttemptHasPresentation = true
               turnUsage = event.usage
+              turnUsageSeen = true
               this.emit(event)
             }
           }
@@ -1316,6 +1323,17 @@ export class AgentRuntime {
               { retryable: false },
             ),
           )
+        }
+        if (turnUsageSeen) {
+          try {
+            await request.observer?.modelRequestCompleted?.({
+              usage: turnUsage,
+              messages: providerRequest.messages,
+              tools: definitions,
+            })
+          } catch (error) {
+            return failScheduledTurn(error)
+          }
         }
         if (request.collectMetrics) {
           const turnApiDurationWithoutRetriesMsResolved =
