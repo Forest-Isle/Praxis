@@ -109,6 +109,10 @@ import {
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
 import {
+  projectTuiHelpSurface,
+  type TuiHelpSurfaceModel,
+} from './tui/help-surface-model.js'
+import {
   loadGitDiff,
   visiblePatchLines,
   type TuiDiffSnapshot,
@@ -666,7 +670,12 @@ const PERMISSION_OPTIONS: readonly {
 ]
 
 type InteractiveMenu =
-  | { kind: 'help'; tabIndex: number; selectedIndex: number }
+  | {
+      kind: 'help'
+      invocation: '?' | '/help'
+      tabIndex: number
+      selectedIndex: number
+    }
   | {
       kind: 'diff'
       snapshots: readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -1691,6 +1700,43 @@ export function InteractiveApp({
     permissionMode: runtimePreferences.permissionMode,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
+  type InteractiveSecondarySurface =
+    TuiHelpSurfaceModel | { readonly kind: 'legacy-secondary' }
+  const legacySecondarySurface = useMemo(
+    () => ({ kind: 'legacy-secondary' as const }),
+    [],
+  )
+  const helpMenu = menu?.kind === 'help' ? menu : null
+  const helpSurface = useMemo(
+    () =>
+      helpMenu === null
+        ? null
+        : projectTuiHelpSurface({
+            invocation: helpMenu.invocation,
+            tabIndex: helpMenu.tabIndex,
+            selectedIndex: helpMenu.selectedIndex,
+            builtinCommands: builtinSlashCommands,
+            customCommands: customSlashCommands,
+          }),
+    [helpMenu, builtinSlashCommands, customSlashCommands],
+  )
+  const shortcutHelpSurface = useMemo(
+    () =>
+      projectTuiHelpSurface({
+        invocation: '?',
+        tabIndex: 0,
+        selectedIndex: 0,
+        builtinCommands: builtinSlashCommands,
+        customCommands: customSlashCommands,
+      }),
+    [builtinSlashCommands, customSlashCommands],
+  )
+  const secondarySurface: InteractiveSecondarySurface | undefined =
+    menu === null
+      ? undefined
+      : menu.kind === 'help'
+        ? (helpSurface ?? undefined)
+        : legacySecondarySurface
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: { readonly kind: 'session-picker' }
     readonly priority:
@@ -1703,7 +1749,7 @@ export function InteractiveApp({
       | { readonly kind: 'command-palette' }
       | { readonly kind: 'file-picker' }
       | { readonly kind: 'exit-confirmation' }
-    readonly secondary: InteractiveMenu
+    readonly secondary: InteractiveSecondarySurface
   }
   const screenSurfaces = useMemo<
     TuiScreenInput<InteractiveTuiScreenSurfaces>['surfaces']
@@ -1725,7 +1771,9 @@ export function InteractiveApp({
               : elicitation !== null
                 ? { priority: { kind: 'elicitation' } }
                 : {}),
-      ...(menu === null ? {} : { secondary: menu }),
+      ...(secondarySurface === undefined
+        ? {}
+        : { secondary: secondarySurface }),
       overlays: [
         ...(commandPaletteVisible
           ? [{ kind: 'command-palette' as const }]
@@ -1743,7 +1791,7 @@ export function InteractiveApp({
       planApproval,
       question,
       elicitation,
-      menu,
+      secondarySurface,
       commandPaletteVisible,
       filePickerVisible,
       exitConfirmation,
@@ -1796,7 +1844,7 @@ export function InteractiveApp({
     conversationScreen?.foreground.kind === 'priority'
       ? conversationScreen.foreground.surface
       : undefined
-  const selectedMenu =
+  const selectedSecondarySurface =
     conversationScreen?.foreground.kind === 'secondary'
       ? (conversationScreen.foreground.surface ?? null)
       : null
@@ -5629,13 +5677,14 @@ export function InteractiveApp({
       }
 
       if (activeMenu.kind === 'help') {
-        if (key.escape) {
+        if (key.escape || value === '\u001B') {
           updateMenu(null)
           return
         }
         if (key.leftArrow || key.rightArrow) {
           updateMenu({
             kind: 'help',
+            invocation: activeMenu.invocation,
             tabIndex: Math.max(
               0,
               Math.min(2, activeMenu.tabIndex + (key.leftArrow ? -1 : 1)),
@@ -7081,7 +7130,12 @@ export function InteractiveApp({
       if (prompt === '/exit') {
         exit()
       } else if (prompt === '/help' || prompt === '?') {
-        updateMenu({ kind: 'help', tabIndex: 0, selectedIndex: 0 })
+        updateMenu({
+          kind: 'help',
+          invocation: prompt,
+          tabIndex: 0,
+          selectedIndex: 0,
+        })
       } else if (prompt === '/new') {
         const previousSessionId = sessionIdRef.current
         void (async () => {
@@ -8080,13 +8134,10 @@ export function InteractiveApp({
                 </DecisionOption>
                 <Text dimColor>Enter to confirm · Esc to cancel</Text>
               </Box>
-            ) : selectedMenu !== null && menu !== null ? (
-              menu.kind === 'help' ? (
+            ) : selectedSecondarySurface !== null && menu !== null ? (
+              selectedSecondarySurface.kind === 'help' ? (
                 <HelpMenu
-                  tabIndex={menu.tabIndex}
-                  selectedIndex={menu.selectedIndex}
-                  builtinCommands={builtinSlashCommands}
-                  customCommands={customSlashCommands}
+                  model={selectedSecondarySurface}
                   width={width}
                   screenReader={axScreenReader}
                 />
@@ -8404,6 +8455,7 @@ export function InteractiveApp({
                     ? { prStatus: `PR #${activeSessionSummary.prNumber}` }
                     : {})}
                   shortcutsVisible={shortcutsVisible}
+                  shortcutHelp={shortcutHelpSurface}
                   {...(editorFooterMessage === undefined
                     ? {}
                     : { footerMessage: editorFooterMessage })}

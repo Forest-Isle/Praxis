@@ -82,6 +82,9 @@ around a minimal, low-noise reading model:
   composer, status, decision, palette, and dashboard surfaces. Keep the
   existing renderer loop during migration and retire old paths only after
   equivalent behavior is proven.
+- Project each secondary surface through its own pure semantic model. Keep raw
+  interaction state local to keyboard routing, pass only projected surfaces
+  through `TuiScreen`, and avoid a universal screen AST or renderer registry.
 - Use a reducer/router model for TUI interaction modes so composer editing,
   dialogs, palettes, pickers, scrolling, editor suspension, and accessibility
   behavior share explicit transitions and effects.
@@ -137,8 +140,12 @@ around a minimal, low-noise reading model:
 ## Further Notes
 
 The redesign is an expand-contract migration. Its retained transcript window,
-atomic presentation environment, and root `TuiScreenModel` now form one pure
-projection path for fullscreen, classic, and screen-reader structure. Existing
-leaf dialogs, menus, and dashboards remain in place while their semantic
-surfaces migrate behind that seam in later slices. Each slice must leave a
-demoable path working and preserve the shared transcript/runtime boundary.
+atomic presentation environment, root `TuiScreenModel`, and semantic Help
+surface now form one pure projection path for fullscreen, classic, and
+screen-reader structure. Help retains the user's actual `?` or `/help`
+invocation, projects one canonical tab/shortcut/command model, and feeds both
+visual and linear screen-reader adapters without exposing raw menu state.
+Existing leaf dialogs, menus, and dashboards remain behind an explicit legacy
+secondary marker while their own semantic surfaces migrate in later slices.
+Each slice must leave a demoable path working and preserve the shared
+transcript/runtime boundary.
