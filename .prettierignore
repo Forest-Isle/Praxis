@@ -2,5 +2,6 @@ dist/
 .worktrees/
 node_modules/
 package-lock.json
+CHANGELOG.md
 test/fixtures/**/*.jsonl
 .agent/
