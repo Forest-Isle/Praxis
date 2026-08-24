@@ -12,6 +12,7 @@ import {
   reduceTuiMcpPanelState,
   type TuiMcpPanelModel,
 } from './mcp-panel-projector.js'
+import { projectTuiMcpSurface } from './mcp-surface-model.js'
 
 interface McpFixture {
   version: string
@@ -93,8 +94,10 @@ describe('McpPanel', () => {
     const frame =
       render(
         <McpPanel
-          model={wideModel}
-          state={{ depth: 'detail', serverIndex: 0, selectedIndex: 0 }}
+          surface={projectTuiMcpSurface({
+            model: wideModel,
+            state: { depth: 'detail', serverIndex: 0, selectedIndex: 0 },
+          })}
         />,
       ).lastFrame() ?? ''
     const lines = frame.split('\n')
@@ -130,8 +133,10 @@ describe('McpPanel', () => {
   it('matches the observed Claude 2.1.208 populated list contract', async () => {
     const app = render(
       <McpPanel
-        model={model}
-        state={initialTuiMcpPanelState(model)}
+        surface={projectTuiMcpSurface({
+          model,
+          state: initialTuiMcpPanelState(model),
+        })}
         screenReader={fixture.terminal.screenReader}
         width={fixture.terminal.columns}
       />,
@@ -156,7 +161,12 @@ describe('McpPanel', () => {
   it('renders the observed empty result without inventing management actions', async () => {
     const empty: TuiMcpPanelModel = { cwd: '/workspace', servers: [] }
     const app = render(
-      <McpPanel model={empty} state={initialTuiMcpPanelState(empty)} />,
+      <McpPanel
+        surface={projectTuiMcpSurface({
+          model: empty,
+          state: initialTuiMcpPanelState(empty),
+        })}
+      />,
     )
 
     expect(app.lastFrame()?.replace(/\s+/gu, ' ')).toContain(
@@ -169,8 +179,10 @@ describe('McpPanel', () => {
   it('renders server status, transport detail, capabilities, and real actions', () => {
     const connected = render(
       <McpPanel
-        model={model}
-        state={{ depth: 'detail', serverIndex: 1, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model,
+          state: { depth: 'detail', serverIndex: 1, selectedIndex: 0 },
+        })}
       />,
     ).lastFrame()
     expect(connected).toContain('Connected MCP Server')
@@ -185,8 +197,10 @@ describe('McpPanel', () => {
 
     const failed = render(
       <McpPanel
-        model={model}
-        state={{ depth: 'detail', serverIndex: 0, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model,
+          state: { depth: 'detail', serverIndex: 0, selectedIndex: 0 },
+        })}
       />,
     ).lastFrame()
     expect(failed).toContain(fixture.detail.failedStatus)
@@ -194,8 +208,10 @@ describe('McpPanel', () => {
 
     const disabled = render(
       <McpPanel
-        model={model}
-        state={{ depth: 'detail', serverIndex: 2, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model,
+          state: { depth: 'detail', serverIndex: 2, selectedIndex: 0 },
+        })}
       />,
     ).lastFrame()
     expect(disabled).toContain(fixture.detail.disabledStatus)
@@ -204,8 +220,10 @@ describe('McpPanel', () => {
 
     const http = render(
       <McpPanel
-        model={model}
-        state={{ depth: 'detail', serverIndex: 3, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model,
+          state: { depth: 'detail', serverIndex: 3, selectedIndex: 0 },
+        })}
       />,
     ).lastFrame()
     expect(http).toContain('URL: https://example.test/mcp')
@@ -231,15 +249,19 @@ describe('McpPanel', () => {
     })
     const authentication = render(
       <McpPanel
-        model={authenticationModel}
-        state={{ depth: 'detail', serverIndex: 0, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model: authenticationModel,
+          state: { depth: 'detail', serverIndex: 0, selectedIndex: 0 },
+        })}
         screenReader
       />,
     ).lastFrame()
     const authenticationList = render(
       <McpPanel
-        model={authenticationModel}
-        state={initialTuiMcpPanelState(authenticationModel)}
+        surface={projectTuiMcpSurface({
+          model: authenticationModel,
+          state: initialTuiMcpPanelState(authenticationModel),
+        })}
       />,
     ).lastFrame()
     expect(authenticationList).toContain(fixture.list.needsAuthentication)
@@ -271,8 +293,10 @@ describe('McpPanel', () => {
     }
     const tools = render(
       <McpPanel
-        model={withTools}
-        state={{ depth: 'tools', serverIndex: 1, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model: withTools,
+          state: { depth: 'tools', serverIndex: 1, selectedIndex: 0 },
+        })}
         screenReader
       />,
     ).lastFrame()
@@ -283,8 +307,10 @@ describe('McpPanel', () => {
 
     const detail = render(
       <McpPanel
-        model={withTools}
-        state={{ depth: 'tool', serverIndex: 1, selectedIndex: 0 }}
+        surface={projectTuiMcpSurface({
+          model: withTools,
+          state: { depth: 'tool', serverIndex: 1, selectedIndex: 0 },
+        })}
       />,
     ).lastFrame()
     for (const label of fixture.tools.detailLabels as string[]) {
@@ -410,8 +436,12 @@ describe('McpPanel', () => {
     expect(state.serverIndex).toBe(3)
 
     const frame =
-      render(<McpPanel model={model} state={state} width={40} />).lastFrame() ??
-      ''
+      render(
+        <McpPanel
+          surface={projectTuiMcpSurface({ model, state })}
+          width={40}
+        />,
+      ).lastFrame() ?? ''
     expect(frame).toContain('Manage MCP servers')
     expect(frame).toContain('/config/.claude.json')
     expect(
@@ -446,7 +476,12 @@ describe('McpPanel', () => {
     })
     const frame =
       render(
-        <McpPanel model={grouped} state={initialTuiMcpPanelState(grouped)} />,
+        <McpPanel
+          surface={projectTuiMcpSurface({
+            model: grouped,
+            state: initialTuiMcpPanelState(grouped),
+          })}
+        />,
       ).lastFrame() ?? ''
     expect(frame.match(/Project MCPs/gu)).toHaveLength(2)
     expect(frame).toContain('/workspace/.mcp.json')
