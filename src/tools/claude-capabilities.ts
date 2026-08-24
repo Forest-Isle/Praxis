@@ -34,6 +34,7 @@ export interface ClaudeToolCapabilityInput {
   readonly agentTriggers?: boolean
   readonly backgroundAgents?: boolean
   readonly subagents?: boolean
+  readonly teams?: boolean
   /** Explicit allow-list for capability-gated tools; never enables a gate. */
   readonly tools?: readonly string[]
   /** Always wins over the allow-list and the default rules. */
@@ -45,6 +46,7 @@ export interface ClaudeToolCapabilityInput {
 export const CLAUDE_CODE_ENABLE_TASKS = 'CLAUDE_CODE_ENABLE_TASKS'
 export const CLAUDE_CODE_DISABLE_CRON = 'CLAUDE_CODE_DISABLE_CRON'
 export const PRAXIS_ENABLE_WORKFLOW_SCRIPTS = 'PRAXIS_ENABLE_WORKFLOW_SCRIPTS'
+export const PRAXIS_ENABLE_TEAMS = 'PRAXIS_ENABLE_TEAMS'
 
 /** task-v2 task-board tools, gated by the `tasks` capability. */
 export const CLAUDE_TASK_V2_TOOLS = [
@@ -71,6 +73,15 @@ export const CLAUDE_AGENT_TOOLS = ['Agent'] as const
 /** Background task lifecycle tools, gated by the `backgroundAgents` capability. */
 export const CLAUDE_BACKGROUND_TOOLS = ['TaskOutput', 'TaskStop'] as const
 
+/** Experimental local Team lifecycle names, gated by `PRAXIS_ENABLE_TEAMS`. */
+export const PRAXIS_TEAM_TOOLS = Object.freeze([
+  'TeamCreate',
+  'TeamResume',
+  'TeamList',
+  'TeamAccept',
+  'TeamStop',
+] as const)
+
 /** Coordination tools advertised by a coordinator only when explicitly enabled. */
 export const CLAUDE_COORDINATION_TOOLS = [
   'AskUserQuestion',
@@ -93,6 +104,7 @@ export const CLAUDE_CAPABILITY_GATED_TOOLS: ReadonlySet<string> = new Set([
   ...CLAUDE_AGENT_TRIGGER_TOOLS,
   ...CLAUDE_AGENT_TOOLS,
   ...CLAUDE_BACKGROUND_TOOLS,
+  ...PRAXIS_TEAM_TOOLS,
   ...CLAUDE_COORDINATION_TOOLS,
 ])
 
@@ -150,6 +162,7 @@ export function resolveClaudeToolCapabilities(
   }
   const backgroundAgents = input.backgroundAgents ?? false
   const subagents = input.subagents ?? false
+  const teams = input.teams ?? envBoolean(env, PRAXIS_ENABLE_TEAMS) ?? false
 
   if (input.tools) validateNames(input.tools, '--tools')
   if (input.disallowedTools)
@@ -177,12 +190,16 @@ export function resolveClaudeToolCapabilities(
   if (backgroundAgents) {
     for (const name of CLAUDE_BACKGROUND_TOOLS) enabled.add(name)
   }
+  if (teams) {
+    for (const name of PRAXIS_TEAM_TOOLS) enabled.add(name)
+  }
 
   if (input.role === 'worker') {
-    for (const name of CLAUDE_WORKER_RECURSIVE_TOOLS) enabled.delete(name)
+    for (const name of [...CLAUDE_WORKER_RECURSIVE_TOOLS, ...PRAXIS_TEAM_TOOLS])
+      enabled.delete(name)
   } else if (input.role === 'coordinator') {
     const explicit = new Set(input.tools ?? [])
-    for (const name of CLAUDE_COORDINATION_TOOLS) {
+    for (const name of [...CLAUDE_COORDINATION_TOOLS, ...PRAXIS_TEAM_TOOLS]) {
       if (!explicit.has(name)) enabled.delete(name)
     }
   }

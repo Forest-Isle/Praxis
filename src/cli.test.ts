@@ -10,7 +10,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
@@ -2968,6 +2968,132 @@ describe('Praxis CLI', () => {
     }
   })
 
+  it('keeps the experimental Team gate default-off, lazy, and on the native root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-capability-'))
+    const claudeRoot = join(root, 'claude')
+    const nativeRoot = join(root, 'native')
+    await mkdir(claudeRoot, { recursive: true })
+    await writeFile(join(claudeRoot, '.claude.json'), '{}')
+    try {
+      const create = async (
+        gate: string | undefined,
+        controlOverrides: Partial<typeof DEFAULT_CLI_CONTROLS> = {},
+      ) =>
+        createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          exposeToolRegistry: true,
+          cwd: root,
+          configRoot: claudeRoot,
+          providerEnvironment: {
+            CLAUDE_CONFIG_DIR: claudeRoot,
+            PRAXIS_HOME: nativeRoot,
+            PRAXIS_DATA_PLANE: 'claude',
+            ...(gate === undefined ? {} : { PRAXIS_ENABLE_TEAMS: gate }),
+          },
+          controls: {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'claude',
+            ...controlOverrides,
+          },
+        })
+
+      for (const gate of [undefined, 'false', 'sometimes']) {
+        const service = await create(gate)
+        try {
+          expect(service.teamLeadOperations).toBeUndefined()
+          expect(
+            service.toolRegistry?.definitions().map(({ name }) => name),
+          ).not.toEqual(
+            expect.arrayContaining([
+              'TeamCreate',
+              'TeamResume',
+              'TeamList',
+              'TeamAccept',
+              'TeamStop',
+            ]),
+          )
+          await expect(
+            access(join(nativeRoot, 'state', 'teams')),
+          ).rejects.toMatchObject({
+            code: 'ENOENT',
+          })
+        } finally {
+          await service.close?.()
+        }
+      }
+
+      const enabled = await create('true')
+      try {
+        expect(enabled.teamLeadOperations).toBeDefined()
+        expect(
+          enabled.toolRegistry?.definitions().map(({ name }) => name),
+        ).toEqual(
+          expect.arrayContaining([
+            'TeamCreate',
+            'TeamResume',
+            'TeamList',
+            'TeamAccept',
+            'TeamStop',
+          ]),
+        )
+        await expect(
+          access(join(nativeRoot, 'state', 'teams')),
+        ).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
+        const operations = enabled.teamLeadOperations
+        if (!operations) throw new Error('missing Team lead operations')
+        const list = vi.spyOn(operations, 'list').mockResolvedValue([])
+        await enabled.toolRegistry?.execute(
+          { id: 'team-list', name: 'TeamList', input: {} },
+          { cwd: root },
+        )
+        expect(list).toHaveBeenCalledOnce()
+      } finally {
+        await enabled.close?.()
+      }
+
+      const selected = await create('true', { tools: ['TeamList'] })
+      try {
+        const definitions =
+          selected.toolRegistry?.definitions().map(({ name }) => name) ?? []
+        expect(definitions).toContain('TeamList')
+        expect(definitions).not.toEqual(
+          expect.arrayContaining([
+            'TeamCreate',
+            'TeamResume',
+            'TeamAccept',
+            'TeamStop',
+          ]),
+        )
+      } finally {
+        await selected.close?.()
+      }
+
+      const disallowed = await create('true', {
+        disallowedTools: ['TeamStop'],
+      })
+      try {
+        const definitions =
+          disallowed.toolRegistry?.definitions().map(({ name }) => name) ?? []
+        expect(definitions).toEqual(
+          expect.arrayContaining([
+            'TeamCreate',
+            'TeamResume',
+            'TeamList',
+            'TeamAccept',
+          ]),
+        )
+        expect(definitions).not.toContain('TeamStop')
+      } finally {
+        await disallowed.close?.()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('projects native hooks normally while safe and bare modes keep only explicit settings', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-native-hooks-'))
     const configRoot = join(root, 'config')
@@ -4912,6 +5038,408 @@ describe('Praxis CLI', () => {
       const capture = captureIO()
       await expect(run(argv, capture.io, dependencies())).resolves.toBe(1)
       expect(capture.stderr.join('')).toContain('Unexpected operand')
+    }
+  })
+
+  it('executes Team CLI commands through the lead operations port', async () => {
+    const manifestRoot = await mkdtemp(join(tmpdir(), 'praxis-team-cli-'))
+    const manifest = join(manifestRoot, 'manifest.json')
+    const request = {
+      teamId: 'team-cli',
+      name: 'CLI team',
+      roster: [],
+      tasks: [],
+    }
+    await writeFile(manifest, JSON.stringify(request))
+    const snapshot = {
+      version: 1 as const,
+      revision: 1,
+      teamId: 'team-cli',
+      name: 'CLI team',
+      projectIdentity: 'project',
+      leadSessionId: 'lead',
+      roster: [],
+      tasks: [],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    const oldGate = process.env.PRAXIS_ENABLE_TEAMS
+    process.env.PRAXIS_ENABLE_TEAMS = 'true'
+    try {
+      const calls: string[] = []
+      const options: boolean[] = []
+      const base = dependencies()
+      const operations = {
+        async list() {
+          calls.push('list')
+          return [snapshot]
+        },
+        async create(input: unknown, lead: string) {
+          calls.push(`create:${JSON.stringify(input)}:${lead}`)
+          return snapshot
+        },
+        async resume(teamId: string, lead: string) {
+          calls.push(`resume:${teamId}:${lead}`)
+          return snapshot
+        },
+        async accept(input: unknown, lead: string) {
+          calls.push(`accept:${JSON.stringify(input)}:${lead}`)
+          return snapshot
+        },
+        async stop(input: unknown, lead: string) {
+          calls.push(`stop:${JSON.stringify(input)}:${lead}`)
+          return snapshot
+        },
+        async detach(teamId: string, lead: string) {
+          calls.push(`detach:${teamId}:${lead}`)
+          return { ...snapshot, revision: 2 }
+        },
+      }
+      const deps: CliDependencies = {
+        async createService(createOptions) {
+          options.push(createOptions.requireProvider)
+          const service = await base.createService(createOptions)
+          return {
+            ...service,
+            teamLeadOperations: operations as never,
+            async close() {
+              calls.push('close')
+            },
+          }
+        },
+      }
+      const trackOutput = (capture: ReturnType<typeof captureIO>) => {
+        const write = capture.io.stdout
+        capture.io.stdout = (message) => {
+          calls.push('output')
+          write(message)
+        }
+      }
+      const list = captureIO()
+      trackOutput(list)
+      await expect(
+        run(['team', 'list', '--json'], list.io, deps),
+      ).resolves.toBe(0)
+      expect(JSON.parse(list.stdout.join(''))).toEqual({ teams: [snapshot] })
+      expect(options).toEqual([false])
+      expect(calls).toEqual(['list', 'output', 'close'])
+
+      calls.length = 0
+      const create = captureIO()
+      trackOutput(create)
+      await expect(
+        run(
+          ['team', 'create', manifest, '--lead-session-id', 'lead', '--json'],
+          create.io,
+          deps,
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(create.stdout.join(''))).toEqual({
+        team: { ...snapshot, revision: 2 },
+      })
+      expect(calls).toEqual([
+        `create:${JSON.stringify(request)}:lead`,
+        'detach:team-cli:lead',
+        'output',
+        'close',
+      ])
+
+      calls.length = 0
+      const resume = captureIO()
+      trackOutput(resume)
+      await expect(
+        run(
+          ['team', 'resume', 'team-cli', '--lead-session-id', 'lead', '--json'],
+          resume.io,
+          deps,
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(resume.stdout.join(''))).toEqual({
+        team: { ...snapshot, revision: 2 },
+      })
+      expect(calls).toEqual([
+        'resume:team-cli:lead',
+        'detach:team-cli:lead',
+        'output',
+        'close',
+      ])
+
+      calls.length = 0
+      const accept = captureIO()
+      trackOutput(accept)
+      await expect(
+        run(
+          [
+            'team',
+            'accept',
+            'team-cli',
+            'task-1',
+            '--lead-session-id',
+            'lead',
+            '--generation',
+            '2',
+            '--decision',
+            'rejected',
+            '--json',
+          ],
+          accept.io,
+          deps,
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(accept.stdout.join(''))).toEqual({
+        team: { ...snapshot, revision: 2 },
+      })
+      expect(calls).toEqual([
+        'accept:{"teamId":"team-cli","taskId":"task-1","generation":2,"decision":"rejected"}:lead',
+        'detach:team-cli:lead',
+        'output',
+        'close',
+      ])
+
+      calls.length = 0
+      const stop = captureIO()
+      trackOutput(stop)
+      await expect(
+        run(
+          [
+            'team',
+            'stop',
+            'team-cli',
+            '--lead-session-id',
+            'lead',
+            '--drain-ms',
+            '42',
+            '--json',
+          ],
+          stop.io,
+          deps,
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(stop.stdout.join(''))).toEqual({ team: snapshot })
+      expect(calls).toEqual([
+        'stop:{"teamId":"team-cli","drainMs":42}:lead',
+        'output',
+        'close',
+      ])
+      expect(calls).not.toContain(expect.stringContaining('detach'))
+      expect(options).toEqual([false, true, true, true, true])
+    } finally {
+      if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+      else process.env.PRAXIS_ENABLE_TEAMS = oldGate
+      await rm(manifestRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('gates Team CLI before service creation or manifest reads', async () => {
+    const calls: string[] = []
+    const deps: CliDependencies = {
+      async createService() {
+        calls.push('createService')
+        throw new Error('must not create')
+      },
+    }
+    const oldGate = process.env.PRAXIS_ENABLE_TEAMS
+    try {
+      for (const gate of [undefined, 'false', 'garbage']) {
+        if (gate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+        else process.env.PRAXIS_ENABLE_TEAMS = gate
+        const capture = captureIO()
+        await expect(
+          run(
+            [
+              'team',
+              'create',
+              '/missing-manifest.json',
+              '--lead-session-id',
+              'lead',
+              '--json',
+            ],
+            capture.io,
+            deps,
+          ),
+        ).resolves.toBe(1)
+        expect(JSON.parse(capture.stdout.join(''))).toEqual({
+          type: 'error',
+          message:
+            'Experimental Team capability is disabled; set PRAXIS_ENABLE_TEAMS=true',
+        })
+      }
+      expect(calls).toEqual([])
+    } finally {
+      if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+      else process.env.PRAXIS_ENABLE_TEAMS = oldGate
+    }
+  })
+
+  it('rejects Team data-plane flags and malformed command options', async () => {
+    const oldGate = process.env.PRAXIS_ENABLE_TEAMS
+    process.env.PRAXIS_ENABLE_TEAMS = 'true'
+    const calls: string[] = []
+    const deps: CliDependencies = {
+      async createService() {
+        calls.push('createService')
+        throw new Error('unexpected')
+      },
+    }
+    try {
+      for (const argv of [
+        ['team', 'list', '--data-plane', 'native'],
+        ['team', 'list', '--data-plane=claude'],
+        ['--data-plane', 'native', 'team', 'list'],
+        ['team', 'list', '--unknown'],
+        ['team', 'list', '--json', '--json'],
+        ['team', 'list', 'extra'],
+        ['team', 'resume', 't', '--lead-session-id'],
+        [
+          'team',
+          'resume',
+          't',
+          '--lead-session-id',
+          'one',
+          '--lead-session-id',
+          'two',
+        ],
+        [
+          'team',
+          'accept',
+          't',
+          'x',
+          '--lead-session-id',
+          'l',
+          '--generation',
+          '-1',
+        ],
+        [
+          'team',
+          'accept',
+          't',
+          'x',
+          '--lead-session-id',
+          'l',
+          '--decision',
+          'maybe',
+        ],
+        ['team', 'stop', 't', '--lead-session-id', 'l', '--drain-ms', 'bad'],
+        ['team', 'stop', 't', '--lead-session-id', 'l', '--drain-ms', '600001'],
+        ['team', 'wat'],
+      ]) {
+        const capture = captureIO()
+        await expect(run(argv, capture.io, deps)).resolves.toBe(1)
+      }
+      expect(calls).toEqual([])
+    } finally {
+      if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+      else process.env.PRAXIS_ENABLE_TEAMS = oldGate
+    }
+  })
+
+  it('closes failed Team CLI services without emitting a success payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-cli-failure-'))
+    const malformed = join(root, 'malformed.json')
+    const nonObject = join(root, 'non-object.json')
+    const valid = join(root, 'valid.json')
+    await writeFile(malformed, '{bad')
+    await writeFile(nonObject, '[]')
+    await writeFile(
+      valid,
+      JSON.stringify({
+        teamId: 'team-failure',
+        name: 'Failure team',
+        roster: [],
+        tasks: [],
+      }),
+    )
+    const oldGate = process.env.PRAXIS_ENABLE_TEAMS
+    process.env.PRAXIS_ENABLE_TEAMS = 'true'
+    const base = dependencies()
+    const execute = async (
+      argv: readonly string[],
+      operations: Record<string, unknown> | undefined,
+    ) => {
+      const order: string[] = []
+      const capture = captureIO()
+      const deps: CliDependencies = {
+        async createService(options) {
+          const service = await base.createService(options)
+          return {
+            ...service,
+            ...(operations === undefined
+              ? {}
+              : { teamLeadOperations: operations as never }),
+            async close() {
+              order.push('close')
+            },
+          }
+        },
+      }
+      const code = await run(argv, capture.io, deps)
+      return { code, capture, order }
+    }
+    try {
+      const unavailable = await execute(['team', 'list', '--json'], undefined)
+      expect(unavailable.code).toBe(1)
+      expect(JSON.parse(unavailable.capture.stdout.join(''))).toEqual({
+        type: 'error',
+        message: 'Team lead operations are unavailable',
+      })
+      expect(unavailable.order).toEqual(['close'])
+
+      const operationFailure = await execute(['team', 'list', '--json'], {
+        async list() {
+          throw new Error('list failed')
+        },
+      })
+      expect(operationFailure.code).toBe(1)
+      expect(JSON.parse(operationFailure.capture.stdout.join(''))).toEqual({
+        type: 'error',
+        message: 'list failed',
+      })
+      expect(operationFailure.order).toEqual(['close'])
+
+      const calls: string[] = []
+      const detachFailure = await execute(
+        ['team', 'create', valid, '--lead-session-id', 'lead', '--json'],
+        {
+          async create() {
+            calls.push('create')
+            return {}
+          },
+          async detach() {
+            calls.push('detach')
+            throw new Error('detach failed')
+          },
+        },
+      )
+      expect(detachFailure.code).toBe(1)
+      expect(JSON.parse(detachFailure.capture.stdout.join(''))).toEqual({
+        type: 'error',
+        message: 'detach failed',
+      })
+      expect(calls).toEqual(['create', 'detach'])
+      expect(detachFailure.order).toEqual(['close'])
+
+      for (const manifest of [malformed, nonObject]) {
+        const manifestFailure = await execute(
+          ['team', 'create', manifest, '--lead-session-id', 'lead', '--json'],
+          {
+            async create() {
+              throw new Error('manifest reached operations')
+            },
+          },
+        )
+        expect(manifestFailure.code).toBe(1)
+        expect(
+          JSON.parse(manifestFailure.capture.stdout.join('')),
+        ).toMatchObject({ type: 'error' })
+        expect(manifestFailure.capture.stdout.join('')).not.toContain(
+          'manifest reached operations',
+        )
+        expect(manifestFailure.order).toEqual(['close'])
+      }
+    } finally {
+      if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+      else process.env.PRAXIS_ENABLE_TEAMS = oldGate
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

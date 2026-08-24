@@ -5,6 +5,8 @@ import {
   CLAUDE_CODE_DISABLE_CRON,
   CLAUDE_CODE_ENABLE_TASKS,
   ClaudeCapabilityToolRegistry,
+  PRAXIS_TEAM_TOOLS,
+  PRAXIS_ENABLE_TEAMS,
   PRAXIS_ENABLE_WORKFLOW_SCRIPTS,
   resolveClaudeToolCapabilities,
 } from './claude-capabilities.js'
@@ -178,6 +180,83 @@ describe('resolveClaudeToolCapabilities', () => {
         tools: ['Read'],
       }),
     ).toThrow('Unknown capability tool')
+  })
+
+  it('resolves the Team gate from explicit input before environment and defaults off', () => {
+    expect(
+      names({
+        role: 'main',
+        interactive: false,
+        simpleMode: false,
+        env: { [PRAXIS_ENABLE_TEAMS]: 'true' },
+      }),
+    ).toEqual(expect.arrayContaining([...PRAXIS_TEAM_TOOLS]))
+    expect(
+      names({
+        role: 'main',
+        interactive: false,
+        simpleMode: false,
+        teams: false,
+        env: { [PRAXIS_ENABLE_TEAMS]: 'true' },
+      }),
+    ).not.toEqual(expect.arrayContaining([...PRAXIS_TEAM_TOOLS]))
+    for (const value of [undefined, '', 'false', 'maybe']) {
+      expect(
+        names({
+          role: 'main',
+          interactive: false,
+          simpleMode: false,
+          env: { [PRAXIS_ENABLE_TEAMS]: value },
+        }),
+      ).not.toEqual(expect.arrayContaining([...PRAXIS_TEAM_TOOLS]))
+    }
+  })
+
+  it('suppresses Teams for simple and worker runtimes and only filters enabled names', () => {
+    expect(
+      names({
+        role: 'worker',
+        interactive: false,
+        simpleMode: false,
+        teams: true,
+      }),
+    ).not.toEqual(expect.arrayContaining([...PRAXIS_TEAM_TOOLS]))
+    expect(
+      names({
+        role: 'main',
+        interactive: false,
+        simpleMode: true,
+        teams: true,
+        tools: ['TeamList'],
+      }),
+    ).toEqual([])
+    expect(
+      names({
+        role: 'main',
+        interactive: false,
+        simpleMode: false,
+        tools: ['TeamList'],
+      }),
+    ).toEqual([])
+    expect(
+      names({
+        role: 'main',
+        interactive: false,
+        simpleMode: false,
+        teams: true,
+        tools: ['TeamList'],
+        disallowedTools: ['TeamList'],
+      }),
+    ).not.toContain('TeamList')
+    expect(
+      names({
+        role: 'coordinator',
+        interactive: false,
+        simpleMode: false,
+        teams: true,
+        tools: ['TeamList'],
+      }),
+    ).toEqual(['TeamList'])
   })
 })
 

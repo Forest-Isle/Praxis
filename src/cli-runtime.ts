@@ -22,6 +22,15 @@ import {
   type SideQuestionResult,
 } from './application/session-service.js'
 import {
+  DEFAULT_LOCAL_TEAM_CONCURRENCY,
+  LocalTeamCapability,
+} from './application/team-capability.js'
+import { ClaudeTeamAgentRuntime } from './application/team-agent-runtime.js'
+import {
+  TeamLeadOperations,
+  type TeamCreateRequest,
+} from './application/team-lead-operations.js'
+import {
   ProjectMemoryAgentExtractor,
   ProjectMemoryExtractionController,
   ProjectMemoryModelSelector,
@@ -104,6 +113,10 @@ import {
   type TuiHookConfiguration,
 } from './cli/tui/hook-settings.js'
 import { DEFAULT_CLI_CONTROLS, resolveCliControls } from './cli/controls.js'
+import {
+  PRAXIS_TEAM_TOOLS,
+  resolveClaudeToolCapabilities,
+} from './tools/claude-capabilities.js'
 import {
   applyRuntimeSettingDefaults,
   loadRuntimeSettings,
@@ -384,6 +397,7 @@ Usage:
   praxis attach <agent-id>
   praxis logs <agent-id>
   praxis stop <agent-id>
+  praxis team <create|resume|list|accept|stop> ...
   praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve> ...
   praxis auto-mode <config|defaults|critique>
   praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|prune|tag|validate|marketplace> ...
@@ -1004,6 +1018,16 @@ Options:
   -h, --help  Show help
 `
 
+const TEAM_HELP = `Usage: praxis team <command>
+
+Commands:
+  create <manifest.json> --lead-session-id <id> [--json]
+  resume <team-id> --lead-session-id <id> [--json]
+  list [--json]
+  accept <team-id> <task-id> --lead-session-id <id> [--generation <n>] [--decision accepted|rejected] [--json]
+  stop <team-id> --lead-session-id <id> [--drain-ms <ms>] [--json]
+`
+
 export { parseContextEnvironment, parseProviderEnvironment }
 
 export interface CliIO {
@@ -1014,6 +1038,7 @@ export interface CliIO {
 }
 
 interface SessionCommands {
+  teamLeadOperations?: TeamLeadOperations
   toolRegistry?: ToolRegistry
   run(
     prompt: string,
@@ -1990,6 +2015,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       'ScheduleWakeup',
     ] as const
     const workflowToolNames = ['Workflow'] as const
+    const teamToolNames = PRAXIS_TEAM_TOOLS
     const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
     const interactiveToolNames = [
       'AskUserQuestion',
@@ -2024,6 +2050,21 @@ const createDefaultService: CliDependencies['createService'] = async ({
       (name) =>
         (runtimeSettings?.workflows ?? true) &&
         cli.sessionPersistence &&
+        !simpleMode &&
+        (cli.tools === undefined ||
+          cli.tools.includes('default') ||
+          cli.tools.includes(name)) &&
+        !cli.disallowedTools.includes(name),
+    )
+    const teamEnabled = resolveClaudeToolCapabilities({
+      role: 'main',
+      interactive,
+      simpleMode,
+      env: runtimeEnvironment,
+    }).has('TeamCreate')
+    const selectedTeamTools = teamToolNames.filter(
+      (name) =>
+        teamEnabled &&
         !simpleMode &&
         (cli.tools === undefined ||
           cli.tools.includes('default') ||
@@ -2073,6 +2114,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         !workflowToolNames.includes(
           name as (typeof workflowToolNames)[number],
         ) &&
+        !teamToolNames.includes(name as (typeof teamToolNames)[number]) &&
         !worktreeToolNames.includes(
           name as (typeof worktreeToolNames)[number],
         ) &&
@@ -2138,6 +2180,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             ...selectedTaskRuntimeTools,
             ...selectedScheduledTools,
             ...selectedWorkflowTools,
+            ...selectedTeamTools,
             ...selectedWorktreeTools,
             ...selectedInteractiveTools,
             ...(enableSubagents ? selectedAgentTools : []),
@@ -2175,6 +2218,38 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(simpleMode ? { bare: true } : {}),
     })
+    const teamCapability = teamEnabled
+      ? new LocalTeamCapability({
+          nativeRoot: resolveDataPlaneRoot({
+            dataPlane: 'native',
+            environment: runtimeEnvironment,
+          }),
+          cwd: () => workspace.cwd(),
+          maxConcurrent: DEFAULT_LOCAL_TEAM_CONCURRENCY,
+          baseTools: filteredTools,
+          permissions,
+          createRuntime: () =>
+            new ClaudeTeamAgentRuntime({
+              nativeRoot: resolveDataPlaneRoot({
+                dataPlane: 'native',
+                environment: runtimeEnvironment,
+              }),
+              configRoot,
+              claudeVersion,
+              provider: hostedToolProvider,
+              ...(extensions ? { extensions } : {}),
+              mcp: mcpTools,
+              ...(hooks ? { hooks } : {}),
+              ...(contextAssembler ? { contextAssembler } : {}),
+              ...(providerForModel ? { providerForModel } : {}),
+              permissionResolverForMode,
+              eventSink: runtimeEventSink,
+            }),
+        })
+      : undefined
+    const teamLeadOperations = teamCapability
+      ? new TeamLeadOperations(teamCapability)
+      : undefined
     const service = new ClaudeSessionService({
       ...options,
       provider: hostedToolProvider,
@@ -2200,6 +2275,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       subagentToolNames: routedSubagentTools,
       taskToolNames: selectedTaskRuntimeTools,
       scheduledToolNames: selectedScheduledTools,
+      teamToolNames: selectedTeamTools,
       enableDynamicWakeups: interactive,
       enableWorkflows: selectedWorkflowTools.length > 0,
       emitToolUseSummaries,
@@ -2232,6 +2308,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ...cli.additionalDirectories,
         ...(memoryDirectory ? [memoryDirectory] : []),
       ],
+      ...(teamLeadOperations ? { teamLeadOperations } : {}),
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),
@@ -2244,6 +2321,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...selectedWorktreeTools,
       ...selectedInteractiveTools,
       ...(enableSubagents ? selectedAgentTools : []),
+      ...selectedTeamTools,
     ]
     const runtimeInfo: CliRuntimeInfo = {
       cwd: workspace.cwd(),
@@ -2284,6 +2362,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : filteredTools
     let pendingResumeSessionAt = cli.resumeSessionAt
     return {
+      ...(teamLeadOperations ? { teamLeadOperations } : {}),
       toolRegistry,
       run: (prompt, signal, sessionId, name, images, documents) =>
         service.run(
@@ -5240,6 +5319,7 @@ function printCommandHelp(argv: readonly string[], io: CliIO): boolean {
       'auto-mode',
       'project',
       'import',
+      'team',
     ].includes(value),
   )
   if (commandIndex < 0) return false
@@ -5329,7 +5409,237 @@ function printCommandHelp(argv: readonly string[], io: CliIO): boolean {
     io.stdout(IMPORT_HELP)
     return true
   }
+  if (command === 'team') {
+    if (!hasHelpFlag) return false
+    io.stdout(TEAM_HELP)
+    return true
+  }
   return false
+}
+
+type TeamCliCommand =
+  | {
+      command: 'create'
+      manifest: string
+      leadSessionId: string
+      json: boolean
+    }
+  | { command: 'resume'; teamId: string; leadSessionId: string; json: boolean }
+  | { command: 'list'; json: boolean }
+  | {
+      command: 'accept'
+      teamId: string
+      taskId: string
+      leadSessionId: string
+      generation?: number
+      decision: 'accepted' | 'rejected'
+      json: boolean
+    }
+  | {
+      command: 'stop'
+      teamId: string
+      leadSessionId: string
+      drainMs?: number
+      json: boolean
+    }
+
+function parseTeamCommand(args: readonly string[]): TeamCliCommand {
+  if (args[0] !== 'team') throw new Error('Invalid Team command')
+  const command = args[1]
+  if (!command || command === 'help') throw new Error(TEAM_HELP.trim())
+  if (!['create', 'resume', 'list', 'accept', 'stop'].includes(command))
+    throw new Error(`Unsupported Team command: ${command}`)
+  const operands: string[] = []
+  let json = false
+  let leadSessionId: string | undefined
+  let generation: number | undefined
+  let decision: 'accepted' | 'rejected' = 'accepted'
+  let drainMs: number | undefined
+  const seen = new Set<string>()
+  const optionValue = (index: number, option: string): string => {
+    const value = args[index + 1]
+    if (value === undefined || value.startsWith('--'))
+      throw new Error(`${option} requires a value`)
+    if (seen.has(option))
+      throw new Error(`${option} may only be specified once`)
+    seen.add(option)
+    return value
+  }
+  for (let index = 2; index < args.length; index += 1) {
+    const value = args[index] as string
+    if (value === '--json') {
+      if (json) throw new Error('--json may only be specified once')
+      json = true
+    } else if (value === '--lead-session-id') {
+      leadSessionId = optionValue(index, value)
+      index += 1
+    } else if (value === '--generation') {
+      const raw = optionValue(index, value)
+      if (!/^\d+$/.test(raw)) throw new Error('Invalid generation')
+      generation = Number(raw)
+      if (!Number.isSafeInteger(generation))
+        throw new Error('Invalid generation')
+      index += 1
+    } else if (value === '--decision') {
+      const raw = optionValue(index, value)
+      if (raw !== 'accepted' && raw !== 'rejected')
+        throw new Error('Invalid decision')
+      decision = raw
+      index += 1
+    } else if (value === '--drain-ms') {
+      const raw = optionValue(index, value)
+      if (!/^\d+(?:\.\d+)?$/.test(raw)) throw new Error('Invalid drain-ms')
+      drainMs = Number(raw)
+      if (!Number.isFinite(drainMs) || drainMs < 0 || drainMs > 600000)
+        throw new Error('Invalid drain-ms')
+      index += 1
+    } else if (value.startsWith('-')) {
+      throw new Error(`Unknown Team option: ${value}`)
+    } else operands.push(value)
+  }
+  const requireLead = (): string => {
+    if (!leadSessionId) throw new Error('--lead-session-id requires a value')
+    return leadSessionId
+  }
+  const rejectOptions = (allowed: readonly string[]): void => {
+    for (const option of seen) {
+      if (!allowed.includes(option))
+        throw new Error(`${option} is not valid for team ${command}`)
+    }
+  }
+  if (command === 'create') {
+    rejectOptions(['--lead-session-id'])
+    if (operands.length !== 1)
+      throw new Error('create requires a manifest path')
+    return {
+      command,
+      manifest: operands[0] as string,
+      leadSessionId: requireLead(),
+      json,
+    }
+  }
+  if (command === 'list') {
+    rejectOptions([])
+    if (operands.length !== 0) throw new Error('Invalid list options')
+    return { command, json }
+  }
+  if (command === 'resume') {
+    rejectOptions(['--lead-session-id'])
+    if (operands.length !== 1) throw new Error('resume requires a team ID')
+    return {
+      command,
+      teamId: operands[0] as string,
+      leadSessionId: requireLead(),
+      json,
+    }
+  }
+  if (command === 'accept') {
+    rejectOptions(['--lead-session-id', '--generation', '--decision'])
+    if (operands.length !== 2)
+      throw new Error('accept requires team ID and task ID')
+    return {
+      command,
+      teamId: operands[0] as string,
+      taskId: operands[1] as string,
+      leadSessionId: requireLead(),
+      ...(generation === undefined ? {} : { generation }),
+      decision,
+      json,
+    }
+  }
+  rejectOptions(['--lead-session-id', '--drain-ms'])
+  if (operands.length !== 1) throw new Error('stop requires a team ID')
+  return {
+    command: 'stop',
+    teamId: operands[0] as string,
+    leadSessionId: requireLead(),
+    ...(drainMs === undefined ? {} : { drainMs }),
+    json,
+  }
+}
+
+function teamEnabled(environment: NodeJS.ProcessEnv): boolean {
+  return /^(1|true|yes|on)$/i.test(
+    (environment.PRAXIS_ENABLE_TEAMS ?? '').trim(),
+  )
+}
+
+async function executeTeamCommand(
+  args: readonly string[],
+  io: CliIO,
+  dependencies: CliDependencies,
+  signal?: AbortSignal,
+): Promise<number> {
+  const parsed = parseTeamCommand(args)
+  if (!teamEnabled(process.env))
+    throw new Error(
+      'Experimental Team capability is disabled; set PRAXIS_ENABLE_TEAMS=true',
+    )
+  const nativeControls = {
+    ...DEFAULT_CLI_CONTROLS,
+    dataPlane: 'native' as const,
+  }
+  const service = await dependencies.createService({
+    eventSink: () => undefined,
+    requireProvider: parsed.command !== 'list',
+    exposeToolRegistry: true,
+    controls: nativeControls,
+    configRoot: resolveDataPlaneRoot({ dataPlane: 'native' }),
+    providerEnvironment: process.env,
+    ...(signal ? { signal } : {}),
+  })
+  try {
+    const operations = service.teamLeadOperations
+    if (!operations) throw new Error('Team lead operations are unavailable')
+    if (parsed.command === 'list') {
+      const teams = await operations.list()
+      if (parsed.json) writeJson(io, { teams })
+      else
+        io.stdout(
+          `${teams.map((team) => team.teamId).join('\n')}${teams.length ? '\n' : ''}`,
+        )
+      return 0
+    }
+    let snapshot
+    if (parsed.command === 'create') {
+      const raw = await readFile(parsed.manifest, 'utf8')
+      const value: unknown = JSON.parse(raw)
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error('Team manifest must be an object')
+      const request = value as TeamCreateRequest
+      snapshot = await operations.create(request, parsed.leadSessionId)
+      snapshot = await operations.detach(request.teamId, parsed.leadSessionId)
+    } else if (parsed.command === 'resume') {
+      snapshot = await operations.resume(parsed.teamId, parsed.leadSessionId)
+      snapshot = await operations.detach(parsed.teamId, parsed.leadSessionId)
+    } else if (parsed.command === 'accept') {
+      snapshot = await operations.accept(
+        {
+          teamId: parsed.teamId,
+          taskId: parsed.taskId,
+          ...(parsed.generation === undefined
+            ? {}
+            : { generation: parsed.generation }),
+          decision: parsed.decision,
+        },
+        parsed.leadSessionId,
+      )
+      snapshot = await operations.detach(parsed.teamId, parsed.leadSessionId)
+    } else {
+      snapshot = await operations.stop(
+        {
+          teamId: parsed.teamId,
+          ...(parsed.drainMs === undefined ? {} : { drainMs: parsed.drainMs }),
+        },
+        parsed.leadSessionId,
+      )
+    }
+    if (parsed.json) writeJson(io, { team: snapshot })
+    else io.stdout(`${snapshot.teamId}\n`)
+    return 0
+  } finally {
+    await service.close?.()
+  }
 }
 
 function extractSpecialDataPlane(argv: readonly string[]): {
@@ -5362,6 +5672,7 @@ function extractSpecialDataPlane(argv: readonly string[]): {
 
 function specialCommandIndex(argv: readonly string[]): number {
   const commands = new Set([
+    'team',
     'plugin',
     'plugins',
     'project',
@@ -5418,6 +5729,28 @@ async function execute(
     return dependencies.runInteractive(signal ? { signal } : {})
   }
   const commandIndex = specialCommandIndex(argv)
+  if (
+    commandIndex >= 0 &&
+    argv[commandIndex] === 'team' &&
+    !argv.includes('--help') &&
+    !argv.includes('-h')
+  ) {
+    if (
+      argv.some(
+        (value) =>
+          value === '--data-plane' || value.startsWith('--data-plane='),
+      )
+    )
+      throw new Error(
+        'Team commands are native-only; --data-plane is not supported',
+      )
+    return executeTeamCommand(
+      argv.slice(commandIndex),
+      io,
+      dependencies,
+      signal,
+    )
+  }
   const specialPrefix =
     commandIndex > 0 &&
     (argv[commandIndex] === 'plugin' || argv[commandIndex] === 'plugins')
