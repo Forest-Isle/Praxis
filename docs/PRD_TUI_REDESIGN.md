@@ -136,7 +136,9 @@ around a minimal, low-noise reading model:
 
 ## Further Notes
 
-The existing TUI tests provide a strong behavioral baseline: the core focused
-suite currently passes 201 tests. The redesign should be executed as an
-expand-contract migration. Each slice must leave a demoable path working and
-must preserve the shared transcript/runtime boundary.
+The redesign is an expand-contract migration. Its retained transcript window,
+atomic presentation environment, and root `TuiScreenModel` now form one pure
+projection path for fullscreen, classic, and screen-reader structure. Existing
+leaf dialogs, menus, and dashboards remain in place while their semantic
+surfaces migrate behind that seam in later slices. Each slice must leave a
+demoable path working and preserve the shared transcript/runtime boundary.
