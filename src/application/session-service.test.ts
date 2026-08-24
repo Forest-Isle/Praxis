@@ -7423,7 +7423,7 @@ describe('ClaudeSessionService', () => {
     expect((await service.taskSnapshots(sessionId)).agents).toContainEqual(
       expect.objectContaining({
         agentId: stoppedAgentId,
-        status: 'stopped',
+        status: 'cancelled',
       }),
     )
     await service.close()
@@ -7610,7 +7610,7 @@ describe('ClaudeSessionService', () => {
     await service.stopTask(sessionId, taskId)
     await vi.waitFor(async () => {
       await expect(service.taskSnapshots(sessionId)).resolves.toMatchObject({
-        agents: [{ agentId: taskId, status: 'stopped' }],
+        agents: [{ agentId: taskId, status: 'cancelled' }],
       })
     })
     await expect(service.stopTask('other-session', taskId)).rejects.toThrow(

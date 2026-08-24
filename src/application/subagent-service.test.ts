@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
@@ -33,7 +33,12 @@ import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
-import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
+import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
+import {
+  SubagentExecution,
+  SubagentLifecycleStore,
+  type PersistedSubagentRunResult,
+} from '../persistence/subagent-lifecycle-store.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
@@ -46,6 +51,27 @@ import {
 const roots: string[] = []
 const execFileAsync = promisify(execFile)
 const originalSubagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+
+async function persistTerminal(
+  store: SubagentLifecycleStore,
+  state: 'completed' | 'failed' | 'cancelled',
+  detail?: string,
+  result?: PersistedSubagentRunResult,
+  notification?: {
+    id: string
+    status: 'completed' | 'failed' | 'killed'
+    toolUseId: string
+    error: string | null
+  },
+): Promise<void> {
+  const execution = (await store.read())
+    ? await store.continue()
+    : await store.start()
+  await execution.running()
+  if (state === 'cancelled') await execution.beginCancellation()
+  await execution.finish(state, result, detail, notification)
+  await execution.release()
+}
 
 function contextSnapshot(system: readonly string[] = []): ContextSnapshot {
   return {
@@ -1323,6 +1349,345 @@ describe('foreground Claude Agent execution', () => {
     ])
   })
 
+  it('terminalizes and releases a persisted Agent when background admission fails', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-admission-failure-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let providerCalls = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'UNREACHABLE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_rejected_background_agent',
+        name: 'Agent',
+        input: {
+          description: 'Rejected background Agent',
+          prompt: 'Do not start',
+          subagent_type: 'general-purpose',
+          isolation: 'worktree',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    await executor.close()
+
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(
+      'Background agent manager is closed',
+    )
+    expect(providerCalls).toBe(0)
+
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const lifecycleDirectory = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    const lifecycleFiles = (await readdir(lifecycleDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(lifecycleFiles).toHaveLength(1)
+    const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
+    expect(JSON.parse(await readFile(lifecyclePath, 'utf8'))).toMatchObject({
+      version: 2,
+      lifecycle: { state: 'failed', revision: 1 },
+      detail: 'Background agent launch was rejected before execution started',
+    })
+    await expect(stat(`${lifecyclePath}.owner.lock`)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    const subagentDirectory = join(paths.projectRoot, sessionId, 'subagents')
+    const metadataFile = (await readdir(subagentDirectory)).find((file) =>
+      file.endsWith('.meta.json'),
+    )
+    expect(metadataFile).toEqual(expect.any(String))
+    const metadata = JSON.parse(
+      await readFile(join(subagentDirectory, metadataFile ?? ''), 'utf8'),
+    ) as { worktreePath?: string }
+    expect(metadata.worktreePath).toEqual(expect.any(String))
+    await expect(stat(metadata.worktreePath ?? '')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await expect(
+      readFile(
+        join(
+          subagentDirectory,
+          (metadataFile ?? '').replace(/\.meta\.json$/u, '.jsonl'),
+        ),
+        'utf8',
+      ),
+    ).resolves.toContain('Do not start')
+  })
+
+  it('preserves the primary failure and recovers after unfinished release diagnostics', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-unfinished-release-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const events: RuntimeEvent[] = []
+    let initialProviderCalls = 0
+    const interrupted = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          initialProviderCalls += 1
+          yield { type: 'text-delta', delta: 'UNREACHABLE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => events.push(event),
+    })
+    const registry = interrupted.registry(sessionId, 0, () => promptId)
+    const originalRelease = SubagentExecution.prototype.release
+    const runningSpy = vi
+      .spyOn(SubagentExecution.prototype, 'running')
+      .mockRejectedValueOnce(new Error('primary lifecycle setup failure'))
+    const releaseSpy = vi
+      .spyOn(SubagentExecution.prototype, 'release')
+      .mockImplementationOnce(async function (this: SubagentExecution) {
+        await originalRelease.call(this)
+        throw new Error('injected release diagnostic')
+      })
+    let agentId = ''
+    try {
+      const launched = await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_unfinished_release',
+            name: 'Agent',
+            input: {
+              description: 'Recover unfinished release',
+              prompt: 'Start once',
+              subagent_type: 'general-purpose',
+              run_in_background: true,
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      agentId = String(launched.nativeToolUseResult?.agentId)
+      const failed = await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_unfinished_output',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: true, timeout: 30_000 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(failed.content).toContain('<status>interrupted</status>')
+      expect(failed.content).toContain('primary lifecycle setup failure')
+      expect(failed.content).not.toContain('injected release diagnostic')
+      expect(initialProviderCalls).toBe(0)
+      expect(events).toContainEqual({
+        type: 'warning',
+        message: expect.stringContaining(
+          'durable owner reconciliation is required: injected release diagnostic',
+        ),
+      })
+    } finally {
+      runningSpy.mockRestore()
+      releaseSpy.mockRestore()
+    }
+
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+    )
+    await expect(lifecycleStore.read()).resolves.toMatchObject({
+      lifecycle: { generation: 1, state: 'orphaned' },
+    })
+
+    let recoveryProviderCalls = 0
+    const recovered = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          recoveryProviderCalls += 1
+          yield { type: 'text-delta', delta: 'RECOVERED_RESULT' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const recoveredRegistry = recovered.registry(sessionId, 0, () => promptId)
+    const sent = await recoveredRegistry.execute(
+      await recoveredRegistry.prepare(
+        {
+          id: 'call_recover_unfinished',
+          name: 'SendMessage',
+          input: {
+            to: agentId,
+            message: 'Recover with a fresh owner',
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('"success":true')
+    const output = await recoveredRegistry.execute(
+      await recoveredRegistry.prepare(
+        {
+          id: 'call_recovered_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('RECOVERED_RESULT')
+    expect(recoveryProviderCalls).toBe(1)
+    await expect(lifecycleStore.read()).resolves.toMatchObject({
+      lifecycle: { generation: 2, state: 'completed' },
+      result: { text: 'RECOVERED_RESULT' },
+    })
+  })
+
+  it('settles setup failure before surfacing worktree cleanup failure', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-setup-cleanup-failure-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    let providerCalls = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'UNREACHABLE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const cleanup = vi.fn(async () => {
+      throw new Error('worktree cleanup failed')
+    })
+    const worktreeSpy = vi
+      .spyOn(
+        executor as unknown as {
+          createAgentWorktree: (...args: unknown[]) => Promise<{
+            cwd: string
+            cleanup: () => Promise<{ retained: boolean }>
+          }>
+        },
+        'createAgentWorktree',
+      )
+      .mockResolvedValue({ cwd: join(cwd, 'fake-worktree'), cleanup })
+    const sidechainSpy = vi
+      .spyOn(ClaudeSidechainStore.prototype, 'create')
+      .mockRejectedValue(new Error('sidechain setup failed'))
+    try {
+      const registry = executor.registry(sessionId, 0, () => promptId)
+      const call = await registry.prepare(
+        {
+          id: 'call_setup_cleanup_failure',
+          name: 'Agent',
+          input: {
+            description: 'Setup cleanup failure',
+            prompt: 'Must not run',
+            subagent_type: 'general-purpose',
+            isolation: 'worktree',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      )
+      let thrown: unknown
+      try {
+        await registry.execute(call, { cwd })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(AggregateError)
+      const aggregate = thrown as AggregateError
+      expect(aggregate.errors).toHaveLength(2)
+      expect((aggregate.errors[0] as Error).message).toBe(
+        'sidechain setup failed',
+      )
+      expect((aggregate.errors[1] as Error).message).toBe(
+        'worktree cleanup failed',
+      )
+      expect(providerCalls).toBe(0)
+      expect(cleanup).toHaveBeenCalledTimes(1)
+
+      const paths = resolveClaudePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId,
+      })
+      const lifecycleDirectory = join(
+        paths.praxisRoot,
+        'subagent-lifecycle',
+        sessionId,
+      )
+      const lifecycleFiles = (await readdir(lifecycleDirectory)).filter(
+        (file) => file.endsWith('.json'),
+      )
+      expect(lifecycleFiles).toHaveLength(1)
+      const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
+      expect(JSON.parse(await readFile(lifecyclePath, 'utf8'))).toMatchObject({
+        version: 2,
+        lifecycle: { state: 'failed', revision: 1 },
+        detail: 'sidechain setup failed',
+        result: {
+          text: 'sidechain setup failed',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: 0,
+        },
+      })
+      await expect(stat(`${lifecyclePath}.owner.lock`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    } finally {
+      sidechainSpy.mockRestore()
+      worktreeSpy.mockRestore()
+    }
+  })
+
   it('loads native custom agent memory and preloads declared skills', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-test-'))
     roots.push(root)
@@ -2453,15 +2818,102 @@ describe('foreground Claude Agent execution', () => {
     }
   })
 
-  it('polls and resumes a completed background sidechain from a new executor', async () => {
+  it('observes an immediate cancellation transition rejection while provider work is pending', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-cancellation-rejection-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let started!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let observedAbort!: () => void
+    const abortObserved = new Promise<void>((resolve) => {
+      observedAbort = resolve
+    })
+    let releaseProvider!: () => void
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          started()
+          request.signal?.addEventListener('abort', observedAbort, {
+            once: true,
+          })
+          await providerRelease
+          yield { type: 'text-delta', delta: 'UNREACHABLE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_rejecting_cancel',
+          name: 'Agent',
+          input: {
+            description: 'Reject cancellation transition',
+            prompt: 'WAIT_CANCEL_REJECTION',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    await providerStarted
+    const agentId = executor.backgroundSnapshots()[0]?.agentId
+    if (!agentId) throw new Error('Expected background agent')
+    const beginCancellation = vi
+      .spyOn(SubagentExecution.prototype, 'beginCancellation')
+      .mockRejectedValueOnce(new Error('injected cancellation transition'))
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      expect(executor.stopAllBackgroundTasks()).toEqual([agentId])
+      await abortObserved
+      expect(beginCancellation).toHaveBeenCalledOnce()
+      await Promise.resolve()
+      expect(unhandled).toEqual([])
+      releaseProvider()
+      await expect(
+        executor.outputBackgroundTask(agentId, {
+          block: true,
+          timeout: 30_000,
+        }),
+      ).resolves.toContain('<status>interrupted</status>')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      beginCancellation.mockRestore()
+      await executor.close()
+    }
+  })
+
+  it('recovers an orphaned lifecycle over a completed sidechain without replay', async () => {
     const { configRoot, cwd } = await gitRepository(
       'praxis-background-resume-test-',
     )
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const providerRequests: string[] = []
     const provider = (text: string): ModelProvider => ({
       model: 'fixture-model',
       capabilities: { streaming: true, usage: true, tools: true },
       async *complete() {
+        providerRequests.push(text)
         yield { type: 'text-delta', delta: text }
         yield {
           type: 'usage',
@@ -2523,6 +2975,60 @@ describe('foreground Claude Agent execution', () => {
       '<worktree_retained>false</worktree_retained>',
     )
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(providerRequests).toEqual(['FIRST_RESULT'])
+
+    const crashPaths = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId,
+    })
+    const crashLifecycleStore = new SubagentLifecycleStore(
+      crashPaths.praxisRoot,
+      sessionId,
+      agentId,
+      join(
+        crashPaths.projectRoot,
+        sessionId,
+        'subagents',
+        `agent-${agentId}.jsonl`,
+      ),
+    )
+    const abandoned = await crashLifecycleStore.continue()
+    await abandoned.running()
+    const crashTranscriptPath = join(
+      crashPaths.projectRoot,
+      sessionId,
+      'subagents',
+      `agent-${agentId}.jsonl`,
+    )
+    const crashTranscript = await readFile(crashTranscriptPath, 'utf8')
+    const crashEntries = entries(crashTranscript)
+    const previous = crashEntries.at(-1)
+    if (!previous) throw new Error('Expected completed sidechain entry')
+    const crashWindowEntry = {
+      ...previous,
+      parentUuid: previous.uuid,
+      uuid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'CRASH_WINDOW_RESULT' }],
+      },
+    }
+    await writeFile(
+      crashTranscriptPath,
+      `${crashTranscript}${JSON.stringify(crashWindowEntry)}\n`,
+    )
+    await abandoned.release()
+    await expect(crashLifecycleStore.read()).resolves.toMatchObject({
+      lifecycle: { generation: 2, state: 'orphaned' },
+    })
+    const orphanedAfterCrashWindow = await crashLifecycleStore.read()
+    if (!orphanedAfterCrashWindow)
+      throw new Error('Expected orphaned lifecycle after crash window')
+    await expect(
+      crashLifecycleStore.matchesTranscript(orphanedAfterCrashWindow),
+    ).resolves.toBe(false)
 
     const recoveryEvents: RuntimeEvent[] = []
     const resumed = new ClaudeSubagentExecutor({
@@ -2531,6 +3037,21 @@ describe('foreground Claude Agent execution', () => {
       eventSink: (event) => recoveryEvents.push(event),
     })
     const resumedRegistry = resumed.registry(sessionId, 0, () => promptId)
+    expect(providerRequests).toEqual(['FIRST_RESULT'])
+    const interruptedOutput = await resumedRegistry.execute(
+      await resumedRegistry.prepare(
+        {
+          id: 'call_output_during_crash_window',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: false, timeout: 0 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(interruptedOutput.content).toContain('<status>interrupted</status>')
+    expect(interruptedOutput.content).toContain('CRASH_WINDOW_RESULT')
+    expect(providerRequests).toEqual(['FIRST_RESULT'])
     const sent = await resumedRegistry.execute(
       await resumedRegistry.prepare(
         {
@@ -2559,6 +3080,14 @@ describe('foreground Claude Agent execution', () => {
       { cwd },
     )
     expect(secondOutput.content).toContain('SECOND_RESULT')
+    expect(providerRequests).toEqual(['FIRST_RESULT', 'SECOND_RESULT'])
+    const recoveredLifecycle = await crashLifecycleStore.read()
+    expect(recoveredLifecycle).toMatchObject({
+      lifecycle: { generation: 3, state: 'completed' },
+    })
+    const recoveredTranscript = await readFile(crashTranscriptPath, 'utf8')
+    expect(recoveredTranscript.match(/FIRST_RESULT/gu)).toHaveLength(1)
+    expect(recoveredTranscript.match(/CRASH_WINDOW_RESULT/gu)).toHaveLength(1)
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
     const recoveredNotifications = await resumed.notifications(false)
     expect(recoveredNotifications.messages).toHaveLength(2)
@@ -2600,20 +3129,23 @@ describe('foreground Claude Agent execution', () => {
       join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
     )
     const deliveredId = '99999999-9999-4999-8999-999999999999'
-    await lifecycleStore.write('completed', undefined, {
-      result: {
+    await persistTerminal(
+      lifecycleStore,
+      'completed',
+      undefined,
+      {
         text: 'SECOND_RESULT',
         usage: { inputTokens: 2, outputTokens: 1 },
         toolUseCount: 0,
         durationMs: 1,
       },
-      notification: {
+      {
         id: deliveredId,
         status: 'completed',
         toolUseId: 'call_already_appended',
         error: null,
       },
-    })
+    )
     await lifecycleStore.prepareNotificationDetached(
       deliveredId,
       'fixture-model',
@@ -2645,20 +3177,23 @@ describe('foreground Claude Agent execution', () => {
     })
 
     const pendingId = '88888888-8888-4888-8888-888888888888'
-    await lifecycleStore.write('completed', undefined, {
-      result: {
+    await persistTerminal(
+      lifecycleStore,
+      'completed',
+      undefined,
+      {
         text: 'SECOND_RESULT',
         usage: { inputTokens: 2, outputTokens: 1 },
         toolUseCount: 0,
         durationMs: 1,
       },
-      notification: {
+      {
         id: pendingId,
         status: 'completed',
         toolUseId: 'call_pending_after_restart',
         error: null,
       },
-    })
+    )
     const automaticallyRecovered = new ClaudeSubagentExecutor({
       ...options,
       provider: provider('UNUSED_AUTOMATIC_RESULT'),
@@ -2688,6 +3223,7 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(source).toContain('The coordinator sent a message')
     expect(source).toContain('SECOND_RESULT')
+    expect(source.match(/FIRST_RESULT/gu)).toHaveLength(1)
     expect(
       entries(source)
         .map((entry) => entry.cwd)
@@ -3088,11 +3624,16 @@ describe('foreground Claude Agent execution', () => {
           name: `${persistedStatus}-reviewer`,
         })}\n`,
       )
-      await new SubagentLifecycleStore(
+      const persistedStore = new SubagentLifecycleStore(
         paths.praxisRoot,
         sessionId,
         agentId,
-      ).write(persistedStatus, `${persistedStatus} before restart`)
+      )
+      await persistTerminal(
+        persistedStore,
+        persistedStatus === 'killed' ? 'cancelled' : 'failed',
+        `${persistedStatus} before restart`,
+      )
       let requests = 0
       const executor = new ClaudeSubagentExecutor({
         configRoot,

@@ -37,6 +37,7 @@ import {
 } from '../core/context.js'
 import { assembleContextSnapshot } from '../core/prompt-composer.js'
 import { ContextBudget } from '../core/context-budget.js'
+import type { LifecycleState } from '../core/agent-orchestration.js'
 import {
   AgentRuntime,
   type ModelMessage,
@@ -70,7 +71,10 @@ import type {
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import { InMemorySidechainStore } from '../persistence/in-memory-sidechain-store.js'
-import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
+import {
+  SubagentLifecycleStore,
+  type SubagentExecution,
+} from '../persistence/subagent-lifecycle-store.js'
 import {
   resolveDataPlanePaths,
   type DataPlane,
@@ -87,6 +91,7 @@ import {
   type BackgroundAgentNotificationIdentity,
   type BackgroundAgentSnapshot,
   type BackgroundAgentRunResult,
+  type BackgroundAgentLifecycleSource,
   type BackgroundAgentTaskSpec,
 } from './background-agent-manager.js'
 import { isBackgroundBashTaskId } from './background-task-id.js'
@@ -1086,20 +1091,75 @@ export class ClaudeSubagentExecutor {
     const agentId = `a${randomBytes(8).toString('hex')}`
     const parentCwd = context.cwd
     const paths = this.sessionPaths(sessionId, parentCwd)
-    const initialIsolation = input.isolation
-      ? await this.createAgentWorktree(
-          paths.praxisRoot,
-          sessionId,
-          agentId,
-          parentCwd,
-        )
-      : undefined
-    const agentCwd = initialIsolation?.cwd ?? parentCwd
     const sidechainPaths = resolveClaudeSidechainPaths(
       paths.projectRoot,
       sessionId,
       agentId,
     )
+    const lifecycleStore =
+      this.options.persistence === 'memory'
+        ? undefined
+        : new SubagentLifecycleStore(
+            paths.praxisRoot,
+            sessionId,
+            agentId,
+            sidechainPaths.transcriptFile,
+          )
+    const initialExecution = lifecycleStore
+      ? await lifecycleStore.start()
+      : undefined
+    let initialIsolation: ManagedWorktree | undefined
+    const settleInitialSetupFailure = async (
+      primary: unknown,
+      isolation?: ManagedWorktree,
+    ): Promise<never> => {
+      const secondary: unknown[] = []
+      const message =
+        primary instanceof Error ? primary.message : String(primary)
+      try {
+        await initialExecution?.finish(
+          'failed',
+          {
+            text: message,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            toolUseCount: 0,
+            durationMs: 0,
+          },
+          message,
+        )
+      } catch (error) {
+        secondary.push(error)
+      }
+      try {
+        await initialExecution?.release()
+      } catch (error) {
+        secondary.push(error)
+      }
+      try {
+        await isolation?.cleanup()
+      } catch (error) {
+        secondary.push(error)
+      }
+      if (secondary.length > 0)
+        throw new AggregateError(
+          [primary, ...secondary],
+          'Background agent setup and cleanup failed',
+        )
+      throw primary
+    }
+    try {
+      initialIsolation = input.isolation
+        ? await this.createAgentWorktree(
+            paths.praxisRoot,
+            sessionId,
+            agentId,
+            parentCwd,
+          )
+        : undefined
+    } catch (error) {
+      return settleInitialSetupFailure(error, initialIsolation)
+    }
+    const agentCwd = initialIsolation?.cwd ?? parentCwd
     const sidechain = this.sidechainStore(
       sessionId,
       agentId,
@@ -1132,25 +1192,16 @@ export class ClaudeSubagentExecutor {
         ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
       })
     } catch (error) {
-      await initialIsolation?.cleanup()
-      throw error
+      return settleInitialSetupFailure(error, initialIsolation)
     }
     const provider = input.model
       ? (this.options.providerForModel?.(input.model) ?? this.options.provider)
       : this.options.provider
-    const lifecycleStore =
-      this.options.persistence === 'memory'
-        ? undefined
-        : new SubagentLifecycleStore(
-            paths.praxisRoot,
-            sessionId,
-            agentId,
-            sidechainPaths.transcriptFile,
-          )
     const backgroundRun = this.createBackgroundAgentRun({
       input,
       parentCwd,
       ...(lifecycleStore ? { lifecycle: lifecycleStore } : {}),
+      ...(initialExecution ? { initialExecution } : {}),
       ...(initialIsolation ? { initialIsolation } : {}),
       createIsolation: () =>
         this.createAgentWorktree(
@@ -1192,6 +1243,7 @@ export class ClaudeSubagentExecutor {
       toolUseId: call.id,
       outputFile: sidechainPaths.transcriptFile,
       resolvedModel,
+      lifecycle: backgroundRun.lifecycle,
       run: backgroundRun.run,
       markBackground: backgroundRun.markBackground,
       ...(lifecycleStore
@@ -1228,7 +1280,19 @@ export class ClaudeSubagentExecutor {
       },
     })
     if (input.runInBackground) {
-      this.background.launch(spec)
+      try {
+        this.background.launch(spec)
+      } catch (error) {
+        try {
+          await backgroundRun.disposeBeforeStart()
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Background agent launch and pre-start cleanup failed',
+          )
+        }
+        throw error
+      }
       return asyncResult()
     }
 
@@ -1378,6 +1442,9 @@ export class ClaudeSubagentExecutor {
     input: AgentInput
     parentCwd: string
     lifecycle?: SubagentLifecycleStore
+    initialLifecycleState?: LifecycleState
+    recover?: boolean
+    initialExecution?: SubagentExecution
     initialIsolation?: ManagedWorktree
     createIsolation: () => Promise<ManagedWorktree>
     execute: (
@@ -1394,61 +1461,90 @@ export class ClaudeSubagentExecutor {
   }): {
     run: BackgroundAgentTaskSpec['run']
     markBackground(): void
+    disposeBeforeStart(): Promise<void>
+    lifecycle: BackgroundAgentLifecycleSource
   } {
     let availableIsolation = options.initialIsolation
     let retainedIsolation: ManagedWorktree | undefined
     let notificationExpected = options.input.runInBackground
+    let recoverNext = options.recover ?? false
+    let pendingExecution = options.initialExecution
+    let disposed = false
+    let lifecycleState: LifecycleState =
+      options.initialExecution?.snapshot.state ??
+      options.initialLifecycleState ??
+      'queued'
+    const lifecycleListeners = new Set<(state: LifecycleState) => void>()
+    const publishLifecycle = (state: LifecycleState): void => {
+      lifecycleState = state
+      if (state === 'orphaned') recoverNext = true
+      for (const listener of lifecycleListeners) listener(state)
+    }
+    const lifecycle: BackgroundAgentLifecycleSource = {
+      current: () => lifecycleState,
+      subscribe(listener) {
+        lifecycleListeners.add(listener)
+        return () => lifecycleListeners.delete(listener)
+      },
+    }
+    const disposeBeforeStart = async (): Promise<void> => {
+      if (disposed) return
+      disposed = true
+      const execution = pendingExecution
+      pendingExecution = undefined
+      const isolation = availableIsolation
+      availableIsolation = undefined
+      const errors: unknown[] = []
+      if (execution) {
+        try {
+          const snapshot = await execution.finish(
+            'failed',
+            {
+              text: 'Background agent launch was rejected before execution started',
+              usage: { inputTokens: 0, outputTokens: 0 },
+              toolUseCount: 0,
+              durationMs: 0,
+            },
+            'Background agent launch was rejected before execution started',
+          )
+          publishLifecycle(snapshot.state)
+        } catch (error) {
+          errors.push(error)
+        } finally {
+          try {
+            await execution.release()
+            publishLifecycle(execution.snapshot.state)
+          } catch (error) {
+            errors.push(error)
+          }
+        }
+      }
+      if (isolation) {
+        try {
+          await isolation.cleanup()
+        } catch (error) {
+          errors.push(error)
+        }
+      }
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          'Background agent pre-start cleanup failed',
+        )
+      }
+    }
     const run: BackgroundAgentTaskSpec['run'] = async (
       message,
       signal,
       continuation,
       currentToolUseId,
     ) => {
-      await options.lifecycle?.write('running')
+      let execution: SubagentExecution | undefined
+      let cancellation: Promise<void> | undefined
+      let lifecycleTerminalized = false
+      let onAbort: (() => void) | undefined
       const startedAt = Date.now()
       let isolation: ManagedWorktree | undefined
-      try {
-        isolation = options.input.isolation
-          ? (retainedIsolation ??
-            availableIsolation ??
-            (await options.createIsolation()))
-          : undefined
-      } catch (error) {
-        const failureMessage =
-          error instanceof Error ? error.message : String(error)
-        const failureResult: BackgroundAgentRunResult = {
-          text: failureMessage,
-          usage: { inputTokens: 0, outputTokens: 0 },
-          toolUseCount: 0,
-          durationMs: Date.now() - startedAt,
-        }
-        const status = signal.aborted ? 'killed' : 'failed'
-        const notificationId =
-          notificationExpected &&
-          !(signal.reason instanceof BackgroundAgentShutdownError)
-            ? randomUUID()
-            : undefined
-        await options.lifecycle?.write(status, failureMessage, {
-          result: failureResult,
-          ...(notificationId
-            ? {
-                notification: {
-                  id: notificationId,
-                  status,
-                  toolUseId: currentToolUseId,
-                  error: failureMessage,
-                },
-              }
-            : {}),
-        })
-        if (!notificationExpected) throw error
-        throw new BackgroundAgentRunError(
-          failureMessage,
-          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
-          error,
-        )
-      }
-      availableIsolation = undefined
       let result:
         | {
             text: string
@@ -1461,146 +1557,237 @@ export class ClaudeSubagentExecutor {
         | undefined
       let failure: unknown
       let cleanup: { retained: boolean; reason?: string } | undefined
-      try {
-        result = await options.execute(
-          isolation?.cwd ?? options.parentCwd,
-          message,
-          signal,
-          continuation,
-        )
-      } catch (error) {
-        failure = error
-      } finally {
-        try {
-          cleanup = await isolation?.cleanup()
-        } catch (error) {
-          failure ??= error
-        }
-        retainedIsolation = cleanup?.retained ? isolation : undefined
+      const finishLifecycle = async (
+        state: 'completed' | 'failed' | 'cancelled',
+        result: BackgroundAgentRunResult,
+        detail?: string,
+        notification?: {
+          id: string
+          status: 'completed' | 'failed' | 'killed'
+          toolUseId: string
+          error: string | null
+        },
+      ): Promise<void> => {
+        if (execution) {
+          const snapshot = await execution.finish(
+            state,
+            result,
+            detail,
+            notification,
+          )
+          publishLifecycle(snapshot.state)
+        } else publishLifecycle(state)
       }
-      if (failure !== undefined) {
-        const underlyingFailure =
-          failure instanceof SubagentExecutionFailure ? failure.cause : failure
-        const failureMessage =
-          underlyingFailure instanceof Error
-            ? underlyingFailure.message
-            : String(underlyingFailure)
-        const detail = cleanup?.reason
-          ? `${failureMessage}\n${cleanup.reason}`
-          : failureMessage
-        const partialResult =
-          failure instanceof SubagentExecutionFailure
-            ? failure.result
-            : undefined
-        const failureResult: BackgroundAgentRunResult = {
-          ...partialResult,
-          text: failureMessage,
-          usage: partialResult?.usage ?? {
-            inputTokens: 0,
-            outputTokens: 0,
-          },
-          toolUseCount: partialResult?.toolUseCount ?? 0,
-          durationMs: Date.now() - startedAt,
-          ...(isolation ? { isolationPath: isolation.cwd } : {}),
-          ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
-          ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+      try {
+        if (pendingExecution) {
+          execution = pendingExecution
+          pendingExecution = undefined
+          publishLifecycle(execution.snapshot.state)
+        } else if (options.lifecycle) {
+          execution = await options.lifecycle.acquire(
+            recoverNext ? 'recover' : continuation ? 'continue' : 'start',
+          )
+          publishLifecycle(execution.snapshot.state)
+          recoverNext = false
         }
-        const status = signal.aborted ? 'killed' : 'failed'
-        const notificationId =
-          notificationExpected &&
-          !(signal.reason instanceof BackgroundAgentShutdownError)
-            ? randomUUID()
+        if (execution) {
+          const snapshot = await execution.running()
+          publishLifecycle(snapshot.state)
+        } else {
+          publishLifecycle('running')
+        }
+        onAbort = () => {
+          if (cancellation) return
+          if (!execution) {
+            cancellation = Promise.resolve(publishLifecycle('cancelling'))
+            return
+          }
+          const activeExecution = execution
+          const transition = activeExecution.beginCancellation()
+          transition.catch(() => undefined)
+          const observedCancellation = transition
+            .then((snapshot) => publishLifecycle(snapshot.state))
+            .finally(() => publishLifecycle(activeExecution.snapshot.state))
+          observedCancellation.catch(() => undefined)
+          cancellation = observedCancellation
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) onAbort()
+        try {
+          isolation = options.input.isolation
+            ? (retainedIsolation ??
+              availableIsolation ??
+              (await options.createIsolation()))
             : undefined
-        await options.lifecycle?.write(status, detail, {
-          result: failureResult,
-          ...(notificationId
-            ? {
-                notification: {
+          availableIsolation = undefined
+          result = await options.execute(
+            isolation?.cwd ?? options.parentCwd,
+            message,
+            signal,
+            continuation,
+          )
+        } catch (error) {
+          failure = error
+        } finally {
+          try {
+            cleanup = await isolation?.cleanup()
+          } catch (error) {
+            failure ??= error
+          }
+          retainedIsolation = cleanup?.retained ? isolation : undefined
+        }
+        if (failure !== undefined) {
+          const underlyingFailure =
+            failure instanceof SubagentExecutionFailure
+              ? failure.cause
+              : failure
+          const failureMessage =
+            underlyingFailure instanceof Error
+              ? underlyingFailure.message
+              : String(underlyingFailure)
+          const detail = cleanup?.reason
+            ? `${failureMessage}\n${cleanup.reason}`
+            : failureMessage
+          const partialResult =
+            failure instanceof SubagentExecutionFailure
+              ? failure.result
+              : undefined
+          const failureResult: BackgroundAgentRunResult = {
+            ...partialResult,
+            text: failureMessage,
+            usage: partialResult?.usage ?? {
+              inputTokens: 0,
+              outputTokens: 0,
+            },
+            toolUseCount: partialResult?.toolUseCount ?? 0,
+            durationMs: Date.now() - startedAt,
+            ...(isolation ? { isolationPath: isolation.cwd } : {}),
+            ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+            ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+          }
+          await cancellation
+          const status = signal.aborted ? 'killed' : 'failed'
+          const notificationId =
+            notificationExpected &&
+            !(signal.reason instanceof BackgroundAgentShutdownError)
+              ? randomUUID()
+              : undefined
+          await finishLifecycle(
+            signal.aborted ? 'cancelled' : 'failed',
+            failureResult,
+            detail,
+            notificationId
+              ? {
                   id: notificationId,
                   status,
                   toolUseId: currentToolUseId,
                   error: detail,
-                },
-              }
-            : {}),
-        })
-        if (!notificationExpected && !isolation && !cleanup?.reason) {
-          throw underlyingFailure
+                }
+              : undefined,
+          )
+          lifecycleTerminalized = true
+          if (!notificationExpected && !isolation && !cleanup?.reason) {
+            throw underlyingFailure
+          }
+          throw new BackgroundAgentRunError(
+            detail,
+            { ...failureResult, ...(notificationId ? { notificationId } : {}) },
+            underlyingFailure,
+          )
         }
-        throw new BackgroundAgentRunError(
-          detail,
-          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
-          underlyingFailure,
-        )
-      }
-      if (!result) {
-        const error = new Error('Agent completed without a result')
-        const failureResult: BackgroundAgentRunResult = {
-          text: error.message,
-          usage: { inputTokens: 0, outputTokens: 0 },
-          toolUseCount: 0,
+        if (!result) {
+          const error = new Error('Agent completed without a result')
+          const failureResult: BackgroundAgentRunResult = {
+            text: error.message,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            toolUseCount: 0,
+            durationMs: Date.now() - startedAt,
+            ...(isolation ? { isolationPath: isolation.cwd } : {}),
+            ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
+            ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
+          }
+          const notificationId =
+            notificationExpected &&
+            !(signal.reason instanceof BackgroundAgentShutdownError)
+              ? randomUUID()
+              : undefined
+          await cancellation
+          await finishLifecycle(
+            signal.aborted ? 'cancelled' : 'failed',
+            failureResult,
+            error.message,
+            notificationId
+              ? {
+                  id: notificationId,
+                  status: signal.aborted ? 'killed' : 'failed',
+                  toolUseId: currentToolUseId,
+                  error: error.message,
+                }
+              : undefined,
+          )
+          lifecycleTerminalized = true
+          if (!notificationExpected) throw error
+          throw new BackgroundAgentRunError(
+            error.message,
+            { ...failureResult, ...(notificationId ? { notificationId } : {}) },
+            error,
+          )
+        }
+        const finalResult: BackgroundAgentRunResult = {
+          ...result,
           durationMs: Date.now() - startedAt,
           ...(isolation ? { isolationPath: isolation.cwd } : {}),
           ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
           ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
         }
+        await cancellation
+        const status = signal.aborted ? 'killed' : 'completed'
+        const detail = signal.aborted
+          ? 'Agent was aborted before terminal cleanup'
+          : undefined
         const notificationId =
           notificationExpected &&
           !(signal.reason instanceof BackgroundAgentShutdownError)
             ? randomUUID()
             : undefined
-        await options.lifecycle?.write('failed', error.message, {
-          result: failureResult,
-          ...(notificationId
+        await finishLifecycle(
+          signal.aborted ? 'cancelled' : 'completed',
+          finalResult,
+          detail,
+          notificationId
             ? {
-                notification: {
-                  id: notificationId,
-                  status: 'failed',
-                  toolUseId: currentToolUseId,
-                  error: error.message,
-                },
-              }
-            : {}),
-        })
-        if (!notificationExpected) throw error
-        throw new BackgroundAgentRunError(
-          error.message,
-          { ...failureResult, ...(notificationId ? { notificationId } : {}) },
-          error,
-        )
-      }
-      const finalResult: BackgroundAgentRunResult = {
-        ...result,
-        durationMs: Date.now() - startedAt,
-        ...(isolation ? { isolationPath: isolation.cwd } : {}),
-        ...(cleanup ? { isolationRetained: cleanup.retained } : {}),
-        ...(cleanup?.reason ? { isolationWarning: cleanup.reason } : {}),
-      }
-      const status = signal.aborted ? 'killed' : 'completed'
-      const detail = signal.aborted
-        ? 'Agent was aborted before terminal cleanup'
-        : undefined
-      const notificationId =
-        notificationExpected &&
-        !(signal.reason instanceof BackgroundAgentShutdownError)
-          ? randomUUID()
-          : undefined
-      await options.lifecycle?.write(status, detail, {
-        result: finalResult,
-        ...(notificationId
-          ? {
-              notification: {
                 id: notificationId,
                 status,
                 toolUseId: currentToolUseId,
                 error: status === 'killed' ? (detail ?? null) : null,
-              },
-            }
-          : {}),
-      })
-      return {
-        ...finalResult,
-        ...(notificationId ? { notificationId } : {}),
+              }
+            : undefined,
+        )
+        lifecycleTerminalized = true
+        return {
+          ...finalResult,
+          ...(notificationId ? { notificationId } : {}),
+        }
+      } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort)
+        if (!lifecycleTerminalized) {
+          try {
+            await execution?.release()
+          } catch (releaseError) {
+            this.options.eventSink?.({
+              type: 'warning',
+              message: `Background agent execution cleanup could not release its durable owner; durable owner reconciliation is required: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`,
+            })
+          } finally {
+            if (execution) publishLifecycle(execution.snapshot.state)
+          }
+        } else {
+          try {
+            await execution?.release()
+          } finally {
+            if (execution) publishLifecycle(execution.snapshot.state)
+          }
+        }
       }
     }
     return {
@@ -1608,6 +1795,8 @@ export class ClaudeSubagentExecutor {
       markBackground: () => {
         notificationExpected = true
       },
+      disposeBeforeStart,
+      lifecycle,
     }
   }
 
@@ -1992,7 +2181,28 @@ export class ClaudeSubagentExecutor {
       agentId,
       sidechainPaths.transcriptFile,
     )
-    const lifecycle = await lifecycleStore.read()
+    const ownership = await lifecycleStore.reconcileOwnerLoss()
+    if (ownership.owned) return
+    let lifecycle = await lifecycleStore.read()
+    if (!lifecycle) {
+      const seed = await lifecycleStore.start()
+      await seed.running()
+      if (completed) {
+        await seed.finish('completed', {
+          text: lastAssistant?.content ?? '',
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: 0,
+        })
+      }
+      await seed.release()
+      lifecycle = await lifecycleStore.read()
+    }
+    if (!lifecycle) {
+      throw new Error(
+        `Unable to establish lifecycle state for background agent ${agentId}`,
+      )
+    }
     const lifecycleIsCurrent =
       lifecycle !== null && (await lifecycleStore.matchesTranscript(lifecycle))
     if (lifecycleIsCurrent && lifecycle.status === 'completed' && !completed) {
@@ -2071,6 +2281,8 @@ export class ClaudeSubagentExecutor {
       input,
       parentCwd: restoredCwd,
       lifecycle: lifecycleStore,
+      recover: lifecycle.lifecycle.state === 'orphaned',
+      initialLifecycleState: lifecycle.lifecycle.state,
       ...(restoredIsolation ? { initialIsolation: restoredIsolation } : {}),
       createIsolation: () =>
         this.createAgentWorktree(
@@ -2111,6 +2323,7 @@ export class ClaudeSubagentExecutor {
       toolUseId,
       outputFile: sidechainPaths.transcriptFile,
       resolvedModel: provider.model ?? 'praxis/provider',
+      lifecycle: backgroundRun.lifecycle,
       run: backgroundRun.run,
       markBackground: backgroundRun.markBackground,
       acknowledgeNotification: (notificationId: string) =>
@@ -2120,33 +2333,27 @@ export class ClaudeSubagentExecutor {
       confirmNotificationDetached: (notificationId: string) =>
         lifecycleStore.confirmNotificationDetached(notificationId),
     }
-    if (lifecycleIsCurrent && lifecycle.status === 'failed') {
-      this.background.registerTerminal(
-        spec,
-        'failed',
-        lifecycle.detail ?? 'Persisted agent failed',
-      )
-    } else if (lifecycleIsCurrent && lifecycle.status === 'killed') {
-      this.background.registerTerminal(
-        spec,
-        'stopped',
-        lifecycle.detail ?? 'Persisted agent was killed',
-      )
-    } else if (completed) {
-      this.background.registerCompleted(
-        spec,
-        lifecycleIsCurrent && lifecycle.result
-          ? lifecycle.result
-          : {
-              text: lastAssistant.content,
-              usage: { inputTokens: 0, outputTokens: 0 },
-              toolUseCount: 0,
-              durationMs: 0,
-            },
-      )
-    } else {
-      this.background.registerInterrupted(spec)
-    }
+    this.background.registerPersisted(spec, {
+      ...(lifecycleIsCurrent && lifecycle.result
+        ? { result: lifecycle.result }
+        : completed
+          ? {
+              result: {
+                text: lastAssistant.content,
+                usage: { inputTokens: 0, outputTokens: 0 },
+                toolUseCount: 0,
+                durationMs: 0,
+              },
+            }
+          : {}),
+      ...(lifecycleIsCurrent && lifecycle.status === 'failed'
+        ? { error: lifecycle.detail ?? 'Persisted agent failed' }
+        : lifecycleIsCurrent && lifecycle.status === 'killed'
+          ? { error: lifecycle.detail ?? 'Persisted agent was killed' }
+          : !completed && lifecycle.lifecycle.state === 'orphaned'
+            ? { error: 'Persisted agent was interrupted before completion' }
+            : {}),
+    })
     for (const notification of lifecycle?.notifications ?? []) {
       if (notification.consumed) continue
       if (
@@ -2168,7 +2375,7 @@ export class ClaudeSubagentExecutor {
       this.background.registerPersistedNotification(agentId, {
         id: notification.id,
         status:
-          notification.status === 'killed' ? 'stopped' : notification.status,
+          notification.status === 'killed' ? 'cancelled' : notification.status,
         result: notification.result,
         error: notification.error,
         toolUseId: notification.toolUseId,

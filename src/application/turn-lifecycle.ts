@@ -5,6 +5,12 @@ import {
   type ModelImage,
   type RuntimeEventSink,
 } from '../core/runtime.js'
+import type { LifecycleState } from '../core/agent-orchestration.js'
+
+export type TurnTerminalState = Extract<
+  LifecycleState,
+  'completed' | 'failed' | 'cancelled'
+>
 
 export type TurnActivation =
   | { kind: 'start'; sessionId: string; name?: string }
@@ -61,7 +67,7 @@ export class TurnTerminalController {
     this.transition(cancelled ? 'cancelled' : 'failed')
   }
 
-  private transition(state: 'completed' | 'failed' | 'cancelled'): void {
+  private transition(state: TurnTerminalState): void {
     if (this.terminal) {
       throw new Error('Turn terminal transition already emitted')
     }

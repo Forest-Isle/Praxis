@@ -88,10 +88,20 @@ export function projectBackgroundBashTask(
 export function projectBackgroundAgentTask(
   snapshot: BackgroundAgentSnapshot,
 ): TuiTaskEntry {
+  const status: TuiTaskStatus =
+    snapshot.status === 'cancelled'
+      ? 'stopped'
+      : snapshot.status === 'orphaned'
+        ? 'interrupted'
+        : snapshot.status === 'queued' ||
+            snapshot.status === 'waiting' ||
+            snapshot.status === 'cancelling'
+          ? 'running'
+          : snapshot.status
   return {
     id: snapshot.agentId,
     kind: 'agent',
-    status: snapshot.status,
+    status,
     label: snapshot.name ?? snapshot.description,
     output: snapshot.result?.text ?? snapshot.error ?? '',
     startedAtMs: snapshot.startedAt,
