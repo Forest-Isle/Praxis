@@ -184,11 +184,16 @@ import {
 import {
   applyMentionReference,
   fileReferenceAtCursor,
-  filterTuiMentionEntries,
   loadTuiFileEntries,
   type TuiAgentEntry,
   type TuiFileEntry,
+  type TuiMentionEntry,
 } from './tui/file-picker.js'
+import {
+  projectTuiMentionPicker,
+  tuiMentionEntryId,
+  type TuiMentionPickerModel,
+} from './tui/mention-picker-model.js'
 import {
   editTuiPrompt,
   openTuiEditorFile,
@@ -1386,6 +1391,7 @@ export function InteractiveApp({
   const commandSelectionRef = useRef(0)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileSelection, setFileSelection] = useState(0)
+  const fileSelectionRef = useRef(0)
   const [fileEntries, setFileEntries] = useState<
     readonly TuiFileEntry[] | null
   >(null)
@@ -1721,16 +1727,15 @@ export function InteractiveApp({
     !elicitation &&
     !selectingSession &&
     commandQuery !== null
-  const matchingMentionEntries = useMemo(
+  const mentionPickerModel = useMemo<TuiMentionPickerModel>(
     () =>
-      fileEntries === null || fileReference === null
-        ? []
-        : filterTuiMentionEntries(
-            fileEntries,
-            availableAgents,
-            fileReference.query,
-          ),
-    [availableAgents, fileEntries, fileReference?.query],
+      projectTuiMentionPicker({
+        files: fileEntries ?? [],
+        agents: availableAgents,
+        query: fileReference?.query ?? '',
+        selectedIndex: fileSelection,
+      }),
+    [availableAgents, fileEntries, fileReference?.query, fileSelection],
   )
   const filePickerVisible =
     !busy &&
@@ -1742,10 +1747,6 @@ export function InteractiveApp({
     filePickerOpen &&
     !shellMode &&
     fileReference !== null
-  const selectedFileIndex = Math.min(
-    fileSelection,
-    Math.max(0, matchingMentionEntries.length - 1),
-  )
   const hasThinking =
     activeThinking.length > 0 ||
     history.some((item) => item.kind === 'thinking')
@@ -1969,7 +1970,7 @@ export function InteractiveApp({
       | { readonly kind: 'elicitation' }
     readonly overlay:
       | TuiCommandPaletteModel
-      | { readonly kind: 'file-picker' }
+      | TuiMentionPickerModel
       | { readonly kind: 'exit-confirmation' }
     readonly secondary: InteractiveSecondarySurface
   }
@@ -2001,7 +2002,7 @@ export function InteractiveApp({
         : { secondary: secondarySurface }),
       overlays: [
         ...(commandPaletteVisible ? [commandPaletteModel] : []),
-        ...(filePickerVisible ? [{ kind: 'file-picker' as const }] : []),
+        ...(filePickerVisible ? [mentionPickerModel] : []),
         ...(exitConfirmation ? [{ kind: 'exit-confirmation' as const }] : []),
       ],
     }),
@@ -2022,6 +2023,7 @@ export function InteractiveApp({
       commandPaletteVisible,
       commandPaletteModel,
       filePickerVisible,
+      mentionPickerModel,
       exitConfirmation,
     ],
   )
@@ -2084,7 +2086,7 @@ export function InteractiveApp({
     (overlay) => overlay.kind === 'command-palette',
   )
   const selectedFilePicker = selectedOverlays.find(
-    (overlay) => overlay.kind === 'file-picker',
+    (overlay) => overlay.kind === 'mention-picker',
   )
   const selectedExitConfirmation = selectedOverlays.find(
     (overlay) => overlay.kind === 'exit-confirmation',
@@ -2400,6 +2402,7 @@ export function InteractiveApp({
       fileReferenceAtCursor(editor.text, editor.cursor) !== null,
     )
     setFileSelection(0)
+    fileSelectionRef.current = 0
   }
 
   const updateComposerEditor = (
@@ -2714,9 +2717,13 @@ export function InteractiveApp({
 
   useEffect(() => {
     setFileSelection((current) =>
-      Math.min(current, Math.max(0, matchingMentionEntries.length - 1)),
+      Math.min(current, Math.max(0, mentionPickerModel.rows.length - 1)),
     )
-  }, [matchingMentionEntries.length])
+    fileSelectionRef.current = Math.min(
+      fileSelectionRef.current,
+      Math.max(0, mentionPickerModel.rows.length - 1),
+    )
+  }, [mentionPickerModel.rows.length])
 
   const handleEvent = (event: RuntimeEvent) => {
     switch (event.type) {
@@ -7218,16 +7225,43 @@ export function InteractiveApp({
     }
     if (filePickerVisible) {
       if (key.upArrow) {
-        setFileSelection((current) => Math.max(0, current - 1))
+        const next = Math.max(0, fileSelectionRef.current - 1)
+        fileSelectionRef.current = next
+        setFileSelection(next)
         return
       }
       if (key.downArrow) {
-        setFileSelection((current) =>
-          Math.min(matchingMentionEntries.length - 1, current + 1),
+        const next = Math.min(
+          mentionPickerModel.rows.length - 1,
+          fileSelectionRef.current + 1,
         )
+        fileSelectionRef.current = Math.max(0, next)
+        setFileSelection(Math.max(0, next))
         return
       }
-      const selected = matchingMentionEntries[selectedFileIndex]
+      const freshModel = projectTuiMentionPicker({
+        files: fileEntries ?? [],
+        agents: availableAgents,
+        query: fileReference?.query ?? '',
+        selectedIndex: fileSelectionRef.current,
+      })
+      const selectedId = freshModel.selectedId
+      const mentionEntries: TuiMentionEntry[] = [
+        ...(fileEntries ?? []).map((entry) => ({
+          kind: 'file' as const,
+          ...entry,
+        })),
+        ...availableAgents.map((entry) => ({
+          kind: 'agent' as const,
+          ...entry,
+        })),
+      ]
+      const selected =
+        selectedId === null
+          ? undefined
+          : mentionEntries.find(
+              (entry) => tuiMentionEntryId(entry) === selectedId,
+            )
       if (selected && (key.tab || key.return) && fileReference) {
         updateComposerEditor(
           applyMentionReference(
@@ -8396,8 +8430,7 @@ export function InteractiveApp({
                 ) : null}
                 {selectedFilePicker !== undefined ? (
                   <MentionPicker
-                    entries={matchingMentionEntries}
-                    selectedIndex={selectedFileIndex}
+                    model={selectedFilePicker}
                     width={width}
                     screenReader={axScreenReader}
                   />

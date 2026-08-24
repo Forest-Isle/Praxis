@@ -11,6 +11,10 @@ import { projectTuiSessionPicker } from './session-picker-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
 import { projectTuiCommandPalette } from './command-palette-model.js'
 import type { TuiCommandPaletteModel } from './command-palette-model.js'
+import {
+  projectTuiMentionPicker,
+  type TuiMentionPickerModel,
+} from './mention-picker-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -23,7 +27,9 @@ type Surfaces = TuiScreenSurfaceModels & {
     | { readonly kind: 'question'; readonly questionIndex: number }
   readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
   readonly overlay:
-    { readonly kind: 'overlay'; readonly id: number } | TuiCommandPaletteModel
+    | { readonly kind: 'overlay'; readonly id: number }
+    | TuiCommandPaletteModel
+    | TuiMentionPickerModel
 }
 
 const presentation = (
@@ -99,6 +105,23 @@ describe('projectTuiScreen', () => {
     expect(foreground.kind).toBe('compose')
     if (foreground.kind === 'compose') {
       expect(foreground.overlays[0]).toBe(palette)
+    }
+  })
+
+  it('preserves the mention-picker payload identity through compose overlays', () => {
+    const picker = projectTuiMentionPicker({
+      files: [{ path: 'src/', directory: true }],
+      agents: [],
+      query: '',
+      selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { overlays: [picker] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('compose')
+    if (foreground.kind === 'compose') {
+      expect(foreground.overlays[0]).toBe(picker)
     }
   })
 

@@ -32,6 +32,7 @@ import { projectTuiHooks } from './hook-settings.js'
 import { projectTuiCommandPalette } from './command-palette-model.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
 import { projectTuiSessionPicker } from './session-picker-model.js'
+import { projectTuiMentionPicker } from './mention-picker-model.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
@@ -2009,14 +2010,17 @@ describe('Claude-style TUI components', () => {
   it('renders Claude-shaped agent entries in the mention picker', () => {
     const visual = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description: 'Reviews code for subtle regressions.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description: 'Reviews code for subtle regressions.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader={false}
       />,
@@ -2027,15 +2031,18 @@ describe('Claude-style TUI components', () => {
 
     const narrow = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description:
-              'Reviews code for subtle regressions across the repository.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description:
+                'Reviews code for subtle regressions across the repository.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={32}
         screenReader={false}
       />,
@@ -2045,19 +2052,26 @@ describe('Claude-style TUI components', () => {
 
     const accessible = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description: 'Reviews code for subtle regressions.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description: 'Reviews code for subtle regressions.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader
       />,
     )
     expect(accessible.lastFrame()).toContain('Selected agent: reviewer')
+    expect(accessible.lastFrame()).toContain('Actions:')
+    expect(accessible.lastFrame()).toContain(
+      'Enter to select · Tab to complete',
+    )
   })
 
   it('renders the shortcut grid and tabbed help surface', () => {

@@ -14,7 +14,8 @@ import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import type { DataPlane } from '../../persistence/data-plane.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
-import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
+import type { TuiFileEntry } from './file-picker.js'
+import type { TuiMentionPickerModel } from './mention-picker-model.js'
 import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
@@ -2383,34 +2384,26 @@ export function FilePicker({
 }
 
 export function MentionPicker({
-  entries,
-  selectedIndex,
+  model,
   width,
   screenReader,
 }: {
-  entries: readonly TuiMentionEntry[]
-  selectedIndex: number
+  model: TuiMentionPickerModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
-  const maxVisible = 12
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      Math.max(0, entries.length - maxVisible),
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = entries.slice(start, start + maxVisible)
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {visible.length === 0 ? (
         <Text dimColor>No matching files or agents.</Text>
       ) : (
-        visible.map((entry, visibleIndex) => {
-          const index = start + visibleIndex
-          const selected = index === selectedIndex
+        visible.map((entry) => {
+          const selected = entry.selected
           if (entry.kind === 'agent') {
             return (
               <Text
@@ -2418,7 +2411,7 @@ export function MentionPicker({
                 {...(selected ? theme.text.selectedRow : {})}
                 {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
               >
-                {screenReader && selected ? 'Selected agent: ' : '* '}
+                {screenReader ? (selected ? 'Selected agent: ' : '') : '* '}
                 {entry.name}
                 {screenReader ? '' : ' (agent)'}
                 {entry.description ? ` – ${entry.description}` : ''}
@@ -2431,12 +2424,18 @@ export function MentionPicker({
               {...(selected ? theme.text.selectedRow : {})}
               {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
             >
-              {screenReader && selected ? 'Selected: ' : '+ '}
+              {screenReader ? (selected ? 'Selected: ' : '') : '+ '}
               {entry.path}
             </Text>
           )
         })
       )}
+      {screenReader ? (
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.select};{' '}
+          {model.actions.search}; {model.actions.cancel}
+        </Text>
+      ) : null}
     </Box>
   )
 }

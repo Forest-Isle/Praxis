@@ -5305,6 +5305,32 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('src/agent.ts')
   })
 
+  it('accepts the selected file after batched Down and Enter input', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        fileLoader={async () => [
+          { path: 'alpha.ts', directory: false },
+          { path: 'beta.ts', directory: false },
+        ]}
+      />,
+    )
+
+    app.stdin.write('@')
+    await waitFor(() =>
+      app.lastFrame()?.includes('alpha.ts') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('❯ @beta.ts')
+  })
+
   it('dismisses command and file pickers without clearing the composer', async () => {
     const app = render(
       <InteractiveApp
