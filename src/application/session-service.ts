@@ -175,9 +175,15 @@ import {
 import {
   lastUserPrompt,
   projectTranscriptDisplay,
+  unresolvedActiveToolCallIds,
 } from './transcript-projection.js'
 import type { TranscriptCodecDiagnostic } from '../core/transcript-codec.js'
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
+import { NativeTranscriptStore } from '../persistence/native-transcript-store.js'
+import {
+  NativeSessionTranscript,
+  type NativeSessionTranscriptLease,
+} from './native-session-transcript.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { ModelCompactor } from './model-compactor.js'
@@ -253,6 +259,8 @@ export interface ClaudeSessionServiceOptions {
   configRoot: string
   /** `claude` preserves the legacy shared layout; the CLI selects `native` by default. */
   dataPlane?: DataPlane
+  /** Experimental canonical native transcript writes. */
+  experimentalNativeTranscriptWrites?: boolean
   cwd: string
   claudeVersion: string
   provider?: ModelProvider
@@ -1352,6 +1360,7 @@ export class ClaudeSessionService {
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
+    this.assertNativeTranscriptOptions()
     this.leadOperations = options.teamLeadOperations ?? null
     this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
     this.runtimeCwd = options.workspace?.cwd() ?? options.cwd
@@ -1957,6 +1966,9 @@ export class ClaudeSessionService {
               })(),
             persistence:
               this.options.sessionPersistence === false ? 'memory' : 'disk',
+            ...(this.options.experimentalNativeTranscriptWrites === true
+              ? { experimentalNativeTranscriptWrites: true }
+              : {}),
             ...(this.options.providerForModel
               ? { providerForModel: this.options.providerForModel }
               : {}),
@@ -2927,6 +2939,27 @@ export class ClaudeSessionService {
     sessionId: string,
   ): Promise<ClaudeInterruptionClassification> {
     this.assertSessionPersistence()
+    if (this.options.dataPlane === 'native') {
+      const sessionPaths = this.paths(sessionId)
+      const nativeTranscript = new NativeSessionTranscript({
+        sessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: sessionPaths.sessionFile,
+          lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+        }),
+      })
+      return nativeTranscript.withLease({ kind: 'resume' }, async (lease) => {
+        const interruption = lease.interruption()
+        if (
+          interruption.kind === 'recoverable-tools' ||
+          interruption.kind === 'indeterminate-tools'
+        )
+          return { kind: 'interrupted-turn' }
+        if (interruption.kind === 'interrupted-prompt')
+          return { kind: 'interrupted-prompt', prompt: interruption.prompt }
+        return { kind: interruption.kind }
+      })
+    }
     await this.discoverProjectRoot(sessionId)
     const snapshot = await this.store(sessionId).loadReadOnly()
     if (snapshot.entries.length === 0) {
@@ -3393,6 +3426,114 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
     selection?: ManualCompactSelection,
   ): Promise<ManualCompactResult> {
+    if (this.nativeTranscriptWritesEnabled()) {
+      if (selection)
+        throw new Error(
+          'Native compaction supports only the full active branch',
+        )
+      this.assertSessionPersistence()
+      const provider = this.provider()
+      await this.activateSessionCostTracker(sessionId)
+      const sessionPaths = this.paths(sessionId)
+      const nativeTranscript = new NativeSessionTranscript({
+        sessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: sessionPaths.sessionFile,
+          lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+        }),
+      })
+      return nativeTranscript.withLease({ kind: 'resume' }, async (lease) => {
+        const messages = lease.activeMessages()
+        if (messages.length === 0)
+          throw new Error('Cannot compact an empty native transcript')
+        const preTokens = estimateModelRequestTokens(messages)
+        this.options.eventSink?.({ type: 'state', state: 'compacting' })
+        const contextWindowTokens =
+          this.contextBudget(provider)?.contextWindowTokens ??
+          provider.capabilities.contextWindowTokens ??
+          200_000
+        const compacted = await (
+          this.options.compactor ?? new ModelCompactor(provider)
+        ).compact({
+          messages,
+          targetTokens: Math.min(
+            8192,
+            Math.max(1, Math.floor(contextWindowTokens / 4)),
+          ),
+          contextWindowTokens,
+          ...(signal ? { signal } : {}),
+        })
+        if (signal?.aborted) throw new AgentRunCancelledError()
+        const { durationMs, durationWithoutRetriesMs } =
+          requireCompactionDurations(compacted)
+        requireManualCompactUsage(compacted.usage)
+        const compactModel =
+          compacted.model !== undefined && compacted.model.trim() !== ''
+            ? compacted.model
+            : provider.model
+        const meaningfulMetering =
+          compacted.summary.trim().length > 0 &&
+          (hasNonZeroUsage(compacted.usage) || durationMs > 0)
+        if (
+          meaningfulMetering &&
+          (compactModel === undefined || compactModel.trim() === '')
+        )
+          throw new Error(
+            'Manual compact usage requires a nonblank model identity',
+          )
+        const tracker = this.sessionCostTrackers.get(sessionId)
+        if (!tracker)
+          throw new Error(
+            `Session cost tracker is not active for session ${sessionId}`,
+          )
+        let meteringTurnInput: ClaudeSessionTurnInput | undefined
+        if (
+          meaningfulMetering &&
+          compactModel !== undefined &&
+          compactModel.trim() !== ''
+        ) {
+          const pricing = this.options.pricing?.resolve(compactModel)
+          const costUsd = pricing
+            ? usageCostUsd(compacted.usage, pricing)
+            : undefined
+          meteringTurnInput = {
+            model: compactModel,
+            usage: compacted.usage,
+            ...(costUsd === undefined ? {} : { costUsd }),
+            ...(compacted.usage.webSearchRequests === undefined
+              ? {}
+              : { webSearchRequests: compacted.usage.webSearchRequests }),
+            apiDurationMs: durationMs,
+            apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
+          }
+          const preflight = new ClaudeSessionCostTracker({
+            sessionId,
+            restored: tracker.snapshot(),
+          })
+          preflight.recordTurn(meteringTurnInput)
+        }
+        const postTokens = estimateModelRequestTokens([
+          { role: 'user', content: compacted.summary },
+        ])
+        if (signal?.aborted) throw new AgentRunCancelledError()
+        const ids = await lease.appendCompaction({
+          summary: compacted.summary,
+          trigger: 'manual',
+          preTokens,
+          postTokens,
+          durationMs,
+        })
+        if (meteringTurnInput !== undefined)
+          tracker.recordTurn(meteringTurnInput)
+        this.options.eventSink?.({
+          type: 'compact-boundary',
+          trigger: 'manual',
+          preTokens,
+          uuid: ids.boundaryId,
+        })
+        return { summary: compacted.summary, usage: compacted.usage, preTokens }
+      })
+    }
     this.assertWritable()
     const provider = this.provider()
     const result = await this.turnStore(sessionId).withLease(async (lease) => {
@@ -3662,6 +3803,40 @@ export class ClaudeSessionService {
     sessionId: string = randomUUID(),
     resumeSessionAt?: string,
   ): Promise<ForkResult> {
+    if (this.nativeTranscriptWritesEnabled()) {
+      this.assertSessionPersistence()
+      const sourcePaths = this.paths(parentSessionId)
+      const targetPaths = this.paths(sessionId)
+      const source = new NativeSessionTranscript({
+        sessionId: parentSessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: sourcePaths.sessionFile,
+          lockFile: join(
+            sourcePaths.praxisRoot,
+            'locks',
+            `${parentSessionId}.lock`,
+          ),
+        }),
+      })
+      const target = new NativeSessionTranscript({
+        sessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: targetPaths.sessionFile,
+          lockFile: join(targetPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+        }),
+      })
+      await source.forkTo(target, {
+        ...(resumeSessionAt === undefined
+          ? {}
+          : { atEventId: resumeSessionAt }),
+        ensureExisting: false,
+      })
+      this.options.contextAssembler?.invalidate?.({
+        lifecycleId: sessionId,
+        reason: 'fork',
+      })
+      return { sessionId, parentSessionId }
+    }
     this.assertSessionPersistence()
     await this.assertNativeWriteTargetIsLegacy(parentSessionId)
     this.assertWritable()
@@ -3686,6 +3861,43 @@ export class ClaudeSessionService {
     sessionId: string,
     checkpoint?: SessionForkCheckpoint,
   ): Promise<ForkResult> {
+    if (this.nativeTranscriptWritesEnabled()) {
+      this.assertSessionPersistence()
+      const sourcePaths = this.paths(parentSessionId)
+      const targetPaths = this.paths(sessionId)
+      const source = new NativeSessionTranscript({
+        sessionId: parentSessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: sourcePaths.sessionFile,
+          lockFile: join(
+            sourcePaths.praxisRoot,
+            'locks',
+            `${parentSessionId}.lock`,
+          ),
+        }),
+      })
+      const target = new NativeSessionTranscript({
+        sessionId,
+        store: new NativeTranscriptStore({
+          transcriptFile: targetPaths.sessionFile,
+          lockFile: join(targetPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+        }),
+      })
+      await source.forkTo(target, {
+        ...(checkpoint?.resumeSessionAt === undefined
+          ? {}
+          : { atEventId: checkpoint.resumeSessionAt }),
+        ...(checkpoint?.entryCount === undefined
+          ? {}
+          : { recordCount: checkpoint.entryCount }),
+        ensureExisting: true,
+      })
+      this.options.contextAssembler?.invalidate?.({
+        lifecycleId: sessionId,
+        reason: 'fork',
+      })
+      return { sessionId, parentSessionId }
+    }
     this.assertSessionPersistence()
     this.assertWritable()
     const expected = await this.nativeForkEntries(
@@ -4085,8 +4297,11 @@ export class ClaudeSessionService {
       this.options.eventSink ?? (() => undefined),
     )
     try {
+      if (this.nativeTranscriptWritesEnabled() && name !== undefined) {
+        throw new Error('experimental native session names are not enabled')
+      }
       if (requireExisting) await this.assertNativeWriteTargetIsLegacy(sessionId)
-      this.assertWritable()
+      this.assertTurnWritable()
       if (prompt.length === 0 && images.length === 0 && documents.length === 0)
         throw new Error('Prompt must not be empty')
       if (name !== undefined && name.length === 0) {
@@ -4097,7 +4312,10 @@ export class ClaudeSessionService {
       }
 
       await this.activateSessionCostTracker(sessionId)
-      if (this.options.sessionPersistence !== false) {
+      if (
+        this.options.sessionPersistence !== false &&
+        !this.nativeTranscriptWritesEnabled()
+      ) {
         this.durableMetadataSessions.add(sessionId)
       }
 
@@ -4124,9 +4342,17 @@ export class ClaudeSessionService {
         sessionId,
         'tool-results',
       )
-      const store = this.turnStore(sessionId)
-      const leaseResult = await store.withLease(async (lease) => {
-        if (!requireExisting) {
+      const runUnderLease = async (
+        lease: ClaudeTranscriptLease,
+        nativeLease?: NativeSessionTranscriptLease,
+      ): Promise<SessionRunResult> => {
+        const rememberDurableMetadata = (
+          observed: readonly ClaudeTranscriptEntry[],
+        ) => {
+          if (!nativeLease) this.rememberDurableMetadata(sessionId, observed)
+        }
+        const store = nativeLease ? undefined : this.turnStore(sessionId)
+        if (store && !requireExisting) {
           const initialization =
             name === undefined
               ? await store.reserve()
@@ -4136,8 +4362,26 @@ export class ClaudeSessionService {
           }
         }
         let snapshot = await lease.load()
+        const activeTurnMessages = (): ModelMessage[] =>
+          nativeLease
+            ? nativeLease.activeMessages()
+            : projectClaudeModelMessages(snapshot.entries)
+        const nativeInterruption = nativeLease?.interruption()
+        if (nativeInterruption?.kind === 'indeterminate-tools')
+          throw new Error(
+            `Native tool execution is indeterminate: ${nativeInterruption.callIds.join(', ')}`,
+          )
+        const nativeResumeInterrupted =
+          nativeLease !== undefined &&
+          this.options.resumeInterruptedTurn === true &&
+          (nativeInterruption?.kind === 'interrupted-prompt' ||
+            nativeInterruption?.kind === 'interrupted-turn')
+        const shouldSkipUserPrompt = () =>
+          skipUserPrompt || nativeResumeInterrupted
         let automaticReplayPrompt: string | undefined
         if (
+          store &&
+          !nativeLease &&
           requireExisting &&
           this.options.sessionPersistence === false &&
           snapshot.entries.length === 0
@@ -4148,11 +4392,11 @@ export class ClaudeSessionService {
             if (imported.status === 'created') snapshot = await lease.load()
           }
         }
-        if (requireExisting && snapshot.entries.length === 0) {
+        if (!nativeLease && requireExisting && snapshot.entries.length === 0) {
           throw new Error(`Claude session not found: ${sessionId}`)
         }
-        this.rememberDurableMetadata(sessionId, snapshot.entries)
-        if (resumeSessionAt !== undefined) {
+        rememberDurableMetadata(snapshot.entries)
+        if (!nativeLease && resumeSessionAt !== undefined) {
           snapshot = {
             entries: selectClaudeTranscriptAtMessage(
               snapshot.entries,
@@ -4160,7 +4404,10 @@ export class ClaudeSessionService {
             ),
             tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
           }
-        } else if (this.explicitResumeLeafUuids.has(sessionId)) {
+        } else if (
+          !nativeLease &&
+          this.explicitResumeLeafUuids.has(sessionId)
+        ) {
           const selected = selectClaudeTranscriptFromNewestLeaf(
             snapshot.entries,
           )
@@ -4175,7 +4422,7 @@ export class ClaudeSessionService {
           resumeSessionAt === undefined &&
           this.options.resumeInterruptedTurn === true &&
           shellCommand === undefined &&
-          !skipUserPrompt &&
+          !shouldSkipUserPrompt() &&
           !(
             this.options.approveRecovery !== undefined &&
             findUnresolvedClaudeToolCalls(snapshot.entries).length > 0
@@ -4211,7 +4458,7 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, stateEntry],
             tail: stateTail,
           }
-          this.rememberDurableMetadata(sessionId, snapshot.entries)
+          rememberDurableMetadata(snapshot.entries)
         }
         this.restoreWorktree(snapshot.entries)
         this.options.interactiveTools?.restore(sessionId, snapshot.entries)
@@ -4231,7 +4478,7 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
-          this.rememberDurableMetadata(sessionId, snapshot.entries)
+          rememberDurableMetadata(snapshot.entries)
         }
         const agentName =
           this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
@@ -4241,7 +4488,7 @@ export class ClaudeSessionService {
         const effectivePrompt =
           automaticReplayPrompt ??
           (!requireExisting &&
-          !skipUserPrompt &&
+          !shouldSkipUserPrompt() &&
           !this.options.agentInitialPromptHandledExternally &&
           shellCommand === undefined &&
           agent?.initialPrompt
@@ -4260,7 +4507,7 @@ export class ClaudeSessionService {
           warn: (message) =>
             this.options.eventSink?.({ type: 'warning', message }),
         })
-        if (!skipUserPrompt && shellCommand === undefined) {
+        if (!shouldSkipUserPrompt() && shellCommand === undefined) {
           turnMemory.prefetch({
             turnId: randomUUID(),
             prompt: effectivePrompt,
@@ -4286,9 +4533,11 @@ export class ClaudeSessionService {
                 ...(this.options.fileRewindRoots ?? []),
               ])
             : null
-        const unresolvedToolCalls = findUnresolvedClaudeToolCalls(
-          snapshot.entries,
-        )
+        const unresolvedToolCalls = nativeLease
+          ? nativeInterruption?.kind === 'recoverable-tools'
+            ? [...nativeInterruption.calls]
+            : []
+          : findUnresolvedClaudeToolCalls(snapshot.entries)
         const pendingRecoveryToolCallIds = new Set(
           unresolvedToolCalls.map((call) => call.id),
         )
@@ -4448,6 +4697,9 @@ export class ClaudeSessionService {
                 provider,
                 persistence:
                   this.options.sessionPersistence === false ? 'memory' : 'disk',
+                ...(this.options.experimentalNativeTranscriptWrites === true
+                  ? { experimentalNativeTranscriptWrites: true }
+                  : {}),
                 ...(this.options.providerForModel
                   ? { providerForModel: this.options.providerForModel }
                   : {}),
@@ -4786,6 +5038,13 @@ export class ClaudeSessionService {
           tools: readonly ModelToolDefinition[]
         }) => void = () => undefined
         const observer = {
+          ...(nativeLease
+            ? {
+                toolExecutionStarted: async (call: ModelToolCall) => {
+                  await nativeLease.beginToolExecution(call.id)
+                },
+              }
+            : {}),
           modelRequestCompleted: async (input: {
             usage: ModelUsage
             messages: readonly ModelMessage[]
@@ -4818,8 +5077,25 @@ export class ClaudeSessionService {
             const tail = await this.append(lease, snapshot.tail, entry)
             snapshot = { entries: [...snapshot.entries, entry], tail }
 
-            lastAssistantUuid =
-              typeof entry.uuid === 'string' ? entry.uuid : lastAssistantUuid
+            lastAssistantUuid = nativeLease
+              ? await nativeLease.appendMessages({
+                  messages: [
+                    {
+                      role: 'assistant',
+                      content: message.content,
+                      ...(message.thinkingBlocks?.length
+                        ? { thinkingBlocks: message.thinkingBlocks }
+                        : {}),
+                      ...(message.toolCalls?.length
+                        ? { toolCalls: message.toolCalls }
+                        : {}),
+                    },
+                  ],
+                  model: provider.model ?? 'praxis/provider',
+                })
+              : typeof entry.uuid === 'string'
+                ? entry.uuid
+                : lastAssistantUuid
           },
           toolCompleted: async (
             call: ModelToolCall,
@@ -4875,33 +5151,43 @@ export class ClaudeSessionService {
                 tail: modeTail,
               }
             }
-            const [entry] = translateProviderEvents(
-              [
-                {
-                  type: 'tool-result',
-                  toolCallId: call.id,
-                  content: toolResult.content,
-                  ...(toolResult.contentBlocks
-                    ? { contentBlocks: toolResult.contentBlocks }
-                    : {}),
-                  ...(toolResult.images ? { images: toolResult.images } : {}),
-                  ...(toolResult.documents
-                    ? { documents: toolResult.documents }
-                    : {}),
-                  isError: toolResult.isError,
-                  ...(toolResult.nativeToolUseResult
-                    ? { nativeToolUseResult: toolResult.nativeToolUseResult }
-                    : {}),
-                  ...(toolResult.nativeMcpMeta
-                    ? { nativeMcpMeta: toolResult.nativeMcpMeta }
-                    : {}),
-                },
-              ],
-              this.translationContext(sessionId, snapshot),
-            )
-            if (!entry) throw new Error('Could not translate tool result')
-            const tail = await this.append(lease, snapshot.tail, entry)
-            snapshot = { entries: [...snapshot.entries, entry], tail }
+            if (nativeLease) {
+              await nativeLease.appendToolCompletion({
+                callId: call.id,
+                result: toolResult,
+                ...(toolResult.followUpUserMessages === undefined
+                  ? {}
+                  : { followUpUserMessages: toolResult.followUpUserMessages }),
+              })
+            } else {
+              const [entry] = translateProviderEvents(
+                [
+                  {
+                    type: 'tool-result',
+                    toolCallId: call.id,
+                    content: toolResult.content,
+                    ...(toolResult.contentBlocks
+                      ? { contentBlocks: toolResult.contentBlocks }
+                      : {}),
+                    ...(toolResult.images ? { images: toolResult.images } : {}),
+                    ...(toolResult.documents
+                      ? { documents: toolResult.documents }
+                      : {}),
+                    isError: toolResult.isError,
+                    ...(toolResult.nativeToolUseResult
+                      ? { nativeToolUseResult: toolResult.nativeToolUseResult }
+                      : {}),
+                    ...(toolResult.nativeMcpMeta
+                      ? { nativeMcpMeta: toolResult.nativeMcpMeta }
+                      : {}),
+                  },
+                ],
+                this.translationContext(sessionId, snapshot),
+              )
+              if (!entry) throw new Error('Could not translate tool result')
+              const tail = await this.append(lease, snapshot.tail, entry)
+              snapshot = { entries: [...snapshot.entries, entry], tail }
+            }
 
             if (!toolResult.isError && this.options.projectMemoryDirectory) {
               const pathValue = call.input.file_path
@@ -5035,7 +5321,7 @@ export class ClaudeSessionService {
           const recoveryRequest = {
             cwd: this.activeCwd(),
             toolResultDirectory,
-            messages: projectClaudeModelMessages(snapshot.entries),
+            messages: activeTurnMessages(),
             observer,
             permissionUpdates:
               this.sessionPermissionUpdates.get(sessionId) ?? [],
@@ -5147,7 +5433,7 @@ export class ClaudeSessionService {
           }
           await refreshRuntimeContext()
 
-          const expansion = skipUserPrompt
+          const expansion = shouldSkipUserPrompt()
             ? { userMessages: [] as string[] }
             : shellCommand === undefined
               ? this.options.extensions
@@ -5219,7 +5505,7 @@ export class ClaudeSessionService {
             }),
           )
           const agentMentionMessages =
-            shellCommand === undefined && !skipUserPrompt
+            shellCommand === undefined && !shouldSkipUserPrompt()
               ? (this.options.extensions?.agentMentionMessages(
                   effectivePrompt,
                 ) ?? [])
@@ -5273,7 +5559,7 @@ export class ClaudeSessionService {
           ) => ({
             current: () => {
               const historyMessages = [
-                ...projectClaudeModelMessages(snapshot.entries),
+                ...activeTurnMessages(),
                 ...projectMemoryRecallMessages,
               ]
               return {
@@ -5301,11 +5587,191 @@ export class ClaudeSessionService {
               tools: definitions,
             }),
             propose: async () => {
+              if (nativeLease) {
+                if (!budget) throw new Error('Context budget is unavailable')
+                const historyMessages = activeTurnMessages()
+                if (historyMessages.length === 0)
+                  throw new Error('Cannot compact an empty native transcript')
+                if (unresolvedActiveToolCallIds(historyMessages).length > 0)
+                  throw new Error(
+                    'Cannot compact a native transcript with unresolved tool calls',
+                  )
+                let compactableMessages = historyMessages
+                let preservedMessages: ModelMessage[] = []
+                if (preservedUserMessages.length > 0) {
+                  let searchFrom = historyMessages.length
+                  const matchedIndexes: number[] = []
+                  for (
+                    let markerIndex = preservedUserMessages.length - 1;
+                    markerIndex >= 0;
+                    markerIndex -= 1
+                  ) {
+                    const marker = preservedUserMessages[markerIndex]
+                    let found = -1
+                    for (let index = searchFrom - 1; index >= 0; index -= 1) {
+                      const message = historyMessages[index]
+                      if (
+                        message?.role === 'user' &&
+                        message.content === marker
+                      ) {
+                        found = index
+                        break
+                      }
+                    }
+                    if (found < 0)
+                      throw new Error(
+                        'Native automatic compaction could not match the current-turn suffix',
+                      )
+                    matchedIndexes.push(found)
+                    searchFrom = found
+                  }
+                  const earliest = Math.min(...matchedIndexes)
+                  compactableMessages = historyMessages.slice(0, earliest)
+                  preservedMessages = historyMessages.slice(earliest)
+                }
+                if (compactableMessages.length === 0)
+                  throw new Error(
+                    'Cannot compact native transcript: no compactable prefix',
+                  )
+                const preTokens =
+                  estimateModelRequestTokens(compactableMessages)
+                const compacted = await (
+                  this.options.compactor ?? new ModelCompactor(provider)
+                ).compact({
+                  messages: compactableMessages,
+                  targetTokens: Math.min(
+                    8192,
+                    Math.max(1, Math.floor(budget.contextWindowTokens / 4)),
+                  ),
+                  contextWindowTokens: budget.contextWindowTokens,
+                  ...(signal ? { signal } : {}),
+                })
+                const { durationMs, durationWithoutRetriesMs } =
+                  requireCompactionDurations(compacted)
+                if (signal?.aborted) throw new AgentRunCancelledError()
+                const postTokens = estimateModelRequestTokens([
+                  { role: 'user', content: compacted.summary },
+                  ...preservedMessages,
+                ])
+                const compactModel =
+                  compacted.model !== undefined && compacted.model.trim() !== ''
+                    ? compacted.model
+                    : provider.model
+                const meaningfulUsage = hasNonZeroUsage(compacted.usage)
+                if (
+                  meaningfulUsage &&
+                  (compactModel === undefined || compactModel.trim() === '')
+                )
+                  throw new Error(
+                    'Auto compact usage requires a nonblank model identity',
+                  )
+                const tracker = this.sessionCostTrackers.get(sessionId)
+                if (!tracker)
+                  throw new Error(
+                    `Session cost tracker is not active for session ${sessionId}`,
+                  )
+                let meteringTurnInput: ClaudeSessionTurnInput | undefined
+                if (
+                  meaningfulUsage &&
+                  compactModel !== undefined &&
+                  compactModel.trim() !== ''
+                ) {
+                  const pricing = this.options.pricing?.resolve(compactModel)
+                  const costUsd = pricing
+                    ? usageCostUsd(compacted.usage, pricing)
+                    : undefined
+                  meteringTurnInput = {
+                    model: compactModel,
+                    usage: compacted.usage,
+                    ...(costUsd === undefined ? {} : { costUsd }),
+                    ...(compacted.usage.webSearchRequests === undefined
+                      ? {}
+                      : {
+                          webSearchRequests: compacted.usage.webSearchRequests,
+                        }),
+                  }
+                }
+                let meteringDurationsInput:
+                  ClaudeSessionDurationsInput | undefined
+                if (durationMs > 0 || durationWithoutRetriesMs > 0)
+                  meteringDurationsInput = {
+                    ...(durationMs === 0 ? {} : { apiDurationMs: durationMs }),
+                    apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
+                  }
+                if (
+                  meteringTurnInput !== undefined ||
+                  meteringDurationsInput !== undefined
+                ) {
+                  const preflight = new ClaudeSessionCostTracker({
+                    sessionId,
+                    restored: tracker.snapshot(),
+                  })
+                  if (meteringTurnInput !== undefined)
+                    preflight.recordTurn(meteringTurnInput)
+                  if (meteringDurationsInput !== undefined)
+                    preflight.recordDurations(meteringDurationsInput)
+                }
+                const summaryMessage = {
+                  role: 'user' as const,
+                  content: compacted.summary,
+                }
+                const proposedMessages = [
+                  ...contextMessages,
+                  ...injectTurnContext([
+                    summaryMessage,
+                    ...preservedMessages,
+                    ...pendingMessages,
+                  ]),
+                ]
+                return {
+                  envelope: { messages: proposedMessages, tools: definitions },
+                  commit: async () => {
+                    if (signal?.aborted) throw new AgentRunCancelledError()
+                    const ids = await nativeLease.appendCompaction({
+                      summary: compacted.summary,
+                      trigger: 'auto',
+                      preTokens,
+                      postTokens,
+                      durationMs,
+                      preservedMessages,
+                    })
+                    this.options.eventSink?.({
+                      type: 'compact-boundary',
+                      trigger: 'auto',
+                      preTokens,
+                      uuid: ids.boundaryId,
+                    })
+                    compactionUsage = mergeUsage(
+                      compactionUsage,
+                      compacted.usage,
+                    )
+                    compactionDurationMs =
+                      (compactionDurationMs ?? 0) + durationMs
+                    compactionDurationWithoutRetriesMs =
+                      (compactionDurationWithoutRetriesMs ?? 0) +
+                      durationWithoutRetriesMs
+                    if (meteringTurnInput !== undefined) {
+                      tracker.recordTurn(meteringTurnInput)
+                    }
+                    if (
+                      compactModel !== undefined &&
+                      compactModel.trim() !== ''
+                    ) {
+                      compactionModelUsage = mergeSessionRawModelUsage(
+                        compactionModelUsage,
+                        { [compactModel]: compacted.usage },
+                      )
+                    }
+                    if (meteringDurationsInput !== undefined)
+                      tracker.recordDurations(meteringDurationsInput)
+                  },
+                }
+              }
               if (!budget) {
                 throw new Error('Context budget is unavailable')
               }
               const historyMessages = [
-                ...projectClaudeModelMessages(snapshot.entries),
+                ...activeTurnMessages(),
                 ...projectMemoryRecallMessages,
               ]
               const irreducibleMessages = [
@@ -5598,7 +6064,7 @@ export class ClaudeSessionService {
                       tail: metadataAppend.tail,
                     }
                   }
-                  this.rememberDurableMetadata(sessionId, snapshot.entries)
+                  rememberDurableMetadata(snapshot.entries)
                   await this.runAdvisoryHook(
                     sessionId,
                     'PostCompact',
@@ -5695,6 +6161,20 @@ export class ClaudeSessionService {
               entries: [...snapshot.entries, userEntry],
               tail: userTail,
             }
+            if (nativeLease) {
+              await nativeLease.appendMessages({
+                messages: [
+                  {
+                    role: 'user',
+                    content: message.text,
+                    ...(messageImages.length ? { images: messageImages } : {}),
+                    ...(index === attachmentIndex && documents.length > 0
+                      ? { documents }
+                      : {}),
+                  },
+                ],
+              })
+            }
           }
 
           if (fileHistory && currentPromptId) {
@@ -5713,7 +6193,7 @@ export class ClaudeSessionService {
             }
           }
 
-          if (this.options.hooks && !skipUserPrompt) {
+          if (this.options.hooks && !shouldSkipUserPrompt()) {
             const outcome = await this.options.hooks.run(
               {
                 ...hookSession,
@@ -5750,7 +6230,7 @@ export class ClaudeSessionService {
                 cwd: this.activeCwd(),
                 sessionId,
                 toolResultDirectory,
-                messages: projectClaudeModelMessages(snapshot.entries),
+                messages: activeTurnMessages(),
                 observer: {
                   assistantCompleted: async () => undefined,
                   toolCompleted: async () => undefined,
@@ -5811,6 +6291,20 @@ export class ClaudeSessionService {
               entries: [...snapshot.entries, inputEntry, outputEntry],
               tail: shellAppend.tail,
             }
+            if (nativeLease) {
+              await nativeLease.appendMessages({
+                messages: [
+                  {
+                    role: 'user',
+                    content: `<bash-input>${shellCommand}</bash-input>`,
+                  },
+                  {
+                    role: 'user',
+                    content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
+                  },
+                ],
+              })
+            }
             currentTurnUserMessages.push(
               `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
             )
@@ -5831,9 +6325,7 @@ export class ClaudeSessionService {
               budget.evaluate(
                 [
                   ...contextMessages,
-                  ...injectTurnContext(
-                    projectClaudeModelMessages(snapshot.entries),
-                  ),
+                  ...injectTurnContext(activeTurnMessages()),
                 ],
                 definitions,
               ),
@@ -5845,9 +6337,7 @@ export class ClaudeSessionService {
             sessionId,
             messages: [
               ...contextMessages,
-              ...injectTurnContext(
-                projectClaudeModelMessages(snapshot.entries),
-              ),
+              ...injectTurnContext(activeTurnMessages()),
             ],
             stableSystemMessageCount,
             cwd: this.activeCwd(),
@@ -5881,7 +6371,7 @@ export class ClaudeSessionService {
               return [
                 ...contextMessages,
                 ...injectTurnContext([
-                  ...projectClaudeModelMessages(snapshot.entries),
+                  ...activeTurnMessages(),
                   ...projectMemoryRecallMessages,
                 ]),
               ]
@@ -6061,7 +6551,7 @@ export class ClaudeSessionService {
               runtimeRequest.messages = [
                 ...contextMessages,
                 ...injectTurnContext([
-                  ...projectClaudeModelMessages(snapshot.entries),
+                  ...activeTurnMessages(),
                   ...projectMemoryRecallMessages,
                 ]),
               ]
@@ -6119,7 +6609,7 @@ export class ClaudeSessionService {
           if (!finalLeafUuid) {
             throw new Error('Could not locate final assistant response')
           }
-          if (!skipUserPrompt) {
+          if (!nativeLease && !skipUserPrompt) {
             const lastPrompt = createClaudeLastPromptEntry({
               sessionId,
               lastPrompt: effectivePrompt,
@@ -6131,7 +6621,7 @@ export class ClaudeSessionService {
               tail,
             }
           }
-          this.rememberDurableMetadata(sessionId, snapshot.entries)
+          rememberDurableMetadata(snapshot.entries)
           const totalUsage = mergeUsage(
             mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
             result.usage,
@@ -6238,7 +6728,7 @@ export class ClaudeSessionService {
                 : { linesRemoved: foregroundLineChanges.linesRemoved }),
             })
           }
-          const memorySnapshot = projectClaudeModelMessages(snapshot.entries)
+          const memorySnapshot = activeTurnMessages()
           const providerVisibleMessages = [
             ...contextMessages,
             ...injectTurnContext(memorySnapshot),
@@ -6254,7 +6744,9 @@ export class ClaudeSessionService {
             occupancyTokens: currentContextTokens,
             toolCalls: currentTurnToolCalls,
             messages: memorySnapshot,
-            projectMessages: projectMemoryMessages(snapshot.entries),
+            projectMessages: nativeLease
+              ? []
+              : projectMemoryMessages(snapshot.entries),
             directMaintenance: projectMemoryMaintained,
           })
           turnCompleted = true
@@ -6279,13 +6771,49 @@ export class ClaudeSessionService {
             await this.hookLifecycle.end(sessionId, 'other')
           }
         }
-      })
-      if (leaseResult.status === 'conflict') {
-        throw new Error(
-          `Claude transcript append conflict: ${leaseResult.reason}`,
-        )
       }
-      const result = leaseResult.value
+      let result: SessionRunResult
+      if (this.nativeTranscriptWritesEnabled()) {
+        const nativeStore = new NativeTranscriptStore({
+          transcriptFile: sessionPaths.sessionFile,
+          lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+        })
+        const nativeTranscript = new NativeSessionTranscript({
+          sessionId,
+          store: nativeStore,
+        })
+        const activationKind = requireExisting
+          ? resumeSessionAt === undefined
+            ? { kind: 'resume' as const }
+            : { kind: 'resume' as const, atEventId: resumeSessionAt }
+          : { kind: 'start' as const }
+        result = await nativeTranscript.withLease(
+          activationKind,
+          async (nativeLease) => {
+            const scratch = new InMemoryTranscriptStore()
+            const scratchResult = await scratch.withLease((scratchLease) =>
+              runUnderLease(scratchLease, nativeLease),
+            )
+            if (scratchResult.status === 'conflict') {
+              throw new Error(
+                `native scratch transcript conflict: ${scratchResult.reason}`,
+              )
+            }
+            return scratchResult.value
+          },
+        )
+      } else {
+        const store = this.turnStore(sessionId)
+        const leaseResult = await store.withLease((lease) =>
+          runUnderLease(lease),
+        )
+        if (leaseResult.status === 'conflict') {
+          throw new Error(
+            `Claude transcript append conflict: ${leaseResult.reason}`,
+          )
+        }
+        result = leaseResult.value
+      }
       controller.complete()
       return result
     } catch (error) {
@@ -7201,11 +7729,19 @@ export class ClaudeSessionService {
   }
 
   private assertWritable(): void {
+    if (this.nativeTranscriptWritesEnabled()) {
+      throw new Error('experimental native operational writes are not enabled')
+    }
     if (this.schema.writeMode !== 'read-write') {
       throw new Error(
         `Claude ${this.options.claudeVersion} session is read-only`,
       )
     }
+  }
+
+  private assertTurnWritable(): void {
+    if (this.nativeTranscriptWritesEnabled()) return
+    this.assertWritable()
   }
 
   private sessionStatus(
@@ -7222,7 +7758,68 @@ export class ClaudeSessionService {
   ): SessionStatus {
     if (issue?.kind === 'unsupported-version') return 'read-only'
     if (entryCount === 0 || issue) return 'corrupt'
-    return 'read-only'
+    return this.nativeTranscriptWritesEnabled() ? 'ready' : 'read-only'
+  }
+
+  private nativeTranscriptWritesEnabled(): boolean {
+    return this.options.experimentalNativeTranscriptWrites === true
+  }
+
+  private assertNativeTranscriptOptions(): void {
+    if (!this.nativeTranscriptWritesEnabled()) return
+    if (this.options.dataPlane !== 'native')
+      throw new Error(
+        'experimental native transcript writes require dataPlane native',
+      )
+    if (this.options.sessionPersistence === false)
+      throw new Error(
+        'experimental native transcript writes require sessionPersistence',
+      )
+    const incompatible: Array<[string, boolean]> = [
+      ['hooks', this.options.hooks !== undefined],
+      [
+        'conditionalRuleResolver',
+        this.options.conditionalRuleResolver !== undefined,
+      ],
+      ['extensions', this.options.extensions !== undefined],
+      ['agent', this.options.agent !== undefined],
+      ['fileCheckpointing', this.options.fileCheckpointing === true],
+      ['fileRewindRoots', (this.options.fileRewindRoots?.length ?? 0) > 0],
+      ['interactiveTools', this.options.interactiveTools !== undefined],
+      ['mcp', this.options.mcp !== undefined],
+      ['taskToolNames', (this.options.taskToolNames?.length ?? 0) > 0],
+      [
+        'scheduledToolNames',
+        (this.options.scheduledToolNames?.length ?? 0) > 0,
+      ],
+      ['enableDynamicWakeups', this.options.enableDynamicWakeups === true],
+      ['enableSessionMemory', this.options.enableSessionMemory === true],
+      [
+        'sessionMemoryProviderFactory',
+        this.options.sessionMemoryProviderFactory !== undefined,
+      ],
+      [
+        'projectMemoryDirectory',
+        this.options.projectMemoryDirectory !== undefined,
+      ],
+      ['projectMemoryRecall', this.options.projectMemoryRecall !== undefined],
+      [
+        'projectMemoryExtraction',
+        this.options.projectMemoryExtraction !== undefined,
+      ],
+      ['sessionKind', this.options.sessionKind !== undefined],
+      ['workspace', this.options.workspace !== undefined],
+      ['initialWorktree', this.options.initialWorktree === true],
+      ['initialWorktreeName', this.options.initialWorktreeName !== undefined],
+      ['enableWorktrees', this.options.enableWorktrees === true],
+      ['worktreeToolNames', (this.options.worktreeToolNames?.length ?? 0) > 0],
+      ['worktreeBaseRef', this.options.worktreeBaseRef !== undefined],
+    ]
+    const active = incompatible.find(([, enabled]) => enabled)
+    if (active)
+      throw new Error(
+        `experimental native transcript writes incompatible with option ${active[0]}`,
+      )
   }
 
   private claudeSessionSummary(
@@ -7250,6 +7847,7 @@ export class ClaudeSessionService {
   private async assertNativeWriteTargetIsLegacy(
     sessionId: string,
   ): Promise<void> {
+    if (this.nativeTranscriptWritesEnabled()) return
     if (this.options.dataPlane !== 'native') return
     const existing = await readNativeTranscript(
       this.paths(sessionId).sessionFile,

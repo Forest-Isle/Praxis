@@ -19,6 +19,9 @@ import {
   readClaudeSessionIndex,
   type ClaudeSessionIndex,
 } from './claude-session-index.js'
+import { classifyTranscriptAppend } from './transcript-file-append.js'
+
+export { classifyTranscriptAppend }
 
 export interface TranscriptTail {
   byteLength: number
@@ -116,23 +119,6 @@ const NON_TAIL_ENTRY_TYPES = new Set([
   'tag',
   'worktree-state',
 ])
-
-export function classifyTranscriptAppend(
-  written: Uint8Array,
-  previousByteLength: number,
-  encodedLine: Uint8Array,
-): 'appended' | 'interleaved-write' {
-  const expectedEnd = previousByteLength + encodedLine.length
-  if (
-    written.length === expectedEnd &&
-    Buffer.from(written)
-      .subarray(previousByteLength, expectedEnd)
-      .equals(encodedLine)
-  ) {
-    return 'appended'
-  }
-  return 'interleaved-write'
-}
 
 function hashLine(line: Uint8Array): string {
   return createHash('sha256').update(line).digest('hex')

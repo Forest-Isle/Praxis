@@ -489,6 +489,7 @@ export function autoModePermissionOutcome(
 }
 
 export interface AgentRunObserver {
+  toolExecutionStarted?(call: ModelToolCall): Promise<void>
   modelRequestCompleted?(input: {
     usage: ModelUsage
     messages: readonly ModelMessage[]
@@ -1232,9 +1233,15 @@ export class AgentRuntime {
               }
               toolCalls.push(event.call)
               this.emit(event)
+              const policy = resolveToolSchedulingPolicy(
+                this.options.tools,
+                event.call,
+              )
               toolScheduler.schedule(
                 event.call,
-                resolveToolSchedulingPolicy(this.options.tools, event.call),
+                request.observer?.toolExecutionStarted
+                  ? { ...policy, startAfterAssistant: true }
+                  : policy,
               )
             } else if (event.type === 'terminal') {
               activeAttemptHasPresentation = true
@@ -1903,6 +1910,7 @@ export class AgentRuntime {
     this.emit({ type: 'state', state: 'executing-tools' })
     context.permissionPhase = 'execute'
     context.permissionApproved = true
+    await request.observer?.toolExecutionStarted?.(prepared)
     const toolStartedAt = performance.now()
     try {
       const result = await tools.execute(prepared, context)

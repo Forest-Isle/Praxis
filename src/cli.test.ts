@@ -6,6 +6,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,6 +18,7 @@ import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
 import { ClaudeSessionService } from './application/session-service.js'
+import { resolveClaudePaths } from './compatibility/claude/paths.js'
 import { resolveProjectMemoryDirectory } from './platform/project-memory-paths.js'
 import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
@@ -3088,6 +3090,371 @@ describe('Praxis CLI', () => {
         expect(definitions).not.toContain('TeamStop')
       } finally {
         await disallowed.close?.()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('activates canonical native transcript writes only for the reduced profile', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-activation-'))
+    const configRoot = join(root, 'native')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    await mkdir(cwd, { recursive: true })
+    const environment = {
+      PRAXIS_API_KEY: 'test-key',
+      PRAXIS_PROVIDER: 'openai',
+      PRAXIS_MODEL: 'fixture-model',
+    }
+    const makeService = async (
+      gate: string | undefined,
+      controls: CliControls = {
+        ...DEFAULT_CLI_CONTROLS,
+        dataPlane: 'native',
+        bare: true,
+      },
+      extra: Partial<Parameters<CliDependencies['createService']>[0]> = {},
+    ) =>
+      createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: false,
+        cwd,
+        configRoot,
+        providerEnvironment: {
+          ...environment,
+          ...(gate === undefined
+            ? {}
+            : { PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: gate }),
+        },
+        controls,
+        ...extra,
+      })
+    const canonicalSource = `${JSON.stringify({
+      schema: 'praxis.transcript',
+      version: 1,
+      event: {
+        kind: 'messages',
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        parentId: null,
+        sessionId,
+        timestamp: '2026-08-23T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+    })}\n`
+    try {
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId,
+      })
+      await mkdir(paths.projectRoot, { recursive: true })
+      await writeFile(paths.sessionFile, canonicalSource)
+      for (const value of [undefined, '', '0', 'false', 'off', 'arbitrary']) {
+        const service = await makeService(value)
+        try {
+          expect(
+            (await service.sessions()).find((s) => s.sessionId === sessionId)
+              ?.status,
+          ).toBe('read-only')
+        } finally {
+          await service.close?.()
+        }
+      }
+      for (const value of ['1', 'true', 'yes', 'on', ' TRUE ', ' On ']) {
+        const service = await makeService(value)
+        try {
+          expect(
+            (await service.sessions()).find((s) => s.sessionId === sessionId)
+              ?.status,
+          ).toBe('ready')
+        } finally {
+          await service.close?.()
+        }
+      }
+
+      const unsupported: Array<
+        [
+          string,
+          CliControls,
+          Partial<Parameters<CliDependencies['createService']>[0]>,
+        ]
+      > = [
+        [
+          'dataPlane',
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude', bare: true },
+          {},
+        ],
+        [
+          'sessionPersistence',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            sessionPersistence: false,
+          },
+          {},
+        ],
+        [
+          'interactive',
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
+          { interactive: true },
+        ],
+        ['simpleMode', { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' }, {}],
+        [
+          'sessionKind',
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
+          { sessionKind: 'bg' },
+        ],
+        [
+          'name',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            name: 'named',
+          },
+          {},
+        ],
+        [
+          'worktree',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            worktreeRequested: true,
+          },
+          {},
+        ],
+        [
+          'addDirectories',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            addDirectories: [cwd],
+          },
+          {},
+        ],
+        [
+          'fileResources',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            fileResources: ['file-id:fixture.txt'],
+          },
+          {},
+        ],
+        [
+          'settings',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            settings: '{}',
+          },
+          {},
+        ],
+        [
+          'settingSources',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            settingSources: ['project'],
+          },
+          {},
+        ],
+        [
+          'pluginDirectories',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            pluginDirectories: [root],
+          },
+          {},
+        ],
+        [
+          'pluginUrls',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            pluginUrls: ['https://example.test/plugin'],
+          },
+          {},
+        ],
+        [
+          'agent',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            agentDefinitions: JSON.stringify({
+              reviewer: { prompt: 'review' },
+            }),
+          },
+          {},
+        ],
+        [
+          'agent',
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
+          { agent: 'reviewer' },
+        ],
+        [
+          'mcp',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            mcpConfigs: [JSON.stringify({ mcpServers: {} })],
+          },
+          {},
+        ],
+        [
+          'mcp',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            strictMcpConfig: true,
+          },
+          {},
+        ],
+        [
+          'checkpointing',
+          {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+            rewindFiles: 'checkpoint',
+          },
+          {},
+        ],
+        [
+          'teams',
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
+          {
+            providerEnvironment: {
+              ...environment,
+              PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: 'true',
+              PRAXIS_ENABLE_TEAMS: 'true',
+            },
+          },
+        ],
+      ]
+      for (const [surface, controls, extra] of unsupported) {
+        await expect(makeService('true', controls, extra)).rejects.toThrow(
+          surface,
+        )
+      }
+
+      const server = createServer((_request, response) => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        response.end(
+          [
+            `data: ${JSON.stringify({ id: 'completion', choices: [{ index: 0, delta: { content: 'answer' }, finish_reason: null }] })}`,
+            `data: ${JSON.stringify({ id: 'completion', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+        )
+      })
+      await new Promise<void>((resolve) =>
+        server.listen(0, '127.0.0.1', resolve),
+      )
+      try {
+        const address = server.address()
+        if (!address || typeof address === 'string')
+          throw new Error('server did not bind')
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: true,
+          cwd,
+          configRoot,
+          providerEnvironment: {
+            ...environment,
+            PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+            PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: 'yes',
+          },
+          controls: {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            bare: true,
+          },
+        })
+        try {
+          await service.run(
+            'new prompt',
+            undefined,
+            'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          )
+        } finally {
+          await service.close?.()
+        }
+        const createdPaths = resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: configRoot,
+          cwd,
+          sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        })
+        const created = await readFile(createdPaths.sessionFile, 'utf8')
+        expect(created).toContain('"schema":"praxis.transcript"')
+        expect(created).not.toMatch(/"(?:type|uuid|parentUuid|isSidechain)"/u)
+        const legacyPath = resolveClaudePaths({
+          cwd,
+          sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          configDir: configRoot,
+        }).sessionFile
+        await expect(access(legacyPath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+
+      const legacyId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+      const legacyProvider: ModelProvider = {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'legacy' }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      }
+      const legacy = new ClaudeSessionService({
+        configRoot,
+        dataPlane: 'native',
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: legacyProvider,
+      })
+      await legacy.run('legacy prompt', undefined, legacyId)
+      await legacy.close()
+      const legacyPaths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId: legacyId,
+      })
+      const before = await readFile(legacyPaths.sessionFile)
+      const gateOn = await makeService('true')
+      try {
+        await expect(gateOn.resume(legacyId, 'must reject')).rejects.toThrow()
+      } finally {
+        await gateOn.close?.()
+      }
+      expect(await readFile(legacyPaths.sessionFile)).toEqual(before)
+      const gateOff = await makeService(undefined)
+      try {
+        expect(
+          (await gateOff.sessions()).find((s) => s.sessionId === legacyId)
+            ?.status,
+        ).toBe('ready')
+      } finally {
+        await gateOff.close?.()
       }
     } finally {
       await rm(root, { recursive: true, force: true })

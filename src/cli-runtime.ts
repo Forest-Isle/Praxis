@@ -1356,6 +1356,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const workspace = new WorkspaceContext(cwd)
   const dataPlane: DataPlane =
     controls.dataPlane ?? resolveDataPlane(runtimeEnvironment)
+  const experimentalNativeTranscriptWrites = /^(?:1|true|yes|on)$/iu.test(
+    (
+      runtimeEnvironment.PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES ?? ''
+    ).trim(),
+  )
   const configRoot = resolveDataPlaneRoot({
     dataPlane,
     ...(requestedConfigRoot === undefined ? {} : { root: requestedConfigRoot }),
@@ -1388,6 +1393,49 @@ const createDefaultService: CliDependencies['createService'] = async ({
     },
     cwd,
   )
+  if (experimentalNativeTranscriptWrites) {
+    const incompatible: Array<[string, boolean]> = [
+      ['dataPlane', dataPlane !== 'native'],
+      ['sessionPersistence', cli.sessionPersistence === false],
+      ['interactive', interactive],
+      ['simpleMode', !simpleMode],
+      ['sessionKind', sessionKind !== undefined],
+      ['name', cli.name !== undefined],
+      [
+        'worktree',
+        cli.worktreeRequested === true || cli.worktreeName !== undefined,
+      ],
+      ['addDirectories', cli.additionalDirectories.length > 0],
+      ['fileResources', cli.fileResources.length > 0],
+      ['settings', cli.additionalSettings !== undefined],
+      ['settingSources', cli.settingSources !== undefined],
+      ['pluginDirectories', cli.pluginDirectories.length > 0],
+      ['pluginUrls', cli.pluginUrls.length > 0],
+      ['agent', agent !== undefined || cli.inlineAgents.length > 0],
+      ['mcp', cli.mcpConfigs.length > 0 || cli.strictMcpConfig],
+      [
+        'checkpointing',
+        cli.rewindFiles !== undefined ||
+          /^(?:1|true|yes|on)$/iu.test(
+            (
+              runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING ?? ''
+            ).trim(),
+          ),
+      ],
+      [
+        'teams',
+        /^(?:1|true|yes|on)$/iu.test(
+          (runtimeEnvironment.PRAXIS_ENABLE_TEAMS ?? '').trim(),
+        ),
+      ],
+    ]
+    const active = incompatible.find(([, enabled]) => enabled)
+    if (active) {
+      throw new Error(
+        `experimental native transcript writes incompatible with ${active[0]}`,
+      )
+    }
+  }
   const debug =
     cli.debug !== undefined || cli.debugFile !== undefined
       ? createCliDebugSink(eventSink, {
@@ -1471,6 +1519,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const options = {
     configRoot,
     dataPlane,
+    ...(experimentalNativeTranscriptWrites
+      ? { experimentalNativeTranscriptWrites: true as const }
+      : {}),
     cwd,
     claudeVersion,
     eventSink: runtimeEventSink,
@@ -1499,10 +1550,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
       runtimeEnvironment.PRAXIS_PRICING_JSON,
     ),
     collectMetrics: true,
-    ...(sessionMemoryProviderFactory ? { sessionMemoryProviderFactory } : {}),
-    ...(sessionKind === undefined ? {} : { sessionKind }),
-    workspace,
-    ...(cli.worktreeRequested
+    ...(!experimentalNativeTranscriptWrites && sessionMemoryProviderFactory
+      ? { sessionMemoryProviderFactory }
+      : {}),
+    ...(!experimentalNativeTranscriptWrites && sessionKind !== undefined
+      ? { sessionKind }
+      : {}),
+    ...(!experimentalNativeTranscriptWrites ? { workspace } : {}),
+    ...(!experimentalNativeTranscriptWrites && cli.worktreeRequested
       ? {
           initialWorktree: true,
           ...(cli.worktreeName === undefined
@@ -1510,7 +1565,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             : { initialWorktreeName: cli.worktreeName }),
         }
       : {}),
-    ...(cli.fileResources.length > 0
+    ...(!experimentalNativeTranscriptWrites && cli.fileResources.length > 0
       ? {
           fileResources: cli.fileResources,
           fileResourceConfig: {
@@ -2257,7 +2312,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(providerForMainModel ? { providerForMainModel } : {}),
       tools: filteredTools,
       toolCapabilityEnvironment: runtimeEnvironment,
-      mcp: mcpTools,
+      ...(!experimentalNativeTranscriptWrites ? { mcp: mcpTools } : {}),
       permissions,
       permissionResolverForMode,
       permissionMode: cli.dangerouslySkipPermissions
@@ -2270,45 +2325,69 @@ const createDefaultService: CliDependencies['createService'] = async ({
           dataPlane,
           updates,
         }),
-      extensions,
-      enableSubagents,
-      subagentToolNames: routedSubagentTools,
-      taskToolNames: selectedTaskRuntimeTools,
-      scheduledToolNames: selectedScheduledTools,
-      teamToolNames: selectedTeamTools,
-      enableDynamicWakeups: interactive,
-      enableWorkflows: selectedWorkflowTools.length > 0,
+      ...(experimentalNativeTranscriptWrites
+        ? {}
+        : {
+            extensions,
+            enableSubagents,
+            subagentToolNames: routedSubagentTools,
+            taskToolNames: selectedTaskRuntimeTools,
+            scheduledToolNames: selectedScheduledTools,
+            teamToolNames: selectedTeamTools,
+            enableDynamicWakeups: interactive,
+            enableWorkflows: selectedWorkflowTools.length > 0,
+          }),
       emitToolUseSummaries,
-      enableWorktrees:
-        cli.worktreeRequested || selectedWorktreeTools.length > 0,
-      worktreeToolNames: selectedWorktreeTools,
-      ...(runtimeSettings
-        ? { worktreeBaseRef: runtimeSettings.worktreeBaseRef }
+      ...(!experimentalNativeTranscriptWrites
+        ? {
+            enableWorktrees:
+              cli.worktreeRequested || selectedWorktreeTools.length > 0,
+            worktreeToolNames: selectedWorktreeTools,
+            ...(runtimeSettings
+              ? { worktreeBaseRef: runtimeSettings.worktreeBaseRef }
+              : {}),
+            ...(interactiveTools ? { interactiveTools } : {}),
+            ...(hooks ? { hooks } : {}),
+            ...(selectedMainAgent ? { agent: selectedMainAgent } : {}),
+            ...(memoryDirectory
+              ? { projectMemoryDirectory: memoryDirectory }
+              : {}),
+            ...(projectMemoryRecall ? { projectMemoryRecall } : {}),
+            ...(projectMemoryExtraction ? { projectMemoryExtraction } : {}),
+          }
         : {}),
-      ...(interactiveTools ? { interactiveTools } : {}),
-      ...(hooks ? { hooks } : {}),
-      ...(selectedMainAgent ? { agent: selectedMainAgent } : {}),
-      ...(memoryDirectory ? { projectMemoryDirectory: memoryDirectory } : {}),
-      ...(projectMemoryRecall ? { projectMemoryRecall } : {}),
-      ...(projectMemoryExtraction ? { projectMemoryExtraction } : {}),
       contextAssembler,
-      conditionalRuleResolver: new ClaudeConditionalRuleResolver({
-        loadResources: loadContextResources,
-      }),
+      ...(!experimentalNativeTranscriptWrites
+        ? {
+            conditionalRuleResolver: new ClaudeConditionalRuleResolver({
+              loadResources: loadContextResources,
+            }),
+          }
+        : {}),
       ...('contextReserveTokens' in context
         ? { contextReserveTokens: context.contextReserveTokens }
         : {}),
       ...(permissionApprover ? { approveTool: permissionApprover } : {}),
       ...(approveRecovery ? { approveRecovery } : {}),
-      fileCheckpointing:
-        runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING ===
-          'true' || runtimeSettings?.checkpoints === true,
+      ...(!experimentalNativeTranscriptWrites
+        ? {
+            fileCheckpointing:
+              runtimeEnvironment.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING ===
+                'true' || runtimeSettings?.checkpoints === true,
+          }
+        : {}),
       autoCompact: runtimeSettings?.autoCompact ?? true,
-      fileRewindRoots: [
-        ...cli.additionalDirectories,
-        ...(memoryDirectory ? [memoryDirectory] : []),
-      ],
-      ...(teamLeadOperations ? { teamLeadOperations } : {}),
+      ...(!experimentalNativeTranscriptWrites
+        ? {
+            fileRewindRoots: [
+              ...cli.additionalDirectories,
+              ...(memoryDirectory ? [memoryDirectory] : []),
+            ],
+          }
+        : {}),
+      ...(!experimentalNativeTranscriptWrites && teamLeadOperations
+        ? { teamLeadOperations }
+        : {}),
     })
     const toolNames = [
       ...filteredTools.definitions().map((definition) => definition.name),

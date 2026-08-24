@@ -101,6 +101,11 @@ import {
   type ManagedWorktree,
 } from './managed-worktree.js'
 import { createWorkflowWorktree } from './workflow-worktree.js'
+import {
+  NativeSidechainTranscript,
+  type NativeSidechainMetadata,
+} from './native-sidechain-transcript.js'
+import type { NativeSessionTranscriptLease } from './native-session-transcript.js'
 
 const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
@@ -291,6 +296,59 @@ async function readSidechainMetadataName(
   } catch {
     return undefined
   }
+}
+
+function projectNativeSidechainContinuationMessages(
+  messages: readonly ModelMessage[],
+): ModelMessage[] {
+  const callCounts = new Map<string, number>()
+  const resultCounts = new Map<string, number>()
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? [])
+        callCounts.set(call.id, (callCounts.get(call.id) ?? 0) + 1)
+    } else if (message.role === 'tool') {
+      resultCounts.set(
+        message.toolCallId,
+        (resultCounts.get(message.toolCallId) ?? 0) + 1,
+      )
+    }
+  }
+  for (const [callId, count] of callCounts) {
+    if (count > 1)
+      throw new Error(
+        `Native sidechain continuation has duplicate tool ID ${callId}`,
+      )
+  }
+  for (const [callId, count] of resultCounts) {
+    if (count > 1)
+      throw new Error(
+        `Native sidechain continuation has duplicate tool result ${callId}`,
+      )
+  }
+  const resolved = new Set(
+    [...callCounts.keys()].filter((callId) => resultCounts.get(callId) === 1),
+  )
+  return messages.flatMap((message): ModelMessage[] => {
+    if (message.role === 'assistant') {
+      const toolCalls = (message.toolCalls ?? []).filter((call) =>
+        resolved.has(call.id),
+      )
+      if (message.content.trim() === '' && toolCalls.length === 0) return []
+      return [
+        {
+          role: 'assistant',
+          content: message.content,
+          ...(message.thinkingBlocks
+            ? { thinkingBlocks: message.thinkingBlocks }
+            : {}),
+          ...(toolCalls.length === 0 ? {} : { toolCalls }),
+        },
+      ]
+    }
+    if (message.role === 'tool' && !resolved.has(message.toolCallId)) return []
+    return [message]
+  })
 }
 
 export type AgentPermissionMode = ClaudeSidechainPermissionMode
@@ -661,6 +719,7 @@ export interface ClaudeSubagentExecutorOptions {
     toolUseId: string,
   ) => string | null
   persistence?: 'disk' | 'memory'
+  experimentalNativeTranscriptWrites?: boolean
   onLineChanges?: (changes: {
     readonly linesAdded: number
     readonly linesRemoved: number
@@ -768,7 +827,27 @@ export class ClaudeSubagentExecutor {
   }
 
   constructor(private readonly options: ClaudeSubagentExecutorOptions) {
+    if (
+      options.experimentalNativeTranscriptWrites === true &&
+      (options.dataPlane !== 'native' || options.persistence !== 'disk')
+    ) {
+      throw new Error(
+        'experimental native transcript writes require native dataPlane and disk persistence',
+      )
+    }
+    if (
+      options.experimentalNativeTranscriptWrites === true &&
+      options.hooks !== undefined
+    ) {
+      throw new Error(
+        'experimental native sidechain writes do not support Claude hooks',
+      )
+    }
     this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
+  }
+
+  private nativeSidechainWritesEnabled(): boolean {
+    return this.options.experimentalNativeTranscriptWrites === true
   }
 
   async close(): Promise<void> {
@@ -1160,25 +1239,39 @@ export class ClaudeSubagentExecutor {
       return settleInitialSetupFailure(error, initialIsolation)
     }
     const agentCwd = initialIsolation?.cwd ?? parentCwd
-    const sidechain = this.sidechainStore(
-      sessionId,
-      agentId,
-      sidechainPaths,
-      paths.praxisRoot,
-    )
-    const root = createClaudeSidechainRoot({
-      sessionId,
-      promptId,
-      prompt: input.prompt,
-      agentId,
-      cwd: agentCwd,
-      claudeVersion: this.options.claudeVersion,
-      gitBranch: null,
-      uuid: randomUUID(),
-      timestamp: new Date().toISOString(),
-    })
+    const nativeSidechain = this.nativeSidechainWritesEnabled()
+      ? new NativeSidechainTranscript({
+          ...sidechainPaths,
+          lockFile: join(
+            paths.praxisRoot,
+            'locks',
+            `${sessionId}-${agentId}.lock`,
+          ),
+        })
+      : undefined
+    const claudeSidechain = nativeSidechain
+      ? undefined
+      : this.sidechainStore(
+          sessionId,
+          agentId,
+          sidechainPaths,
+          paths.praxisRoot,
+        )
+    const root = nativeSidechain
+      ? undefined
+      : createClaudeSidechainRoot({
+          sessionId,
+          promptId,
+          prompt: input.prompt,
+          agentId,
+          cwd: agentCwd,
+          claudeVersion: this.options.claudeVersion,
+          gitBranch: null,
+          uuid: randomUUID(),
+          timestamp: new Date().toISOString(),
+        })
     try {
-      await sidechain.create(root, {
+      const metadata = {
         agentType: input.subagentType,
         description: input.description,
         toolUseId: call.id,
@@ -1190,7 +1283,18 @@ export class ClaudeSubagentExecutor {
         ...(input.isolation ? { isolation: input.isolation } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
-      })
+      }
+      if (nativeSidechain) {
+        await nativeSidechain.create(input.prompt, {
+          ...metadata,
+          cwd: agentCwd,
+          promptId,
+        })
+      } else {
+        if (!claudeSidechain || !root)
+          throw new Error('Claude sidechain initialization is unavailable')
+        await claudeSidechain.create(root, metadata)
+      }
     } catch (error) {
       return settleInitialSetupFailure(error, initialIsolation)
     }
@@ -1210,11 +1314,14 @@ export class ClaudeSubagentExecutor {
           agentId,
           parentCwd,
         ),
-      execute: (cwd, message, signal, continuation) =>
-        sidechain.withLease(async (lease) =>
+      execute: async (cwd, message, signal, continuation) => {
+        const run = (lease: {
+          claudeLease?: ClaudeTranscriptLease
+          nativeLease?: NativeSessionTranscriptLease
+        }) =>
           this.runSidechain({
-            lease,
-            root,
+            ...lease,
+            sessionId,
             input,
             provider,
             agentId,
@@ -1230,8 +1337,15 @@ export class ClaudeSubagentExecutor {
             ...(continuation ? { continuationMessage: message } : {}),
             signal,
             cwd,
-          }),
-        ),
+          })
+        if (nativeSidechain)
+          return nativeSidechain.withLease((nativeLease) =>
+            run({ nativeLease }),
+          )
+        if (!claudeSidechain)
+          throw new Error('Claude sidechain execution is unavailable')
+        return claudeSidechain.withLease((claudeLease) => run({ claudeLease }))
+      },
     })
     const resolvedModel = provider.model ?? 'praxis/provider'
     const spec: BackgroundAgentTaskSpec = {
@@ -1841,15 +1955,17 @@ export class ClaudeSubagentExecutor {
       metadataFile: agentFiles.metadataFile,
     }
     const sessionPaths = this.sessionPaths(options.sessionId)
-    const sidechain = new ClaudeSidechainStore(
-      paths,
-      join(
-        sessionPaths.praxisRoot,
-        'locks',
-        `${options.sessionId}-${options.runId}-${options.agentId}.lock`,
-      ),
-      this.schema,
+    const lockFile = join(
+      sessionPaths.praxisRoot,
+      'locks',
+      `${options.sessionId}-${options.runId}-${options.agentId}.lock`,
     )
+    const nativeSidechain = this.nativeSidechainWritesEnabled()
+      ? new NativeSidechainTranscript({ ...paths, lockFile })
+      : undefined
+    const claudeSidechain = nativeSidechain
+      ? undefined
+      : new ClaudeSidechainStore(paths, lockFile, this.schema)
     const isolation = options.isolation
       ? await createWorkflowWorktree({
           cwd: this.cwd(),
@@ -1859,30 +1975,50 @@ export class ClaudeSubagentExecutor {
         })
       : null
     const agentCwd = isolation?.cwd ?? this.cwd()
-    const root = createClaudeSidechainRoot({
-      sessionId: options.sessionId,
-      promptId: options.promptId,
-      prompt: options.prompt,
-      agentId: options.agentId,
-      cwd: agentCwd,
-      claudeVersion: this.options.claudeVersion,
-      gitBranch: null,
-      uuid: randomUUID(),
-      timestamp: new Date().toISOString(),
-    })
+    const root = nativeSidechain
+      ? undefined
+      : createClaudeSidechainRoot({
+          sessionId: options.sessionId,
+          promptId: options.promptId,
+          prompt: options.prompt,
+          agentId: options.agentId,
+          cwd: agentCwd,
+          claudeVersion: this.options.claudeVersion,
+          gitBranch: null,
+          uuid: randomUUID(),
+          timestamp: new Date().toISOString(),
+        })
     const startedAt = Date.now()
     const structured = { calls: 0, value: undefined as unknown }
     let run
     let cleanup: { retained: boolean; reason?: string } | undefined
     try {
-      await sidechain.createWorkflow(root, {
-        agentType: options.agentType ?? 'workflow-subagent',
-        spawnDepth: 1,
-      })
-      run = await sidechain.withLease((lease) =>
+      if (nativeSidechain) {
+        await nativeSidechain.create(options.prompt, {
+          agentType: options.agentType ?? 'workflow-subagent',
+          description: input.description,
+          toolUseId: `workflow:${options.runId}`,
+          spawnDepth: 1,
+          cwd: agentCwd,
+          promptId: options.promptId,
+          ...(options.isolation ? { isolation: options.isolation } : {}),
+          ...(isolation ? { worktreePath: isolation.cwd } : {}),
+        })
+      } else {
+        if (!claudeSidechain || !root)
+          throw new Error('Claude workflow sidechain is unavailable')
+        await claudeSidechain.createWorkflow(root, {
+          agentType: options.agentType ?? 'workflow-subagent',
+          spawnDepth: 1,
+        })
+      }
+      const runWithLease = (lease: {
+        claudeLease?: ClaudeTranscriptLease
+        nativeLease?: NativeSessionTranscriptLease
+      }) =>
         this.runSidechain({
-          lease,
-          root,
+          ...lease,
+          sessionId: options.sessionId,
           input,
           provider,
           agentId: options.agentId,
@@ -1900,8 +2036,18 @@ export class ClaudeSubagentExecutor {
           ...(options.effort ? { effort: options.effort } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
           cwd: agentCwd,
-        }),
-      )
+        })
+      if (nativeSidechain) {
+        run = await nativeSidechain.withLease((nativeLease) =>
+          runWithLease({ nativeLease }),
+        )
+      } else {
+        if (!claudeSidechain)
+          throw new Error('Claude workflow sidechain is unavailable')
+        run = await claudeSidechain.withLease((claudeLease) =>
+          runWithLease({ claudeLease }),
+        )
+      }
     } finally {
       cleanup = await isolation?.cleanup()
     }
@@ -2141,35 +2287,51 @@ export class ClaudeSubagentExecutor {
     )
     if (!sidechainPaths) return
     const agentId = sidechainPaths.agentId
-    const sidechain = new ClaudeSidechainStore(
-      sidechainPaths,
-      join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
-      this.schema,
+    const lockFile = join(
+      paths.praxisRoot,
+      'locks',
+      `${sessionId}-${agentId}.lock`,
     )
-    let snapshot
+    const nativeSidechain = this.nativeSidechainWritesEnabled()
+      ? new NativeSidechainTranscript({ ...sidechainPaths, lockFile })
+      : undefined
+    const claudeSidechain = nativeSidechain
+      ? undefined
+      : new ClaudeSidechainStore(sidechainPaths, lockFile, this.schema)
+    let metadata: ClaudeSidechainMetadata | NativeSidechainMetadata | null =
+      null
+    let root: ClaudeTranscriptEntry | undefined
+    let projected: ModelMessage[]
     try {
-      snapshot = await sidechain.loadReadOnly()
+      if (nativeSidechain) {
+        await nativeSidechain.loadReadOnly()
+        metadata = await nativeSidechain.metadata()
+        projected = await nativeSidechain.withLease(async (lease) =>
+          lease.activeMessages(),
+        )
+      } else {
+        if (!claudeSidechain)
+          throw new Error('Claude persisted sidechain is unavailable')
+        const snapshot = await claudeSidechain.loadReadOnly()
+        metadata = await claudeSidechain.metadata().catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw error
+        })
+        root = snapshot.entries[0]
+        if (!root || root.type !== 'user') {
+          throw new Error(`Background agent ${agentId} has no sidechain root`)
+        }
+        projected = projectClaudeModelMessages(snapshot.entries)
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       throw error
     }
-    let metadata: ClaudeSidechainMetadata | null = null
-    try {
-      metadata = await sidechain.metadata()
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    const root = snapshot.entries[0]
-    if (!root || root.type !== 'user') {
+    const rootMessage = projected[0]
+    if (rootMessage?.role !== 'user' || rootMessage.content.trim() === '') {
       throw new Error(`Background agent ${agentId} has no sidechain root`)
     }
-    const prompt =
-      typeof root.message === 'object' &&
-      root.message !== null &&
-      typeof (root.message as Record<string, unknown>).content === 'string'
-        ? String((root.message as Record<string, unknown>).content)
-        : ''
-    const projected = projectClaudeModelMessages(snapshot.entries)
+    const prompt = rootMessage.content
     const lastAssistant = projected.at(-1)
     const completed =
       lastAssistant?.role === 'assistant' &&
@@ -2242,7 +2404,9 @@ export class ClaudeSubagentExecutor {
         }
       }
     } else {
-      const persistedCwd = root.cwd
+      const persistedCwd = nativeSidechain
+        ? (metadata as NativeSidechainMetadata).cwd
+        : root?.cwd
       if (
         typeof persistedCwd === 'string' &&
         persistedCwd.length > 0 &&
@@ -2277,6 +2441,9 @@ export class ClaudeSubagentExecutor {
       runInBackground: true,
     }
     const provider = this.options.provider
+    const recoveredPromptId = nativeSidechain
+      ? (metadata as NativeSidechainMetadata).promptId
+      : String(root?.promptId ?? randomUUID())
     const backgroundRun = this.createBackgroundAgentRun({
       input,
       parentCwd: restoredCwd,
@@ -2291,16 +2458,19 @@ export class ClaudeSubagentExecutor {
           agentId,
           parentCwd,
         ),
-      execute: (cwd, message, signal, continuation) =>
-        sidechain.withLease(async (lease) =>
+      execute: async (cwd, message, signal, continuation) => {
+        const run = (lease: {
+          claudeLease?: ClaudeTranscriptLease
+          nativeLease?: NativeSessionTranscriptLease
+        }) =>
           this.runSidechain({
-            lease,
-            root,
+            ...lease,
+            sessionId,
             input,
             provider,
             agentId,
             spawnDepth,
-            promptId: String(root.promptId ?? randomUUID()),
+            promptId: recoveredPromptId,
             toolUseId,
             transcriptPath: sidechainPaths.transcriptFile,
             toolResultDirectory: join(
@@ -2311,8 +2481,15 @@ export class ClaudeSubagentExecutor {
             ...(continuation ? { continuationMessage: message } : {}),
             signal,
             cwd,
-          }),
-        ),
+          })
+        if (nativeSidechain)
+          return nativeSidechain.withLease((nativeLease) =>
+            run({ nativeLease }),
+          )
+        if (!claudeSidechain)
+          throw new Error('Claude persisted sidechain is unavailable')
+        return claudeSidechain.withLease((claudeLease) => run({ claudeLease }))
+      },
     })
     const spec = {
       agentId,
@@ -2535,8 +2712,9 @@ export class ClaudeSubagentExecutor {
   }
 
   private async runSidechain(options: {
-    lease: ClaudeTranscriptLease
-    root: ClaudeTranscriptEntry
+    claudeLease?: ClaudeTranscriptLease
+    nativeLease?: NativeSessionTranscriptLease
+    sessionId: string
     input: AgentInput
     provider: ModelProvider
     agentId: string
@@ -2567,46 +2745,75 @@ export class ClaudeSubagentExecutor {
     if (!permissions) {
       throw new Error('Agent permission mode overrides are unavailable')
     }
-    let snapshot: TranscriptSnapshot = await options.lease.load()
+    if (
+      (options.claudeLease === undefined) ===
+      (options.nativeLease === undefined)
+    )
+      throw new Error('Exactly one sidechain transcript lease is required')
+    const claudeLease = options.claudeLease
+    const nativeLease = options.nativeLease
+    let snapshot: TranscriptSnapshot | undefined = claudeLease
+      ? await claudeLease.load()
+      : undefined
+    const requireClaudeSnapshot = (): TranscriptSnapshot => {
+      if (!snapshot) throw new Error('Claude sidechain snapshot is unavailable')
+      return snapshot
+    }
+    const nativeInterruption = nativeLease?.interruption()
+    if (nativeInterruption?.kind === 'indeterminate-tools')
+      throw new Error(
+        `Native sidechain tool execution is indeterminate: ${nativeInterruption.callIds.join(', ')}`,
+      )
+    const nativeRecoveryCalls =
+      options.continuationMessage === undefined &&
+      nativeInterruption?.kind === 'recoverable-tools'
+        ? [...nativeInterruption.calls]
+        : []
     if (options.continuationMessage !== undefined) {
       // Validate ambiguous tool linkage before the append-only sidechain is
       // mutated. The projection is rebuilt after appending the one explicit
       // continuation prompt so that prompt is visible to the provider.
-      projectClaudeSidechainContinuationMessages(snapshot.entries)
-      const [entry] = translateProviderEvents(
-        [
+      const continuation = `The coordinator sent a message while you were working:\n${options.continuationMessage}\n\nAddress this before completing your current task.`
+      if (nativeLease) {
+        projectNativeSidechainContinuationMessages(nativeLease.activeMessages())
+        await nativeLease.appendMessages({
+          messages: [{ role: 'user', content: continuation }],
+        })
+      } else {
+        const current = requireClaudeSnapshot()
+        projectClaudeSidechainContinuationMessages(current.entries)
+        const [entry] = translateProviderEvents(
+          [{ type: 'user-text-block', text: continuation }],
           {
-            type: 'user-text-block',
-            text: `The coordinator sent a message while you were working:\n${options.continuationMessage}\n\nAddress this before completing your current task.`,
+            sessionId: options.sessionId,
+            parentUuid: current.tail.lastUuid,
+            cwd,
+            claudeVersion: this.options.claudeVersion,
+            gitBranch: null,
+            history: current.entries,
           },
-        ],
-        {
-          sessionId: String(options.root.sessionId),
-          parentUuid: snapshot.tail.lastUuid,
-          cwd,
-          claudeVersion: this.options.claudeVersion,
-          gitBranch: null,
-          history: snapshot.entries,
-        },
-      )
-      if (!entry) throw new Error('Could not translate subagent message')
-      const sidechainEntry = toClaudeSidechainEntry(
-        entry,
-        options.agentId,
-        options.input.subagentType,
-      )
-      const appendResult = await options.lease.append(
-        snapshot.tail,
-        sidechainEntry,
-      )
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude sidechain append conflict: ${appendResult.reason}`,
         )
-      }
-      snapshot = {
-        entries: [...snapshot.entries, sidechainEntry],
-        tail: appendResult.tail,
+        if (!entry) throw new Error('Could not translate subagent message')
+        const sidechainEntry = toClaudeSidechainEntry(
+          entry,
+          options.agentId,
+          options.input.subagentType,
+        )
+        if (!claudeLease)
+          throw new Error('Claude sidechain continuation is unavailable')
+        const appendResult = await claudeLease.append(
+          current.tail,
+          sidechainEntry,
+        )
+        if (appendResult.status === 'conflict') {
+          throw new Error(
+            `Claude sidechain append conflict: ${appendResult.reason}`,
+          )
+        }
+        snapshot = {
+          entries: [...current.entries, sidechainEntry],
+          tail: appendResult.tail,
+        }
       }
     }
     let toolUseCount = 0
@@ -2619,27 +2826,35 @@ export class ClaudeSubagentExecutor {
     let recordedApiDurationSeen = false
     let lastToolName: string | undefined
     const taskStartedAt = Date.now()
-    const append = async (entry: ClaudeTranscriptEntry) => {
-      const result = await options.lease.append(snapshot.tail, entry)
+    const appendClaude = async (entry: ClaudeTranscriptEntry) => {
+      if (!claudeLease)
+        throw new Error('Claude sidechain append is unavailable')
+      const current = requireClaudeSnapshot()
+      const result = await claudeLease.append(current.tail, entry)
       if (result.status === 'conflict') {
         throw new Error(`Claude sidechain append conflict: ${result.reason}`)
       }
-      snapshot = { entries: [...snapshot.entries, entry], tail: result.tail }
+      snapshot = { entries: [...current.entries, entry], tail: result.tail }
     }
-    const translationContext = () => ({
-      sessionId: String(options.root.sessionId),
-      parentUuid: snapshot.tail.lastUuid,
-      cwd,
-      claudeVersion: this.options.claudeVersion,
-      gitBranch: null,
-      history: snapshot.entries,
-    })
+    const translationContext = () => {
+      const current = requireClaudeSnapshot()
+      return {
+        sessionId: options.sessionId,
+        parentUuid: current.tail.lastUuid,
+        cwd,
+        claudeVersion: this.options.claudeVersion,
+        gitBranch: null,
+        history: current.entries,
+      }
+    }
     const recordHookOutcome = async (outcome: ClaudeHookOutcome) => {
+      if (nativeLease)
+        throw new Error('Claude hooks are unavailable for native sidechains')
       for (const entry of createClaudeHookAttachmentEntries(
         outcome,
         translationContext(),
       )) {
-        await append(
+        await appendClaude(
           toClaudeSidechainEntry(
             entry,
             options.agentId,
@@ -2650,7 +2865,7 @@ export class ClaudeSubagentExecutor {
     }
     const customAgent = this.agentDefinition(options.input)
     const hookSession = {
-      session_id: String(options.root.sessionId),
+      session_id: options.sessionId,
       transcript_path: options.transcriptPath,
       cwd,
       permission_mode: options.input.permissionMode ?? 'default',
@@ -2710,7 +2925,7 @@ export class ClaudeSubagentExecutor {
       recordedApiDurationSeen = true
     }
     const nestedTools = this.registry(
-      String(options.root.sessionId),
+      options.sessionId,
       options.spawnDepth,
       () => options.promptId,
       options.agentId,
@@ -2828,12 +3043,33 @@ export class ClaudeSubagentExecutor {
       maxToolInputBytes: 1024 * 1024,
     })
     const observer = {
+      toolExecutionStarted: async (call: ModelToolCall) => {
+        await nativeLease?.beginToolExecution(call.id)
+      },
       assistantCompleted: async (message: {
         content: string
         thinkingBlocks?: readonly ModelThinkingBlock[]
         toolCalls?: readonly ModelToolCall[]
       }) => {
         commitProviderUsage()
+        if (nativeLease) {
+          await nativeLease.appendMessages({
+            messages: [
+              {
+                role: 'assistant',
+                content: message.content,
+                ...(message.thinkingBlocks
+                  ? { thinkingBlocks: message.thinkingBlocks }
+                  : {}),
+                ...(message.toolCalls?.length
+                  ? { toolCalls: message.toolCalls }
+                  : {}),
+              },
+            ],
+            model: options.provider.model ?? 'praxis/provider',
+          })
+          return
+        }
         const [entry] = translateProviderEvents(
           [
             {
@@ -2850,7 +3086,7 @@ export class ClaudeSubagentExecutor {
           translationContext(),
         )
         if (!entry) throw new Error('Could not translate subagent response')
-        await append(
+        await appendClaude(
           toClaudeSidechainEntry(
             entry,
             options.agentId,
@@ -2885,6 +3121,16 @@ export class ClaudeSubagentExecutor {
         ) {
           toolUseCount += nestedToolUseCount
         }
+        if (nativeLease) {
+          await nativeLease.appendToolCompletion({
+            callId: call.id,
+            result,
+            ...(result.followUpUserMessages?.length
+              ? { followUpUserMessages: result.followUpUserMessages }
+              : {}),
+          })
+          return
+        }
         const [entry] = translateProviderEvents(
           [
             {
@@ -2908,7 +3154,7 @@ export class ClaudeSubagentExecutor {
           translationContext(),
         )
         if (!entry) throw new Error('Could not translate subagent tool result')
-        await append(
+        await appendClaude(
           toClaudeSidechainEntry(
             entry,
             options.agentId,
@@ -2918,18 +3164,21 @@ export class ClaudeSubagentExecutor {
       },
       followUpUserMessagesCompleted: async (messages: readonly string[]) => {
         for (const text of messages) {
-          const [entry] = translateProviderEvents(
-            [{ type: 'user-text-block' as const, text }],
-            translationContext(),
-          )
-          if (!entry) throw new Error('Could not translate subagent follow-up')
-          await append(
-            toClaudeSidechainEntry(
-              entry,
-              options.agentId,
-              options.input.subagentType,
-            ),
-          )
+          if (!nativeLease) {
+            const [entry] = translateProviderEvents(
+              [{ type: 'user-text-block' as const, text }],
+              translationContext(),
+            )
+            if (!entry)
+              throw new Error('Could not translate subagent follow-up')
+            await appendClaude(
+              toClaudeSidechainEntry(
+                entry,
+                options.agentId,
+                options.input.subagentType,
+              ),
+            )
+          }
           await this.background.acknowledge([text])
         }
       },
@@ -3019,12 +3268,21 @@ export class ClaudeSubagentExecutor {
         )
         const contextProjection = projectContextSnapshot(assembledContext)
         stableSystemMessageCount = contextProjection.stableSystemSectionCount
+        const transcriptMessages = nativeLease
+          ? options.continuationMessage === undefined
+            ? nativeLease.activeMessages()
+            : projectNativeSidechainContinuationMessages(
+                nativeLease.activeMessages(),
+              )
+          : options.continuationMessage === undefined
+            ? projectClaudeModelMessages(requireClaudeSnapshot().entries)
+            : projectClaudeSidechainContinuationMessages(
+                requireClaudeSnapshot().entries,
+              )
         const messages = [
           ...contextProjection.systemMessages,
           ...injectFirstUserMessageContext(
-            options.continuationMessage === undefined
-              ? projectClaudeModelMessages(snapshot.entries)
-              : projectClaudeSidechainContinuationMessages(snapshot.entries),
+            transcriptMessages,
             contextProjection.firstUserMessageContext,
           ),
           ...preloadedSkills,
@@ -3040,9 +3298,27 @@ export class ClaudeSubagentExecutor {
       const configuredEffort =
         typeof customAgent?.effort === 'string' ? customAgent.effort : undefined
       const effectiveEffort = options.effort ?? configuredEffort
+      if (nativeRecoveryCalls.length > 0) {
+        if (!nativeLease)
+          throw new Error('Native sidechain recovery lease is unavailable')
+        await runtime.recoverToolCalls(nativeRecoveryCalls, {
+          cwd,
+          toolResultDirectory: options.toolResultDirectory,
+          messages: nativeLease.activeMessages(),
+          observer,
+          ...(this.options.approveTool
+            ? { approveTool: this.options.approveTool }
+            : {}),
+          permissionUpdates: this.options.permissionUpdates?.() ?? [],
+          ...(this.options.onPermissionUpdates
+            ? { onPermissionUpdates: this.options.onPermissionUpdates }
+            : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        })
+      }
       const initialMessages = await assembleMessages()
       const runtimeRequest: Parameters<typeof runtime.run>[0] = {
-        sessionId: String(options.root.sessionId),
+        sessionId: options.sessionId,
         messages: initialMessages,
         collectMetrics: true,
         stableSystemMessageCount,
@@ -3089,17 +3365,18 @@ export class ClaudeSubagentExecutor {
                   }
                 }
                 await this.hydratePersistedTasks(
-                  String(options.root.sessionId),
+                  options.sessionId,
                   options.cwd ?? this.cwd(),
                 )
                 await this.reconcileDeliveredNotifications((notification) => {
                   const markers =
                     backgroundAgentNotificationMarkers(notification)
-                  return snapshot.entries.some((entry) => {
-                    if (entry.type !== 'user') return false
-                    const source = JSON.stringify(entry.message)
-                    return markers.every((marker) => source.includes(marker))
-                  })
+                  const source = JSON.stringify(
+                    nativeLease
+                      ? nativeLease.activeMessages()
+                      : requireClaudeSnapshot().entries,
+                  )
+                  return markers.every((marker) => source.includes(marker))
                 })
                 const background = await this.background.notifications({
                   waitForRunning: false,
