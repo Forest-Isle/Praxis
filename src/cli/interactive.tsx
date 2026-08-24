@@ -117,6 +117,12 @@ import {
   type TuiDiffSurfaceModel,
 } from './tui/diff-surface-model.js'
 import {
+  filterTuiSessionPickerChoices,
+  projectTuiSessionPicker,
+  tuiSessionPickerChoiceId,
+  type TuiSessionPickerModel,
+} from './tui/session-picker-model.js'
+import {
   addTuiPermissionRule,
   loadTuiPermissionRules,
   removeTuiPermissionRule,
@@ -982,19 +988,7 @@ function describeToolInput(
   return detail.length > 160 ? `${detail.slice(0, 157)}...` : detail
 }
 
-function filterSessionChoices(
-  sessions: readonly (SessionSummary | null)[],
-  search: string,
-): readonly (SessionSummary | null)[] {
-  const query = search.trim().toLowerCase()
-  if (!query) return sessions
-  return sessions.filter((session) => {
-    if (!session) return false
-    return [session.sessionId, session.name, session.lastPrompt].some((value) =>
-      value?.toLowerCase().includes(query),
-    )
-  })
-}
+const filterSessionChoices = filterTuiSessionPickerChoices
 
 function estimatedCommandTokens(command: TuiSlashCommand): number {
   return Math.max(
@@ -1335,6 +1329,15 @@ export function InteractiveApp({
       (!allowNewSession || resume?.requireSession === true),
   )
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const sessionPickerSurface = useMemo<TuiSessionPickerModel>(
+    () =>
+      projectTuiSessionPicker({
+        choices: pickerChoices,
+        query: sessionSearch,
+        selectedIndex,
+      }),
+    [pickerChoices, sessionSearch, selectedIndex],
+  )
   const selectedIndexRef = useRef(0)
   const [sessionId, setSessionId] = useState<string | null>(
     resume?.sessionId ?? null,
@@ -1952,7 +1955,7 @@ export function InteractiveApp({
           ? (diffSurface ?? undefined)
           : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
-    readonly sessionPicker: { readonly kind: 'session-picker' }
+    readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
       | { readonly kind: 'editor-wait' }
       | {
@@ -1971,9 +1974,7 @@ export function InteractiveApp({
     TuiScreenInput<InteractiveTuiScreenSurfaces>['surfaces']
   >(
     () => ({
-      ...(selectingSession
-        ? { sessionPicker: { kind: 'session-picker' } }
-        : {}),
+      ...(selectingSession ? { sessionPicker: sessionPickerSurface } : {}),
       ...(externalEditorRequest !== null ||
       keybindingsEditing ||
       memoryEditorRequest !== null
@@ -2005,6 +2006,7 @@ export function InteractiveApp({
     }),
     [
       selectingSession,
+      sessionPickerSurface,
       externalEditorRequest,
       keybindingsEditing,
       memoryEditorRequest,
@@ -5333,10 +5335,16 @@ export function InteractiveApp({
         const currentPickerChoices = pickerIncludesNewSessionRef.current
           ? choices
           : initialSessions
+        const currentPickerModel = projectTuiSessionPicker({
+          choices: currentPickerChoices,
+          query: sessionSearchRef.current,
+          selectedIndex: selectedIndexRef.current,
+        })
+        const selectedId = currentPickerModel.selectedId
         const selected = filterSessionChoices(
           currentPickerChoices,
           sessionSearchRef.current,
-        )[selectedIndexRef.current]
+        ).find((choice) => tuiSessionPickerChoiceId(choice) === selectedId)
         if (selected === undefined) return
         setSelectingSession(false)
         const nextSessionId = selected?.sessionId ?? null
@@ -7865,10 +7873,8 @@ export function InteractiveApp({
       >
         {screen.body.kind === 'session-picker' ? (
           <SessionPicker
-            sessions={filteredPickerChoices}
-            selectedIndex={selectedIndex}
+            model={screen.body.surface}
             screenReader={axScreenReader}
-            query={sessionSearch}
           />
         ) : (
           <>

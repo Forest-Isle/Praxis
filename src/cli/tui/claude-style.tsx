@@ -20,6 +20,7 @@ import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
+import type { TuiSessionPickerModel } from './session-picker-model.js'
 import type {
   TuiHelpShortcut,
   TuiHelpShortcutGroup,
@@ -2199,31 +2200,17 @@ export function BtwPanel({
 }
 
 export function SessionPicker({
-  sessions,
-  selectedIndex,
+  model,
   screenReader,
-  query = '',
 }: {
-  sessions: readonly (null | {
-    sessionId: string
-    name?: string | null
-    lastPrompt?: string | null
-    status: string
-  })[]
-  selectedIndex: number
+  model: TuiSessionPickerModel
   screenReader: boolean
-  query?: string
 }) {
   const theme = useTuiTheme()
-  const maxVisible = 8
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      sessions.length - maxVisible,
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = sessions.slice(start, start + maxVisible)
   return (
     <Box flexDirection="column">
       {!screenReader ? <Text dimColor>{'─'.repeat(80)}</Text> : null}
@@ -2237,46 +2224,50 @@ export function SessionPicker({
         paddingX={screenReader ? 0 : 1}
         marginY={1}
       >
-        <Text {...(query ? {} : { dimColor: true })}>
-          ⌕ {query || 'Search…'}
+        <Text {...(model.query ? {} : { dimColor: true })}>
+          {screenReader ? 'Search: ' : '⌕ '}
+          {model.query || 'Search…'}
         </Text>
       </Box>
-      {start > 0 ? <Text dimColor> ↑ {start} earlier</Text> : null}
+      {model.visibleRange.start > 0 ? (
+        <Text dimColor> ↑ {model.visibleRange.start} earlier</Text>
+      ) : null}
       {visible.length === 0 ? <Text dimColor>No sessions found.</Text> : null}
-      {visible.map((session, visibleIndex) => {
-        const index = start + visibleIndex
+      {visible.map((row) => {
         return (
-          <Box key={session?.sessionId ?? 'new'}>
+          <Box key={row.id}>
             <Text
-              {...(index === selectedIndex ? theme.text.selectedRow : {})}
-              bold={index === selectedIndex}
+              {...(row.selected ? theme.text.selectedRow : {})}
+              bold={row.selected}
             >
               {dashboardSelectionPrefix(
-                index === selectedIndex,
+                row.selected,
                 screenReader,
                 theme.noColor,
               )}
-              {session
-                ? (session.name ?? session.lastPrompt ?? 'Untitled')
-                : 'Start a new session'}
+              {row.label}
             </Text>
-            {session ? (
-              <Text dimColor>
-                {' '}
-                · {session.sessionId} · {session.status}
-              </Text>
-            ) : null}
+            {row.detail ? <Text dimColor> · {row.detail}</Text> : null}
           </Box>
         )
       })}
-      {start + visible.length < sessions.length ? (
-        <Text dimColor> ↓ {sessions.length - start - visible.length} more</Text>
+      {model.visibleRange.end < model.rows.length ? (
+        <Text dimColor>
+          {' '}
+          ↓ {model.rows.length - model.visibleRange.end} more
+        </Text>
       ) : null}
       {!screenReader ? (
         <Text dimColor>
-          ↑/↓ to navigate · Enter to select · Type to search · Esc to cancel
+          {model.actions.navigate} · {model.actions.select} ·{' '}
+          {model.actions.search} · {model.actions.cancel}
         </Text>
-      ) : null}
+      ) : (
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.select};{' '}
+          {model.actions.search}; {model.actions.cancel}
+        </Text>
+      )}
     </Box>
   )
 }

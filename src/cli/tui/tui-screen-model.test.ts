@@ -7,9 +7,11 @@ import {
   type TuiScreenInput,
   type TuiScreenSurfaceModels,
 } from './tui-screen-model.js'
+import { projectTuiSessionPicker } from './session-picker-model.js'
+import type { TuiSessionPickerModel } from './session-picker-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
-  readonly sessionPicker: { readonly kind: 'picker' }
+  readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
   readonly priority:
     | {
         readonly kind: 'priority'
@@ -64,6 +66,21 @@ const conversation = (
 }
 
 describe('projectTuiScreen', () => {
+  it('preserves the projected session-picker payload identity', () => {
+    const picker = projectTuiSessionPicker({
+      choices: [null, { sessionId: 'session-1', status: 'ready' }],
+      query: '',
+      selectedIndex: 1,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { sessionPicker: picker, overlays: [] } }),
+    )
+    expect(screen.body.kind).toBe('session-picker')
+    if (screen.body.kind === 'session-picker') {
+      expect(screen.body.surface).toBe(picker)
+    }
+  })
+
   it('returns the input presentation object and applies body precedence', () => {
     const sourcePresentation = presentation('classic')
     const picker = projectTuiScreen<Surfaces>(

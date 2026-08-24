@@ -30,6 +30,7 @@ import {
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
+import { projectTuiSessionPicker } from './session-picker-model.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
@@ -1749,8 +1750,11 @@ describe('Claude-style TUI components', () => {
     ).lastFrame()
     const sessions = render(
       <SessionPicker
-        sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
-        selectedIndex={0}
+        model={projectTuiSessionPicker({
+          choices: [{ sessionId: 'abc', name: 'Review', status: 'ready' }],
+          query: '',
+          selectedIndex: 0,
+        })}
         screenReader
       />,
     ).lastFrame()
@@ -1809,8 +1813,13 @@ describe('Claude-style TUI components', () => {
               screenReader={false}
             />
             <SessionPicker
-              sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
-              selectedIndex={0}
+              model={projectTuiSessionPicker({
+                choices: [
+                  { sessionId: 'abc', name: 'Review', status: 'ready' },
+                ],
+                query: '',
+                selectedIndex: 0,
+              })}
               screenReader={false}
             />
           </>
@@ -2554,11 +2563,14 @@ describe('Claude-style TUI components', () => {
   it('keeps dialogs and session selection visually bounded', () => {
     const picker = renderNormal(
       <SessionPicker
-        sessions={[
-          null,
-          { sessionId: 'abc-123', name: 'Review', status: 'ready' },
-        ]}
-        selectedIndex={1}
+        model={projectTuiSessionPicker({
+          choices: [
+            null,
+            { sessionId: 'abc-123', name: 'Review', status: 'ready' },
+          ],
+          query: '',
+          selectedIndex: 1,
+        })}
         screenReader={false}
       />,
     )
@@ -2581,8 +2593,11 @@ describe('Claude-style TUI components', () => {
     }))
     const app = renderNormal(
       <SessionPicker
-        sessions={sessions}
-        selectedIndex={11}
+        model={projectTuiSessionPicker({
+          choices: sessions,
+          query: '',
+          selectedIndex: 11,
+        })}
         screenReader={false}
       />,
     )
