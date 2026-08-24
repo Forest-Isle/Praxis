@@ -8132,6 +8132,91 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('done')
   })
 
+  it('queues concurrent permission requests in FIFO order and preserves provenance', async () => {
+    const decisions: PermissionApproval[] = []
+    const notifications: unknown[][] = []
+    const calls: ModelToolCall[] = [
+      { id: 'call-alpha', name: 'Bash', input: { command: 'npm test' } },
+      {
+        id: 'call-beta',
+        name: 'Write',
+        input: { file_path: 'out.txt', content: 'x' },
+      },
+    ]
+    const reasons = ['team=alpha ask', 'team=beta ask'] as const
+    const factory: InteractiveServiceFactory = {
+      async createService({ approveTool }) {
+        if (!approveTool) throw new Error('approveTool unavailable')
+        return {
+          async run() {
+            const pending = calls.map((call, index) =>
+              approveTool(call, call, {
+                behavior: 'ask',
+                reason: reasons[index === 0 ? 0 : 1],
+              }),
+            )
+            decisions.push(...(await Promise.all(pending)))
+            return {
+              sessionId: 'session-queue',
+              text: 'queued done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          async notify(...args) {
+            notifications.push(args)
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        notificationDelayMs={1}
+        axScreenReader
+      />,
+    )
+
+    await flush()
+    app.stdin.write('queue approvals')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('team=alpha ask') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain('Bash command')
+    expect(app.lastFrame()).not.toContain('team=beta ask')
+    await delay(10)
+    await flush()
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]?.[1]).toBe('Approval required for Bash')
+
+    app.stdin.write('y')
+    await waitFor(() =>
+      app.lastFrame()?.includes('team=beta ask') ? true : undefined,
+    )
+    expect(app.lastFrame()).toContain('Create file')
+    expect(app.lastFrame()).not.toContain('team=alpha ask')
+    await delay(10)
+    await flush()
+    expect(notifications).toHaveLength(2)
+    expect(notifications[1]?.[1]).toBe('Approval required for Write')
+
+    app.stdin.write('\u001b')
+    await waitFor(() => (decisions.length === 2 ? true : undefined))
+    expect(decisions).toEqual([{ behavior: 'allow' }, false])
+    expect(app.lastFrame()).toContain('queued done')
+  })
+
   it('edits, persists, and immediately applies a Bash prefix rule', async () => {
     const added: unknown[] = []
     const approvals: PermissionApproval[] = []
@@ -9557,6 +9642,66 @@ describe('InteractiveApp', () => {
     await flush()
 
     expect(approval).toBe(false)
+  })
+
+  it('drains queued permission requests on cancellation', async () => {
+    const controller = new AbortController()
+    const settled: PermissionApproval[] = []
+    const calls: ModelToolCall[] = [
+      { id: 'call-drain-alpha', name: 'Bash', input: { command: 'npm test' } },
+      {
+        id: 'call-drain-beta',
+        name: 'Write',
+        input: { file_path: 'out.txt', content: 'x' },
+      },
+    ]
+    const factory: InteractiveServiceFactory = {
+      async createService({ approveTool }) {
+        if (!approveTool) throw new Error('approveTool unavailable')
+        const requestApproval = approveTool
+        return {
+          async run() {
+            const pending = calls.map((call) => requestApproval(call, call))
+            const results = await Promise.all(pending)
+            settled.push(...results)
+            return {
+              sessionId: 'session-drain',
+              text: 'drained',
+              usage: { inputTokens: 0, outputTokens: 0 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        signal={controller.signal}
+      />,
+    )
+
+    await flush()
+    app.stdin.write('drain approvals')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Bash command') ? true : undefined,
+    )
+    expect(app.lastFrame()).not.toContain('out.txt')
+    controller.abort()
+    await waitFor(() => (settled.length === 2 ? true : undefined))
+    expect(settled).toEqual([false, false])
+    expect(app.lastFrame()).not.toContain('out.txt')
   })
 
   it('lets the session picker own Escape before the Vim composer', async () => {

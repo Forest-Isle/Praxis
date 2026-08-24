@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { performance } from 'node:perf_hooks'
 import { createElement } from 'react'
 import { clearTimeout, setTimeout } from 'node:timers'
@@ -141,6 +142,72 @@ function runCli(repositoryRoot, expectedVersion) {
   })
 }
 
+function verifyDisabledTeamModules(repositoryRoot) {
+  return new Promise((resolve, reject) => {
+    const script = `
+      import { registerHooks } from 'node:module'
+      const loaded = []
+      registerHooks({
+        resolve(specifier, context, nextResolve) {
+          const result = nextResolve(specifier, context)
+          if (/\\/dist\\/(application|core|persistence|tools)\\/team-[^/]+\\.js$/.test(result.url)) loaded.push(result.url)
+          return result
+        },
+      })
+      await import(${JSON.stringify(pathToFileURL(join(repositoryRoot, 'dist/cli-runtime.js')).href)})
+      if (loaded.length > 0) throw new Error(JSON.stringify(loaded))
+    `
+    const child = spawn(
+      process.execPath,
+      ['--input-type=module', '-e', script],
+      {
+        cwd: repositoryRoot,
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(
+            ([key]) => key !== 'PRAXIS_ENABLE_TEAMS',
+          ),
+        ),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    let killTimer
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM')
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 1_000)
+    }, cliTimeoutMs)
+    const settle = (action) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (killTimer) clearTimeout(killTimer)
+      action()
+    }
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.once('error', (error) => settle(() => reject(error)))
+    child.once('close', (code) =>
+      settle(() => {
+        if (code !== 0)
+          reject(
+            new Error(
+              `Disabled Team module probe failed (${code}): ${stderr.trim() || stdout.trim()}`,
+            ),
+          )
+        else resolve()
+      }),
+    )
+  })
+}
+
 function sessionFixture(sessionId, index, cwd) {
   const prompt = `performance session ${index}`
   const entries = translateProviderEvents(
@@ -195,6 +262,7 @@ try {
     95,
   )
   assertBudget('CLI cold start p95', cliP95Ms, budgets.cliColdStartP95Ms)
+  await verifyDisabledTeamModules(repositoryRoot)
 
   const fixturePaths = resolveClaudePaths({
     configDir: configRoot,

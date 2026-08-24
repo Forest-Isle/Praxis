@@ -69,6 +69,7 @@ import {
   type ProjectMemoryExtractorInput,
 } from './project-memory.js'
 import { WorkspaceContext } from './session-worktree.js'
+import type { TeamLeadOperations } from './team-lead-operations.js'
 
 const roots: string[] = []
 
@@ -158,6 +159,66 @@ async function createService() {
     }),
   }
 }
+
+it('uses the injected Team registry factory for hosted and foreground registries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-team-registry-factory-'))
+  const sessionId = '11111111-1111-4111-8111-111111111111'
+  const operations = {
+    close: async () => undefined,
+    projectInbox: async () => undefined,
+  } as unknown as TeamLeadOperations
+  const calls: Array<{
+    base: ToolRegistry
+    operations: TeamLeadOperations
+    sessionId: string
+    names: readonly string[]
+  }> = []
+  const provider = queuedProvider(['foreground response'])
+  const service = new ClaudeSessionService({
+    configRoot: join(root, 'config'),
+    cwd: join(root, 'project'),
+    claudeVersion: '2.1.208',
+    provider,
+    tools: new LocalToolRegistry({ cwd: join(root, 'project') }),
+    teamLeadOperations: operations,
+    teamToolNames: ['TeamList'],
+    toolCapabilityEnvironment: { PRAXIS_ENABLE_TEAMS: 'true' },
+    teamLeadToolRegistryFactory: (
+      base,
+      receivedOperations,
+      receivedSessionId,
+      names,
+    ) => {
+      calls.push({
+        base,
+        operations: receivedOperations,
+        sessionId: receivedSessionId,
+        names,
+      })
+      return base
+    },
+  })
+  try {
+    service.createHostedToolRegistry(sessionId)
+    await service.run('hello', undefined, sessionId)
+    expect(calls).toHaveLength(2)
+    expect(calls.map(({ operations: received }) => received)).toEqual([
+      operations,
+      operations,
+    ])
+    expect(calls.map(({ sessionId: received }) => received)).toEqual([
+      sessionId,
+      sessionId,
+    ])
+    expect(calls.map(({ names }) => [...names])).toEqual([
+      ['TeamList'],
+      ['TeamList'],
+    ])
+  } finally {
+    await service.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 /** Waits on the observable sidecar commit instead of reaching into the
  * service's private controller lifecycle. */

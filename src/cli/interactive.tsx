@@ -601,6 +601,9 @@ type PendingPermission = {
   kind: 'tool' | 'recovery'
   call: ModelToolCall
   decision?: PermissionDecision
+  notificationTimer: ReturnType<typeof setTimeout> | null
+  settled: boolean
+  settle: (approval: PermissionApproval) => void
   resolve: (approval: PermissionApproval) => void
 }
 
@@ -1534,6 +1537,7 @@ export function InteractiveApp({
   const runtimePreferencesRef = useRef(runtimePreferences)
   const [permission, setPermission] = useState<PendingPermission | null>(null)
   const permissionRef = useRef<PendingPermission | null>(null)
+  const permissionQueueRef = useRef<PendingPermission[]>([])
   const [permissionSelection, setPermissionSelection] = useState(0)
   const [permissionFeedbackMode, setPermissionFeedbackMode] = useState(false)
   const [permissionRuleEditor, setPermissionRuleEditor] = useState<ReturnType<
@@ -1553,6 +1557,76 @@ export function InteractiveApp({
         : null,
     [dataPlane, permission, runtimeCwd, sensitiveValues],
   )
+
+  const activatePermission = (pending: PendingPermission) => {
+    const projected =
+      pending.kind === 'tool'
+        ? projectTuiToolPermission(
+            pending.call,
+            runtimeCwdRef.current,
+            sensitiveValues,
+            pending.decision,
+            dataPlane,
+          )
+        : null
+    const editableRule = projected?.options.find(
+      (option) => option.editableRule,
+    )?.editableRule
+    clearComposerInput()
+    setPermissionSelection(0)
+    setPermissionFeedbackMode(false)
+    setPermissionRuleEditor(
+      editableRule ? createComposerEditor(editableRule.initialValue) : null,
+    )
+    permissionRef.current = pending
+    setPermission(pending)
+    pending.notificationTimer = setTimeout(() => {
+      if (pending.settled) return
+      serviceRef.current?.notify?.(
+        sessionIdRef.current ?? undefined,
+        `Approval required for ${pending.call.name}`,
+        'permission_prompt',
+        'Praxis',
+      )
+    }, notificationDelayMs)
+  }
+
+  const resolvePermission = (
+    pending: PendingPermission,
+    approval: PermissionApproval,
+  ) => {
+    if (pending.settled) return
+    pending.settled = true
+    if (pending.notificationTimer) {
+      clearTimeout(pending.notificationTimer)
+      pending.notificationTimer = null
+    }
+    const queue = permissionQueueRef.current
+    const index = queue.indexOf(pending)
+    if (index >= 0) queue.splice(index, 1)
+    if (permissionRef.current === pending) {
+      permissionRef.current = null
+      setPermission((current) => (current === pending ? null : current))
+    }
+    pending.settle(approval)
+    const next = queue[0]
+    if (next) activatePermission(next)
+  }
+
+  const drainPermissionQueue = () => {
+    const queued = permissionQueueRef.current.splice(0)
+    permissionRef.current = null
+    setPermission(null)
+    for (const pending of queued) {
+      if (pending.settled) continue
+      pending.settled = true
+      if (pending.notificationTimer) {
+        clearTimeout(pending.notificationTimer)
+        pending.notificationTimer = null
+      }
+      pending.settle(false)
+    }
+  }
   const [elicitation, setElicitation] = useState<PendingElicitation | null>(
     null,
   )
@@ -2122,7 +2196,7 @@ export function InteractiveApp({
   useEffect(() => {
     if (!signal) return
     const cancel = () => {
-      permissionRef.current?.resolve(false)
+      drainPermissionQueue()
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
       planApprovalRef.current?.resolve({ behavior: 'deny' })
@@ -2137,7 +2211,7 @@ export function InteractiveApp({
     () => () => {
       componentMountedRef.current = false
       streamingFrameRef.current?.dispose()
-      permissionRef.current?.resolve(false)
+      drainPermissionQueue()
       elicitationRef.current?.resolve({ action: 'cancel' })
       questionRef.current?.resolve(null)
       planApprovalRef.current?.resolve({ behavior: 'deny' })
@@ -2845,50 +2919,17 @@ export function InteractiveApp({
     decision?: PermissionDecision,
   ) =>
     new Promise<PermissionApproval>((resolveApproval) => {
-      const projected =
-        kind === 'tool'
-          ? projectTuiToolPermission(
-              call,
-              runtimeCwdRef.current,
-              sensitiveValues,
-              decision,
-              dataPlane,
-            )
-          : null
-      const editableRule = projected?.options.find(
-        (option) => option.editableRule,
-      )?.editableRule
-      let settled = false
-      const notificationTimer = setTimeout(() => {
-        if (settled) return
-        serviceRef.current?.notify?.(
-          sessionIdRef.current ?? undefined,
-          `Approval required for ${call.name}`,
-          'permission_prompt',
-          'Praxis',
-        )
-      }, notificationDelayMs)
       const pending: PendingPermission = {
         kind,
         call,
         ...(decision ? { decision } : {}),
-        resolve: (approved) => {
-          if (settled) return
-          settled = true
-          clearTimeout(notificationTimer)
-          if (permissionRef.current === pending) permissionRef.current = null
-          setPermission((current) => (current === pending ? null : current))
-          resolveApproval(approved)
-        },
+        notificationTimer: null,
+        settled: false,
+        settle: resolveApproval,
+        resolve: (approved) => resolvePermission(pending, approved),
       }
-      clearComposerInput()
-      setPermissionSelection(0)
-      setPermissionFeedbackMode(false)
-      setPermissionRuleEditor(
-        editableRule ? createComposerEditor(editableRule.initialValue) : null,
-      )
-      permissionRef.current = pending
-      setPermission(pending)
+      permissionQueueRef.current.push(pending)
+      if (permissionQueueRef.current.length === 1) activatePermission(pending)
     })
   const approveTool = (
     call: ModelToolCall,
@@ -3031,6 +3072,7 @@ export function InteractiveApp({
   const retireService = (): Promise<void> => {
     serviceEpochRef.current += 1
     scheduledWaitRef.current?.abort()
+    drainPermissionQueue()
     const current = serviceRef.current
     serviceRef.current = null
     if (!current?.close) return Promise.resolve()
@@ -4596,7 +4638,7 @@ export function InteractiveApp({
         } else if (effect.kind === 'dismiss-exit-confirmation') {
           dismissExitConfirmation()
         } else if (effect.kind === 'exit-application') {
-          permissionRef.current?.resolve(false)
+          drainPermissionQueue()
           elicitationRef.current?.resolve({ action: 'cancel' })
           questionRef.current?.resolve(null)
           planApprovalRef.current?.resolve({ behavior: 'deny' })

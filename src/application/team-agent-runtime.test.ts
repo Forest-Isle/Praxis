@@ -16,10 +16,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   ModelProvider,
+  ModelToolCall,
+  PermissionDecision,
   PermissionResolver,
   ToolRegistry,
 } from '../core/runtime.js'
 import type { TeamTask } from '../core/team-ownership.js'
+import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
@@ -123,6 +126,7 @@ const task: TeamTask = {
     mergeTargets: [],
   },
   execution: null,
+  usage: { generation: 0, totalTokens: 0, durationMs: 0 },
 }
 
 describe('ClaudeTeamAgentRuntime', () => {
@@ -194,6 +198,7 @@ describe('ClaudeTeamAgentRuntime', () => {
         permissions,
         signal: new AbortController().signal,
         mailbox: endpoint,
+        reportProgress: () => undefined,
       })
       expect(sent).toHaveLength(1)
       expect(sent[0]).toMatchObject({
@@ -237,12 +242,246 @@ describe('ClaudeTeamAgentRuntime', () => {
           permissions,
           signal: new AbortController().signal,
           mailbox,
+          reportProgress: () => undefined,
         }),
-      ).resolves.toBe('completed')
+      ).resolves.toMatchObject({ status: 'completed' })
       const state = await readdir(join(root, 'state', 'team-executions'), {
         recursive: true,
       })
       expect(state.some((name) => name.endsWith('.jsonl'))).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails before transcript creation without usage and reports exact metered completion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-usage-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    const input = {
+      teamId: 'team-a',
+      task,
+      member: {
+        name: 'worker',
+        agentType: 'general-purpose',
+        access: 'read-only' as const,
+      },
+      generation: 1,
+      cwd,
+      branch: null,
+      tools,
+      permissions,
+      signal: new AbortController().signal,
+      mailbox,
+    }
+    try {
+      const unsupported = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: false, tools: true },
+          async *complete() {
+            yield { type: 'text-delta', delta: 'unreachable' }
+          },
+        },
+      })
+      await expect(
+        unsupported.run({ ...input, reportProgress: () => undefined }),
+      ).rejects.toThrow('Team agent runtime requires provider usage capability')
+      await expect(
+        stat(join(root, 'state', 'team-executions')),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+
+      const reports: Array<{
+        generation: number
+        totalTokens: number
+        durationMs: number
+      }> = []
+      const now = vi.spyOn(Date, 'now').mockReturnValue(10_000)
+      const metered = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete() {
+            now.mockReturnValue(10_037)
+            yield { type: 'text-delta', delta: 'metered' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 11, outputTokens: 7 },
+            }
+          },
+        },
+      })
+      const result = await metered.run({
+        ...input,
+        reportProgress: (progress) => reports.push(progress),
+      })
+      expect(result).toEqual({
+        status: 'completed',
+        totalTokens: 18,
+        durationMs: 37,
+      })
+      expect(reports.at(-1)).toEqual({
+        generation: 1,
+        totalTokens: 18,
+        durationMs: 37,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes Team asks through the Lead approver with provenance and honors denial', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-approval-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    let writeExecutions = 0
+    let approval:
+      | {
+          call: ModelToolCall
+          originalCall: ModelToolCall | undefined
+          decision: PermissionDecision | undefined
+        }
+      | undefined
+    const guardedTools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Write',
+          description: 'Write a file',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => {
+        writeExecutions += 1
+        return { content: 'WRITTEN', isError: false }
+      },
+    }
+    try {
+      const runtime = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete(request) {
+            if (request.messages.some((message) => message.role === 'tool')) {
+              yield { type: 'text-delta', delta: 'TEAM_PERMISSION_DONE' }
+              return
+            }
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'team_write',
+                name: 'Write',
+                input: { file_path: join(cwd, 'denied.txt') },
+              },
+            }
+          },
+        },
+        approveTool: (call, originalCall, decision) => {
+          approval = { call, originalCall, decision }
+          return { behavior: 'deny', message: 'Team Lead denied the write' }
+        },
+      })
+      const result = await runtime.run({
+        teamId: 'team-a',
+        task,
+        member: {
+          name: 'worker',
+          agentType: 'general-purpose',
+          access: 'write',
+        },
+        generation: 1,
+        cwd,
+        branch: null,
+        tools: guardedTools,
+        permissions: {
+          resolve: () => ({
+            behavior: 'ask',
+            reason: 'Lead approval required',
+            metadata: { origin: 'parent' },
+          }),
+        },
+        signal: new AbortController().signal,
+        mailbox,
+        reportProgress: () => undefined,
+      })
+
+      expect(result.status).toBe('completed')
+      expect(approval?.call).toMatchObject({ id: 'team_write', name: 'Write' })
+      expect(approval?.originalCall).toMatchObject({ id: 'team_write' })
+      expect(approval?.decision).toEqual({
+        behavior: 'ask',
+        reason:
+          'Lead approval required [team=team-a member=worker task=task-a generation=1]',
+        metadata: {
+          origin: 'parent',
+          teamId: 'team-a',
+          member: 'worker',
+          taskId: 'task-a',
+          generation: 1,
+        },
+      })
+      expect(writeExecutions).toBe(0)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('loads a custom Team agent without connecting its offered MCP server', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-mcp-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    let exposedTools: string[] = []
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(root, 'agents', 'mcp-agent.md'),
+          scope: 'user',
+          content:
+            '---\nname: mcp-agent\ndescription: Team MCP isolation fixture.\nmcpServers:\n  - agent-fixture\n---\nTEAM_MCP_AGENT_POLICY',
+        },
+      ],
+    })
+    try {
+      const runtime = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        extensions,
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete(request) {
+            expect(JSON.stringify(request.messages)).toContain(
+              'TEAM_MCP_AGENT_POLICY',
+            )
+            exposedTools = request.tools?.map(({ name }) => name) ?? []
+            yield { type: 'text-delta', delta: 'MCP_ISOLATED' }
+          },
+        },
+      })
+      await runtime.run({
+        teamId: 'team-a',
+        task,
+        member: {
+          name: 'worker',
+          agentType: 'mcp-agent',
+          access: 'read-only',
+        },
+        generation: 1,
+        cwd,
+        branch: null,
+        tools,
+        permissions,
+        signal: new AbortController().signal,
+        mailbox,
+        reportProgress: () => undefined,
+      })
+
+      expect(exposedTools).not.toContain('mcp__agent_fixture__probe')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -284,6 +523,7 @@ describe('ClaudeTeamAgentRuntime', () => {
         permissions,
         signal: new AbortController().signal,
         mailbox,
+        reportProgress: () => undefined,
       })
       await expect(result).rejects.toSatisfy((error: unknown) => {
         return (
@@ -336,8 +576,9 @@ describe('ClaudeTeamAgentRuntime', () => {
           permissions,
           signal: new AbortController().signal,
           mailbox,
+          reportProgress: () => undefined,
         }),
-      ).resolves.toBe('completed')
+      ).resolves.toMatchObject({ status: 'completed' })
       const manager = await LocalTeamManager.open({
         nativeRoot: root,
         cwd,

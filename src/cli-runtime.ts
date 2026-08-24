@@ -21,14 +21,9 @@ import {
   type SideQuestionForkResult,
   type SideQuestionResult,
 } from './application/session-service.js'
-import {
-  DEFAULT_LOCAL_TEAM_CONCURRENCY,
-  LocalTeamCapability,
-} from './application/team-capability.js'
-import { ClaudeTeamAgentRuntime } from './application/team-agent-runtime.js'
-import {
+import type {
   TeamLeadOperations,
-  type TeamCreateRequest,
+  TeamCreateRequest,
 } from './application/team-lead-operations.js'
 import {
   ProjectMemoryAgentExtractor,
@@ -2273,18 +2268,26 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(simpleMode ? { bare: true } : {}),
     })
-    const teamCapability = teamEnabled
-      ? new LocalTeamCapability({
+    const teamModules = teamEnabled
+      ? await Promise.all([
+          import('./application/team-capability.js'),
+          import('./application/team-agent-runtime.js'),
+          import('./application/team-lead-operations.js'),
+          import('./tools/team-lead-tools.js'),
+        ])
+      : undefined
+    const teamCapability = teamModules
+      ? new teamModules[0].LocalTeamCapability({
           nativeRoot: resolveDataPlaneRoot({
             dataPlane: 'native',
             environment: runtimeEnvironment,
           }),
           cwd: () => workspace.cwd(),
-          maxConcurrent: DEFAULT_LOCAL_TEAM_CONCURRENCY,
+          maxConcurrent: teamModules[0].DEFAULT_LOCAL_TEAM_CONCURRENCY,
           baseTools: filteredTools,
           permissions,
           createRuntime: () =>
-            new ClaudeTeamAgentRuntime({
+            new teamModules[1].ClaudeTeamAgentRuntime({
               nativeRoot: resolveDataPlaneRoot({
                 dataPlane: 'native',
                 environment: runtimeEnvironment,
@@ -2293,7 +2296,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
               claudeVersion,
               provider: hostedToolProvider,
               ...(extensions ? { extensions } : {}),
-              mcp: mcpTools,
+              ...(permissionApprover
+                ? { approveTool: permissionApprover }
+                : {}),
               ...(hooks ? { hooks } : {}),
               ...(contextAssembler ? { contextAssembler } : {}),
               ...(providerForModel ? { providerForModel } : {}),
@@ -2302,8 +2307,23 @@ const createDefaultService: CliDependencies['createService'] = async ({
             }),
         })
       : undefined
-    const teamLeadOperations = teamCapability
-      ? new TeamLeadOperations(teamCapability)
+    const teamLeadOperations =
+      teamCapability && teamModules
+        ? new teamModules[2].TeamLeadOperations(teamCapability)
+        : undefined
+    const teamLeadToolRegistryFactory = teamModules
+      ? (
+          base: ToolRegistry,
+          operations: TeamLeadOperations,
+          sessionId: string,
+          names: readonly string[],
+        ) =>
+          new teamModules[3].TeamLeadToolRegistry(
+            base,
+            operations,
+            sessionId,
+            names,
+          )
       : undefined
     const service = new ClaudeSessionService({
       ...options,
@@ -2386,7 +2406,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
           }
         : {}),
       ...(!experimentalNativeTranscriptWrites && teamLeadOperations
-        ? { teamLeadOperations }
+        ? {
+            teamLeadOperations,
+            ...(teamLeadToolRegistryFactory
+              ? { teamLeadToolRegistryFactory }
+              : {}),
+          }
         : {}),
     })
     const toolNames = [

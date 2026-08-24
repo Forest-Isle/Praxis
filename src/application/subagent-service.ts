@@ -57,6 +57,7 @@ import {
   type ToolExecutionResult,
   type ToolRegistry,
 } from '../core/runtime.js'
+import { composePermissionResolvers } from '../core/permission-policy.js'
 import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
   BUILTIN_STATUSLINE_AGENT_PATH,
@@ -2745,7 +2746,14 @@ export class ClaudeSubagentExecutor {
     const cwd = options.cwd ?? this.cwd()
     const permissions =
       options.input.permissionMode && options.input.permissionMode !== 'default'
-        ? this.options.permissionResolverForMode?.(options.input.permissionMode)
+        ? (() => {
+            const mode = options.input.permissionMode
+            if (!mode) return undefined
+            const child = this.options.permissionResolverForMode?.(mode)
+            return child
+              ? composePermissionResolvers(this.options.permissions, child)
+              : undefined
+          })()
         : this.options.permissions
     if (!permissions) {
       throw new Error('Agent permission mode overrides are unavailable')

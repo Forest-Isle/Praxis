@@ -4,13 +4,15 @@ import { join } from 'node:path'
 
 import type {
   ModelProvider,
+  ModelToolCall,
+  PermissionApproval,
+  PermissionDecision,
   PermissionResolver,
   RuntimeEventSink,
 } from '../core/runtime.js'
 import type { ContextAssembler } from '../core/context.js'
 import type { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import type { ClaudeHookRunner } from '../hooks/claude-hooks.js'
-import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
@@ -26,7 +28,6 @@ export interface ClaudeTeamAgentRuntimeOptions {
   readonly claudeVersion: string
   readonly provider: ModelProvider
   readonly extensions?: ClaudeExtensionCatalog
-  readonly mcp?: ClaudeMcpRuntime
   readonly hooks?: ClaudeHookRunner
   readonly contextAssembler?: ContextAssembler
   readonly providerForModel?: (model: string) => ModelProvider
@@ -34,6 +35,11 @@ export interface ClaudeTeamAgentRuntimeOptions {
     mode: AgentPermissionMode,
   ) => PermissionResolver
   readonly eventSink?: RuntimeEventSink
+  readonly approveTool?: (
+    call: ModelToolCall,
+    originalCall?: ModelToolCall,
+    decision?: PermissionDecision,
+  ) => PermissionApproval | Promise<PermissionApproval>
 }
 
 function digest(value: string): string {
@@ -88,9 +94,13 @@ function taskPrompt(input: Parameters<TeamAgentRuntime['run']>[0]): string {
 export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
   constructor(private readonly options: ClaudeTeamAgentRuntimeOptions) {}
 
-  async run(
-    input: Parameters<TeamAgentRuntime['run']>[0],
-  ): Promise<'completed' | 'failed' | 'orphaned'> {
+  async run(input: Parameters<TeamAgentRuntime['run']>[0]): Promise<{
+    status: 'completed' | 'failed' | 'orphaned'
+    totalTokens: number
+    durationMs: number
+  }> {
+    if (this.options.provider.capabilities.usage !== true)
+      throw new Error('Team agent runtime requires provider usage capability')
     const projectIdentity = await resolveProjectIdentity(input.cwd)
     const identity = executionIdentity(
       projectIdentity,
@@ -107,6 +117,7 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
       identity.taskDirectory,
     )
     await mkdir(transcriptDirectory, { recursive: true })
+    const approveTool = this.options.approveTool
     const executor = new ClaudeSubagentExecutor({
       configRoot: this.options.configRoot,
       dataPlane: 'native',
@@ -120,7 +131,6 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
       ...(this.options.extensions
         ? { extensions: this.options.extensions }
         : {}),
-      ...(this.options.mcp ? { mcp: this.options.mcp } : {}),
       ...(this.options.hooks ? { hooks: this.options.hooks } : {}),
       ...(this.options.contextAssembler
         ? { contextAssembler: this.options.contextAssembler }
@@ -133,7 +143,40 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
             permissionResolverForMode: this.options.permissionResolverForMode,
           }
         : {}),
-      ...(this.options.eventSink ? { eventSink: this.options.eventSink } : {}),
+      eventSink: (event) => {
+        if (event.type === 'task-progress')
+          input.reportProgress({
+            generation: input.generation,
+            totalTokens: event.usage.totalTokens,
+            durationMs: event.usage.durationMs,
+          })
+        this.options.eventSink?.(event)
+      },
+      ...(approveTool
+        ? {
+            approveTool: (
+              call: ModelToolCall,
+              originalCall?: ModelToolCall,
+              decision?: PermissionDecision,
+            ) => {
+              const wrapped =
+                decision?.behavior === 'ask'
+                  ? {
+                      ...decision,
+                      reason: `${decision.reason ?? 'Team permission request'} [team=${input.teamId} member=${input.member.name} task=${input.task.id} generation=${input.generation}]`,
+                      metadata: {
+                        ...(decision.metadata ?? {}),
+                        teamId: input.teamId,
+                        member: input.member.name,
+                        taskId: input.task.id,
+                        generation: input.generation,
+                      },
+                    }
+                  : decision
+              return approveTool(call, originalCall, wrapped)
+            },
+          }
+        : {}),
       sendOwnedBackgroundAgent: async (
         _sessionId: string,
         _agentId: string,
@@ -162,8 +205,11 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
       durableFollowUpSource: () => input.mailbox.project(),
     })
     let failure: unknown
+    let workflowResult:
+      | Awaited<ReturnType<ClaudeSubagentExecutor['runWorkflowAgent']>>
+      | undefined
     try {
-      await executor.runWorkflowAgent({
+      workflowResult = await executor.runWorkflowAgent({
         sessionId: identity.sessionId,
         promptId: identity.promptId,
         runId: identity.runId,
@@ -191,6 +237,16 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
     }
     if (failure !== undefined) throw failure
     if (closeFailure !== undefined) throw closeFailure
-    return 'completed'
+    if (!workflowResult)
+      throw new Error('Team agent workflow completed without a result')
+    const totalTokens =
+      workflowResult.usage.inputTokens + workflowResult.usage.outputTokens
+    const durationMs = workflowResult.durationMs
+    input.reportProgress({
+      generation: input.generation,
+      totalTokens,
+      durationMs,
+    })
+    return { status: 'completed', totalTokens, durationMs }
   }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  continueLifecycle,
   createAgentLifecycle,
   markLifecycleOrphaned,
   transitionLifecycle,
@@ -8,10 +9,15 @@ import {
 } from './agent-orchestration.js'
 import {
   acceptTeamTaskExecution,
+  DEFAULT_TEAM_BUDGETS,
+  markTeamBudgetExhausted,
+  parseTeamBudgetOverrides,
   parseTeamSnapshot,
   parseTeamId,
+  recordTeamTaskProgress,
   selectTeamTaskAdmissions,
   teamTasksConflict,
+  updateTeamUsageDuration,
   withTeamTaskExecution,
 } from './team-ownership.js'
 
@@ -52,6 +58,15 @@ const snapshotWith = (
   tasks: unknown[],
   changes: Record<string, unknown> = {},
 ) => ({ ...base(tasks), ...changes })
+
+const versionTwo = (
+  tasks: unknown[] = [],
+  changes: Record<string, unknown> = {},
+) => ({
+  ...parseTeamSnapshot(base(tasks)),
+  policy: { lead: 'hybrid', execution: 'sequential', commit: 'lead' },
+  ...changes,
+})
 
 const completed = (token = 'worker'): AgentLifecycleSnapshot => {
   let value = createAgentLifecycle(owner(token))
@@ -97,10 +112,28 @@ describe('team ownership contract', () => {
       expect(() => parseTeamId(value)).toThrow(/Invalid Team ID/u)
   })
 
-  it('parses a frozen flat snapshot and rejects invalid claims/cycles', () => {
+  it('migrates a literal v1 snapshot into a frozen strict v2 snapshot', () => {
     const snapshot = parseTeamSnapshot(base([task('one', ['src/a.ts'])]))
+    expect(snapshot).toMatchObject({
+      version: 2,
+      policy: { lead: 'hybrid', execution: 'swarm', commit: 'lead' },
+      budgets: DEFAULT_TEAM_BUDGETS,
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+      tasks: [
+        {
+          usage: { generation: 0, totalTokens: 0, durationMs: 0 },
+        },
+      ],
+    })
     expect(Object.isFrozen(snapshot)).toBe(true)
+    expect(Object.isFrozen(snapshot.policy)).toBe(true)
+    expect(Object.isFrozen(snapshot.budgets)).toBe(true)
+    expect(Object.isFrozen(snapshot.usage)).toBe(true)
+    expect(Object.isFrozen(snapshot.tasks.at(0)?.usage)).toBe(true)
     expect(Object.isFrozen(snapshot.tasks.at(0)?.claims)).toBe(true)
+  })
+
+  it('rejects invalid claims and dependency cycles', () => {
     expect(() =>
       parseTeamSnapshot(base([task('one', ['../secret'])])),
     ).toThrow()
@@ -109,6 +142,137 @@ describe('team ownership contract', () => {
         base([task('one', [], ['two']), task('two', [], ['one'])]),
       ),
     ).toThrow(/cycle/u)
+  })
+
+  it('requires every authoritative v2 policy, budget, and usage field', () => {
+    const canonical = versionTwo([task('one')])
+    const without = (key: string) =>
+      Object.fromEntries(
+        Object.entries(canonical).filter(([field]) => field !== key),
+      )
+    const first = canonical.tasks[0]
+    if (!first) throw new Error('missing task fixture')
+    const taskWithoutUsage = Object.fromEntries(
+      Object.entries(first).filter(([field]) => field !== 'usage'),
+    )
+    for (const value of [
+      without('policy'),
+      without('budgets'),
+      without('usage'),
+      { ...canonical, tasks: [taskWithoutUsage] },
+    ])
+      expect(() => parseTeamSnapshot(value)).toThrow()
+  })
+
+  it('requires explicit Lead-owned v2 commits and validates budget overrides', () => {
+    const canonical = versionTwo([task('one')])
+    expect(() =>
+      parseTeamSnapshot({
+        ...canonical,
+        policy: { lead: 'hybrid', execution: 'sequential' },
+      }),
+    ).toThrow(/Team field|policy/u)
+    expect(() =>
+      parseTeamSnapshot({
+        ...canonical,
+        policy: { ...canonical.policy, commit: 'members' },
+      }),
+    ).toThrow(/Invalid Team policy/u)
+
+    const overrides = parseTeamBudgetOverrides({
+      maxTokens: 123,
+      shutdownDrainMs: 0,
+    })
+    expect(overrides).toEqual({ maxTokens: 123, shutdownDrainMs: 0 })
+    expect(Object.isFrozen(overrides)).toBe(true)
+    for (const value of [
+      { unknown: 1 },
+      { maxTokens: 1.5 },
+      { maxAgents: 0 },
+      { shutdownDrainMs: 600001 },
+    ])
+      expect(() => parseTeamBudgetOverrides(value)).toThrow()
+  })
+
+  it('rejects invalid budgets, unsafe counters, and oversized rosters', () => {
+    const canonical = versionTwo([task('one')])
+    for (const budgets of [
+      { ...canonical.budgets, maxAgents: 1, maxConcurrent: 2 },
+      { ...canonical.budgets, maxTokens: -1 },
+      { ...canonical.budgets, maxDurationMs: Number.MAX_SAFE_INTEGER + 1 },
+      { ...canonical.budgets, shutdownDrainMs: 600_001 },
+    ])
+      expect(() => parseTeamSnapshot({ ...canonical, budgets })).toThrow()
+
+    expect(() =>
+      parseTeamSnapshot({
+        ...canonical,
+        budgets: { ...canonical.budgets, maxAgents: 1, maxConcurrent: 1 },
+        roster: [
+          ...canonical.roster,
+          { name: 'worker-2', agentType: 'agent', access: 'read-only' },
+        ],
+      }),
+    ).toThrow(/roster exceeds maxAgents/u)
+
+    const first = canonical.tasks[0]
+    if (!first) throw new Error('missing task fixture')
+    for (const value of [-1, Number.MAX_SAFE_INTEGER + 1])
+      expect(() =>
+        parseTeamSnapshot({
+          ...canonical,
+          tasks: [
+            {
+              ...first,
+              usage: { ...first.usage, totalTokens: value },
+            },
+          ],
+          usage: { ...canonical.usage, totalTokens: value },
+        }),
+      ).toThrow()
+  })
+
+  it('defaults new v2 Teams to sequential and requires explicit Swarm concurrency', () => {
+    const tasks = [task('first'), task('second')]
+    const sequential = parseTeamSnapshot(versionTwo(tasks))
+    expect(
+      selectTeamTaskAdmissions({ snapshot: sequential, maxConcurrent: 2 }),
+    ).toEqual(['first'])
+    const swarm = parseTeamSnapshot({
+      ...versionTwo(tasks),
+      policy: { lead: 'hybrid', execution: 'swarm', commit: 'lead' },
+    })
+    expect(
+      selectTeamTaskAdmissions({ snapshot: swarm, maxConcurrent: 2 }),
+    ).toEqual(['first', 'second'])
+  })
+
+  it('closes admission for explicit, token, and duration exhaustion', () => {
+    const canonical = parseTeamSnapshot(versionTwo([task('one')]))
+    const cases = [
+      markTeamBudgetExhausted(canonical, 'tokens', '2026-08-24T00:00:01.000Z'),
+      parseTeamSnapshot({
+        ...canonical,
+        budgets: { ...canonical.budgets, maxTokens: 1 },
+        tasks: [
+          {
+            ...canonical.tasks[0],
+            execution: createAgentLifecycle(owner('budget-worker')),
+            usage: { generation: 1, totalTokens: 1, durationMs: 0 },
+          },
+        ],
+        usage: { ...canonical.usage, totalTokens: 1 },
+      }),
+      parseTeamSnapshot({
+        ...canonical,
+        budgets: { ...canonical.budgets, maxDurationMs: 1 },
+        usage: { ...canonical.usage, durationMs: 1 },
+      }),
+    ]
+    for (const snapshot of cases)
+      expect(selectTeamTaskAdmissions({ snapshot, maxConcurrent: 1 })).toEqual(
+        [],
+      )
   })
 
   it('admits stable disjoint work while serializing claims', () => {
@@ -369,5 +533,132 @@ describe('team ownership contract', () => {
       'rejected',
     )
     expect(rejected.tasks[0]?.execution?.acceptance).toBe('rejected')
+  })
+
+  it('enforces usage generations and resets aggregate usage for fresh executions', () => {
+    const original = parseTeamSnapshot(
+      versionTwo([task('one'), task('two')], {
+        policy: { lead: 'hybrid', execution: 'swarm', commit: 'lead' },
+      }),
+    )
+    const firstExecution = completed('first-owner')
+    const secondExecution = completed('second-owner')
+    let current = withTeamTaskExecution(original, 'one', firstExecution)
+    current = recordTeamTaskProgress(current, 'one', {
+      generation: 1,
+      totalTokens: 10,
+      durationMs: 20,
+    })
+    current = withTeamTaskExecution(current, 'two', secondExecution)
+    current = recordTeamTaskProgress(current, 'two', {
+      generation: 1,
+      totalTokens: 7,
+      durationMs: 8,
+    })
+    const nextExecution = continueLifecycle(
+      firstExecution,
+      owner('fresh-owner'),
+    )
+    const replaced = withTeamTaskExecution(current, 'one', nextExecution)
+    expect(replaced.tasks[0]?.usage).toEqual({
+      generation: 2,
+      totalTokens: 0,
+      durationMs: 0,
+    })
+    expect(replaced.usage.totalTokens).toBe(7)
+    expect(() =>
+      recordTeamTaskProgress(replaced, 'one', {
+        generation: 1,
+        totalTokens: 1,
+        durationMs: 1,
+      }),
+    ).toThrow(/generation/u)
+
+    const idle = parseTeamSnapshot(versionTwo([task('idle')]))
+    expect(() =>
+      recordTeamTaskProgress(idle, 'idle', {
+        generation: 1,
+        totalTokens: 1,
+        durationMs: 1,
+      }),
+    ).toThrow(/execution/u)
+
+    const idleTask = idle.tasks[0]
+    if (!idleTask) throw new Error('missing idle task')
+    expect(() =>
+      parseTeamSnapshot({
+        ...idle,
+        tasks: [
+          {
+            ...idleTask,
+            usage: { generation: 0, totalTokens: 1, durationMs: 0 },
+          },
+        ],
+        usage: { ...idle.usage, totalTokens: 1 },
+      }),
+    ).toThrow(/generation/u)
+  })
+
+  it('rejects progress regressions and marks first budget exhaustion atomically', () => {
+    const original = parseTeamSnapshot({
+      ...versionTwo([task('one')]),
+      budgets: { ...DEFAULT_TEAM_BUDGETS, maxTokens: 10, maxDurationMs: 50 },
+    })
+    let current = withTeamTaskExecution(
+      original,
+      'one',
+      createAgentLifecycle(owner('worker')),
+    )
+    current = recordTeamTaskProgress(
+      current,
+      'one',
+      { generation: 1, totalTokens: 10, durationMs: 20 },
+      '2026-08-24T00:00:01.000Z',
+    )
+    expect(current.usage.exhausted).toEqual({
+      reason: 'tokens',
+      at: '2026-08-24T00:00:01.000Z',
+    })
+    expect(() =>
+      recordTeamTaskProgress(current, 'one', {
+        generation: 1,
+        totalTokens: 9,
+        durationMs: 20,
+      }),
+    ).toThrow(/Regressing task progress/u)
+    current = updateTeamUsageDuration(current, 20)
+    expect(() => updateTeamUsageDuration(current, 19)).toThrow(
+      /Regressing Team duration/u,
+    )
+    const later = updateTeamUsageDuration(
+      current,
+      50,
+      '2026-08-24T00:00:02.000Z',
+    )
+    expect(later.usage.exhausted).toEqual(current.usage.exhausted)
+    const preserved = markTeamBudgetExhausted(
+      later,
+      'duration',
+      '2026-08-24T00:00:03.000Z',
+    )
+    expect(preserved.revision).toBe(later.revision)
+    expect(preserved.usage.exhausted).toEqual(later.usage.exhausted)
+  })
+
+  it('marks duration exhaustion when it is the first crossed budget', () => {
+    const original = parseTeamSnapshot({
+      ...versionTwo([task('one')]),
+      budgets: { ...DEFAULT_TEAM_BUDGETS, maxDurationMs: 25 },
+    })
+    const exhausted = updateTeamUsageDuration(
+      original,
+      25,
+      '2026-08-24T00:00:01.000Z',
+    )
+    expect(exhausted.usage.exhausted).toEqual({
+      reason: 'duration',
+      at: '2026-08-24T00:00:01.000Z',
+    })
+    expect(Object.isFrozen(exhausted.usage.exhausted)).toBe(true)
   })
 })

@@ -254,7 +254,12 @@ import type {
 } from '../mcp/claude-mcp-tools.js'
 import type { TeamLeadOperations } from './team-lead-operations.js'
 import { DurableFollowUpTracker } from './durable-follow-up.js'
-import { TeamLeadToolRegistry } from '../tools/team-lead-tools.js'
+type TeamLeadToolRegistryFactory = (
+  base: ToolRegistry,
+  operations: TeamLeadOperations,
+  sessionId: string,
+  enabledTools: readonly string[],
+) => ToolRegistry
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -344,6 +349,8 @@ export interface ClaudeSessionServiceOptions {
   costStateStore?: Pick<ClaudeCostStateStore, 'load' | 'save'>
   /** Shared internal Team lead operations port. */
   teamLeadOperations?: TeamLeadOperations
+  /** Lazily supplied Team tool wrapper, so disabled runs do not load Team code. */
+  teamLeadToolRegistryFactory?: TeamLeadToolRegistryFactory
 }
 
 function agentPermissionMode(
@@ -2108,15 +2115,11 @@ export class ClaudeSessionService {
       this.options.teamToolNames,
       capabilities,
     )
-    const teamRegistry =
-      this.leadOperations && teamToolNames.length > 0
-        ? new TeamLeadToolRegistry(
-            interactiveRegistry,
-            this.leadOperations,
-            sessionId,
-            teamToolNames,
-          )
-        : interactiveRegistry
+    const teamRegistry = this.teamRegistry(
+      interactiveRegistry,
+      sessionId,
+      teamToolNames,
+    )
     const capabilityRegistry = new ClaudeCapabilityToolRegistry(
       teamRegistry,
       capabilities,
@@ -4934,21 +4937,14 @@ export class ClaudeSessionService {
             : interactiveMessageTools
         const capabilityTools = fileHistoryTools
           ? new ClaudeCapabilityToolRegistry(
-              this.leadOperations &&
+              this.teamRegistry(
+                fileHistoryTools,
+                sessionId,
                 this.capabilityToolNames(
                   this.options.teamToolNames,
                   capabilities,
-                ).length > 0
-                ? new TeamLeadToolRegistry(
-                    fileHistoryTools,
-                    this.leadOperations,
-                    sessionId,
-                    this.capabilityToolNames(
-                      this.options.teamToolNames,
-                      capabilities,
-                    ),
-                  )
-                : fileHistoryTools,
+                ),
+              ),
               capabilities,
             )
           : undefined
@@ -8139,6 +8135,23 @@ export class ClaudeSessionService {
           ].includes(name) || capabilities.has(name),
       )
       .filter((name) => !name.startsWith('Team') || capabilities.has(name))
+  }
+
+  private teamRegistry(
+    base: ToolRegistry,
+    sessionId: string,
+    enabledTools: readonly string[],
+  ): ToolRegistry {
+    if (enabledTools.length === 0) return base
+    const operations = this.leadOperations
+    if (!operations) return base
+    const factory = this.options.teamLeadToolRegistryFactory
+    if (!factory) {
+      throw new Error(
+        'Team lead operations require a Team lead tool registry factory',
+      )
+    }
+    return factory(base, operations, sessionId, enabledTools)
   }
 
   private async append(

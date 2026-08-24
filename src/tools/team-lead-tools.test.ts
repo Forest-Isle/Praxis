@@ -13,7 +13,7 @@ const base: ToolRegistry = {
     { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
   ],
   prepare: async (call) => call,
-  execute: async () => ({ content: 'base', isError: false }),
+  execute: vi.fn(async () => ({ content: 'base', isError: false })),
 }
 const snapshot = { teamId: 'team-a' }
 function registry(
@@ -25,8 +25,10 @@ function registry(
     'TeamStop',
     'TeamSend',
   ],
+  toolRegistry: ToolRegistry = base,
 ) {
   const operations = {
+    activeLeadPolicy: vi.fn<() => 'hybrid' | 'coordinator'>(() => 'hybrid'),
     create: vi.fn(async () => snapshot),
     resume: vi.fn(async () => snapshot),
     list: vi.fn(async () => [snapshot]),
@@ -36,7 +38,7 @@ function registry(
   }
   return {
     registry: new TeamLeadToolRegistry(
-      base,
+      toolRegistry,
       operations as never,
       'lead-a',
       enabled,
@@ -112,6 +114,130 @@ describe('TeamLeadToolRegistry', () => {
     ).rejects.toThrow(/Unknown Team field/u)
   })
 
+  it('passes policy and budgets through TeamCreate and preserves omitted drain', async () => {
+    const f = registry(['TeamCreate', 'TeamStop'])
+    const input = {
+      teamId: 'team-a',
+      name: 'A',
+      roster: [],
+      tasks: [],
+      leadPolicy: 'coordinator',
+      executionPolicy: 'swarm',
+      commitPolicy: 'lead',
+      budgets: {
+        maxAgents: 2,
+        maxConcurrent: 1,
+        maxTokens: 10,
+        maxDurationMs: 20,
+        shutdownDrainMs: 30,
+      },
+    }
+    await f.registry.execute(
+      { id: 'c', name: 'TeamCreate', input },
+      { cwd: '.' },
+    )
+    expect(f.operations.create).toHaveBeenCalledWith(input, 'lead-a')
+    await expect(
+      f.registry.execute(
+        {
+          id: 'invalid-commit',
+          name: 'TeamCreate',
+          input: { ...input, commitPolicy: 'members' },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Invalid commitPolicy/u)
+    await expect(
+      f.registry.execute(
+        {
+          id: 'invalid-budget',
+          name: 'TeamCreate',
+          input: { ...input, budgets: { maxTokens: 1.5 } },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Invalid Team budget: maxTokens/u)
+    expect(f.operations.create).toHaveBeenCalledTimes(1)
+    await f.registry.execute(
+      { id: 's', name: 'TeamStop', input: { teamId: 'team-a' } },
+      { cwd: '.' },
+    )
+    expect(f.operations.stop).toHaveBeenCalledWith(
+      { teamId: 'team-a' },
+      'lead-a',
+    )
+  })
+
+  it('filters and rejects every non-allowlisted path for a Coordinator', async () => {
+    const baseExecute = vi.fn(async (call: { name: string }) => ({
+      content: call.name,
+      isError: false,
+    }))
+    const representativeBase: ToolRegistry = {
+      definitions: () =>
+        [
+          'Read',
+          'Agent',
+          'TaskCreate',
+          'AskUserQuestion',
+          'SendMessage',
+          'Monitor',
+          'mcp__arbitrary__tool',
+        ].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      prepare: async (call) => call,
+      execute: baseExecute as never,
+    }
+    const f = registry(['TeamList'], representativeBase)
+    expect(f.registry.definitions().map(({ name }) => name)).toContain('Read')
+    const prepared = await f.registry.prepare(
+      { id: 'r', name: 'Read', input: {} },
+      { cwd: '.' },
+    )
+    expect(prepared.name).toBe('Read')
+    f.operations.activeLeadPolicy.mockReturnValue('coordinator')
+    expect(f.registry.definitions().map(({ name }) => name)).toEqual([
+      'Agent',
+      'TaskCreate',
+      'AskUserQuestion',
+      'SendMessage',
+      'Monitor',
+      'TeamList',
+    ])
+    await expect(
+      f.registry.prepare({ id: 'r', name: 'Read', input: {} }, { cwd: '.' }),
+    ).rejects.toThrow(/Coordinator/u)
+    await expect(f.registry.execute(prepared, { cwd: '.' })).rejects.toThrow(
+      /Coordinator/u,
+    )
+    expect(baseExecute).not.toHaveBeenCalled()
+    expect(() =>
+      f.registry.schedulingPolicy({ id: 'r', name: 'Read', input: {} }),
+    ).toThrow(/Coordinator/u)
+    await expect(
+      f.registry.execute(
+        { id: 'm', name: 'mcp__arbitrary__tool', input: {} },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Coordinator/u)
+    await expect(
+      f.registry.execute({ id: 'a', name: 'Agent', input: {} }, { cwd: '.' }),
+    ).resolves.toMatchObject({ content: 'Agent' })
+    expect(baseExecute).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Agent' }),
+      expect.anything(),
+    )
+    await expect(
+      f.registry.execute(
+        { id: 't', name: 'TeamList', input: {} },
+        { cwd: '.' },
+      ),
+    ).resolves.toBeDefined()
+  })
+
   it('applies defaults, validates nested input, and rejects unavailable names', async () => {
     const f = registry(['TeamCreate', 'TeamAccept', 'TeamStop', 'NotATeam'])
     const create = {
@@ -169,7 +295,7 @@ describe('TeamLeadToolRegistry', () => {
       { cwd: '.' },
     )
     expect(f.operations.stop).toHaveBeenCalledWith(
-      { teamId: 'team-a', drainMs: 5000 },
+      { teamId: 'team-a' },
       'lead-a',
     )
     expect(() =>
@@ -224,7 +350,7 @@ describe('TeamLeadToolRegistry', () => {
         runtime: {
           run: async ({ task }) => {
             runtimeCalls.push(task.id)
-            return 'completed'
+            return { status: 'completed', totalTokens: 0, durationMs: 0 }
           },
         },
       })

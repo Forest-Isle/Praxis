@@ -104,6 +104,29 @@ describe('TeamLeadOperations', () => {
     )
   })
 
+  it('tracks durable coordinator policy across owned Teams', async () => {
+    const f = fixture()
+    const second = fixture()
+    f.team.snapshot.mockResolvedValue({
+      teamId: 'team-a',
+      policy: { lead: 'coordinator' },
+    } as never)
+    second.team.snapshot.mockResolvedValue({
+      teamId: 'team-b',
+      policy: { lead: 'coordinator' },
+    } as never)
+    f.manager.create
+      .mockResolvedValueOnce(f.team)
+      .mockResolvedValueOnce(second.team)
+    await f.operations.create(input, 'lead-a')
+    await f.operations.create({ ...input, teamId: 'team-b' }, 'lead-a')
+    expect(f.operations.activeLeadPolicy('lead-a')).toBe('coordinator')
+    await f.operations.stop({ teamId: 'team-a' }, 'lead-a')
+    expect(f.operations.activeLeadPolicy('lead-a')).toBe('coordinator')
+    await f.operations.stop({ teamId: 'team-b' }, 'lead-a')
+    expect(f.operations.activeLeadPolicy('lead-a')).toBe('hybrid')
+  })
+
   it('does not retain failed create or resume and retains a failed stop', async () => {
     const f = fixture()
     f.manager.create.mockRejectedValueOnce(new Error('create failed'))

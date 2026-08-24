@@ -4941,6 +4941,94 @@ describe('foreground Claude Agent execution', () => {
     )
   })
 
+  it('keeps a parent ask ceiling when the child mode would allow execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-agent-ceiling-test-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    let writeExecutions = 0
+    const approvals: string[] = []
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'Write',
+          description: 'Write a file',
+          inputSchema: {
+            type: 'object',
+            properties: { file_path: { type: 'string' } },
+            required: ['file_path'],
+          },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => {
+        writeExecutions += 1
+        return { content: 'WRITTEN', isError: false }
+      },
+    }
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        if (request.messages.some((message) => message.role === 'tool')) {
+          yield { type: 'text-delta', delta: 'PARENT_CEILING_DONE' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'call_write',
+            name: 'Write',
+            input: { file_path: join(cwd, 'blocked.txt') },
+          },
+        }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'claude',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      baseTools: tools,
+      permissions: {
+        resolve: () => ({
+          behavior: 'ask',
+          reason: 'Parent approval is required',
+        }),
+      },
+      permissionResolverForMode: () => ({
+        resolve: () => ({ behavior: 'allow' }),
+      }),
+      approveTool: (call, _originalCall, decision) => {
+        approvals.push(`${call.id}:${decision?.behavior}`)
+        return { behavior: 'deny', message: 'Parent denied the write' }
+      },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_child_allow',
+        name: 'Agent',
+        input: {
+          description: 'Respect parent ceiling',
+          prompt: 'Try to write',
+          mode: 'acceptEdits',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+
+    const result = await registry.execute(call, { cwd })
+
+    expect(result.content).toContain('PARENT_CEILING_DONE')
+    expect(approvals).toEqual(['call_write:ask'])
+    expect(writeExecutions).toBe(0)
+  })
+
   it('exposes ExitPlanMode only to effective plan-mode subagents', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plan-mode-tools-test-'))
     roots.push(root)

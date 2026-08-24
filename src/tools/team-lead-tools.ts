@@ -13,6 +13,7 @@ import {
   parseTeamMailboxPayload,
   type TeamMailboxPayload,
 } from '../core/team-mailbox.js'
+import { parseTeamBudgetOverrides } from '../core/team-ownership.js'
 
 const names = [
   'TeamCreate',
@@ -23,6 +24,26 @@ const names = [
   'TeamSend',
 ] as const
 type TeamName = (typeof names)[number]
+
+/** Tools a Coordinator Lead may use; all other base/MCP tools are denied. */
+export const COORDINATOR_LEAD_ALLOWLIST = Object.freeze([
+  'Agent',
+  'TaskOutput',
+  'TaskStop',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskUpdate',
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'SendMessage',
+  'SendUserMessage',
+  'Monitor',
+  'PushNotification',
+  ...names,
+] as const)
+const coordinatorAllowlist = new Set<string>(COORDINATOR_LEAD_ALLOWLIST)
 
 const teamPayloadSchema = {
   oneOf: [
@@ -171,6 +192,20 @@ const definitions: readonly ModelToolDefinition[] = [
             },
           },
         },
+        leadPolicy: { enum: ['hybrid', 'coordinator'] },
+        executionPolicy: { enum: ['sequential', 'swarm'] },
+        commitPolicy: { enum: ['lead'] },
+        budgets: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            maxAgents: { type: 'integer', minimum: 1 },
+            maxConcurrent: { type: 'integer', minimum: 1 },
+            maxTokens: { type: 'integer', minimum: 1 },
+            maxDurationMs: { type: 'integer', minimum: 1 },
+            shutdownDrainMs: { type: 'integer', minimum: 0, maximum: 600000 },
+          },
+        },
       },
     },
   },
@@ -217,7 +252,7 @@ const definitions: readonly ModelToolDefinition[] = [
       required: ['teamId'],
       properties: {
         teamId: { type: 'string' },
-        drainMs: { type: 'number', minimum: 0, maximum: 600000, default: 5000 },
+        drainMs: { type: 'integer', minimum: 0, maximum: 600000 },
       },
     },
   },
@@ -263,11 +298,43 @@ function validate(
   name: TeamName,
 ): Record<string, unknown> {
   if (name === 'TeamCreate') {
-    objectInput(input, ['teamId', 'name', 'roster', 'tasks'])
+    objectInput(input, [
+      'teamId',
+      'name',
+      'roster',
+      'tasks',
+      'leadPolicy',
+      'executionPolicy',
+      'commitPolicy',
+      'budgets',
+    ])
     stringValue(input, 'teamId')
     stringValue(input, 'name')
     if (!Array.isArray(input.roster) || !Array.isArray(input.tasks))
       throw new Error('Invalid Team roster or tasks')
+    if (
+      input.leadPolicy !== undefined &&
+      input.leadPolicy !== 'hybrid' &&
+      input.leadPolicy !== 'coordinator'
+    )
+      throw new Error('Invalid leadPolicy')
+    if (
+      input.executionPolicy !== undefined &&
+      input.executionPolicy !== 'sequential' &&
+      input.executionPolicy !== 'swarm'
+    )
+      throw new Error('Invalid executionPolicy')
+    if (input.commitPolicy !== undefined && input.commitPolicy !== 'lead')
+      throw new Error('Invalid commitPolicy')
+    if (input.budgets !== undefined) {
+      if (
+        !input.budgets ||
+        typeof input.budgets !== 'object' ||
+        Array.isArray(input.budgets)
+      )
+        throw new Error('Invalid Team budgets')
+      parseTeamBudgetOverrides(input.budgets)
+    }
     for (const member of input.roster) {
       if (!member || typeof member !== 'object' || Array.isArray(member))
         throw new Error('Invalid Team member')
@@ -362,7 +429,9 @@ function validate(
       input.drainMs > 600000)
   )
     throw new Error('Invalid drainMs')
-  return { ...input, ...(input.drainMs === undefined ? { drainMs: 5000 } : {}) }
+  if (input.drainMs !== undefined && !Number.isSafeInteger(input.drainMs))
+    throw new Error('Invalid drainMs')
+  return input
 }
 
 export class TeamLeadToolRegistry implements ToolRegistry {
@@ -381,11 +450,17 @@ export class TeamLeadToolRegistry implements ToolRegistry {
   }
   definitions(): readonly ModelToolDefinition[] {
     return [
-      ...this.base.definitions(),
-      ...definitions.filter((definition) => this.enabled.has(definition.name)),
+      ...this.base
+        .definitions()
+        .filter((definition) => this.isAllowed(definition.name)),
+      ...definitions.filter(
+        (definition) =>
+          this.enabled.has(definition.name) && this.isAllowed(definition.name),
+      ),
     ]
   }
   schedulingPolicy(call: ModelToolCall) {
+    this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName)) {
       if (!this.enabled.has(call.name))
         throw new Error(`Tool ${call.name} is unavailable`)
@@ -401,6 +476,7 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
+    this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)
     if (!this.enabled.has(call.name)) return this.base.prepare(call, context)
@@ -410,6 +486,7 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
+    this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)
     if (!this.enabled.has(call.name)) return this.base.execute(call, context)
@@ -461,6 +538,16 @@ export class TeamLeadToolRegistry implements ToolRegistry {
         return this.result({ message: value })
     }
     return this.result({ team: value })
+  }
+  private isAllowed(name: string): boolean {
+    return (
+      this.operations.activeLeadPolicy(this.sessionId) !== 'coordinator' ||
+      coordinatorAllowlist.has(name)
+    )
+  }
+  private assertLeadPolicyAllows(name: string): void {
+    if (!this.isAllowed(name))
+      throw new Error(`Tool ${name} is unavailable for Coordinator Lead`)
   }
   private result(value: Record<string, unknown>): ToolExecutionResult {
     return {

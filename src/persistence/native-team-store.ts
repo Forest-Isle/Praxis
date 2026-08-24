@@ -61,7 +61,7 @@ export class NativeTeamStore {
     return new NativeTeamStore(root, projectIdentity)
   }
 
-  async createAndClaim(snapshot: TeamSnapshot): Promise<NativeTeamClaim> {
+  async createAndClaim(snapshot: unknown): Promise<NativeTeamClaim> {
     const parsed = parseTeamSnapshot(snapshot)
     this.assertSnapshot(parsed, parsed.teamId)
     if (parsed.revision !== 0)
@@ -231,13 +231,17 @@ export class NativeTeamStore {
         const parsed = parseTeamSnapshot(next)
         this.assertSnapshot(parsed, teamId)
         if (
-          parsed.version !== current.version ||
           parsed.teamId !== current.teamId ||
           parsed.projectIdentity !== current.projectIdentity ||
           parsed.leadSessionId !== current.leadSessionId ||
           parsed.createdAt !== current.createdAt
         )
           throw new Error('Immutable native Team identity fields changed')
+        if (
+          JSON.stringify(parsed.policy) !== JSON.stringify(current.policy) ||
+          JSON.stringify(parsed.budgets) !== JSON.stringify(current.budgets)
+        )
+          throw new Error('Immutable native Team policy or budgets changed')
         if (
           parsed.revision !== current.revision + 1 ||
           parsed.updatedAt < current.updatedAt
