@@ -75,6 +75,36 @@ const model = projectTuiMcpPanel({
 })
 
 describe('McpPanel', () => {
+  it('bounds omitted width to the documented 80-column fallback', () => {
+    const wideName = 'W'.repeat(120)
+    const wideModel = projectTuiMcpPanel({
+      cwd: '/workspace',
+      records: [
+        {
+          name: wideName,
+          scope: 'project',
+          path: '/workspace/.mcp.json',
+          config: { type: 'stdio', command: 'node' },
+        },
+      ],
+      disabledNames: [],
+      runtime: [{ name: wideName, status: 'connected' }],
+    })
+    const frame =
+      render(
+        <McpPanel
+          model={wideModel}
+          state={{ depth: 'detail', serverIndex: 0, selectedIndex: 0 }}
+        />,
+      ).lastFrame() ?? ''
+    const lines = frame.split('\n')
+
+    expect(frame).toContain('W'.repeat(80))
+    expect(Math.max(...lines.map((line) => line.length))).toBeLessThanOrEqual(
+      80,
+    )
+  })
+
   it('binds every fixture field to the immutable 2.1.208 raw capture', () => {
     expect(createHash('sha256').update(capture).digest('hex')).toBe(
       fixture.captureSha256,

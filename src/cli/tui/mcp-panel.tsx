@@ -1,7 +1,6 @@
 import { Box, Text } from 'ink'
 
 import type { DataPlane } from '../../persistence/data-plane.js'
-import { useTerminalWidth } from './claude-style.js'
 import {
   tuiMcpServerActions,
   type TuiMcpPanelCommand,
@@ -235,7 +234,7 @@ export function McpPanel({
   width?: number
   dataPlane?: DataPlane
 }) {
-  const terminalWidth = useTerminalWidth(width)
+  const terminalWidth = width ?? 80
   const server = model.servers[state.serverIndex]
   let content
   if (model.servers.length === 0)

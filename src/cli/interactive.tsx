@@ -80,8 +80,6 @@ import {
   SessionIdentity,
   Transcript,
   WelcomePanel,
-  useTerminalRows,
-  useTerminalWidth,
   type TranscriptItem,
   type TuiBtwEntry,
   type TuiDisplayMetadata,
@@ -93,7 +91,10 @@ import {
   type TuiMemoryFiles,
 } from './tui/memory-files.js'
 import { loadClaudeReleaseNotes } from './tui/release-notes.js'
-import { fullscreenInkRenderOptions } from './tui/fullscreen-renderer.js'
+import {
+  tuiInkRenderOptions,
+  useTuiPresentationEnvironment,
+} from './tui/presentation-environment.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
@@ -1164,8 +1165,6 @@ export function InteractiveApp({
   settingSources,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
-  const width = useTerminalWidth(terminalWidth)
-  const rows = useTerminalRows()
   const settingsDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
   const keybindingsRoot = useMemo(
     () =>
@@ -1299,8 +1298,16 @@ export function InteractiveApp({
     suppliedRuntimeSettings ??
       projectRuntimeSettings({ settings: {}, state: {} }),
   )
-  const fixedViewport =
-    runtimeSettings.tui === 'fullscreen' && rows !== undefined
+  const presentation = useTuiPresentationEnvironment({
+    renderer: runtimeSettings.tui,
+    screenReader: axScreenReader,
+    ...(terminalWidth === undefined
+      ? {}
+      : { viewportOverride: { columns: terminalWidth } }),
+  })
+  const width = presentation.viewport.columns
+  const rows = presentation.viewport.rows
+  const fixedViewport = presentation.fixedViewport
   const runtimeSettingsRef = useRef(runtimeSettings)
   runtimeSettingsRef.current = runtimeSettings
   runtimeGitignoreRef.current = runtimeSettings.gitignore
@@ -1507,7 +1514,7 @@ export function InteractiveApp({
           history,
           resume: resume !== undefined,
           fixedViewport,
-          screenReader: axScreenReader,
+          screenReader: presentation.screenReader,
           rows,
           width,
           scrollOffset: transcriptScrollOffset,
@@ -1521,7 +1528,7 @@ export function InteractiveApp({
       history,
       resume,
       fixedViewport,
-      axScreenReader,
+      presentation.screenReader,
       rows,
       width,
       transcriptScrollOffset,
@@ -8618,7 +8625,10 @@ export async function runInteractive(options: {
       />,
       {
         exitOnCtrlC: false,
-        ...fullscreenInkRenderOptions(currentRenderer, options.axScreenReader),
+        ...tuiInkRenderOptions(
+          currentRenderer,
+          options.axScreenReader === true,
+        ),
         interactive: true,
       },
     )
