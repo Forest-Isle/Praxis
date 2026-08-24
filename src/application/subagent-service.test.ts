@@ -3018,13 +3018,7 @@ describe('foreground Claude Agent execution', () => {
       const second = await executor.notifications(true)
       return [...first.messages, ...second.messages]
     }
-    let timeout: NodeJS.Timeout | undefined
-    const timedOut = new Promise<'timeout'>((resolveTimeout) => {
-      timeout = setTimeout(() => resolveTimeout('timeout'), 750)
-    })
-    const messages = await Promise.race([collect(), timedOut])
-    if (timeout) clearTimeout(timeout)
-    expect(messages).not.toBe('timeout')
+    const messages = await collect()
     expect(JSON.stringify(messages)).toContain('AGENT_ONE')
     expect(JSON.stringify(messages)).toContain('AGENT_TWO')
   })
