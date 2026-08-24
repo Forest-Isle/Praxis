@@ -7,7 +7,7 @@ import {
   type ReactElement,
 } from 'react'
 
-import { Box, Text, useStdout } from 'ink'
+import { Box, Text } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
@@ -52,45 +52,6 @@ export interface TuiBtwEntry {
   answer: string
   status: 'answering' | 'complete' | 'forking' | 'error'
   error?: string
-}
-
-export function useTerminalWidth(override?: number): number {
-  const { stdout } = useStdout()
-  const [width, setWidth] = useState(override ?? stdout.columns ?? 80)
-
-  useEffect(() => {
-    if (override !== undefined) {
-      setWidth(override)
-      return
-    }
-    const resize = () => setWidth(stdout.columns ?? 80)
-    stdout.on('resize', resize)
-    return () => {
-      stdout.off('resize', resize)
-    }
-  }, [override, stdout])
-
-  return Math.max(32, width)
-}
-
-export function useTerminalRows(override?: number): number | undefined {
-  const { stdout } = useStdout()
-  const initialRows = override ?? (stdout.isTTY ? stdout.rows : undefined)
-  const [rows, setRows] = useState(initialRows)
-
-  useEffect(() => {
-    if (override !== undefined) {
-      setRows(override)
-      return
-    }
-    const resize = () => setRows(stdout.rows)
-    stdout.on('resize', resize)
-    return () => {
-      stdout.off('resize', resize)
-    }
-  }, [override, stdout])
-
-  return rows === undefined ? undefined : Math.max(12, rows)
 }
 
 function compactPath(cwd: string): string {

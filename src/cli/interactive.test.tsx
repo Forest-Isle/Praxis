@@ -1812,7 +1812,12 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const before = await waitFor(() => {
       const frame = app.lastFrame() ?? ''
-      return frame.includes('newer marker') ? frame : undefined
+      const rows = frame.endsWith('\n')
+        ? frame.slice(0, -1).split('\n')
+        : frame.split('\n')
+      return rows.length === 24 && frame.includes('newer marker')
+        ? frame
+        : undefined
     })
     for (let index = 0; index < 12; index += 1) app.stdin.write('\u0015')
     await waitFor(() => {
@@ -1954,6 +1959,57 @@ describe('InteractiveApp', () => {
     expect(defaultBody.join('\n')).toContain('prompt 1')
     expect(defaultBody.join('\n')).toContain(`❯ prompt ${turnCount}`)
     expect(defaultBody.join('\n')).toContain(`reply ${turnCount}`)
+  })
+
+  it('publishes the latest resize tuple while preserving composer input and transcript tail', async () => {
+    const newestMarker = 'latest-resize-tail'
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        initialHistory={[{ kind: 'assistant', text: newestMarker }]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+      />,
+    )
+    await flush()
+    const resize = (columns: number, rows: number) => {
+      Object.defineProperty(app.stdout, 'columns', {
+        configurable: true,
+        writable: true,
+        value: columns,
+      })
+      Object.defineProperty(app.stdout, 'rows', {
+        configurable: true,
+        writable: true,
+        value: rows,
+      })
+      app.stdout.emit('resize')
+    }
+    resize(120, 40)
+    resize(90, 30)
+    resize(80, 24)
+    app.stdin.write('draft input')
+
+    const frame = await waitFor(() => {
+      const candidate = app.lastFrame() ?? ''
+      const rows = candidate.endsWith('\n')
+        ? candidate.slice(0, -1).split('\n')
+        : candidate.split('\n')
+      return rows.length === 24 &&
+        candidate.includes('draft input') &&
+        candidate.includes(newestMarker)
+        ? candidate
+        : undefined
+    })
+    expect(frame).toContain('draft input')
+    expect(frame).toContain(newestMarker)
   })
 
   it('recomputes the bounded fullscreen frame when the terminal shrinks and never duplicates the composer', async () => {
