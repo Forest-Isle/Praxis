@@ -266,6 +266,11 @@ import {
   type TuiPermissionSurfaceModel,
 } from './tui/permission-surface-model.js'
 import { PermissionSurface } from './tui/permission-surface.js'
+import {
+  projectTuiDecisionSurface,
+  type TuiDecisionSurfaceModel,
+} from './tui/decision-surface-model.js'
+import { DecisionSurface } from './tui/decision-surface.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import { DoctorDashboard } from './tui/doctor-dashboard.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
@@ -1812,6 +1817,43 @@ export function InteractiveApp({
       }),
     [builtinSlashCommands, customSlashCommands],
   )
+  const decisionElevatedMode = runtimeSettings.useAutoModeDuringPlan
+    ? 'auto'
+    : allowDangerouslySkipPermissions
+      ? 'bypassPermissions'
+      : 'acceptEdits'
+  const planDecisionSurface = useMemo<TuiDecisionSurfaceModel | null>(
+    () =>
+      planApproval
+        ? projectTuiDecisionSurface({
+            kind: 'plan-approval',
+            request: planApproval.request,
+            selectedIndex: planApprovalSelection,
+            feedbackMode: planApprovalFeedbackMode,
+            feedback: input,
+            elevatedMode: decisionElevatedMode,
+          })
+        : null,
+    [
+      planApproval,
+      planApprovalFeedbackMode,
+      planApprovalSelection,
+      input,
+      decisionElevatedMode,
+    ],
+  )
+  const questionDecisionSurface = useMemo<TuiDecisionSurfaceModel | null>(
+    () =>
+      question
+        ? projectTuiDecisionSurface({
+            kind: 'question',
+            questions: question.questions,
+            questionIndex: question.index,
+            answer: input,
+          })
+        : null,
+    [question, input],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -1826,8 +1868,7 @@ export function InteractiveApp({
           readonly kind: 'permission'
           readonly surface: TuiPermissionSurfaceModel
         }
-      | { readonly kind: 'plan-approval' }
-      | { readonly kind: 'question' }
+      | TuiDecisionSurfaceModel
       | { readonly kind: 'elicitation' }
     readonly overlay:
       | { readonly kind: 'command-palette' }
@@ -1853,10 +1894,10 @@ export function InteractiveApp({
                 surface: permissionPrioritySurface,
               },
             }
-          : planApproval !== null
-            ? { priority: { kind: 'plan-approval' } }
-            : question !== null
-              ? { priority: { kind: 'question' } }
+          : planApproval !== null && planDecisionSurface !== null
+            ? { priority: planDecisionSurface }
+            : question !== null && questionDecisionSurface !== null
+              ? { priority: questionDecisionSurface }
               : elicitation !== null
                 ? { priority: { kind: 'elicitation' } }
                 : {}),
@@ -1880,6 +1921,8 @@ export function InteractiveApp({
       permissionPrioritySurface,
       planApproval,
       question,
+      planDecisionSurface,
+      questionDecisionSurface,
       elicitation,
       secondarySurface,
       commandPaletteVisible,
@@ -7813,93 +7856,18 @@ export function InteractiveApp({
                 width={width}
                 screenReader={axScreenReader}
               />
-            ) : selectedPriority?.kind === 'plan-approval' && planApproval ? (
-              <DialogFrame title="Ready to code?" screenReader={axScreenReader}>
-                <Text>Here is Praxis&apos;s plan:</Text>
-                {planApproval.request.plan ? (
-                  <Box
-                    borderStyle={axScreenReader ? undefined : 'classic'}
-                    borderLeft={false}
-                    borderRight={false}
-                    paddingX={axScreenReader ? 0 : 1}
-                    marginY={1}
-                  >
-                    <Text>{planApproval.request.plan}</Text>
-                  </Box>
-                ) : null}
-                <Text dimColor>
-                  Praxis has written up a plan and is ready to execute. Would
-                  you like to proceed?
-                </Text>
-                <DecisionOption
-                  selected={planApprovalSelection === 0}
-                  screenReader={axScreenReader}
-                >
-                  1.{' '}
-                  {runtimeSettings.useAutoModeDuringPlan
-                    ? 'Yes, and use auto mode'
-                    : allowDangerouslySkipPermissions
-                      ? 'Yes, and bypass permissions'
-                      : 'Yes, auto-accept edits'}
-                </DecisionOption>
-                <DecisionOption
-                  selected={planApprovalSelection === 1}
-                  screenReader={axScreenReader}
-                >
-                  2. Yes, manually approve edits
-                </DecisionOption>
-                <DecisionOption
-                  selected={planApprovalSelection === 2}
-                  screenReader={axScreenReader}
-                >
-                  3. No, keep planning
-                </DecisionOption>
-                {planApprovalFeedbackMode ? (
-                  <Text>
-                    ›{' '}
-                    {input ||
-                      (planApprovalSelection === 2
-                        ? 'Tell Praxis what to change'
-                        : 'Add feedback for implementation')}
-                  </Text>
-                ) : null}
-                <Text dimColor>{planApproval.request.planPath}</Text>
-                <Text dimColor>
-                  {planApprovalFeedbackMode
-                    ? 'Enter to submit · Tab to collapse · Esc to cancel'
-                    : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
-                </Text>
-              </DialogFrame>
-            ) : selectedPriority?.kind === 'question' && question ? (
-              <DialogFrame
-                title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
+            ) : selectedPriority?.kind === 'plan-approval' ? (
+              <DecisionSurface
+                model={selectedPriority}
+                width={width}
                 screenReader={axScreenReader}
-              >
-                {question.questions[question.index]?.options.map(
-                  (option, index) => (
-                    <Box
-                      key={`${index}-${option.label}`}
-                      flexDirection="column"
-                    >
-                      <Text>
-                        {index + 1}. {option.label} — {option.description}
-                      </Text>
-                      {option.preview ? (
-                        <Text dimColor>{option.preview}</Text>
-                      ) : null}
-                    </Box>
-                  ),
-                )}
-                <Text>
-                  {axScreenReader ? 'Current answer: ' : '› '}
-                  {input || (axScreenReader ? '(empty)' : '')}
-                </Text>
-                <Text dimColor>
-                  {question.questions[question.index]?.multiSelect
-                    ? 'Enter comma-separated option numbers or custom text · Esc cancels'
-                    : 'Enter one option number or custom text · Esc cancels'}
-                </Text>
-              </DialogFrame>
+              />
+            ) : selectedPriority?.kind === 'question' ? (
+              <DecisionSurface
+                model={selectedPriority}
+                width={width}
+                screenReader={axScreenReader}
+              />
             ) : selectedPriority?.kind === 'elicitation' && elicitation ? (
               elicitation.request.mode === 'url' ? (
                 <McpElicitationUrl

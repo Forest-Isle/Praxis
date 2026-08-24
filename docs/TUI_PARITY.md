@@ -94,7 +94,7 @@ are registered CLI commands in the authoritative source snapshot.
 | Context       | usage grid and skill allocation          | transcript, interaction, and PTY fixtures                                                                    |
 | Status        | tabbed runtime/config/usage panels       | component, interaction, and PTY fixtures                                                                     |
 | Skills/tasks  | local list and background-task panels    | component, interaction, and PTY fixtures                                                                     |
-| Decision      | tool-specific bordered, numbered choices | permission/question/plan/MCP tests                                                                           |
+| Decision      | tool-specific bordered, numbered choices | pure permission/plan/question models, shared adapters, interaction, and MCP tests                            |
 | Resume        | selectable list plus active history      | projection, picker, interaction, and Ink tests                                                               |
 | Export        | clipboard/file method and filename flow  | formatter, interaction, and PTY fixtures                                                                     |
 | Compact       | progress, marker, expandable summary     | service, projection, interaction, and PTY gates                                                              |
@@ -186,6 +186,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   rule input/scope/deletion, and workspace input/deletion. The model owns
   labels, filtering, empty states, valid ranges, and selection normalization;
   raw keyboard state and permission persistence remain outside the renderer.
+- `projectTuiDecisionSurface` and `DecisionSurface`: one pure Decisions-domain
+  projection and visual/screen-reader adapter for plan approval and
+  `AskUserQuestion`. The two-discriminant model owns normalized selection and
+  question indices, progress, source-ordered option descriptions/previews,
+  custom-text guidance, feedback placeholders, valid ranges, and complete
+  action/cancellation semantics. `InteractiveApp` retains resolvers, signals,
+  timers, answer parsing, raw keyboard state, and approval/answer effects.
 - `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
   notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
   permission explanations, editable reusable command/Skill rules, `.claude`
@@ -211,8 +218,8 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `BtwPanel`: session-local side-question history with bounded answer scrolling,
   clipboard copy, history pruning, cancellation, and native background-Agent
   handoff.
-- `DialogFrame`: shared bordered surface used by question, plan, recovery, and
-  elicitation decisions; tool permissions use their source-specific dialog.
+- `DialogFrame`: shared bordered surface used by `DecisionSurface`, recovery,
+  and elicitation decisions; tool permissions use their source-specific dialog.
 - screen-reader branches: semantic text-only rendering through the same state.
 
 ## Interaction rules
@@ -449,12 +456,15 @@ is passed from the CLI composition root and never written to shared JSONL.
 - focused Ink render fixtures at wide and narrow widths, including exact
   built-in syntax/diff preview palettes, persisted normal-render syntax state,
   explicit focused-selection announcements in the decoration-free
-  screen-reader branch, and all eight Permissions-domain discriminants through
-  the shared semantic model and both presentation adapters;
+  screen-reader branch, all eight Permissions-domain discriminants, and both
+  Decisions-domain discriminants through their shared semantic models and
+  visual/screen-reader adapters;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
   streaming, tools, direct shell turns, cancellation, and screen-reader mode,
-  including permission dashboard, rule, workspace, recovery, and Escape paths
-  driven through actual keyboard input;
+  including permission dashboard, rule, workspace, recovery, concurrent
+  priority cancellation, plan arrows/numeric/y/n/Enter/Tab/feedback, question
+  single/multi/custom progression, timeout/abort, and Escape paths driven
+  through actual keyboard input;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, built-in `/theme` selection, `Ctrl+T` syntax

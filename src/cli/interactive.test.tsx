@@ -7968,8 +7968,8 @@ describe('InteractiveApp', () => {
           }) {
             return {
               async run() {
-                permissionResult = await approveTool?.(call)
-                questionResult = await askUser?.([
+                const permission = approveTool?.(call)
+                const question = askUser?.([
                   {
                     question: 'Continue?',
                     header: 'Confirm',
@@ -7977,13 +7977,13 @@ describe('InteractiveApp', () => {
                     multiSelect: false,
                   },
                 ])
-                planResult = await approvePlan?.({
+                const plan = approvePlan?.({
                   action: 'exit',
                   planPath: '/tmp/plan.md',
                   plan: '# Plan\n\n1. Implement.',
                   previousMode: 'default',
                 })
-                elicitationResult = await onElicitation?.({
+                const elicitation = onElicitation?.({
                   serverName: 'fixture',
                   message: 'Provide a value',
                   mode: 'form',
@@ -7992,6 +7992,10 @@ describe('InteractiveApp', () => {
                     properties: { code: { type: 'string' } },
                   },
                 })
+                permissionResult = await permission
+                questionResult = await question
+                planResult = await plan
+                elicitationResult = await elicitation
                 return {
                   sessionId: 'decision-session',
                   text: 'all decisions cancelled',
@@ -8020,13 +8024,12 @@ describe('InteractiveApp', () => {
       app.lastFrame()?.includes('Bash command') ? true : undefined,
     )
     app.stdin.write('\u001B')
-    app.stdin.write('\u001B')
     await waitFor(() =>
-      app.lastFrame()?.includes('Confirm: Continue?') ? true : undefined,
+      app.lastFrame()?.includes('Ready to code?') ? true : undefined,
     )
     app.stdin.write('\u001B')
     await waitFor(() =>
-      app.lastFrame()?.includes('Ready to code?') ? true : undefined,
+      app.lastFrame()?.includes('Confirm: Continue?') ? true : undefined,
     )
     app.stdin.write('\u001B')
     await waitFor(() =>
@@ -8513,7 +8516,11 @@ describe('InteractiveApp', () => {
                 question: 'Which runtime?',
                 header: 'Runtime',
                 options: [
-                  { label: 'Node', description: 'Use Node.js' },
+                  {
+                    label: 'Node',
+                    description: 'Use Node.js',
+                    preview: 'Node preview',
+                  },
                   { label: 'Bun', description: 'Use Bun' },
                 ],
                 multiSelect: false,
@@ -8554,7 +8561,13 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Runtime: Which runtime?')
+    expect(app.lastFrame()).toContain('Question 1 of 2')
+    expect(app.lastFrame()).toContain('1. Node — Use Node.js')
+    expect(app.lastFrame()).toContain('Node preview')
     expect(app.lastFrame()).toContain('Current answer: (empty)')
+    expect(app.lastFrame()).toContain(
+      'Enter one option number or custom text · Escape cancels',
+    )
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('Bun, with npm')
     await flush()
@@ -8562,6 +8575,10 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Checks: Which checks?')
+    expect(app.lastFrame()).toContain('Question 2 of 2')
+    expect(app.lastFrame()).toContain(
+      'Enter comma-separated option numbers or custom text · Escape cancels',
+    )
     app.stdin.write('1, custom lint')
     app.stdin.write('\r')
     await flush()
@@ -8728,6 +8745,16 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Selected: 1. Yes, and use auto mode')
     expect(app.lastFrame()).toContain('2. Yes, manually approve edits')
     expect(app.lastFrame()).toContain('3. No, keep planning')
+    for (const action of [
+      'Enter selection [1-3]',
+      'Use up/down arrows to change selection',
+      'Press 1, 2, or 3 to choose directly',
+      'Press y to approve',
+      'Press n to keep planning',
+      'Tab to add feedback',
+      'Escape to cancel',
+    ])
+      expect((app.lastFrame() ?? '').replace(/\s+/g, ' ')).toContain(action)
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
@@ -8795,6 +8822,108 @@ describe('InteractiveApp', () => {
       if (previousNoColor === undefined) delete process.env.NO_COLOR
       else process.env.NO_COLOR = previousNoColor
     }
+  })
+
+  it('preserves plan numeric, navigation, feedback-toggle, and rejection keys', async () => {
+    const results: ClaudePlanApprovalResult[] = []
+    const request = {
+      action: 'exit' as const,
+      planPath: '/tmp/plan.md',
+      previousMode: 'default' as const,
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approvePlan }) {
+            if (approvePlan === undefined)
+              throw new Error('approvePlan callback is required')
+            return {
+              async run() {
+                for (let index = 1; index <= 6; index += 1) {
+                  results.push(
+                    await approvePlan({
+                      ...request,
+                      planPath: `/tmp/plan-${index}.md`,
+                    }),
+                  )
+                }
+                return {
+                  sessionId: 'session-plan-keys',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+    await flush()
+    app.stdin.write('start')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-1.md') ? true : undefined,
+    )
+    app.stdin.write('2')
+    await waitFor(() => (results.length === 1 ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-2.md') ? true : undefined,
+    )
+    app.stdin.write('n')
+    await waitFor(() => (results.length === 2 ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-3.md') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() => (results.length === 3 ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-4.md') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\u001B[A')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() => (results.length === 4 ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-5.md') ? true : undefined,
+    )
+    app.stdin.write('\t')
+    await flush()
+    expect(app.lastFrame()).toContain('Add feedback for implementation')
+    app.stdin.write('\t')
+    await flush()
+    expect(app.lastFrame()).toContain('Enter to confirm')
+    app.stdin.write('\r')
+    await waitFor(() => (results.length === 5 ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('/tmp/plan-6.md') ? true : undefined,
+    )
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('feedback')
+    app.stdin.write('\r')
+    await waitFor(() => (results.length === 6 ? true : undefined))
+    expect(results).toEqual([
+      { behavior: 'allow', permissionMode: 'default' },
+      { behavior: 'deny' },
+      { behavior: 'allow', permissionMode: 'default' },
+      { behavior: 'allow', permissionMode: 'auto' },
+      { behavior: 'allow', permissionMode: 'auto' },
+      { behavior: 'allow', permissionMode: 'auto', feedback: 'feedback' },
+    ])
   })
 
   it('declines plan approval when the tool signal aborts', async () => {
