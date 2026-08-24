@@ -27,19 +27,26 @@ function frame(
   screenReader: boolean,
   width = 20,
 ) {
-  return (
-    render(
-      <TuiThemeProvider
-        settings={{ theme: 'auto', syntaxHighlightingDisabled: false }}
-      >
-        <DecisionSurface
-          model={model}
-          width={width}
-          screenReader={screenReader}
-        />
-      </TuiThemeProvider>,
-    ).lastFrame() ?? ''
-  )
+  const previousNoColor = process.env.NO_COLOR
+  delete process.env.NO_COLOR
+  try {
+    return (
+      render(
+        <TuiThemeProvider
+          settings={{ theme: 'auto', syntaxHighlightingDisabled: false }}
+        >
+          <DecisionSurface
+            model={model}
+            width={width}
+            screenReader={screenReader}
+          />
+        </TuiThemeProvider>,
+      ).lastFrame() ?? ''
+    )
+  } finally {
+    if (previousNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = previousNoColor
+  }
 }
 
 describe('DecisionSurface', () => {
@@ -133,7 +140,7 @@ describe('DecisionSurface', () => {
       .replace(/[╭╮╰╯│─]+/gu, ' ')
       .replace(/\s+/g, ' ')
     expect(semanticVisual).toContain('Ready to code?')
-    expect(semanticVisual).toContain('Selected: 2. Yes, manually approve edits')
+    expect(semanticVisual).toContain('❯ 2. Yes, manually approve edits')
     expect(semanticVisual).toContain(
       'Enter to confirm · Tab to add feedback · Esc to cancel',
     )
