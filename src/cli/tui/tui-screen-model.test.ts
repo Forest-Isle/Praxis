@@ -7,9 +7,17 @@ import {
   type TuiScreenInput,
   type TuiScreenSurfaceModels,
 } from './tui-screen-model.js'
+import { projectTuiSessionPicker } from './session-picker-model.js'
+import type { TuiSessionPickerModel } from './session-picker-model.js'
+import { projectTuiCommandPalette } from './command-palette-model.js'
+import type { TuiCommandPaletteModel } from './command-palette-model.js'
+import {
+  projectTuiMentionPicker,
+  type TuiMentionPickerModel,
+} from './mention-picker-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
-  readonly sessionPicker: { readonly kind: 'picker' }
+  readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
   readonly priority:
     | {
         readonly kind: 'priority'
@@ -18,7 +26,10 @@ type Surfaces = TuiScreenSurfaceModels & {
     | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
     | { readonly kind: 'question'; readonly questionIndex: number }
   readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
-  readonly overlay: { readonly kind: 'overlay'; readonly id: number }
+  readonly overlay:
+    | { readonly kind: 'overlay'; readonly id: number }
+    | TuiCommandPaletteModel
+    | TuiMentionPickerModel
 }
 
 const presentation = (
@@ -64,6 +75,56 @@ const conversation = (
 }
 
 describe('projectTuiScreen', () => {
+  it('preserves the projected session-picker payload identity', () => {
+    const picker = projectTuiSessionPicker({
+      choices: [null, { sessionId: 'session-1', status: 'ready' }],
+      query: '',
+      selectedIndex: 1,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { sessionPicker: picker, overlays: [] } }),
+    )
+    expect(screen.body.kind).toBe('session-picker')
+    if (screen.body.kind === 'session-picker') {
+      expect(screen.body.surface).toBe(picker)
+    }
+  })
+
+  it('preserves the command-palette payload identity through compose overlays', () => {
+    const palette = projectTuiCommandPalette({
+      commands: [
+        { name: 'review', description: 'Review changes', source: 'command' },
+      ],
+      query: 'rev',
+      selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { overlays: [palette] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('compose')
+    if (foreground.kind === 'compose') {
+      expect(foreground.overlays[0]).toBe(palette)
+    }
+  })
+
+  it('preserves the mention-picker payload identity through compose overlays', () => {
+    const picker = projectTuiMentionPicker({
+      files: [{ path: 'src/', directory: true }],
+      agents: [],
+      query: '',
+      selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { overlays: [picker] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('compose')
+    if (foreground.kind === 'compose') {
+      expect(foreground.overlays[0]).toBe(picker)
+    }
+  })
+
   it('returns the input presentation object and applies body precedence', () => {
     const sourcePresentation = presentation('classic')
     const picker = projectTuiScreen<Surfaces>(

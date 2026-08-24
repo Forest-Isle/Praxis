@@ -29,7 +29,10 @@ import {
   activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
+import { projectTuiCommandPalette } from './command-palette-model.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
+import { projectTuiSessionPicker } from './session-picker-model.js'
+import { projectTuiMentionPicker } from './mention-picker-model.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
@@ -1749,8 +1752,11 @@ describe('Claude-style TUI components', () => {
     ).lastFrame()
     const sessions = render(
       <SessionPicker
-        sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
-        selectedIndex={0}
+        model={projectTuiSessionPicker({
+          choices: [{ sessionId: 'abc', name: 'Review', status: 'ready' }],
+          query: '',
+          selectedIndex: 0,
+        })}
         screenReader
       />,
     ).lastFrame()
@@ -1809,8 +1815,13 @@ describe('Claude-style TUI components', () => {
               screenReader={false}
             />
             <SessionPicker
-              sessions={[{ sessionId: 'abc', name: 'Review', status: 'ready' }]}
-              selectedIndex={0}
+              model={projectTuiSessionPicker({
+                choices: [
+                  { sessionId: 'abc', name: 'Review', status: 'ready' },
+                ],
+                query: '',
+                selectedIndex: 0,
+              })}
               screenReader={false}
             />
           </>
@@ -1894,24 +1905,24 @@ describe('Claude-style TUI components', () => {
   })
 
   it('renders a bounded slash command palette with descriptions', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        {
+          name: 'review',
+          description: 'Review the current change.',
+          source: 'command',
+        },
+        {
+          name: 'check',
+          description: 'Check the workspace.',
+          source: 'skill',
+        },
+      ],
+      query: '',
+      selectedIndex: 1,
+    })
     const app = render(
-      <CommandPalette
-        commands={[
-          {
-            name: 'review',
-            description: 'Review the current change.',
-            source: 'command',
-          },
-          {
-            name: 'check',
-            description: 'Check the workspace.',
-            source: 'skill',
-          },
-        ]}
-        selectedIndex={1}
-        width={70}
-        screenReader={false}
-      />,
+      <CommandPalette model={model} width={70} screenReader={false} />,
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('/review')
@@ -1921,25 +1932,25 @@ describe('Claude-style TUI components', () => {
   })
 
   it('keeps the bounded slash command palette on one row per command with long descriptions', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        {
+          name: 'caveman-compress',
+          description:
+            'Compress the conversation with heavy-handed simplification, dropping nuance and detail aggressively to fit the context window',
+          source: 'builtin',
+        },
+        {
+          name: 'review',
+          description: 'Review the current change.',
+          source: 'command',
+        },
+      ],
+      query: '',
+      selectedIndex: 0,
+    })
     const app = render(
-      <CommandPalette
-        commands={[
-          {
-            name: 'caveman-compress',
-            description:
-              'Compress the conversation with heavy-handed simplification, dropping nuance and detail aggressively to fit the context window',
-            source: 'builtin',
-          },
-          {
-            name: 'review',
-            description: 'Review the current change.',
-            source: 'command',
-          },
-        ]}
-        selectedIndex={0}
-        width={80}
-        screenReader={false}
-      />,
+      <CommandPalette model={model} width={80} screenReader={false} />,
     )
     const frame = app.lastFrame() ?? ''
     const lines = frame.split('\n')
@@ -1952,6 +1963,22 @@ describe('Claude-style TUI components', () => {
     // below the first command row instead of after a wrapped description.
     expect(lines.every((line) => line.length <= 80)).toBe(true)
     expect(lines[firstCommandRow + 1]).toContain('/review')
+  })
+
+  it('exposes selected command and actions to screen readers', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        { name: 'review', description: 'Review changes.', source: 'command' },
+      ],
+      query: '',
+      selectedIndex: 0,
+    })
+    const app = render(<CommandPalette model={model} width={70} screenReader />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Selected: /review: Review changes.')
+    expect(frame).toContain('Tab to complete')
+    expect(frame).toContain('Enter to run')
+    expect(frame).toContain('Esc to cancel')
   })
 
   it('renders a Claude-shaped file picker with an accessible selection', () => {
@@ -1983,14 +2010,17 @@ describe('Claude-style TUI components', () => {
   it('renders Claude-shaped agent entries in the mention picker', () => {
     const visual = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description: 'Reviews code for subtle regressions.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description: 'Reviews code for subtle regressions.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader={false}
       />,
@@ -2001,15 +2031,18 @@ describe('Claude-style TUI components', () => {
 
     const narrow = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description:
-              'Reviews code for subtle regressions across the repository.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description:
+                'Reviews code for subtle regressions across the repository.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={32}
         screenReader={false}
       />,
@@ -2019,19 +2052,26 @@ describe('Claude-style TUI components', () => {
 
     const accessible = render(
       <MentionPicker
-        entries={[
-          {
-            kind: 'agent',
-            name: 'reviewer',
-            description: 'Reviews code for subtle regressions.',
-          },
-        ]}
-        selectedIndex={0}
+        model={projectTuiMentionPicker({
+          files: [],
+          agents: [
+            {
+              name: 'reviewer',
+              description: 'Reviews code for subtle regressions.',
+            },
+          ],
+          query: '',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader
       />,
     )
     expect(accessible.lastFrame()).toContain('Selected agent: reviewer')
+    expect(accessible.lastFrame()).toContain('Actions:')
+    expect(accessible.lastFrame()).toContain(
+      'Enter to select · Tab to complete',
+    )
   })
 
   it('renders the shortcut grid and tabbed help surface', () => {
@@ -2554,11 +2594,14 @@ describe('Claude-style TUI components', () => {
   it('keeps dialogs and session selection visually bounded', () => {
     const picker = renderNormal(
       <SessionPicker
-        sessions={[
-          null,
-          { sessionId: 'abc-123', name: 'Review', status: 'ready' },
-        ]}
-        selectedIndex={1}
+        model={projectTuiSessionPicker({
+          choices: [
+            null,
+            { sessionId: 'abc-123', name: 'Review', status: 'ready' },
+          ],
+          query: '',
+          selectedIndex: 1,
+        })}
         screenReader={false}
       />,
     )
@@ -2581,8 +2624,11 @@ describe('Claude-style TUI components', () => {
     }))
     const app = renderNormal(
       <SessionPicker
-        sessions={sessions}
-        selectedIndex={11}
+        model={projectTuiSessionPicker({
+          choices: sessions,
+          query: '',
+          selectedIndex: 11,
+        })}
         screenReader={false}
       />,
     )

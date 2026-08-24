@@ -14,12 +14,14 @@ import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import type { DataPlane } from '../../persistence/data-plane.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
-import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
+import type { TuiFileEntry } from './file-picker.js'
+import type { TuiMentionPickerModel } from './mention-picker-model.js'
 import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
-import type { TuiSlashCommand } from './slash-commands.js'
+import type { TuiCommandPaletteModel } from './command-palette-model.js'
+import type { TuiSessionPickerModel } from './session-picker-model.js'
 import type {
   TuiHelpShortcut,
   TuiHelpShortcutGroup,
@@ -2199,31 +2201,17 @@ export function BtwPanel({
 }
 
 export function SessionPicker({
-  sessions,
-  selectedIndex,
+  model,
   screenReader,
-  query = '',
 }: {
-  sessions: readonly (null | {
-    sessionId: string
-    name?: string | null
-    lastPrompt?: string | null
-    status: string
-  })[]
-  selectedIndex: number
+  model: TuiSessionPickerModel
   screenReader: boolean
-  query?: string
 }) {
   const theme = useTuiTheme()
-  const maxVisible = 8
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      sessions.length - maxVisible,
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = sessions.slice(start, start + maxVisible)
   return (
     <Box flexDirection="column">
       {!screenReader ? <Text dimColor>{'─'.repeat(80)}</Text> : null}
@@ -2237,58 +2225,60 @@ export function SessionPicker({
         paddingX={screenReader ? 0 : 1}
         marginY={1}
       >
-        <Text {...(query ? {} : { dimColor: true })}>
-          ⌕ {query || 'Search…'}
+        <Text {...(model.query ? {} : { dimColor: true })}>
+          {screenReader ? 'Search: ' : '⌕ '}
+          {model.query || 'Search…'}
         </Text>
       </Box>
-      {start > 0 ? <Text dimColor> ↑ {start} earlier</Text> : null}
+      {model.visibleRange.start > 0 ? (
+        <Text dimColor> ↑ {model.visibleRange.start} earlier</Text>
+      ) : null}
       {visible.length === 0 ? <Text dimColor>No sessions found.</Text> : null}
-      {visible.map((session, visibleIndex) => {
-        const index = start + visibleIndex
+      {visible.map((row) => {
         return (
-          <Box key={session?.sessionId ?? 'new'}>
+          <Box key={row.id}>
             <Text
-              {...(index === selectedIndex ? theme.text.selectedRow : {})}
-              bold={index === selectedIndex}
+              {...(row.selected ? theme.text.selectedRow : {})}
+              bold={row.selected}
             >
               {dashboardSelectionPrefix(
-                index === selectedIndex,
+                row.selected,
                 screenReader,
                 theme.noColor,
               )}
-              {session
-                ? (session.name ?? session.lastPrompt ?? 'Untitled')
-                : 'Start a new session'}
+              {row.label}
             </Text>
-            {session ? (
-              <Text dimColor>
-                {' '}
-                · {session.sessionId} · {session.status}
-              </Text>
-            ) : null}
+            {row.detail ? <Text dimColor> · {row.detail}</Text> : null}
           </Box>
         )
       })}
-      {start + visible.length < sessions.length ? (
-        <Text dimColor> ↓ {sessions.length - start - visible.length} more</Text>
+      {model.visibleRange.end < model.rows.length ? (
+        <Text dimColor>
+          {' '}
+          ↓ {model.rows.length - model.visibleRange.end} more
+        </Text>
       ) : null}
       {!screenReader ? (
         <Text dimColor>
-          ↑/↓ to navigate · Enter to select · Type to search · Esc to cancel
+          {model.actions.navigate} · {model.actions.select} ·{' '}
+          {model.actions.search} · {model.actions.cancel}
         </Text>
-      ) : null}
+      ) : (
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.select};{' '}
+          {model.actions.search}; {model.actions.cancel}
+        </Text>
+      )}
     </Box>
   )
 }
 
 export function CommandPalette({
-  commands,
-  selectedIndex,
+  model,
   width,
   screenReader,
 }: {
-  commands: readonly TuiSlashCommand[]
-  selectedIndex: number
+  model: TuiCommandPaletteModel
   width: number
   screenReader: boolean
 }) {
@@ -2296,15 +2286,10 @@ export function CommandPalette({
   const paletteWidth = Math.max(1, Math.min(100, width))
   const nameWidth = Math.min(30, paletteWidth)
   const descriptionWidth = Math.max(0, paletteWidth - nameWidth)
-  const maxVisible = 12
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      Math.max(0, commands.length - maxVisible),
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = commands.slice(start, start + maxVisible)
   if (screenReader) {
     return (
       <Box flexDirection="column">
@@ -2312,12 +2297,17 @@ export function CommandPalette({
         {visible.length === 0 ? (
           <Text>No matching commands.</Text>
         ) : (
-          visible.map((command) => (
-            <Text key={command.name}>
-              /{command.name}: {command.description}
+          visible.map((row) => (
+            <Text key={row.id}>
+              {row.selected ? 'Selected: ' : ''}
+              {row.invocation}: {row.description}
             </Text>
           ))
         )}
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.complete};{' '}
+          {model.actions.submit}; {model.actions.cancel}
+        </Text>
       </Box>
     )
   }
@@ -2326,22 +2316,20 @@ export function CommandPalette({
       {visible.length === 0 ? (
         <Text dimColor>No matching commands.</Text>
       ) : (
-        visible.map((command, visibleIndex) => {
-          const index = start + visibleIndex
-          const selected = index === selectedIndex
+        visible.map((row) => {
           return (
-            <Box key={command.name} flexDirection="row" width={paletteWidth}>
+            <Box key={row.id} flexDirection="row" width={paletteWidth}>
               <Box width={nameWidth} flexShrink={0}>
                 <Text
                   wrap="truncate-end"
-                  {...(selected ? theme.text.selectedRow : {})}
+                  {...(row.selected ? theme.text.selectedRow : {})}
                 >
-                  /{command.name}
+                  {row.invocation}
                 </Text>
               </Box>
               <Box width={descriptionWidth} flexShrink={1}>
                 <Text dimColor wrap="truncate-end">
-                  {command.description}
+                  {row.description}
                 </Text>
               </Box>
             </Box>
@@ -2396,34 +2384,26 @@ export function FilePicker({
 }
 
 export function MentionPicker({
-  entries,
-  selectedIndex,
+  model,
   width,
   screenReader,
 }: {
-  entries: readonly TuiMentionEntry[]
-  selectedIndex: number
+  model: TuiMentionPickerModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
-  const maxVisible = 12
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      Math.max(0, entries.length - maxVisible),
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = entries.slice(start, start + maxVisible)
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       {visible.length === 0 ? (
         <Text dimColor>No matching files or agents.</Text>
       ) : (
-        visible.map((entry, visibleIndex) => {
-          const index = start + visibleIndex
-          const selected = index === selectedIndex
+        visible.map((entry) => {
+          const selected = entry.selected
           if (entry.kind === 'agent') {
             return (
               <Text
@@ -2431,7 +2411,7 @@ export function MentionPicker({
                 {...(selected ? theme.text.selectedRow : {})}
                 {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
               >
-                {screenReader && selected ? 'Selected agent: ' : '* '}
+                {screenReader ? (selected ? 'Selected agent: ' : '') : '* '}
                 {entry.name}
                 {screenReader ? '' : ' (agent)'}
                 {entry.description ? ` – ${entry.description}` : ''}
@@ -2444,12 +2424,18 @@ export function MentionPicker({
               {...(selected ? theme.text.selectedRow : {})}
               {...(screenReader ? {} : { wrap: 'truncate-end' as const })}
             >
-              {screenReader && selected ? 'Selected: ' : '+ '}
+              {screenReader ? (selected ? 'Selected: ' : '') : '+ '}
               {entry.path}
             </Text>
           )
         })
       )}
+      {screenReader ? (
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.select};{' '}
+          {model.actions.search}; {model.actions.cancel}
+        </Text>
+      ) : null}
     </Box>
   )
 }

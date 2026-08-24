@@ -5305,6 +5305,32 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('src/agent.ts')
   })
 
+  it('accepts the selected file after batched Down and Enter input', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        fileLoader={async () => [
+          { path: 'alpha.ts', directory: false },
+          { path: 'beta.ts', directory: false },
+        ]}
+      />,
+    )
+
+    app.stdin.write('@')
+    await waitFor(() =>
+      app.lastFrame()?.includes('alpha.ts') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B\r')
+    await flush()
+
+    expect(app.lastFrame()).toContain('❯ @beta.ts')
+  })
+
   it('dismisses command and file pickers without clearing the composer', async () => {
     const app = render(
       <InteractiveApp
@@ -6196,6 +6222,70 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(calls).toEqual(['/review src'])
+  })
+
+  it('keeps batched palette navigation aligned with the selected completion', async () => {
+    const calls: string[] = []
+    const customCommands = [
+      {
+        name: 'revert',
+        description: 'Revert the current change.',
+        source: 'command' as const,
+      },
+      {
+        name: 'review',
+        description: 'Review the current change.',
+        source: 'command' as const,
+      },
+    ]
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(prompt)
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          slashCommands() {
+            return customCommands
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        slashCommands={customCommands}
+      />,
+    )
+
+    app.stdin.write('/rev')
+    await flush()
+    expect(app.lastFrame()).toContain('/revert')
+    expect(app.lastFrame()).toContain('/review')
+
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ /review')
+
+    app.stdin.write('inspect')
+    app.stdin.write('\r')
+    await flush()
+    expect(calls).toEqual(['/review inspect'])
   })
 
   it('opens the shortcut grid and tabbed help without a model turn', async () => {
