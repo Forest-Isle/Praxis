@@ -33,11 +33,13 @@ import { projectTuiHooks } from './hook-settings.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
+  type TranscriptPresentationEntry,
   type TranscriptPresentationMode,
 } from './transcript-presentation.js'
 import {
   estimateTranscriptEntryLines,
   projectTranscriptPresentationTail,
+  projectTranscriptPresentationWindow,
 } from './transcript-viewport.js'
 
 afterEach(() => cleanup())
@@ -610,6 +612,155 @@ describe('Claude-style TUI components', () => {
     expect(app.lastFrame()).not.toContain('excluded older answer')
   })
 
+  it('does not re-read an unchanged memoized history row while the stream changes', () => {
+    let textReads = 0
+    const item = {
+      kind: 'assistant' as const,
+      get text() {
+        textReads += 1
+        return 'stable retained answer'
+      },
+    }
+    const entry: TranscriptPresentationEntry = {
+      kind: 'item',
+      key: 'item-0',
+      item,
+    }
+    const entries = [entry]
+    const app = render(
+      <Transcript
+        screenReader={false}
+        activeText="frame 0"
+        entries={entries}
+      />,
+    )
+    const readsAfterFirstRender = textReads
+    expect(readsAfterFirstRender).toBeGreaterThan(0)
+
+    app.rerender(
+      <Transcript
+        screenReader={false}
+        activeText="frame 1"
+        entries={entries}
+      />,
+    )
+    expect(app.lastFrame()).toContain('frame 1')
+    expect(app.lastFrame()).toContain('stable retained answer')
+    expect(textReads).toBe(readsAfterFirstRender)
+  })
+
+  it('keeps semantic renderers for projected oversized rows', () => {
+    const entries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'assistant',
+          text: `${Array.from({ length: 20 }, (_, index) => `older-${index}`).join('\n')}\n# Selected viewport heading`,
+        },
+      ],
+      'normal',
+    )
+    const projected = projectTranscriptPresentationTail(
+      entries,
+      4,
+      80,
+      'normal',
+    )
+    expect(projected[0]?.viewportSlice).toBeDefined()
+    const app = render(
+      <Transcript screenReader={false} activeText="" entries={projected} />,
+    )
+
+    expect(app.lastFrame()).toContain('Selected viewport heading')
+    expect(app.lastFrame()).toContain('⏺')
+    expect(app.lastFrame()).not.toContain('# Selected viewport heading')
+    expect(app.lastFrame()).not.toContain('older-0')
+
+    const toolEntries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'tool',
+          call: {
+            id: 'tool-viewport',
+            name: 'Bash',
+            input: { command: `hidden-command-${'x'.repeat(200)}` },
+          },
+          detail: '',
+        },
+        {
+          kind: 'tool-result',
+          callId: 'tool-viewport',
+          text: Array.from(
+            { length: 20 },
+            (_, index) => `selected-result-${index}`,
+          ).join('\n'),
+          isError: false,
+        },
+      ],
+      'audit',
+    )
+    const toolProjected = projectTranscriptPresentationTail(
+      toolEntries,
+      4,
+      40,
+      'audit',
+    )
+    const tool = render(
+      <Box width={40}>
+        <Transcript
+          screenReader={false}
+          activeText=""
+          detailedTranscript
+          entries={toolProjected}
+        />
+      </Box>,
+    )
+    const toolFrame = tool.lastFrame() ?? ''
+    expect(toolFrame).toContain('selected-result-19')
+    expect(toolFrame).not.toContain('hidden-command')
+    expect(toolFrame.split('\n')).toHaveLength(4)
+
+    const shellEntries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'shell',
+          callId: 'shell-viewport',
+          command: `hidden-shell-${'x'.repeat(200)}`,
+        },
+        {
+          kind: 'shell-result',
+          callId: 'shell-viewport',
+          stdout: Array.from(
+            { length: 20 },
+            (_, index) => `selected-shell-result-${index}`,
+          ).join('\n'),
+          stderr: '',
+          isError: false,
+        },
+      ],
+      'audit',
+    )
+    const shellProjected = projectTranscriptPresentationTail(
+      shellEntries,
+      4,
+      40,
+      'audit',
+    )
+    const shell = render(
+      <Box width={40}>
+        <Transcript
+          screenReader={false}
+          activeText=""
+          detailedTranscript
+          entries={shellProjected}
+        />
+      </Box>,
+    )
+    const shellFrame = shell.lastFrame() ?? ''
+    expect(shellFrame).toContain('selected-shell-result-19')
+    expect(shellFrame).not.toContain('hidden-shell')
+    expect(shellFrame.split('\n')).toHaveLength(4)
+  })
+
   it('keeps projected Markdown within the fullscreen viewport rows', () => {
     const entries = projectTranscriptPresentation(
       [{ kind: 'assistant', text: '```ts\n123456789012345678\n```' }],
@@ -634,9 +785,79 @@ describe('Claude-style TUI components', () => {
     )
     const frame = app.lastFrame() ?? ''
     expect(frame.split('\n')).toHaveLength(4)
-    expect(retained.item.text).toContain('…')
+    expect(retained.item.text).toMatch(/^```ts\n/u)
+    expect(retained.item.text).toMatch(/\n```$/u)
     expect(retained.item.text).toContain('678')
     expect(JSON.stringify(entries)).toBe(source)
+  })
+
+  it('preserves fenced Markdown semantics in an oversized assistant tail', () => {
+    const entries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'assistant',
+          text: `${Array.from({ length: 20 }, (_, index) => `older-${index}`).join('\n')}\n\`\`\`ts\nconst visible = 1\n\`\`\``,
+        },
+      ],
+      'normal',
+    )
+    const projected = projectTranscriptPresentationTail(
+      entries,
+      5,
+      40,
+      'normal',
+    )
+    const app = render(
+      <Box width={40}>
+        <Transcript screenReader={false} activeText="" entries={projected} />
+      </Box>,
+    )
+    const frame = app.lastFrame() ?? ''
+
+    expect(frame).toContain('⏺')
+    expect(frame).toContain('╭─ ts')
+    expect(frame).toContain('│ const visible = 1')
+    expect(frame).toContain('╰─')
+    expect(frame).not.toContain('```')
+    expect(frame.split('\n')).toHaveLength(5)
+  })
+
+  it('preserves fenced Markdown context in an arbitrary assistant window', () => {
+    const entries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'assistant',
+          text: `before\n\`\`\`ts\n${Array.from({ length: 20 }, (_, index) => `const code${index} = ${index}`).join('\n')}\n\`\`\`\nafter`,
+        },
+      ],
+      'normal',
+    )
+    const projected = projectTranscriptPresentationWindow(
+      entries,
+      5,
+      40,
+      10,
+      'normal',
+    )
+    const retained = projected[0]
+    if (retained?.kind !== 'item' || retained.item.kind !== 'assistant')
+      throw new Error('expected a projected assistant entry')
+    const app = render(
+      <Box width={40}>
+        <Transcript screenReader={false} activeText="" entries={projected} />
+      </Box>,
+    )
+    const frame = app.lastFrame() ?? ''
+
+    expect(retained.item.text).toMatch(/^```ts\n/u)
+    expect(retained.item.text).toMatch(/\n```$/u)
+    expect(frame).toContain('⏺')
+    expect(frame).toContain('╭─ ts')
+    expect(frame).toContain('│ const code')
+    expect(frame).toContain('╰─')
+    expect(frame).not.toContain('before')
+    expect(frame).not.toContain('after')
+    expect(frame.split('\n')).toHaveLength(5)
   })
 
   it.each([

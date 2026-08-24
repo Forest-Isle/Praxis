@@ -148,45 +148,77 @@ function hardWrappedRows(
   return { rows, column }
 }
 
-function wrappedLineRows(line: string, width: number): number {
+function wrappedLineLayout(
+  line: string,
+  width: number,
+  output?: string[],
+): number {
   const expanded = expandTabs(line)
-  if (isPrintableAscii(expanded) && expanded.length <= width) return 1
+  if (isPrintableAscii(expanded) && expanded.length <= width) {
+    output?.push(expanded)
+    return 1
+  }
+  if (expanded.length === 0) {
+    output?.push('')
+    return 1
+  }
   const words = expanded.split(' ')
-  let rows = 1
+  let completedRows = 0
+  let row = ''
   let column = 0
+  const pushRow = () => {
+    output?.push(row)
+    row = ''
+    column = 0
+    completedRows += 1
+  }
+  const appendHardWrappedWord = (word: string) => {
+    if (!output) {
+      const wrapped = hardWrappedRows(word, width, column)
+      completedRows += wrapped.rows
+      column = wrapped.column
+      return
+    }
+    const clusters = graphemes(word)
+    for (const [index, cluster] of clusters.entries()) {
+      const clusterWidth = graphemeWidth(cluster)
+      if (column + clusterWidth > width) pushRow()
+      row += cluster
+      column += clusterWidth
+      if (column >= width && index < clusters.length - 1) pushRow()
+    }
+  }
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index] ?? ''
     const wordWidth = isPrintableAscii(word)
       ? word.length
       : terminalStringWidth(word)
     if (index > 0) {
-      if (column >= width) {
-        rows += 1
-        column = 0
-      }
+      if (column >= width) pushRow()
+      if (output) row += ' '
       column += 1
     }
     if (wordWidth > width) {
       const current = hardWrappedRows(word, width, column)
       const fresh = hardWrappedRows(word, width, 0)
       if (column > 0 && current.rows > fresh.rows) {
-        rows += 1
-        column = 0
-        rows += fresh.rows
-        column = fresh.column
-      } else {
-        rows += current.rows
-        column = current.column
+        pushRow()
       }
+      appendHardWrappedWord(word)
       continue
     }
     if (column + wordWidth > width && column > 0 && word.length > 0) {
-      rows += 1
-      column = 0
+      pushRow()
     }
+    if (output) row += word
     column += wordWidth
   }
-  return rows
+  pushRow()
+  return completedRows
+}
+
+function wrappedLineRows(line: string, width: number): number {
+  return wrappedLineLayout(line, width)
 }
 
 function wrappedLineCount(text: string, width: number): number {
@@ -407,7 +439,85 @@ function textTail(text: string, budget: number, width: number): string {
   return `${TRANSCRIPT_TRUNCATION_MARKER}${kept.join('\n')}`
 }
 
-export function estimateTranscriptEntryLines(
+function textHead(text: string, budget: number, width: number): string {
+  const usableBudget = Math.max(1, budget)
+  const usableWidth = Math.max(1, width)
+  if (wrappedLineCount(text, usableWidth) <= usableBudget) return text
+  const marker = `${TRANSCRIPT_TRUNCATION_MARKER}`
+  const lines = text.split('\n')
+  const kept: string[] = []
+  for (const line of lines) {
+    const candidate = [...kept, line, marker].join('\n')
+    if (wrappedLineCount(candidate, usableWidth) > usableBudget) break
+    kept.push(line)
+  }
+  let candidate = [...kept, marker].join('\n')
+  if (wrappedLineCount(candidate, usableWidth) <= usableBudget) return candidate
+  const remaining = Math.max(
+    0,
+    usableBudget - wrappedLineCount(marker, usableWidth),
+  )
+  const prefix = kept.join('\n')
+  const clusters = graphemes(prefix)
+  let low = 0
+  let high = clusters.length
+  let best = ''
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2)
+    const next = clusters.slice(0, middle).join('')
+    if (
+      wrappedLineCount(`${next}${next ? '\n' : ''}${marker}`, usableWidth) <=
+      usableBudget
+    ) {
+      best = next
+      low = middle + 1
+    } else high = middle - 1
+  }
+  candidate = `${best}${best ? '\n' : ''}${marker}`
+  return wrappedLineCount(candidate, usableWidth) <= usableBudget
+    ? candidate
+    : marker.slice(0, Math.max(1, remaining))
+}
+
+function textVisualRows(text: string, width: number): readonly string[] {
+  const usableWidth = Math.max(1, width)
+  const visualRows: string[] = []
+  const visible =
+    text.includes('\u001b') || text.includes('\u009b')
+      ? stripVTControlCharacters(text)
+      : text
+  for (const logicalLine of visible.replace(/\r\n?/gu, '\n').split('\n'))
+    wrappedLineLayout(logicalLine, usableWidth, visualRows)
+  return visualRows
+}
+
+function textRange(
+  text: string,
+  startRow: number,
+  budget: number,
+  width: number,
+): string {
+  const visualRows = textVisualRows(text, width)
+  const limit = Math.max(1, budget)
+  const start = Math.min(Math.max(0, startRow), visualRows.length)
+  const clippedBefore = start > 0 && limit >= 2
+  const available = Math.max(1, limit - (clippedBefore ? 1 : 0))
+  let contentBudget = available
+  let end = Math.min(visualRows.length, start + contentBudget)
+  const clippedAfter = end < visualRows.length && available >= 2
+  if (clippedAfter) {
+    contentBudget = available - 1
+    end = Math.min(visualRows.length, start + contentBudget)
+  }
+  const selected = visualRows.slice(start, end)
+  return [
+    ...(clippedBefore ? [TRANSCRIPT_TRUNCATION_MARKER] : []),
+    ...selected,
+    ...(clippedAfter ? [TRANSCRIPT_TRUNCATION_MARKER] : []),
+  ].join('\n')
+}
+
+function estimateRenderedTranscriptEntryLines(
   entry: TranscriptPresentationEntry,
   width: number,
   mode: TranscriptPresentationMode,
@@ -467,7 +577,11 @@ export function estimateTranscriptEntryLines(
     }
     if (item.kind === 'compact') {
       if (mode === 'screen-reader')
-        return 2 + wrappedLineCount(item.summary, markdownContentWidth(width))
+        return (
+          1 +
+          wrappedLineCount('Conversation compacted', width) +
+          wrappedLineCount(item.summary, markdownContentWidth(width))
+        )
       return (
         1 +
         wrappedLineCount(
@@ -568,6 +682,23 @@ export function estimateTranscriptEntryLines(
   rows += visibleOutputLineCount(output, width, mode)
   return rows
 }
+
+export function estimateTranscriptEntryLines(
+  entry: TranscriptPresentationEntry,
+  width: number,
+  mode: TranscriptPresentationMode,
+): number {
+  if (entry.viewportSlice) return entry.viewportSlice.rows
+  const rendered = estimateRenderedTranscriptEntryLines(entry, width, mode)
+  const hasBoundedAuthoritativeText =
+    (entry.kind === 'orphan-tool-result' && entry.item.text.length > 500) ||
+    (entry.kind === 'tool' &&
+      entry.result?.isError === true &&
+      entry.result.text.length > 500)
+  if (!hasBoundedAuthoritativeText) return rendered
+  return entryViewportRows(entry, width, mode)?.length ?? rendered
+}
+
 export function transcriptPresentationLineCount(
   entries: readonly TranscriptPresentationEntry[],
   width: number,
@@ -577,6 +708,387 @@ export function transcriptPresentationLineCount(
     (n, entry) => n + estimateTranscriptEntryLines(entry, width, mode),
     0,
   )
+}
+
+function viewportOutputRows(
+  text: string,
+  width: number,
+  mode: TranscriptPresentationMode,
+): readonly string[] {
+  const lines = contentLines(text)
+  const visible = mode === 'normal' ? lines.slice(0, 3) : lines
+  const outputWidth = Math.max(1, width - 2)
+  const rows = visible.flatMap((line, index) =>
+    textVisualRows(`${index === 0 ? '⎿ ' : '   '}${line || ' '}`, outputWidth),
+  )
+  if (mode === 'normal' && lines.length > visible.length) {
+    rows.push(
+      ...textVisualRows(
+        `   ${TRANSCRIPT_TRUNCATION_MARKER} +${lines.length - visible.length} lines (ctrl+o to expand)`,
+        outputWidth,
+      ),
+    )
+  }
+  return rows
+}
+
+function entryViewportRows(
+  entry: TranscriptPresentationEntry,
+  width: number,
+  mode: TranscriptPresentationMode,
+): readonly string[] | undefined {
+  if (entry.kind === 'read-summary')
+    return textVisualRows(
+      `  Read ${entry.count} file${entry.count === 1 ? '' : 's'} (ctrl+o to expand)`,
+      width,
+    )
+  if (entry.kind === 'item') {
+    const item = entry.item
+    if (item.kind === 'context') return undefined
+    if (item.kind === 'user')
+      return [
+        '',
+        ...(mode === 'screen-reader' ? [''] : []),
+        ...textVisualRows(
+          `${mode === 'screen-reader' ? 'You: ' : '❯ '}${item.text}`,
+          width,
+        ),
+      ]
+    if (item.kind === 'assistant')
+      return [
+        '',
+        ...(mode === 'screen-reader' ? ['Praxis:'] : []),
+        ...textVisualRows(
+          item.text,
+          mode === 'screen-reader'
+            ? Math.max(1, width - 7)
+            : markdownContentWidth(width),
+        ),
+      ]
+    if (item.kind === 'thinking') {
+      const summary = item.text.replace(/\s+/gu, ' ').trim()
+      const heading =
+        mode === 'screen-reader'
+          ? 'Thinking:Thought for a moment'
+          : `✻ Thought for a moment${summary ? ` · ${summary.slice(0, 160)}` : ''}`
+      if (mode === 'normal')
+        return [
+          '',
+          ...textVisualRows(heading, width),
+          ...(summary.length > 160
+            ? textVisualRows(' ctrl+o to expand thinking', width)
+            : []),
+        ]
+      return [
+        '',
+        ...textVisualRows(heading, width),
+        ...textVisualRows(
+          item.text,
+          mode === 'screen-reader' ? width : markdownContentWidth(width),
+        ),
+      ]
+    }
+    if (item.kind === 'compact') {
+      const heading =
+        mode === 'screen-reader'
+          ? 'Conversation compacted'
+          : '✻ Conversation compacted (ctrl+o for history)'
+      return [
+        '',
+        ...textVisualRows(heading, width),
+        ...(mode === 'normal'
+          ? []
+          : textVisualRows(item.summary, markdownContentWidth(width))),
+      ]
+    }
+    if (item.kind === 'local-result')
+      return textVisualRows(`⎿ ${item.text}`, Math.max(1, width - 2))
+    if (item.kind === 'warning') return textVisualRows(`⚠ ${item.text}`, width)
+    if (item.kind === 'notice') return textVisualRows(`· ${item.text}`, width)
+    return textVisualRows(item.text, width)
+  }
+  if (entry.kind === 'orphan-tool-result')
+    return [
+      entry.item.isError ? '└ Error' : '└ Result',
+      ...textVisualRows(entry.item.text, Math.max(1, width - 2)),
+    ]
+  if (entry.kind === 'orphan-shell-result')
+    return textVisualRows(
+      `⎿ ${orphanShellOutput(entry.item.stdout, entry.item.stderr)}`,
+      width,
+    )
+  if (entry.kind === 'shell') {
+    const rows = [
+      '',
+      ...textVisualRows(
+        `${mode === 'screen-reader' ? 'Shell command: ' : '! '}${entry.item.command}`,
+        width,
+      ),
+    ]
+    if (!entry.result) return rows
+    const output = combinedShellOutput(entry.result.stdout, entry.result.stderr)
+    return [
+      ...rows,
+      ...(output
+        ? viewportOutputRows(output, width, mode)
+        : textVisualRows('⎿ ', Math.max(1, width - 2))),
+    ]
+  }
+  if (
+    mode === 'normal' &&
+    entry.item.call.name === 'Read' &&
+    entry.result &&
+    !entry.result.isError
+  )
+    return textVisualRows('  Read 1 file (ctrl+o to expand)', width)
+  const rows = ['', ...textVisualRows(`⏺ ${toolHeading(entry)}`, width)]
+  if (
+    !['Bash', 'Read', 'Edit'].includes(entry.item.call.name) &&
+    entry.item.detail
+  )
+    rows.push(...textVisualRows(` ${entry.item.detail}`, width))
+  if (!entry.result) return rows
+  if (entry.result.isError) {
+    rows.push(
+      ...textVisualRows(
+        `⎿ Error: ${entry.result.text}`,
+        Math.max(1, width - 2),
+      ),
+    )
+    return rows
+  }
+  if (entry.item.call.name === 'Edit') {
+    const oldLines = contentLines(inputString(entry, 'old_string'))
+    const newLines = contentLines(inputString(entry, 'new_string'))
+    rows.push(
+      ...textVisualRows(
+        `⎿ Added ${newLines.length} line${newLines.length === 1 ? '' : 's'}, removed ${oldLines.length} line${oldLines.length === 1 ? '' : 's'}`,
+        Math.max(1, width - 2),
+      ),
+    )
+    if (mode !== 'normal') {
+      for (const [index, line] of oldLines.entries())
+        rows.push(
+          ...textVisualRows(`   ${index + 1} -${line}`, Math.max(1, width - 2)),
+        )
+      for (const [index, line] of newLines.entries())
+        rows.push(
+          ...textVisualRows(`   ${index + 1} +${line}`, Math.max(1, width - 2)),
+        )
+    }
+    return rows
+  }
+  rows.push(...viewportOutputRows(entry.result.text, width, mode))
+  return rows
+}
+
+interface MarkdownViewportRow {
+  readonly text: string
+  readonly fenceBefore: boolean
+  readonly fenceAfter: boolean
+  readonly fenceLabel: string
+}
+
+function markdownViewportRows(
+  text: string,
+  width: number,
+): readonly MarkdownViewportRow[] {
+  const rows: MarkdownViewportRow[] = []
+  let insideFence = false
+  let fenceLabel = 'code'
+  for (const logicalLine of text.replace(/\r\n?/gu, '\n').split('\n')) {
+    if (logicalLine.startsWith('```')) {
+      const before = insideFence
+      if (!insideFence) fenceLabel = logicalLine.slice(3) || 'code'
+      insideFence = !insideFence
+      rows.push({
+        text: logicalLine,
+        fenceBefore: before,
+        fenceAfter: insideFence,
+        fenceLabel,
+      })
+      continue
+    }
+    for (const row of textVisualRows(logicalLine, width))
+      rows.push({
+        text: row,
+        fenceBefore: insideFence,
+        fenceAfter: insideFence,
+        fenceLabel,
+      })
+  }
+  return rows
+}
+
+/** Immutable visual-row index retained only for oversized presentation rows. */
+export interface TranscriptEntryViewportIndex {
+  readonly entry: TranscriptPresentationEntry
+  readonly width: number
+  readonly mode: TranscriptPresentationMode
+  readonly rows: readonly string[]
+  readonly assistantMarkdownRows?: readonly MarkdownViewportRow[]
+}
+
+export function createTranscriptEntryViewportIndex(
+  entry: TranscriptPresentationEntry,
+  width: number,
+  mode: TranscriptPresentationMode,
+): TranscriptEntryViewportIndex | undefined {
+  if (entry.kind === 'item' && entry.item.kind === 'assistant') {
+    const contentWidth =
+      mode === 'screen-reader'
+        ? Math.max(1, width - 7)
+        : markdownContentWidth(width)
+    const assistantMarkdownRows = markdownViewportRows(
+      entry.item.text,
+      contentWidth,
+    )
+    return {
+      entry,
+      width,
+      mode,
+      rows: [
+        '',
+        ...(mode === 'screen-reader' ? ['Praxis:'] : []),
+        ...assistantMarkdownRows.map((row) => row.text),
+      ],
+      assistantMarkdownRows,
+    }
+  }
+  const rows = entryViewportRows(entry, width, mode)
+  return rows ? { entry, width, mode, rows } : undefined
+}
+
+function matchingViewportIndex(
+  index: TranscriptEntryViewportIndex | undefined,
+  entry: TranscriptPresentationEntry,
+  width: number,
+  mode: TranscriptPresentationMode,
+): TranscriptEntryViewportIndex | undefined {
+  return index?.entry === entry && index.width === width && index.mode === mode
+    ? index
+    : undefined
+}
+
+function projectAssistantMarkdownSlice(
+  source: Extract<TranscriptPresentationEntry, { kind: 'item' }>,
+  sourceText: string | undefined,
+  startRow: number,
+  budget: number,
+  width: number,
+  mode: TranscriptPresentationMode,
+  viewportIndex?: TranscriptEntryViewportIndex,
+): TranscriptPresentationEntry {
+  const limit = Math.max(1, budget)
+  const sourceChromeRows = 1 + (mode === 'screen-reader' ? 1 : 0)
+  const marginTop: 0 | 1 = startRow <= 0 ? 1 : 0
+  const projectedChromeRows = marginTop + (mode === 'screen-reader' ? 1 : 0)
+  const contentBudget = Math.max(1, limit - projectedChromeRows)
+  const contentWidth =
+    mode === 'screen-reader'
+      ? Math.max(1, width - 7)
+      : markdownContentWidth(width)
+  const sourceRows =
+    matchingViewportIndex(viewportIndex, source, width, mode)
+      ?.assistantMarkdownRows ??
+    markdownViewportRows(sourceText ?? '', contentWidth)
+  const contentStart = Math.min(
+    Math.max(0, startRow - sourceChromeRows + (startRow > 0 ? 1 : 0)),
+    sourceRows.length,
+  )
+  const clippedBefore = contentStart > 0 && contentBudget > 1
+  let remaining = Math.max(1, contentBudget - (clippedBefore ? 1 : 0))
+  let contentEnd = Math.min(sourceRows.length, contentStart + remaining)
+  const clippedAfter = contentEnd < sourceRows.length && remaining > 1
+  if (clippedAfter) {
+    remaining -= 1
+    contentEnd = Math.min(sourceRows.length, contentStart + remaining)
+  }
+  const selected = sourceRows.slice(contentStart, contentEnd)
+  const first = selected[0]
+  const last = selected.at(-1)
+  const needsSyntheticOpen = clippedBefore && first?.fenceBefore === true
+  const needsSyntheticClose = clippedAfter && last?.fenceAfter === true
+  const lines = [
+    ...(clippedBefore
+      ? [
+          needsSyntheticOpen
+            ? `\`\`\`${first?.fenceLabel || 'code'}`
+            : TRANSCRIPT_TRUNCATION_MARKER,
+        ]
+      : []),
+    ...selected.map((row) => row.text),
+    ...(clippedAfter
+      ? [needsSyntheticClose ? '```' : TRANSCRIPT_TRUNCATION_MARKER]
+      : []),
+  ]
+  const text = lines.join('\n')
+  return {
+    ...source,
+    item: { kind: 'assistant', text },
+    viewportSlice: {
+      text,
+      rows: projectedChromeRows + lines.length,
+      assistantMarkdown: { marginTop },
+    },
+  }
+}
+
+function withViewportSlice(
+  projected: TranscriptPresentationEntry,
+  source: TranscriptPresentationEntry,
+  startRow: number,
+  budget: number,
+  width: number,
+  mode: TranscriptPresentationMode,
+  viewportIndex?: TranscriptEntryViewportIndex,
+): TranscriptPresentationEntry {
+  const retainedIndex = matchingViewportIndex(
+    viewportIndex,
+    source,
+    width,
+    mode,
+  )
+  if (
+    source.kind === 'item' &&
+    source.item.kind === 'assistant' &&
+    (retainedIndex?.rows.length ??
+      estimateRenderedTranscriptEntryLines(source, width, mode)) > budget
+  )
+    return projectAssistantMarkdownSlice(
+      source,
+      retainedIndex ? undefined : source.item.text,
+      startRow,
+      budget,
+      width,
+      mode,
+      retainedIndex,
+    )
+  const sourceRows =
+    retainedIndex?.rows ?? entryViewportRows(source, width, mode)
+  if (!sourceRows || sourceRows.length <= budget) return projected
+  const limit = Math.max(1, budget)
+  const start = Math.min(
+    Math.max(0, startRow + (startRow > 0 ? 1 : 0)),
+    Math.max(0, sourceRows.length - 1),
+  )
+  const clippedBefore = start > 0 && limit > 1
+  let remaining = Math.max(1, limit - (clippedBefore ? 1 : 0))
+  let end = Math.min(sourceRows.length, start + remaining)
+  const clippedAfter = end < sourceRows.length && remaining > 1
+  if (clippedAfter) {
+    remaining -= 1
+    end = Math.min(sourceRows.length, start + remaining)
+  }
+  const rows = [
+    ...(clippedBefore ? [TRANSCRIPT_TRUNCATION_MARKER] : []),
+    ...sourceRows.slice(start, end),
+    ...(clippedAfter ? [TRANSCRIPT_TRUNCATION_MARKER] : []),
+  ]
+  return {
+    ...projected,
+    viewportSlice: { text: rows.join('\n'), rows: rows.length },
+  }
 }
 
 function fitEntryText<T extends TranscriptPresentationEntry>(
@@ -595,30 +1107,18 @@ function fitEntryText<T extends TranscriptPresentationEntry>(
     return entry
   const withoutValue = replace(entry, '')
   const remaining =
-    budget - estimateTranscriptEntryLines(withoutValue, viewportWidth, mode)
+    budget -
+    Math.max(
+      0,
+      estimateTranscriptEntryLines(withoutValue, viewportWidth, mode) - 1,
+    )
   if (remaining <= 0) return withoutValue
-  const candidate = textTail(value, remaining, contentWidth)
-  const projected = replace(entry, candidate)
-  if (estimateTranscriptEntryLines(projected, viewportWidth, mode) <= budget)
-    return projected
-  const clusters = graphemes(candidate)
-  let low = 0
-  let high = clusters.length
-  let suffix = ''
-  while (low <= high) {
-    const middle = Math.floor((low + high) / 2)
-    const next = clusters.slice(clusters.length - middle).join('')
-    const nextEntry = replace(entry, next)
-    if (
-      estimateTranscriptEntryLines(nextEntry, viewportWidth, mode) <= budget
-    ) {
-      suffix = next
-      low = middle + 1
-    } else {
-      high = middle - 1
-    }
+  for (let allowed = remaining; allowed >= 1; allowed -= 1) {
+    const projected = replace(entry, textTail(value, allowed, contentWidth))
+    if (estimateTranscriptEntryLines(projected, viewportWidth, mode) <= budget)
+      return projected
   }
-  return suffix ? replace(entry, suffix) : withoutValue
+  return withoutValue
 }
 
 type ToolPresentationEntry = Extract<
@@ -643,11 +1143,50 @@ function replaceToolInput(
   }
 }
 
-function projectOversizedEntry(
+function rangeEntryText<T extends TranscriptPresentationEntry>(
+  entry: T,
+  value: string,
+  replace: (source: T, projectedValue: string) => T,
+  startRow: number,
+  budget: number,
+  viewportWidth: number,
+  contentWidth: number,
+  mode: TranscriptPresentationMode,
+): T {
+  if (!value) return entry
+  const withoutValue = replace(entry, '')
+  // Empty renderer fields still account for one placeholder row. The source
+  // content begins before that placeholder, while the two clipping markers
+  // occupy the boundary rows of a middle projection.
+  const fixedRows = Math.max(
+    0,
+    estimateTranscriptEntryLines(withoutValue, viewportWidth, mode) - 1,
+  )
+  const contentStart = Math.max(
+    0,
+    startRow - fixedRows + (startRow > 0 ? 2 : 0),
+  )
+  for (
+    let contentBudget = Math.max(1, budget - fixedRows);
+    contentBudget >= 1;
+    contentBudget -= 1
+  ) {
+    const projected = replace(
+      entry,
+      textRange(value, contentStart, contentBudget, contentWidth),
+    )
+    if (estimateTranscriptEntryLines(projected, viewportWidth, mode) <= budget)
+      return projected
+  }
+  return withoutValue
+}
+
+function projectOversizedEntryLegacy(
   entry: TranscriptPresentationEntry,
   budget: number,
   width: number,
   mode: TranscriptPresentationMode,
+  fromStart = false,
 ): TranscriptPresentationEntry {
   if (entry.kind === 'item') {
     const item = entry.item
@@ -656,7 +1195,7 @@ function projectOversizedEntry(
         ...entry,
         item: {
           ...item,
-          text: textTail(
+          text: (fromStart ? textHead : textTail)(
             item.text,
             Math.max(1, budget - 2),
             markdownContentWidth(width),
@@ -668,7 +1207,7 @@ function projectOversizedEntry(
         ...entry,
         item: {
           ...item,
-          summary: textTail(
+          summary: (fromStart ? textHead : textTail)(
             item.summary,
             Math.max(1, budget - 2),
             markdownContentWidth(width),
@@ -680,7 +1219,7 @@ function projectOversizedEntry(
         ...entry,
         item: {
           ...item,
-          text: textTail(
+          text: (fromStart ? textHead : textTail)(
             item.text,
             Math.max(
               1,
@@ -817,6 +1356,203 @@ function projectOversizedEntry(
   }
   return entry
 }
+
+function projectOversizedEntry(
+  entry: TranscriptPresentationEntry,
+  budget: number,
+  width: number,
+  mode: TranscriptPresentationMode,
+  fromStart = false,
+): TranscriptPresentationEntry {
+  const projected = projectOversizedEntryLegacy(
+    entry,
+    budget,
+    width,
+    mode,
+    fromStart,
+  )
+  const rows = entryViewportRows(entry, width, mode)
+  if (!rows || rows.length <= budget) return projected
+  const visibleRows = Math.max(1, budget)
+  const start = fromStart ? 0 : Math.max(0, rows.length - visibleRows)
+  return withViewportSlice(projected, entry, start, budget, width, mode)
+}
+
+function projectTranscriptEntryRangeLegacy(
+  entry: TranscriptPresentationEntry,
+  startRow: number,
+  budget: number,
+  width: number,
+  mode: TranscriptPresentationMode,
+): TranscriptPresentationEntry {
+  if (entry.kind === 'item' && 'text' in entry.item) {
+    const item = entry.item
+    return rangeEntryText(
+      entry,
+      item.text,
+      (source, text) => ({
+        ...source,
+        item: { ...source.item, text },
+      }),
+      startRow,
+      budget,
+      width,
+      item.kind === 'assistant'
+        ? mode === 'screen-reader'
+          ? Math.max(1, width - 7)
+          : markdownContentWidth(width)
+        : item.kind === 'user'
+          ? Math.max(1, width - (mode === 'screen-reader' ? 5 : 2))
+          : Math.max(1, width - (item.kind === 'local-result' ? 4 : 2)),
+      mode,
+    )
+  }
+  if (entry.kind === 'item' && entry.item.kind === 'compact')
+    return rangeEntryText(
+      entry,
+      entry.item.summary,
+      (source, summary) => ({
+        ...source,
+        item: { ...source.item, summary },
+      }),
+      startRow,
+      budget,
+      width,
+      markdownContentWidth(width),
+      mode,
+    )
+  if (entry.kind === 'tool') {
+    if (entry.result && entry.item.call.name !== 'Edit') {
+      const result = entry.result
+      return rangeEntryText(
+        entry,
+        result.text,
+        (source, text) => ({
+          ...source,
+          result: { ...result, text },
+        }),
+        startRow,
+        budget,
+        width,
+        Math.max(1, width - 5),
+        mode,
+      )
+    }
+    const inputKey = ['command', 'new_string', 'old_string', 'file_path'].find(
+      (key) => inputString(entry, key).length > 0,
+    )
+    if (inputKey)
+      return rangeEntryText(
+        entry,
+        inputString(entry, inputKey),
+        (source, value) => replaceToolInput(source, inputKey, value),
+        startRow,
+        budget,
+        width,
+        Math.max(1, width - 8),
+        mode,
+      )
+    if (entry.item.detail)
+      return rangeEntryText(
+        entry,
+        entry.item.detail,
+        (source, detail) => ({
+          ...source,
+          item: { ...source.item, detail },
+        }),
+        startRow,
+        budget,
+        width,
+        Math.max(1, width - 1),
+        mode,
+      )
+  }
+  if (entry.kind === 'shell') {
+    if (entry.result) {
+      const result = entry.result
+      const combined = combinedShellOutput(result.stdout, result.stderr)
+      return rangeEntryText(
+        entry,
+        combined,
+        (source, stdout) => ({
+          ...source,
+          result: { ...result, stdout, stderr: '' },
+        }),
+        startRow,
+        budget,
+        width,
+        Math.max(1, width - 5),
+        mode,
+      )
+    }
+    return rangeEntryText(
+      entry,
+      entry.item.command,
+      (source, command) => ({
+        ...source,
+        item: { ...source.item, command },
+      }),
+      startRow,
+      budget,
+      width,
+      Math.max(1, width - 4),
+      mode,
+    )
+  }
+  if (entry.kind === 'orphan-tool-result')
+    return rangeEntryText(
+      entry,
+      entry.item.text,
+      (source, text) => ({
+        ...source,
+        item: { ...source.item, text },
+      }),
+      startRow,
+      budget,
+      width,
+      Math.max(1, width - 2),
+      mode,
+    )
+  if (entry.kind === 'orphan-shell-result') {
+    const combined = orphanShellOutput(entry.item.stdout, entry.item.stderr)
+    return rangeEntryText(
+      entry,
+      combined,
+      (source, stdout) => ({
+        ...source,
+        item: { ...source.item, stdout, stderr: '' },
+      }),
+      startRow,
+      budget,
+      width,
+      Math.max(1, width - 2),
+      mode,
+    )
+  }
+  return projectOversizedEntry(entry, budget, width, mode)
+}
+
+export function projectTranscriptEntryRange(
+  entry: TranscriptPresentationEntry,
+  startRow: number,
+  budget: number,
+  width: number,
+  mode: TranscriptPresentationMode,
+  viewportIndex?: TranscriptEntryViewportIndex,
+): TranscriptPresentationEntry {
+  const retainedIndex = matchingViewportIndex(viewportIndex, entry, width, mode)
+  return withViewportSlice(
+    retainedIndex
+      ? entry
+      : projectTranscriptEntryRangeLegacy(entry, startRow, budget, width, mode),
+    entry,
+    startRow,
+    budget,
+    width,
+    mode,
+    retainedIndex,
+  )
+}
 export function projectTranscriptPresentationTail(
   entries: readonly TranscriptPresentationEntry[],
   budget: number,
@@ -842,28 +1578,44 @@ export function projectTranscriptPresentationTail(
   return entries
 }
 
-function projectTranscriptPresentationStart(
+export function projectTranscriptPresentationRange(
   entries: readonly TranscriptPresentationEntry[],
   budget: number,
   width: number,
+  startRow: number,
   mode: TranscriptPresentationMode,
 ): readonly TranscriptPresentationEntry[] {
   const limit = Math.max(1, budget)
-  let rows = 0
-  let end = 0
+  const totalRows = transcriptPresentationLineCount(entries, width, mode)
+  const rangeStart = Math.min(Math.max(0, startRow), totalRows)
+  const rangeEnd = Math.min(totalRows, rangeStart + limit)
+  const selected: TranscriptPresentationEntry[] = []
+  let cursor = 0
   for (const entry of entries) {
     const count = estimateTranscriptEntryLines(entry, width, mode)
-    if (rows + count > limit) {
-      if (end > 0) break
-      const projected = projectOversizedEntry(entry, limit, width, mode)
-      return estimateTranscriptEntryLines(projected, width, mode) <= limit
-        ? [projected]
-        : []
+    const entryEnd = cursor + count
+    const overlapStart = Math.max(rangeStart, cursor)
+    const overlapEnd = Math.min(rangeEnd, entryEnd)
+    if (overlapStart < overlapEnd) {
+      const localStart = overlapStart - cursor
+      const overlapRows = overlapEnd - overlapStart
+      const projected =
+        localStart === 0 && overlapRows === count
+          ? entry
+          : projectTranscriptEntryRange(
+              entry,
+              localStart,
+              overlapRows,
+              width,
+              mode,
+            )
+      if (estimateTranscriptEntryLines(projected, width, mode) <= overlapRows)
+        selected.push(projected)
     }
-    rows += count
-    end += 1
+    cursor = entryEnd
+    if (cursor >= rangeEnd) break
   }
-  return entries.slice(0, end)
+  return selected
 }
 
 export function projectTranscriptPresentationWindow(
@@ -881,54 +1633,11 @@ export function projectTranscriptPresentationWindow(
     Math.max(0, scrollOffset),
     Math.max(0, totalRows - limit),
   )
-  const startRows = Math.max(0, totalRows - clampedOffset - limit)
-  const endRows = totalRows - clampedOffset
-  let rows = 0
-  let start = entries.length
-  let startBeforeRows = 0
-  let startEntryRows = 0
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i]
-    if (!entry) continue
-    const count = estimateTranscriptEntryLines(entry, width, mode)
-    const next = rows + count
-    if (start === entries.length && next > startRows) {
-      start = i
-      startBeforeRows = rows
-      startEntryRows = count
-    }
-    rows = next
-  }
-  if (start === entries.length) return []
-
-  let completeEnd = start - 1
-  rows = 0
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i]
-    if (!entry) continue
-    rows += estimateTranscriptEntryLines(entry, width, mode)
-    if (rows <= endRows) completeEnd = i
-    if (rows >= endRows) break
-  }
-
-  const offsetWithinStart = startRows - startBeforeRows
-  const remainingStartRows = startEntryRows - offsetWithinStart
-  if (completeEnd < start) {
-    const entry = entries[start]
-    if (!entry) return []
-    return projectTranscriptPresentationStart([entry], limit, width, mode)
-  }
-
-  let candidates = entries.slice(start, completeEnd + 1)
-  if (offsetWithinStart > 0) {
-    const entry = candidates[0]
-    if (entry) {
-      const allowance = Math.min(limit, Math.max(1, remainingStartRows))
-      candidates = [
-        projectOversizedEntry(entry, allowance, width, mode),
-        ...candidates.slice(1),
-      ]
-    }
-  }
-  return projectTranscriptPresentationStart(candidates, limit, width, mode)
+  return projectTranscriptPresentationRange(
+    entries,
+    limit,
+    width,
+    Math.max(0, totalRows - clampedOffset - limit),
+    mode,
+  )
 }

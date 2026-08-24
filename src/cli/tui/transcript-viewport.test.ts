@@ -4,6 +4,7 @@ import {
   type TranscriptItem,
 } from './transcript-presentation.js'
 import {
+  createTranscriptEntryViewportIndex,
   estimateTranscriptEntryLines,
   projectTranscriptPresentationTail,
   projectTranscriptPresentationWindow,
@@ -121,7 +122,10 @@ describe('presentation viewport', () => {
     if (retained?.kind !== 'item' || retained.item.kind !== 'assistant') {
       throw new Error('expected a projected assistant entry')
     }
-    expect(retained.item.text).toMatch(/^….*suffix$/u)
+    expect(retained.item.text.startsWith(TRANSCRIPT_TRUNCATION_MARKER)).toBe(
+      true,
+    )
+    expect(retained.item.text.endsWith('suffix')).toBe(true)
     expect(retained.item.text).not.toBe(TRANSCRIPT_TRUNCATION_MARKER)
     expect(
       estimateTranscriptEntryLines(retained, 10, 'normal'),
@@ -155,7 +159,32 @@ describe('presentation viewport', () => {
     expect(JSON.stringify(entries)).toBe(source)
   })
 
-  it('stays bounded when the truncation marker fills the available width', () => {
+  it('strips terminal controls from a plain oversized viewport slice', () => {
+    const text = Array.from(
+      { length: 20 },
+      (_, index) => `\u001b[31mcontrolled-${index}\u001b[0m`,
+    ).join('\n')
+    const entries = projectTranscriptPresentation(
+      [{ kind: 'assistant', text }],
+      'audit',
+    )
+    const projected = projectTranscriptPresentationTail(
+      entries,
+      4,
+      40,
+      'audit',
+    )[0]
+
+    expect(projected?.viewportSlice?.text).toContain('controlled-19')
+    expect(projected?.viewportSlice?.text).not.toContain('\u001b')
+    expect(
+      entries[0]?.kind === 'item' && entries[0].item.kind === 'assistant'
+        ? entries[0].item.text
+        : '',
+    ).toContain('\u001b[31m')
+  })
+
+  it('uses the remaining row when the truncation marker fills the width', () => {
     const entries = projectTranscriptPresentation(
       [{ kind: 'assistant', text: 'newest-content' }],
       'normal',
@@ -165,7 +194,7 @@ describe('presentation viewport', () => {
     if (retained?.kind !== 'item' || retained.item.kind !== 'assistant') {
       throw new Error('expected a projected assistant entry')
     }
-    expect(retained.item.text).toBe(TRANSCRIPT_TRUNCATION_MARKER)
+    expect(retained.item.text).toBe(`${TRANSCRIPT_TRUNCATION_MARKER}\nt`)
     expect(
       estimateTranscriptEntryLines(retained, 1, 'normal'),
     ).toBeLessThanOrEqual(2)
@@ -186,7 +215,9 @@ describe('presentation viewport', () => {
       3,
       'normal',
     )
-    expect(projected.map((entry) => entry.key)).toEqual(['item-9'])
+    expect(projected.map((entry) => entry.key)).toEqual(['item-9', 'item-10'])
+    expect(projected[0]?.viewportSlice).toBeUndefined()
+    expect(projected[1]?.viewportSlice?.rows).toBe(1)
     expect(
       projected.reduce(
         (rows, entry) =>
@@ -216,7 +247,9 @@ describe('presentation viewport', () => {
       'normal',
     )
 
-    expect(projected.map((entry) => entry.key)).toEqual(['item-0'])
+    expect(projected.map((entry) => entry.key)).toEqual(['item-0', 'item-1'])
+    expect(projected[0]?.viewportSlice).toBeUndefined()
+    expect(projected[1]?.viewportSlice?.rows).toBe(1)
     expect(
       projected.reduce(
         (rows, entry) =>
@@ -225,6 +258,105 @@ describe('presentation viewport', () => {
       ),
     ).toBeLessThanOrEqual(budget)
   })
+
+  it('indexes assistant slices at the same width used by Markdown rendering', () => {
+    const text = `oldest-${'x'.repeat(248)}`
+    const entries = projectTranscriptPresentation(
+      [{ kind: 'assistant', text }],
+      'normal',
+    )
+    const budget = 4
+    const maxOffset =
+      transcriptPresentationLineCount(entries, 12, 'normal') - budget
+    const projected = projectTranscriptPresentationWindow(
+      entries,
+      budget,
+      12,
+      maxOffset,
+      'normal',
+    )
+
+    expect(projected[0]?.viewportSlice?.text).toContain('oldest-')
+    expect(projected[0]?.viewportSlice?.text).not.toMatch(/^\n{2,}/u)
+    expect(
+      transcriptPresentationLineCount(projected, 12, 'normal'),
+    ).toBeLessThanOrEqual(budget)
+  })
+
+  it('uses the same word-wrapped rows for assistant measurement and slicing', () => {
+    const entries = projectTranscriptPresentation(
+      [{ kind: 'assistant', text: 'aaaaaa bbbbbb cccccc' }],
+      'normal',
+    )
+    expect(transcriptPresentationLineCount(entries, 14, 'normal')).toBe(4)
+
+    const visibleByOffset = [0, 1, 2].map((scrollOffset) => {
+      const projected = projectTranscriptPresentationWindow(
+        entries,
+        2,
+        14,
+        scrollOffset,
+        'normal',
+      )[0]
+      return projected?.kind === 'item' && projected.item.kind === 'assistant'
+        ? projected.item.text
+        : ''
+    })
+
+    expect(visibleByOffset[0]).toContain('cccccc')
+    expect(visibleByOffset[1]).toContain('bbbbbb')
+    expect(visibleByOffset[2]).toContain('aaaaaa')
+  })
+
+  it('matches Ink wide-grapheme wrapping at a one-column content width', () => {
+    const entry = projectTranscriptPresentation(
+      [{ kind: 'assistant', text: '界' }],
+      'normal',
+    )[0]
+    if (!entry) throw new Error('expected an assistant entry')
+    const index = createTranscriptEntryViewportIndex(entry, 5, 'normal')
+
+    expect(estimateTranscriptEntryLines(entry, 5, 'normal')).toBe(3)
+    expect(index?.rows).toEqual(['', '', '界'])
+  })
+
+  it.each([
+    [
+      'thinking',
+      { kind: 'thinking' as const, text: `oldest-thinking-${'x'.repeat(160)}` },
+      'oldest-thinking-',
+    ],
+    [
+      'compact',
+      {
+        kind: 'compact' as const,
+        summary: `oldest-compact-${'x'.repeat(160)}`,
+      },
+      'oldest-compact-',
+    ],
+  ])(
+    'does not synthesize leading padding for oversized %s content',
+    (_name, item, oldestMarker) => {
+      const entries = projectTranscriptPresentation([item], 'audit')
+      const budget = 9
+      const maxOffset = Math.max(
+        0,
+        transcriptPresentationLineCount(entries, 12, 'audit') - budget,
+      )
+      const projected = projectTranscriptPresentationWindow(
+        entries,
+        budget,
+        12,
+        maxOffset,
+        'audit',
+      )
+      const slice = projected[0]?.viewportSlice
+
+      expect(slice?.text.replaceAll('\n', '')).toContain(oldestMarker)
+      expect(slice?.text).not.toMatch(/^\n{2,}/u)
+      expect(slice?.rows).toBeLessThanOrEqual(budget)
+    },
+  )
 
   it('keeps the bounded start tail with complete following entries', () => {
     const oldest = {

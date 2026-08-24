@@ -1,4 +1,11 @@
-import { cloneElement, useEffect, useState, type ReactElement } from 'react'
+import {
+  cloneElement,
+  useEffect,
+  useMemo,
+  useState,
+  memo,
+  type ReactElement,
+} from 'react'
 
 import { Box, Text, useStdout } from 'ink'
 
@@ -1085,6 +1092,117 @@ function ActiveStreamText({ text }: { text: string }) {
   )
 }
 
+const TranscriptEntryRow = memo(
+  function TranscriptEntryRow(props: {
+    entry: TranscriptPresentationEntry
+    first: boolean
+    detailed: boolean
+    screenReader: boolean
+    theme: TuiSemanticTheme
+    render: (
+      entry: TranscriptPresentationEntry,
+      first: boolean,
+    ) => ReactElement | null
+  }) {
+    return props.render(props.entry, props.first)
+  },
+  (previous, next) =>
+    previous.entry === next.entry &&
+    previous.first === next.first &&
+    previous.detailed === next.detailed &&
+    previous.screenReader === next.screenReader &&
+    previous.theme === next.theme,
+)
+
+function TranscriptViewportSlice({
+  entry,
+  theme,
+}: {
+  entry: TranscriptPresentationEntry
+  theme: TuiSemanticTheme
+}) {
+  const slice = entry.viewportSlice
+  if (!slice) return null
+  const item = entry.kind === 'read-summary' ? undefined : entry.item
+  return (
+    <Box flexDirection="column">
+      {slice.text.split('\n').map((line, index) => {
+        if (item?.kind === 'compact')
+          return line.includes('Conversation compacted') ? (
+            <Text key={index} {...theme.text.focusMarker} italic>
+              {line || ' '}
+            </Text>
+          ) : (
+            cloneElement(cachedMarkdownLineElement(line, theme), {
+              key: index,
+            })
+          )
+        if (item?.kind === 'thinking')
+          return (
+            <Text key={index} dimColor italic>
+              {line || ' '}
+            </Text>
+          )
+        if (entry.kind === 'tool' && /^\s*\d+\s-[^-]/u.test(line))
+          return (
+            <SyntaxCodeLine
+              key={index}
+              prefix=""
+              text={line}
+              change="removed"
+            />
+          )
+        if (entry.kind === 'tool' && /^\s*\d+\s\+[^+]/u.test(line))
+          return (
+            <SyntaxCodeLine key={index} prefix="" text={line} change="added" />
+          )
+        if (
+          item?.kind === 'warning' ||
+          (entry.kind === 'tool' && entry.result?.isError) ||
+          (entry.kind === 'shell' && entry.result?.isError) ||
+          (entry.kind === 'orphan-tool-result' && entry.item.isError) ||
+          (entry.kind === 'orphan-shell-result' && entry.item.isError)
+        )
+          return (
+            <Text key={index} {...theme.text.error}>
+              {line || ' '}
+            </Text>
+          )
+        if (entry.kind === 'tool' && line.startsWith('⏺'))
+          return (
+            <Text key={index} {...theme.text.heading} bold>
+              {line}
+            </Text>
+          )
+        if (
+          entry.kind === 'shell' &&
+          (line.startsWith('! ') || line.startsWith('Shell command: '))
+        )
+          return (
+            <Text key={index} bold>
+              {line}
+            </Text>
+          )
+        return (
+          <Text
+            key={index}
+            bold={item?.kind === 'user'}
+            dimColor={
+              entry.kind === 'tool' ||
+              entry.kind === 'shell' ||
+              entry.kind === 'orphan-tool-result' ||
+              item?.kind === 'local-result' ||
+              item?.kind === 'notice'
+            }
+          >
+            {line || ' '}
+          </Text>
+        )
+      })}
+    </Box>
+  )
+}
+
 export function Transcript({
   entries,
   activeText,
@@ -1104,182 +1222,214 @@ export function Transcript({
 }) {
   const theme = useTuiTheme()
   const detailed = thinkingExpanded || detailedTranscript
+  const renderEntry = (entry: TranscriptPresentationEntry, first: boolean) => {
+    if (
+      entry.viewportSlice?.assistantMarkdown &&
+      entry.kind === 'item' &&
+      entry.item.kind === 'assistant'
+    )
+      return (
+        <Box
+          key={entry.key}
+          marginTop={entry.viewportSlice.assistantMarkdown.marginTop}
+        >
+          {screenReader ? <Text {...theme.text.heading}>Praxis:</Text> : null}
+          {!screenReader ? <Text {...theme.text.focusMarker}>⏺ </Text> : null}
+          <MarkdownText text={entry.item.text} />
+        </Box>
+      )
+    if (
+      entry.viewportSlice &&
+      !(entry.kind === 'item' && entry.item.kind === 'assistant')
+    )
+      return (
+        <TranscriptViewportSlice key={entry.key} entry={entry} theme={theme} />
+      )
+    if (entry.kind === 'read-summary') {
+      return (
+        <Text key={entry.key}>
+          {'  '}Read {entry.count} file{entry.count === 1 ? '' : 's'}{' '}
+          <Text dimColor>(ctrl+o to expand)</Text>
+        </Text>
+      )
+    }
+    const item = entry.item
+    if (item.kind === 'user') {
+      return (
+        <Box key={entry.key} marginTop={first ? 0 : 1}>
+          <Text {...theme.text.productIdentity} bold>
+            {screenReader ? 'You: ' : '❯ '}
+          </Text>
+          <Text bold>{item.text}</Text>
+        </Box>
+      )
+    }
+    if (item.kind === 'assistant') {
+      return (
+        <Box key={entry.key} marginTop={1}>
+          {screenReader ? <Text {...theme.text.heading}>Praxis:</Text> : null}
+          {!screenReader ? <Text {...theme.text.focusMarker}>⏺ </Text> : null}
+          <MarkdownText text={item.text} />
+        </Box>
+      )
+    }
+    if (item.kind === 'thinking') {
+      return (
+        <ThinkingBlock
+          key={entry.key}
+          text={item.text}
+          active={false}
+          expanded={detailed}
+          screenReader={screenReader}
+        />
+      )
+    }
+    if (item.kind === 'compact') {
+      return (
+        <Box key={entry.key} flexDirection="column" marginTop={1}>
+          <Text {...theme.text.focusMarker} italic>
+            {screenReader
+              ? 'Conversation compacted'
+              : '✻ Conversation compacted (ctrl+o for history)'}
+          </Text>
+          {detailed ? (
+            <Box marginLeft={screenReader ? 0 : 2}>
+              <MarkdownText text={item.summary} />
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+    if (item.kind === 'context') {
+      return (
+        <ContextUsageBlock
+          key={entry.key}
+          {...item}
+          screenReader={screenReader}
+        />
+      )
+    }
+    if (item.kind === 'tool') {
+      return (
+        <ToolTranscriptEntry
+          key={entry.key}
+          call={item.call}
+          detail={item.detail}
+          {...(entry.kind === 'tool' && entry.result
+            ? { result: entry.result }
+            : {})}
+          detailed={detailed || screenReader}
+        />
+      )
+    }
+    if (item.kind === 'tool-result') {
+      const text =
+        item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
+      return (
+        <Box key={entry.key} marginLeft={2} flexDirection="column">
+          <Text {...(item.isError ? theme.text.error : theme.text.muted)}>
+            {item.isError ? '└ Error' : '└ Result'}
+          </Text>
+          {item.isError ? (
+            <Text {...theme.text.error}>{text}</Text>
+          ) : (
+            <ToolResultText text={text} />
+          )}
+        </Box>
+      )
+    }
+    if (item.kind === 'shell') {
+      const result = entry.kind === 'shell' ? entry.result : undefined
+      const output = result
+        ? [result.stdout, result.stderr]
+            .filter(Boolean)
+            .join(
+              result.stdout && result.stderr && !result.stdout.endsWith('\n')
+                ? '\n'
+                : '',
+            )
+        : ''
+      const lines = contentLines(output)
+      const visible = detailed || screenReader ? lines : lines.slice(0, 3)
+      const hidden = lines.length - visible.length
+      return (
+        <Box key={entry.key} flexDirection="column" marginTop={1}>
+          <Text>
+            <Text bold>
+              {screenReader ? 'Shell command: ' : '! '}
+              {item.command}
+            </Text>
+          </Text>
+          {result ? (
+            <Box marginLeft={2} flexDirection="column">
+              {lines.length === 0 ? (
+                <Text dimColor>⎿ </Text>
+              ) : (
+                visible.map((line, lineIndex) => (
+                  <Text
+                    key={lineIndex}
+                    {...(result.isError ? theme.text.error : {})}
+                    dimColor={!result.isError}
+                  >
+                    {lineIndex === 0 ? '⎿ ' : '   '}
+                    {line || ' '}
+                  </Text>
+                ))
+              )}
+              {hidden > 0 ? (
+                <Text dimColor>
+                  {'   '}… +{hidden} lines (ctrl+o to expand)
+                </Text>
+              ) : null}
+            </Box>
+          ) : null}
+        </Box>
+      )
+    }
+    if (item.kind === 'shell-result') {
+      const output = [item.stdout, item.stderr].filter(Boolean).join('\n')
+      return (
+        <Text key={entry.key} {...(item.isError ? theme.text.error : {})}>
+          ⎿ {output}
+        </Text>
+      )
+    }
+    if (item.kind === 'local-result') {
+      return (
+        <Box key={entry.key} marginLeft={2}>
+          <Text dimColor>⎿ {item.text}</Text>
+        </Box>
+      )
+    }
+    return (
+      <Text
+        key={entry.key}
+        {...(item.kind === 'warning' ? theme.text.error : {})}
+        dimColor={item.kind === 'notice'}
+      >
+        {item.kind === 'warning' ? '⚠ ' : '· '}
+        {item.text}
+      </Text>
+    )
+  }
+  const historyRows = useMemo(
+    () =>
+      entries.map((entry, index) => (
+        <TranscriptEntryRow
+          key={entry.key}
+          entry={entry}
+          first={index === 0}
+          detailed={detailed}
+          screenReader={screenReader}
+          theme={theme}
+          render={renderEntry}
+        />
+      )),
+    [detailed, entries, screenReader, theme],
+  )
   return (
     <Box flexDirection="column">
-      {entries.map((entry, index) => {
-        if (entry.kind === 'read-summary') {
-          return (
-            <Text key={entry.key}>
-              {'  '}Read {entry.count} file{entry.count === 1 ? '' : 's'}{' '}
-              <Text dimColor>(ctrl+o to expand)</Text>
-            </Text>
-          )
-        }
-        const item = entry.item
-        if (item.kind === 'user') {
-          return (
-            <Box key={entry.key} marginTop={index === 0 ? 0 : 1}>
-              <Text {...theme.text.productIdentity} bold>
-                {screenReader ? 'You: ' : '❯ '}
-              </Text>
-              <Text bold>{item.text}</Text>
-            </Box>
-          )
-        }
-        if (item.kind === 'assistant') {
-          return (
-            <Box key={entry.key} marginTop={1}>
-              {screenReader ? (
-                <Text {...theme.text.heading}>Praxis:</Text>
-              ) : null}
-              {!screenReader ? (
-                <Text {...theme.text.focusMarker}>⏺ </Text>
-              ) : null}
-              <MarkdownText text={item.text} />
-            </Box>
-          )
-        }
-        if (item.kind === 'thinking') {
-          return (
-            <ThinkingBlock
-              key={entry.key}
-              text={item.text}
-              active={false}
-              expanded={detailed}
-              screenReader={screenReader}
-            />
-          )
-        }
-        if (item.kind === 'compact') {
-          return (
-            <Box key={entry.key} flexDirection="column" marginTop={1}>
-              <Text {...theme.text.focusMarker} italic>
-                {screenReader
-                  ? 'Conversation compacted'
-                  : '✻ Conversation compacted (ctrl+o for history)'}
-              </Text>
-              {detailed ? (
-                <Box marginLeft={screenReader ? 0 : 2}>
-                  <MarkdownText text={item.summary} />
-                </Box>
-              ) : null}
-            </Box>
-          )
-        }
-        if (item.kind === 'context') {
-          return (
-            <ContextUsageBlock
-              key={entry.key}
-              {...item}
-              screenReader={screenReader}
-            />
-          )
-        }
-        if (item.kind === 'tool') {
-          return (
-            <ToolTranscriptEntry
-              key={entry.key}
-              call={item.call}
-              detail={item.detail}
-              {...(entry.kind === 'tool' && entry.result
-                ? { result: entry.result }
-                : {})}
-              detailed={detailed || screenReader}
-            />
-          )
-        }
-        if (item.kind === 'tool-result') {
-          const text =
-            item.text.length > 500 ? `${item.text.slice(0, 497)}...` : item.text
-          return (
-            <Box key={entry.key} marginLeft={2} flexDirection="column">
-              <Text {...(item.isError ? theme.text.error : theme.text.muted)}>
-                {item.isError ? '└ Error' : '└ Result'}
-              </Text>
-              {item.isError ? (
-                <Text {...theme.text.error}>{text}</Text>
-              ) : (
-                <ToolResultText text={text} />
-              )}
-            </Box>
-          )
-        }
-        if (item.kind === 'shell') {
-          const result = entry.kind === 'shell' ? entry.result : undefined
-          const output = result
-            ? [result.stdout, result.stderr]
-                .filter(Boolean)
-                .join(
-                  result.stdout &&
-                    result.stderr &&
-                    !result.stdout.endsWith('\n')
-                    ? '\n'
-                    : '',
-                )
-            : ''
-          const lines = contentLines(output)
-          const visible = detailed || screenReader ? lines : lines.slice(0, 3)
-          const hidden = lines.length - visible.length
-          return (
-            <Box key={entry.key} flexDirection="column" marginTop={1}>
-              <Text>
-                <Text bold>
-                  {screenReader ? 'Shell command: ' : '! '}
-                  {item.command}
-                </Text>
-              </Text>
-              {result ? (
-                <Box marginLeft={2} flexDirection="column">
-                  {lines.length === 0 ? (
-                    <Text dimColor>⎿ </Text>
-                  ) : (
-                    visible.map((line, lineIndex) => (
-                      <Text
-                        key={lineIndex}
-                        {...(result.isError ? theme.text.error : {})}
-                        dimColor={!result.isError}
-                      >
-                        {lineIndex === 0 ? '⎿ ' : '   '}
-                        {line || ' '}
-                      </Text>
-                    ))
-                  )}
-                  {hidden > 0 ? (
-                    <Text dimColor>
-                      {'   '}… +{hidden} lines (ctrl+o to expand)
-                    </Text>
-                  ) : null}
-                </Box>
-              ) : null}
-            </Box>
-          )
-        }
-        if (item.kind === 'shell-result') {
-          const output = [item.stdout, item.stderr].filter(Boolean).join('\n')
-          return (
-            <Text key={entry.key} {...(item.isError ? theme.text.error : {})}>
-              ⎿ {output}
-            </Text>
-          )
-        }
-        if (item.kind === 'local-result') {
-          return (
-            <Box key={entry.key} marginLeft={2}>
-              <Text dimColor>⎿ {item.text}</Text>
-            </Box>
-          )
-        }
-        return (
-          <Text
-            key={entry.key}
-            {...(item.kind === 'warning' ? theme.text.error : {})}
-            dimColor={item.kind === 'notice'}
-          >
-            {item.kind === 'warning' ? '⚠ ' : '· '}
-            {item.text}
-          </Text>
-        )
-      })}
+      {historyRows}
       {activeStreamVisible && activeThinking ? (
         <ThinkingBlock
           text={activeThinking}
