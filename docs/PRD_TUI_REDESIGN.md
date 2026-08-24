@@ -167,3 +167,5 @@ demoable path working and preserve the shared transcript/runtime boundary.
 Diff now joins this pure semantic projection path through one summary/detail
 model shared by visual and screen-reader adapters; other legacy secondary
 surfaces remain behind the legacy marker for later migration.
+MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
+effects remain outside presentation.

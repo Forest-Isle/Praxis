@@ -8,6 +8,7 @@ import {
   type TuiMcpPanelState,
   type TuiMcpServer,
 } from './mcp-panel-projector.js'
+import type { TuiMcpSurfaceModel } from './mcp-surface-model.js'
 
 const CLAUDE_EMPTY_MESSAGE =
   'No MCP servers configured. Run claude doctor if this is unexpected — it lists MCP config files that failed validation. Otherwise, run claude mcp --help or visit https://code.claude.com/docs/en/mcp to learn more.'
@@ -222,18 +223,17 @@ function ToolPanel({
 }
 
 export function McpPanel({
-  model,
-  state,
+  surface,
   screenReader = false,
   width,
   dataPlane = 'claude',
 }: {
-  model: TuiMcpPanelModel
-  state: TuiMcpPanelState
+  surface: TuiMcpSurfaceModel
   screenReader?: boolean
   width?: number
   dataPlane?: DataPlane
 }) {
+  const { model, state } = surface
   const terminalWidth = width ?? 80
   const server = model.servers[state.serverIndex]
   let content

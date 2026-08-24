@@ -331,6 +331,10 @@ import {
   type TuiMcpPanelModel,
   type TuiMcpPanelState,
 } from './tui/mcp-panel-projector.js'
+import {
+  projectTuiMcpSurface,
+  type TuiMcpSurfaceModel,
+} from './tui/mcp-surface-model.js'
 import type {
   ClaudeMcpServerStatus,
   ClaudeMcpToolInspection,
@@ -1869,6 +1873,7 @@ export function InteractiveApp({
     | TuiHelpSurfaceModel
     | TuiPermissionSurfaceModel
     | TuiDiffSurfaceModel
+    | TuiMcpSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -1950,6 +1955,14 @@ export function InteractiveApp({
           }),
     [diffMenu],
   )
+  const mcpMenu = menu?.kind === 'mcp' ? menu : null
+  const mcpSurface = useMemo<TuiMcpSurfaceModel | null>(
+    () =>
+      mcpMenu === null
+        ? null
+        : projectTuiMcpSurface({ model: mcpMenu.model, state: mcpMenu.state }),
+    [mcpMenu],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -1957,7 +1970,9 @@ export function InteractiveApp({
         ? (helpSurface ?? undefined)
         : menu.kind === 'diff'
           ? (diffSurface ?? undefined)
-          : (permissionManagementSurface ?? legacySecondarySurface)
+          : menu.kind === 'mcp'
+            ? (mcpSurface ?? undefined)
+            : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8200,6 +8215,13 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'mcp-panel' ? (
+                <McpPanel
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                  dataPlane={dataPlane}
+                />
               ) : selectedSecondarySurface.kind === 'help' ? (
                 <HelpMenu
                   model={selectedSecondarySurface}
@@ -8263,14 +8285,6 @@ export function InteractiveApp({
                   error={menu.error}
                   width={width}
                   screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'mcp' ? (
-                <McpPanel
-                  model={menu.model}
-                  state={menu.state}
-                  width={width}
-                  screenReader={axScreenReader}
-                  dataPlane={dataPlane}
                 />
               ) : menu.kind === 'tasks' ? (
                 <TaskPanel

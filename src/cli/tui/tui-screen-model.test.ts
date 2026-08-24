@@ -15,6 +15,8 @@ import {
   projectTuiMentionPicker,
   type TuiMentionPickerModel,
 } from './mention-picker-model.js'
+import { projectTuiMcpSurface } from './mcp-surface-model.js'
+import type { TuiMcpSurfaceModel } from './mcp-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -25,7 +27,8 @@ type Surfaces = TuiScreenSurfaceModels & {
       }
     | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
     | { readonly kind: 'question'; readonly questionIndex: number }
-  readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
+  readonly secondary:
+    { readonly kind: 'menu'; readonly surface?: unknown } | TuiMcpSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -123,6 +126,20 @@ describe('projectTuiScreen', () => {
     if (foreground.kind === 'compose') {
       expect(foreground.overlays[0]).toBe(picker)
     }
+  })
+
+  it('preserves the MCP semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiMcpSurface({
+      model: { cwd: '/workspace', servers: [] },
+      state: { depth: 'list', serverIndex: 0, selectedIndex: 0 },
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
   })
 
   it('returns the input presentation object and applies body precedence', () => {
