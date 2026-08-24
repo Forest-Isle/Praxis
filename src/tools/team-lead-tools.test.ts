@@ -1,0 +1,269 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { describe, expect, it, vi } from 'vitest'
+import type { ToolRegistry } from '../core/runtime.js'
+import { TeamLeadOperations } from '../application/team-lead-operations.js'
+import { LocalTeamManager } from '../application/team-manager.js'
+import { TeamLeadToolRegistry } from './team-lead-tools.js'
+
+const base: ToolRegistry = {
+  definitions: () => [
+    { name: 'Read', description: 'read', inputSchema: { type: 'object' } },
+  ],
+  prepare: async (call) => call,
+  execute: async () => ({ content: 'base', isError: false }),
+}
+const snapshot = { teamId: 'team-a' }
+function registry(
+  enabled = ['TeamCreate', 'TeamResume', 'TeamList', 'TeamAccept', 'TeamStop'],
+) {
+  const operations = {
+    create: vi.fn(async () => snapshot),
+    resume: vi.fn(async () => snapshot),
+    list: vi.fn(async () => [snapshot]),
+    accept: vi.fn(async () => snapshot),
+    stop: vi.fn(async () => snapshot),
+  }
+  return {
+    registry: new TeamLeadToolRegistry(
+      base,
+      operations as never,
+      'lead-a',
+      enabled,
+    ),
+    operations,
+  }
+}
+
+describe('TeamLeadToolRegistry', () => {
+  it('advertises the selected five tools with closed schemas and delegates base tools', async () => {
+    const f = registry(['TeamList'])
+    expect(f.registry.definitions().map((d) => d.name)).toEqual([
+      'Read',
+      'TeamList',
+    ])
+    expect(
+      f.registry.schedulingPolicy?.({ id: 'x', name: 'TeamList', input: {} }),
+    ).toMatchObject({ concurrency: 'exclusive', cancelOnInterrupt: true })
+    await expect(
+      f.registry.execute({ id: 'r', name: 'Read', input: {} }, { cwd: '.' }),
+    ).resolves.toMatchObject({ content: 'base' })
+    await expect(
+      f.registry.execute(
+        { id: 'l', name: 'TeamList', input: {} },
+        { cwd: '.' },
+      ),
+    ).resolves.toEqual({
+      content: JSON.stringify({ teams: [snapshot] }),
+      isError: false,
+      nativeToolUseResult: { teams: [snapshot] },
+    })
+    await expect(
+      f.registry.execute(
+        { id: 'l', name: 'TeamList', input: { extra: true } },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Unknown Team field/u)
+  })
+
+  it('applies defaults, validates nested input, and rejects unavailable names', async () => {
+    const f = registry(['TeamCreate', 'TeamAccept', 'TeamStop', 'NotATeam'])
+    const create = {
+      teamId: 'team-a',
+      name: 'A',
+      roster: [{ name: 'worker', agentType: 'x', access: 'write' }],
+      tasks: [
+        {
+          id: 'task',
+          description: 'd',
+          assignee: 'worker',
+          blockedBy: [],
+          claims: {
+            files: [],
+            publicContracts: [],
+            generatedArtifacts: [],
+            migrations: [],
+            mergeTargets: [],
+          },
+        },
+      ],
+    }
+    await f.registry.execute(
+      { id: 'c', name: 'TeamCreate', input: create },
+      { cwd: '.' },
+    )
+    expect(f.operations.create).toHaveBeenCalled()
+    await expect(
+      f.registry.execute(
+        {
+          id: 'bad',
+          name: 'TeamCreate',
+          input: {
+            ...create,
+            roster: [{ ...create.roster[0], unknown: true }],
+          },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Unknown Team field/u)
+    await f.registry.execute(
+      {
+        id: 'a',
+        name: 'TeamAccept',
+        input: { teamId: 'team-a', taskId: 'task' },
+      },
+      { cwd: '.' },
+    )
+    expect(f.operations.accept).toHaveBeenCalledWith(
+      expect.objectContaining({ decision: 'accepted' }),
+      'lead-a',
+    )
+    await f.registry.execute(
+      { id: 's', name: 'TeamStop', input: { teamId: 'team-a' } },
+      { cwd: '.' },
+    )
+    expect(f.operations.stop).toHaveBeenCalledWith(
+      { teamId: 'team-a', drainMs: 5000 },
+      'lead-a',
+    )
+    expect(() =>
+      f.registry.schedulingPolicy?.({ id: 'x', name: 'TeamResume', input: {} }),
+    ).toThrow(/unavailable/u)
+  })
+
+  it('does not operate after interruption and rejects invalid ranges', async () => {
+    const f = registry()
+    const signal = AbortSignal.abort()
+    await expect(
+      f.registry.execute(
+        { id: 's', name: 'TeamStop', input: { teamId: 'team-a' } },
+        { cwd: '.', signal },
+      ),
+    ).rejects.toThrow(/interrupted/u)
+    expect(f.operations.stop).not.toHaveBeenCalled()
+    await expect(
+      f.registry.prepare(
+        {
+          id: 's',
+          name: 'TeamStop',
+          input: { teamId: 'team-a', drainMs: 600001 },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Invalid drainMs/u)
+    await expect(
+      f.registry.prepare(
+        {
+          id: 'a',
+          name: 'TeamAccept',
+          input: { teamId: 'team-a', taskId: 'x', decision: 'maybe' },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Invalid decision/u)
+  })
+
+  it('creates, completes, accepts, admits a dependent task, and stops through the model registry', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-lead-tools-'))
+    const cwd = process.cwd()
+    const runtimeCalls: string[] = []
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 2,
+        baseTools: base,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ task }) => {
+            runtimeCalls.push(task.id)
+            return 'completed'
+          },
+        },
+      })
+      const operations = new TeamLeadOperations({
+        open: async () => manager,
+      } as never)
+      const tools = new TeamLeadToolRegistry(base, operations, 'lead-a', [
+        'TeamCreate',
+        'TeamAccept',
+        'TeamStop',
+      ])
+      const claims = {
+        files: [],
+        publicContracts: [],
+        generatedArtifacts: [],
+        migrations: [],
+        mergeTargets: [],
+      }
+      await tools.execute(
+        {
+          id: 'create',
+          name: 'TeamCreate',
+          input: {
+            teamId: 'dependent-team',
+            name: 'Dependent Team',
+            roster: [
+              { name: 'worker', agentType: 'test', access: 'read-only' },
+            ],
+            tasks: [
+              {
+                id: 'first',
+                description: 'first',
+                assignee: 'worker',
+                blockedBy: [],
+                claims,
+              },
+              {
+                id: 'second',
+                description: 'second',
+                assignee: 'worker',
+                blockedBy: ['first'],
+                claims,
+              },
+            ],
+          },
+        },
+        { cwd },
+      )
+      const beforeAcceptance = await operations.waitForIdle(
+        'dependent-team',
+        'lead-a',
+      )
+      expect(runtimeCalls).toEqual(['first'])
+      expect(beforeAcceptance.tasks[0]?.execution?.state).toBe('completed')
+      expect(beforeAcceptance.tasks[1]?.execution).toBeNull()
+
+      await tools.execute(
+        {
+          id: 'accept',
+          name: 'TeamAccept',
+          input: { teamId: 'dependent-team', taskId: 'first' },
+        },
+        { cwd },
+      )
+      const afterAcceptance = await operations.waitForIdle(
+        'dependent-team',
+        'lead-a',
+      )
+      expect(runtimeCalls).toEqual(['first', 'second'])
+      expect(afterAcceptance.tasks[1]?.execution?.state).toBe('completed')
+
+      await expect(
+        tools.execute(
+          {
+            id: 'stop',
+            name: 'TeamStop',
+            input: { teamId: 'dependent-team', drainMs: 0 },
+          },
+          { cwd },
+        ),
+      ).resolves.toMatchObject({ isError: false })
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+})

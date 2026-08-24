@@ -246,6 +246,8 @@ import type {
   ClaudeMcpServerStatus,
   ClaudeMcpToolInspection,
 } from '../mcp/claude-mcp-tools.js'
+import type { TeamLeadOperations } from './team-lead-operations.js'
+import { TeamLeadToolRegistry } from '../tools/team-lead-tools.js'
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -282,6 +284,7 @@ export interface ClaudeSessionServiceOptions {
   subagentToolNames?: readonly string[]
   taskToolNames?: readonly string[]
   scheduledToolNames?: readonly string[]
+  teamToolNames?: readonly string[]
   /** Runtime gates for Claude capability-driven tool exposure. */
   toolRole?: ClaudeToolRole
   toolCapabilityEnvironment?: Readonly<Record<string, string | undefined>>
@@ -330,6 +333,8 @@ export interface ClaudeSessionServiceOptions {
   interactiveTools?: ClaudeInteractiveToolManager
   mcp?: ClaudeMcpRuntime
   costStateStore?: Pick<ClaudeCostStateStore, 'load' | 'save'>
+  /** Shared internal Team lead operations port. */
+  teamLeadOperations?: TeamLeadOperations
 }
 
 function agentPermissionMode(
@@ -1342,10 +1347,12 @@ export class ClaudeSessionService {
   >()
   private resolvedSessionMemoryProvider: ModelProvider | null | undefined
   private readonly hookLifecycle: HookLifecycle
+  private readonly leadOperations: TeamLeadOperations | null
   private readonly fileChangeWatcher: ClaudeFileChangeWatcher | null
   private runtimeCwd: string
 
   constructor(private readonly options: ClaudeSessionServiceOptions) {
+    this.leadOperations = options.teamLeadOperations ?? null
     this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
     this.runtimeCwd = options.workspace?.cwd() ?? options.cwd
     this.fileChangeWatcher = options.hooks
@@ -1677,6 +1684,7 @@ export class ClaudeSessionService {
     await this.closeCostSavePromise
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
     await this.mcpClosePromise
+    await this.leadOperations?.close()
   }
 
   async transitionHookSession(
@@ -2083,8 +2091,21 @@ export class ClaudeSessionService {
     const interactiveRegistry = this.options.interactiveTools
       ? this.options.interactiveTools.registry(messageRegistry, sessionId)
       : messageRegistry
+    const teamToolNames = this.capabilityToolNames(
+      this.options.teamToolNames,
+      capabilities,
+    )
+    const teamRegistry =
+      this.leadOperations && teamToolNames.length > 0
+        ? new TeamLeadToolRegistry(
+            interactiveRegistry,
+            this.leadOperations,
+            sessionId,
+            teamToolNames,
+          )
+        : interactiveRegistry
     const capabilityRegistry = new ClaudeCapabilityToolRegistry(
-      interactiveRegistry,
+      teamRegistry,
       capabilities,
     )
     const preferredOrder = [
@@ -2119,6 +2140,11 @@ export class ClaudeSessionService {
       'ScheduleWakeup',
       'Monitor',
       'PushNotification',
+      'TeamCreate',
+      'TeamResume',
+      'TeamList',
+      'TeamAccept',
+      'TeamStop',
     ]
     const hostedRegistry: ToolRegistry = {
       definitions: () => {
@@ -4654,7 +4680,24 @@ export class ClaudeSessionService {
               }
             : interactiveMessageTools
         const capabilityTools = fileHistoryTools
-          ? new ClaudeCapabilityToolRegistry(fileHistoryTools, capabilities)
+          ? new ClaudeCapabilityToolRegistry(
+              this.leadOperations &&
+                this.capabilityToolNames(
+                  this.options.teamToolNames,
+                  capabilities,
+                ).length > 0
+                ? new TeamLeadToolRegistry(
+                    fileHistoryTools,
+                    this.leadOperations,
+                    sessionId,
+                    this.capabilityToolNames(
+                      this.options.teamToolNames,
+                      capabilities,
+                    ),
+                  )
+                : fileHistoryTools,
+              capabilities,
+            )
           : undefined
         const structuredCapture = this.options.structuredOutputSchema
           ? { calls: 0, value: undefined as unknown }
@@ -7462,6 +7505,7 @@ export class ClaudeSessionService {
       ...(this.options.enableSubagents === undefined
         ? {}
         : { subagents: this.options.enableSubagents }),
+      teams: this.leadOperations !== null,
       ...(this.options.toolCapabilityEnvironment
         ? { env: this.options.toolCapabilityEnvironment }
         : {}),
@@ -7486,6 +7530,7 @@ export class ClaudeSessionService {
             'ScheduleWakeup',
           ].includes(name) || capabilities.has(name),
       )
+      .filter((name) => !name.startsWith('Team') || capabilities.has(name))
   }
 
   private async append(
