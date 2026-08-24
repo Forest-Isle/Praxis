@@ -23,6 +23,7 @@ import {
   type TeamWorkspaceProvider,
 } from './team-workspace.js'
 import { TeamMemberToolRegistry } from '../tools/team-member-tools.js'
+import { TeamMailboxService, type TeamMailboxEndpoint } from './team-mailbox.js'
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface TeamCreateTaskInput extends Omit<TeamTask, 'execution'> {}
@@ -46,6 +47,7 @@ export interface TeamAgentRuntime {
     readonly tools: ToolRegistry
     readonly permissions: PermissionResolver
     readonly signal: AbortSignal
+    readonly mailbox: TeamMailboxEndpoint
   }): Promise<'completed' | 'failed' | 'orphaned'>
 }
 
@@ -118,7 +120,20 @@ export class LocalTeamManager {
     let team: LocalTeam | undefined
     try {
       claim = await this.store.createAndClaim(snapshot)
-      team = new LocalTeam(this.options, this.workspace, claim)
+      team = new LocalTeam(
+        this.options,
+        this.workspace,
+        claim,
+        new TeamMailboxService({
+          nativeRoot: (this.options as LocalTeamManagerOptions).nativeRoot,
+          projectIdentity: this.store.projectIdentity,
+          teamId: snapshot.teamId,
+          participants: [
+            'lead',
+            ...snapshot.roster.map((member) => member.name),
+          ],
+        }),
+      )
       await team.initialize(false)
       return team
     } catch (error) {
@@ -138,7 +153,20 @@ export class LocalTeamManager {
       const current = await claim.read()
       if (current.leadSessionId !== input.leadSessionId)
         throw new Error('Team lead session mismatch')
-      team = new LocalTeam(this.options, this.workspace, claim)
+      team = new LocalTeam(
+        this.options,
+        this.workspace,
+        claim,
+        new TeamMailboxService({
+          nativeRoot: (this.options as LocalTeamManagerOptions).nativeRoot,
+          projectIdentity: this.store.projectIdentity,
+          teamId: current.teamId,
+          participants: [
+            'lead',
+            ...current.roster.map((member) => member.name),
+          ],
+        }),
+      )
       await team.initialize(true)
       return team
     } catch (error) {
@@ -175,7 +203,12 @@ export class LocalTeam {
     private readonly options: LocalTeamManagerOptions,
     private readonly workspace: TeamWorkspaceProvider,
     private readonly claim: NativeTeamClaim,
+    private readonly mailbox: TeamMailboxService,
   ) {}
+
+  mailboxEndpoint(participant: string): TeamMailboxEndpoint {
+    return this.mailbox.endpoint(participant)
+  }
 
   async initialize(resume: boolean): Promise<void> {
     try {
@@ -474,6 +507,7 @@ export class LocalTeam {
           }),
           permissions: this.options.permissions,
           signal: controller.signal,
+          mailbox: this.mailbox.endpoint(member.name),
         })
         entry.runtimeSettled = true
       } catch {

@@ -253,6 +253,7 @@ import type {
   ClaudeMcpToolInspection,
 } from '../mcp/claude-mcp-tools.js'
 import type { TeamLeadOperations } from './team-lead-operations.js'
+import { DurableFollowUpTracker } from './durable-follow-up.js'
 import { TeamLeadToolRegistry } from '../tools/team-lead-tools.js'
 
 export interface ClaudeSessionServiceOptions {
@@ -5037,6 +5038,7 @@ export class ClaudeSessionService {
           messages: readonly ModelMessage[]
           tools: readonly ModelToolDefinition[]
         }) => void = () => undefined
+        const durableFollowUps = new DurableFollowUpTracker()
         const observer = {
           ...(nativeLease
             ? {
@@ -5301,6 +5303,7 @@ export class ClaudeSessionService {
                 ),
               )
             }
+            await durableFollowUps.followUpUserMessagesCompleted(messages)
           },
         }
         let turnCompleted = false
@@ -6380,10 +6383,17 @@ export class ClaudeSessionService {
             subagentExecutor ||
             taskTools ||
             this.scheduledPrompts ||
-            this.workflowManager
+            this.workflowManager ||
+            this.leadOperations
               ? {
                   onStop: async (text: string) => {
                     const messages: string[] = []
+                    const teamInbox =
+                      await this.leadOperations?.projectInbox(sessionId)
+                    if (teamInbox) {
+                      durableFollowUps.register(teamInbox)
+                      messages.push(...teamInbox.messages)
+                    }
                     const outcome = await this.options.hooks?.run(
                       {
                         ...hookSession,

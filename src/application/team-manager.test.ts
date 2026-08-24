@@ -7,7 +7,12 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PermissionResolver, ToolRegistry } from '../core/runtime.js'
 import { parseTeamSnapshot, type TeamMember } from '../core/team-ownership.js'
 import type { NativeTeamClaim } from '../persistence/native-team-store.js'
-import { LocalTeam, LocalTeamManager } from './team-manager.js'
+import {
+  LocalTeam,
+  LocalTeamManager,
+  type TeamAgentRuntime,
+} from './team-manager.js'
+import { TeamMailboxService } from './team-mailbox.js'
 
 const member: TeamMember = {
   name: 'worker',
@@ -22,8 +27,66 @@ const baseTools: ToolRegistry = {
 const permissions: PermissionResolver = {
   resolve: () => ({ behavior: 'allow' }),
 }
+function mailbox(cwd: string, teamId: string, projectIdentity = cwd) {
+  return new TeamMailboxService({
+    nativeRoot: cwd,
+    projectIdentity,
+    teamId,
+    participants: ['lead', 'worker'],
+  })
+}
 
 describe('LocalTeamManager', () => {
+  it('passes the assigned scoped mailbox endpoint to every launched runtime', async () => {
+    const nativeRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-team-mailbox-runtime-'),
+    )
+    const cwd = process.cwd()
+    let received: string | undefined
+    const runtime: TeamAgentRuntime = {
+      run: async ({ mailbox: endpoint }) => {
+        received = endpoint.participant
+        return 'completed'
+      },
+    }
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        runtime,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+      })
+      const team = await manager.create({
+        teamId: 'team-mailbox-runtime',
+        name: 'Mailbox Runtime',
+        leadSessionId: 'lead-mailbox-runtime',
+        roster: [member],
+        tasks: [
+          {
+            id: 'mailbox-task',
+            description: 'run',
+            assignee: member.name,
+            blockedBy: [],
+            claims: {
+              files: [],
+              publicContracts: [],
+              generatedArtifacts: [],
+              migrations: [],
+              mergeTargets: [],
+            },
+          },
+        ],
+      })
+      await team.waitForIdle()
+      expect(received).toBe('worker')
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
   it('detaches once without mutation and rejects concurrent mutations', async () => {
     const cwd = process.cwd()
     const current = parseTeamSnapshot({
@@ -63,6 +126,7 @@ describe('LocalTeamManager', () => {
         save,
         release,
       },
+      mailbox(cwd, current.teamId),
     )
     await team.initialize(false)
 
@@ -123,6 +187,7 @@ describe('LocalTeamManager', () => {
         save: async () => current,
         release,
       },
+      mailbox(cwd, current.teamId),
     )
     await team.initialize(false)
 
@@ -376,6 +441,7 @@ describe('LocalTeamManager', () => {
       },
       { acquire: async () => ({ cwd, branch: null }) },
       claim,
+      mailbox(cwd, current.teamId),
     )
 
     await team.initialize(false)

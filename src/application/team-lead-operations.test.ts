@@ -3,6 +3,8 @@ import {
   TeamLeadOperations,
   type TeamCreateRequest,
 } from './team-lead-operations.js'
+import type { TeamMailboxEndpoint } from './team-mailbox.js'
+import type { DurableTeamMailboxBatch } from './team-mailbox.js'
 
 const snapshot = (teamId: string) => ({ teamId }) as never
 const input: TeamCreateRequest = {
@@ -13,12 +15,21 @@ const input: TeamCreateRequest = {
 }
 
 function fixture() {
+  const endpointMock = {
+    participant: 'lead',
+    send: vi.fn(async () => ({ teamId: 'team-a' }) as never),
+    project: vi.fn<() => Promise<DurableTeamMailboxBatch | null>>(
+      async () => null,
+    ),
+  }
+  const endpoint = endpointMock as unknown as TeamMailboxEndpoint
   const team = {
     snapshot: vi.fn(async () => snapshot('team-a')),
     waitForIdle: vi.fn(async () => snapshot('team-a')),
     accept: vi.fn(async () => snapshot('team-a')),
     stop: vi.fn(async () => snapshot('team-a')),
     detach: vi.fn(async () => snapshot('team-a')),
+    mailboxEndpoint: vi.fn(() => endpoint),
   }
   const manager = {
     create: vi.fn(async () => team),
@@ -28,6 +39,7 @@ function fixture() {
   const capability = { open: vi.fn(async () => manager) }
   return {
     team,
+    endpoint: endpointMock,
     manager,
     capability,
     operations: new TeamLeadOperations(capability as never),
@@ -35,6 +47,45 @@ function fixture() {
 }
 
 describe('TeamLeadOperations', () => {
+  it('routes owned Lead sends and aggregates inboxes in stable order', async () => {
+    const f = fixture()
+    const second = fixture()
+    const firstBatch = {
+      id: 'a',
+      messages: ['a'],
+      acknowledge: vi.fn(async () => undefined),
+    }
+    const secondBatch = {
+      id: 'b',
+      messages: ['b'],
+      acknowledge: vi.fn(async () => undefined),
+    }
+    f.endpoint.project.mockResolvedValue(firstBatch)
+    second.endpoint.project.mockResolvedValue(secondBatch)
+    f.manager.create.mockResolvedValueOnce(f.team)
+    f.manager.create.mockResolvedValueOnce(second.team)
+    await f.operations.create(input, 'lead-a')
+    await f.operations.create({ ...input, teamId: 'team-b' }, 'lead-a')
+    await f.operations.send(
+      {
+        teamId: 'team-a',
+        to: 'worker',
+        payload: { kind: 'text', text: 'hello' },
+      },
+      'lead-a',
+      'call-1',
+    )
+    expect(f.endpoint.send).toHaveBeenCalledOnce()
+    const inbox = await f.operations.projectInbox('lead-a', {
+      maxMessages: 2,
+      maxBytes: 100,
+    })
+    expect(inbox?.messages).toEqual(['a', 'b'])
+    await inbox?.acknowledge()
+    expect(firstBatch.acknowledge).toHaveBeenCalledOnce()
+    expect(secondBatch.acknowledge).toHaveBeenCalledOnce()
+  })
+
   it('owns handles, enforces lead identity, and removes stopped teams', async () => {
     const f = fixture()
     await f.operations.create(input, 'lead-a')

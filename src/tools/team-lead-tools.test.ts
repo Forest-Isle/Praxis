@@ -17,7 +17,14 @@ const base: ToolRegistry = {
 }
 const snapshot = { teamId: 'team-a' }
 function registry(
-  enabled = ['TeamCreate', 'TeamResume', 'TeamList', 'TeamAccept', 'TeamStop'],
+  enabled = [
+    'TeamCreate',
+    'TeamResume',
+    'TeamList',
+    'TeamAccept',
+    'TeamStop',
+    'TeamSend',
+  ],
 ) {
   const operations = {
     create: vi.fn(async () => snapshot),
@@ -25,6 +32,7 @@ function registry(
     list: vi.fn(async () => [snapshot]),
     accept: vi.fn(async () => snapshot),
     stop: vi.fn(async () => snapshot),
+    send: vi.fn(async () => ({ teamId: 'team-a', sequence: 1 })),
   }
   return {
     registry: new TeamLeadToolRegistry(
@@ -38,6 +46,42 @@ function registry(
 }
 
 describe('TeamLeadToolRegistry', () => {
+  it('validates and routes the gated typed TeamSend tool', async () => {
+    const f = registry(['TeamSend'])
+    await f.registry.execute(
+      {
+        id: 'send-call',
+        name: 'TeamSend',
+        input: {
+          teamId: 'team-a',
+          to: 'worker',
+          payload: { kind: 'text', text: 'hello' },
+        },
+      },
+      { cwd: '.' },
+    )
+    expect(f.operations.send).toHaveBeenCalledWith(
+      expect.objectContaining({ teamId: 'team-a', to: 'worker' }),
+      'lead-a',
+      'send-call',
+    )
+    await expect(
+      f.registry.execute(
+        {
+          id: 'bad',
+          name: 'TeamSend',
+          input: { teamId: 'team-a', to: 'worker', payload: { kind: 'wat' } },
+        },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow()
+    expect(
+      registry(['TeamList'])
+        .registry.definitions()
+        .map(({ name }) => name),
+    ).not.toContain('TeamSend')
+  })
+
   it('advertises the selected five tools with closed schemas and delegates base tools', async () => {
     const f = registry(['TeamList'])
     expect(f.registry.definitions().map((d) => d.name)).toEqual([

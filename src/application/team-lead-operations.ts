@@ -1,12 +1,28 @@
+import { Buffer } from 'node:buffer'
+
+import type { TeamMailboxMessage } from '../core/team-mailbox.js'
 import type { TeamSnapshot } from '../core/team-ownership.js'
 import type { LocalTeam, LocalTeamManager } from './team-manager.js'
 import type { LocalTeamCapability } from './team-capability.js'
+import type {
+  DurableTeamMailboxBatch,
+  TeamMailboxProjectBounds,
+  TeamMailboxSendInput,
+} from './team-mailbox.js'
+import { teamMailboxMessageId } from './team-mailbox.js'
 
 export interface TeamCreateRequest {
   readonly teamId: string
   readonly name: string
   readonly roster: Parameters<LocalTeamManager['create']>[0]['roster']
   readonly tasks: Parameters<LocalTeamManager['create']>[0]['tasks']
+}
+
+export interface TeamLeadSendInput extends Omit<
+  TeamMailboxSendInput,
+  'messageId'
+> {
+  readonly teamId: string
 }
 
 interface OwnedTeam {
@@ -60,6 +76,65 @@ export class TeamLeadOperations {
     return this.forLead(input.teamId, leadSessionId, (team) =>
       team.accept(input.taskId, input.generation, input.decision),
     )
+  }
+
+  async send(
+    input: TeamLeadSendInput,
+    leadSessionId: string,
+    operationId: string,
+  ): Promise<TeamMailboxMessage> {
+    const owned = this.require(input.teamId, leadSessionId)
+    return owned.team.mailboxEndpoint('lead').send({
+      messageId: teamMailboxMessageId(input.teamId, 'lead', operationId),
+      to: input.to,
+      payload: input.payload,
+      ...(input.createdAt === undefined ? {} : { createdAt: input.createdAt }),
+    })
+  }
+
+  async projectInbox(
+    leadSessionId: string,
+    bounds: TeamMailboxProjectBounds = {},
+  ): Promise<DurableTeamMailboxBatch | null> {
+    const maxBytes = bounds.maxBytes ?? 64 * 1024
+    const maxMessages = bounds.maxMessages ?? 32
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
+      throw new Error('Invalid Team inbox maxBytes')
+    if (!Number.isSafeInteger(maxMessages) || maxMessages <= 0)
+      throw new Error('Invalid Team inbox maxMessages')
+    const batches: DurableTeamMailboxBatch[] = []
+    let bytes = 0
+    let messageCount = 0
+    for (const owned of [...this.owned.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, value]) => value)) {
+      if (owned.leadSessionId !== leadSessionId) continue
+      const remainingMessages = maxMessages - messageCount
+      if (remainingMessages <= 0) break
+      const batch = await owned.team.mailboxEndpoint('lead').project({
+        maxBytes: maxBytes - bytes,
+        maxMessages: remainingMessages,
+      })
+      if (!batch) continue
+      batches.push(batch)
+      bytes += batch.messages.reduce(
+        (total, message) => total + Buffer.byteLength(message, 'utf8'),
+        0,
+      )
+      messageCount += batch.messages.length
+      if (bytes >= maxBytes || messageCount >= maxMessages) break
+    }
+    if (batches.length === 0) return null
+    let acknowledged = false
+    return {
+      id: `lead:${leadSessionId}:${batches.map((batch) => batch.id).join('|')}`,
+      messages: Object.freeze(batches.flatMap((batch) => batch.messages)),
+      acknowledge: async () => {
+        if (acknowledged) return
+        for (const batch of batches) await batch.acknowledge()
+        acknowledged = true
+      },
+    }
   }
 
   async stop(

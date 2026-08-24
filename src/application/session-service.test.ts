@@ -215,6 +215,81 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('appends Team inbox follow-ups as ordinary user text before acknowledging', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-team-inbox-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let delivered = false
+    let acknowledged = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['first', 'second']),
+      teamLeadOperations: {
+        async projectInbox() {
+          if (delivered) return null
+          delivered = true
+          return {
+            id: 'team-inbox',
+            messages: [
+              '<team-mailbox-message>worker message</team-mailbox-message>',
+            ],
+            acknowledge: async () => {
+              acknowledged += 1
+            },
+          }
+        },
+      } as never,
+    })
+    const sessionId = '92929292-3333-4333-8333-929292929292'
+    await service.run('prompt', undefined, sessionId)
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const source = await readFile(paths.sessionFile, 'utf8')
+    expect(source).toContain('worker message')
+    expect(source).not.toContain('teamMailbox')
+    expect(acknowledged).toBe(1)
+  })
+
+  it('does not acknowledge a Team inbox when transcript follow-up append fails', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-session-team-inbox-failure-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-4444-4444-8444-929292929292'
+    let acknowledged = 0
+    let projected = false
+    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['first', 'second']),
+      teamLeadOperations: {
+        async projectInbox() {
+          if (projected) return null
+          projected = true
+          await appendFile(paths.sessionFile, '{"corrupt":true}\n')
+          return {
+            id: 'team-inbox-failure',
+            messages: [
+              '<team-mailbox-message>unpersisted worker message</team-mailbox-message>',
+            ],
+            acknowledge: async () => {
+              acknowledged += 1
+            },
+          }
+        },
+      } as never,
+    })
+
+    await expect(service.run('prompt', undefined, sessionId)).rejects.toThrow()
+    expect(acknowledged).toBe(0)
+  })
+
   it('validates experimental native activation before setup', () => {
     const base = {
       configRoot: '/tmp/praxis-native-activation-config',

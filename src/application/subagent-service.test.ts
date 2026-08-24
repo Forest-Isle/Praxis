@@ -183,6 +183,93 @@ function entries(source: string): Record<string, unknown>[] {
 }
 
 describe('foreground Claude Agent execution', () => {
+  it('installs the no-hook stop boundary for durable follow-ups', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-durable-stop-test-'))
+    roots.push(root)
+    let projected = 0
+    let acknowledged = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'claude',
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'WORKER_DONE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      durableFollowUpSource: async () => {
+        projected += 1
+        if (projected > 1) return null
+        return {
+          id: 'durable-stop-batch',
+          messages: ['<team-mailbox-message>MAILBOX</team-mailbox-message>'],
+          acknowledge: async () => {
+            acknowledged += 1
+          },
+        }
+      },
+    })
+
+    await executor.runWorkflowAgent({
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      runId: 'durable-stop-run',
+      agentId: 'a1234567890abcdef',
+      transcriptDirectory: join(root, 'workflow'),
+      prompt: 'WORKER_PROMPT',
+    })
+
+    expect(projected).toBeGreaterThan(0)
+    expect(acknowledged).toBe(1)
+  })
+
+  it('awaits an asynchronously owned SendMessage result', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-owned-send-await-'))
+    roots.push(root)
+    let completed = false
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'claude',
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      sendOwnedBackgroundAgent: async () => {
+        await Promise.resolve()
+        completed = true
+        return 'owned result'
+      },
+    })
+    const registry = executor.registry(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const result = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'owned-send',
+          name: 'SendMessage',
+          input: { to: 'worker', message: 'hello' },
+        },
+        { cwd: join(root, 'project') },
+      ),
+      { cwd: join(root, 'project') },
+    )
+    expect(completed).toBe(true)
+    expect(result.content).toBe('owned result')
+  })
+
   it('assembles one canonical structured-output section for workflow subagents', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-context-test-'))
     roots.push(root)
