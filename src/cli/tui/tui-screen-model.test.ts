@@ -10,10 +10,13 @@ import {
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' }
-  readonly priority: {
-    readonly kind: 'priority'
-    readonly surface?: unknown
-  }
+  readonly priority:
+    | {
+        readonly kind: 'priority'
+        readonly surface?: unknown
+      }
+    | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
+    | { readonly kind: 'question'; readonly questionIndex: number }
   readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
   readonly overlay: { readonly kind: 'overlay'; readonly id: number }
 }
@@ -143,6 +146,26 @@ describe('projectTuiScreen', () => {
       kind: 'secondary',
       surface: legacy,
     })
+  })
+
+  it('preserves decision payload identity through generic precedence', () => {
+    const decisionPlan = { kind: 'plan-approval' as const, selectedIndex: 2 }
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({
+        surfaces: {
+          priority: decisionPlan,
+          overlays: [],
+        },
+      }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground).toEqual({
+      kind: 'priority',
+      surface: decisionPlan,
+    })
+    if (foreground.kind === 'priority') {
+      expect(foreground.surface).toBe(decisionPlan)
+    }
   })
 
   it('projects fresh, started, resumed, and screen-reader intros', () => {

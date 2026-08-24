@@ -70,7 +70,10 @@ The Ink interactive CLI is an event adapter under `src/cli`: it renders
 existing `approveTool` callback, and starts or resumes application sessions.
 Stateless presentation components under `src/cli/tui` provide the responsive
 welcome card, Markdown/diff transcript, tool and thinking hierarchy, bounded
-session picker, composer/status area, and decision dialogs. A provider-neutral
+session picker, composer/status area, and decision dialogs. `InteractiveApp`
+retains raw keyboard/lifecycle state while pure Help, Permissions, and
+Decisions-domain projectors produce semantic models that `projectTuiScreen`
+carries opaquely to visual and screen-reader adapters. A provider-neutral
 streaming frame buffer (`src/cli/tui/streaming-frame-buffer.ts`) sits at the
 presentation boundary: it coalesces high-frequency text/thinking deltas into
 bounded frames published at a fixed cadence, flushes explicitly at lifecycle

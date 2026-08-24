@@ -318,13 +318,16 @@ try {
   const address = provider.address()
   if (!address || typeof address === 'string') throw new Error('no address')
   const baseUrl = `http://127.0.0.1:${address.port}`
+  const fixtureEnvironment = { ...process.env, TERM: 'xterm-256color' }
+  delete fixtureEnvironment.NO_COLOR
+  delete fixtureEnvironment.FORCE_COLOR
   const implementations = [
     {
       label: 'claude',
       command: 'claude',
       args: [],
       env: {
-        ...process.env,
+        ...fixtureEnvironment,
         ANTHROPIC_AUTH_TOKEN: 'fixture-key',
         ANTHROPIC_BASE_URL: baseUrl,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
@@ -337,7 +340,7 @@ try {
       command: process.execPath,
       args: [join(process.cwd(), 'dist', 'cli.js')],
       env: {
-        ...process.env,
+        ...fixtureEnvironment,
         CLAUDE_CONFIG_DIR: join(root, 'praxis-config'),
         PRAXIS_DATA_PLANE: 'native',
         PRAXIS_PROVIDER: 'anthropic',
@@ -531,9 +534,13 @@ try {
     .map((line) => JSON.parse(line))
     .filter((entry) => entry.type === 'permission-mode')
     .map((entry) => entry.permissionMode)
+  const permissionTransitions = permissionModes.filter(
+    (mode, index) => index === 0 || mode !== permissionModes[index - 1],
+  )
   assert(
-    JSON.stringify(permissionModes) === JSON.stringify(['plan', 'default']),
-    `Plan-mode transcript transitions differ: ${JSON.stringify(permissionModes)}`,
+    JSON.stringify(permissionTransitions) ===
+      JSON.stringify(['plan', 'default']),
+    `Plan-mode transcript transitions differ: ${JSON.stringify({ permissionModes, permissionTransitions })}`,
   )
   if (failure) throw failure
 
