@@ -100,11 +100,14 @@ import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
 import {
   createTuiHistoryChange,
-  projectTuiView,
   resolveTuiRenderer,
   type TuiHistoryChange,
-  type TuiViewModel,
 } from './tui/tui-view-model.js'
+import {
+  projectTuiScreen,
+  type TuiScreenInput,
+  type TuiScreenModel,
+} from './tui/tui-screen-model.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -1490,64 +1493,6 @@ export function InteractiveApp({
     transcriptScrollOffsetRef.current = offset
     setTranscriptScrollOffsetState(offset)
   }
-  // The pure TUI view model classifies the session identity (fresh/resumed/
-  // started) and projects the rendered transcript. Startup diagnostics are
-  // useful before the first prompt, but they are not conversation history and
-  // must not suppress the new-session welcome panel. Only real user/assistant
-  // transcript entries start a conversation; every other kind (thinking,
-  // context, tool, shell, notices, results, and so on) is operational
-  // bookkeeping that must not hide the fresh-session welcome. The original
-  // loaded transcript decides whether the session was resumed, separately from
-  // the live history that grows while the session runs. A session is resumed
-  // only when it was opened through `resume` and the original transcript
-  // already contained real conversation content. Fullscreen projects only the
-  // newest transcript tail that fits the fixed viewport, leaving the
-  // composer/status chrome intact and keeping the active stream visible.
-  // Classic and screen-reader modes always render the full history exactly as
-  // before.
-  const previousTuiViewRef = useRef<TuiViewModel | undefined>(undefined)
-  const tuiView = useMemo(
-    () =>
-      projectTuiView(
-        {
-          initialHistory,
-          history,
-          resume: resume !== undefined,
-          fixedViewport,
-          screenReader: presentation.screenReader,
-          rows,
-          width,
-          scrollOffset: transcriptScrollOffset,
-          detailedTranscript: thinkingExpanded || runtimeSettings.verbose,
-          historyChange: historyState.change,
-        },
-        previousTuiViewRef.current,
-      ),
-    [
-      initialHistory,
-      history,
-      resume,
-      fixedViewport,
-      presentation.screenReader,
-      rows,
-      width,
-      transcriptScrollOffset,
-      thinkingExpanded,
-      runtimeSettings.verbose,
-      historyState.change,
-    ],
-  )
-  const {
-    transcriptEntries,
-    transcriptPageRows,
-    maxTranscriptScrollOffset,
-    resumed,
-    freshSession,
-    hasConversationHistory,
-  } = tuiView
-  useEffect(() => {
-    previousTuiViewRef.current = tuiView
-  }, [tuiView])
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -1746,6 +1691,131 @@ export function InteractiveApp({
     permissionMode: runtimePreferences.permissionMode,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
+  type InteractiveTuiScreenSurfaces = {
+    readonly sessionPicker: { readonly kind: 'session-picker' }
+    readonly priority:
+      | { readonly kind: 'editor-wait' }
+      | { readonly kind: 'permission' }
+      | { readonly kind: 'plan-approval' }
+      | { readonly kind: 'question' }
+      | { readonly kind: 'elicitation' }
+    readonly overlay:
+      | { readonly kind: 'command-palette' }
+      | { readonly kind: 'file-picker' }
+      | { readonly kind: 'exit-confirmation' }
+    readonly secondary: InteractiveMenu
+  }
+  const screenSurfaces = useMemo<
+    TuiScreenInput<InteractiveTuiScreenSurfaces>['surfaces']
+  >(
+    () => ({
+      ...(selectingSession
+        ? { sessionPicker: { kind: 'session-picker' } }
+        : {}),
+      ...(externalEditorRequest !== null ||
+      keybindingsEditing ||
+      memoryEditorRequest !== null
+        ? { priority: { kind: 'editor-wait' } }
+        : permission !== null
+          ? { priority: { kind: 'permission' } }
+          : planApproval !== null
+            ? { priority: { kind: 'plan-approval' } }
+            : question !== null
+              ? { priority: { kind: 'question' } }
+              : elicitation !== null
+                ? { priority: { kind: 'elicitation' } }
+                : {}),
+      ...(menu === null ? {} : { secondary: menu }),
+      overlays: [
+        ...(commandPaletteVisible
+          ? [{ kind: 'command-palette' as const }]
+          : []),
+        ...(filePickerVisible ? [{ kind: 'file-picker' as const }] : []),
+        ...(exitConfirmation ? [{ kind: 'exit-confirmation' as const }] : []),
+      ],
+    }),
+    [
+      selectingSession,
+      externalEditorRequest,
+      keybindingsEditing,
+      memoryEditorRequest,
+      permission,
+      planApproval,
+      question,
+      elicitation,
+      menu,
+      commandPaletteVisible,
+      filePickerVisible,
+      exitConfirmation,
+    ],
+  )
+  const previousTuiScreenRef = useRef<
+    TuiScreenModel<InteractiveTuiScreenSurfaces> | undefined
+  >(undefined)
+  const screen = useMemo(
+    () =>
+      projectTuiScreen<InteractiveTuiScreenSurfaces>(
+        {
+          presentation,
+          conversation: {
+            initialHistory,
+            history,
+            resumeRequested: resume !== undefined,
+            scrollOffset: transcriptScrollOffset,
+            detailed: thinkingExpanded || runtimeSettings.verbose,
+            activeText,
+            activeThinking,
+            historyChange: historyState.change,
+          },
+          sessionId,
+          surfaces: screenSurfaces,
+        },
+        previousTuiScreenRef.current,
+      ),
+    [
+      presentation,
+      initialHistory,
+      history,
+      resume,
+      transcriptScrollOffset,
+      thinkingExpanded,
+      runtimeSettings.verbose,
+      activeText,
+      activeThinking,
+      historyState.change,
+      sessionId,
+      screenSurfaces,
+    ],
+  )
+  useEffect(() => {
+    previousTuiScreenRef.current = screen
+  }, [screen])
+  const conversationScreen =
+    screen.body.kind === 'conversation' ? screen.body : undefined
+  const selectedPriority =
+    conversationScreen?.foreground.kind === 'priority'
+      ? conversationScreen.foreground.surface
+      : undefined
+  const selectedMenu =
+    conversationScreen?.foreground.kind === 'secondary'
+      ? (conversationScreen.foreground.surface ?? null)
+      : null
+  const selectedOverlays =
+    conversationScreen?.foreground.kind === 'compose'
+      ? conversationScreen.foreground.overlays
+      : []
+  const selectedCommandPalette = selectedOverlays.find(
+    (overlay) => overlay.kind === 'command-palette',
+  )
+  const selectedFilePicker = selectedOverlays.find(
+    (overlay) => overlay.kind === 'file-picker',
+  )
+  const selectedExitConfirmation = selectedOverlays.find(
+    (overlay) => overlay.kind === 'exit-confirmation',
+  )
+  const transcriptPageRows = conversationScreen?.transcript.pageRows ?? 2
+  const maxTranscriptScrollOffset =
+    conversationScreen?.transcript.maxScrollOffset ?? 0
   const statusAuthSource = process.env.PRAXIS_API_KEY
     ? 'PRAXIS_API_KEY'
     : process.env.ANTHROPIC_API_KEY
@@ -7553,7 +7623,7 @@ export function InteractiveApp({
           ? {}
           : { height: rows, overflowY: 'hidden' as const })}
       >
-        {selectingSession ? (
+        {screen.body.kind === 'session-picker' ? (
           <SessionPicker
             sessions={filteredPickerChoices}
             selectedIndex={selectedIndex}
@@ -7562,7 +7632,7 @@ export function InteractiveApp({
           />
         ) : (
           <>
-            {!axScreenReader && freshSession ? (
+            {screen.body.intro === 'welcome' ? (
               <WelcomePanel
                 display={runtimeDisplay}
                 width={width}
@@ -7570,10 +7640,10 @@ export function InteractiveApp({
                 dataPlane={dataPlane}
               />
             ) : null}
-            {sessionId ? (
-              <Text dimColor>Session {sessionId.slice(0, 8)}</Text>
+            {screen.body.sessionLabel ? (
+              <Text dimColor>Session {screen.body.sessionLabel}</Text>
             ) : null}
-            {!axScreenReader && !resumed && hasConversationHistory ? (
+            {screen.body.intro === 'identity' ? (
               <SessionIdentity display={runtimeDisplay} width={width} />
             ) : null}
             <Box
@@ -7586,20 +7656,20 @@ export function InteractiveApp({
                 : {})}
             >
               <Transcript
-                entries={transcriptEntries}
-                activeText={activeText}
-                activeThinking={activeThinking}
-                activeStreamVisible={transcriptScrollOffset === 0}
+                entries={screen.body.transcript.entries}
+                activeText={screen.body.transcript.active.text}
+                activeThinking={screen.body.transcript.active.thinking}
+                activeStreamVisible={screen.body.transcript.active.visible}
                 thinkingExpanded={thinkingExpanded}
-                detailedTranscript={thinkingExpanded || runtimeSettings.verbose}
+                detailedTranscript={
+                  screen.body.transcript.readingMode !== 'normal'
+                }
                 screenReader={axScreenReader}
               />
             </Box>
-            {externalEditorRequest !== null ||
-            keybindingsEditing ||
-            memoryEditorRequest !== null ? (
+            {selectedPriority?.kind === 'editor-wait' ? (
               <ExternalEditorWait screenReader={axScreenReader} />
-            ) : permission ? (
+            ) : selectedPriority?.kind === 'permission' && permission ? (
               permission.kind === 'tool' && toolPermissionModel ? (
                 <ToolPermissionDialog
                   model={toolPermissionModel}
@@ -7648,7 +7718,7 @@ export function InteractiveApp({
                   </Text>
                 </DialogFrame>
               )
-            ) : planApproval ? (
+            ) : selectedPriority?.kind === 'plan-approval' && planApproval ? (
               <DialogFrame title="Ready to code?" screenReader={axScreenReader}>
                 <Text>Here is Praxis&apos;s plan:</Text>
                 {planApproval.request.plan ? (
@@ -7705,7 +7775,7 @@ export function InteractiveApp({
                     : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
                 </Text>
               </DialogFrame>
-            ) : question ? (
+            ) : selectedPriority?.kind === 'question' && question ? (
               <DialogFrame
                 title={`${question.questions[question.index]?.header}: ${question.questions[question.index]?.question}`}
                 screenReader={axScreenReader}
@@ -7735,7 +7805,7 @@ export function InteractiveApp({
                     : 'Enter one option number or custom text · Esc cancels'}
                 </Text>
               </DialogFrame>
-            ) : elicitation ? (
+            ) : selectedPriority?.kind === 'elicitation' && elicitation ? (
               elicitation.request.mode === 'url' ? (
                 <McpElicitationUrl
                   serverName={elicitation.request.serverName}
@@ -8010,7 +8080,7 @@ export function InteractiveApp({
                 </DecisionOption>
                 <Text dimColor>Enter to confirm · Esc to cancel</Text>
               </Box>
-            ) : menu ? (
+            ) : selectedMenu !== null && menu !== null ? (
               menu.kind === 'help' ? (
                 <HelpMenu
                   tabIndex={menu.tabIndex}
@@ -8278,7 +8348,7 @@ export function InteractiveApp({
               ) : null
             ) : (
               <>
-                {commandPaletteVisible ? (
+                {selectedCommandPalette !== undefined ? (
                   <CommandPalette
                     commands={matchingSlashCommands}
                     selectedIndex={selectedSlashCommandIndex}
@@ -8286,7 +8356,7 @@ export function InteractiveApp({
                     screenReader={axScreenReader}
                   />
                 ) : null}
-                {filePickerVisible ? (
+                {selectedFilePicker !== undefined ? (
                   <MentionPicker
                     entries={matchingMentionEntries}
                     selectedIndex={selectedFileIndex}
@@ -8294,7 +8364,9 @@ export function InteractiveApp({
                     screenReader={axScreenReader}
                   />
                 ) : null}
-                {exitConfirmation ? <ExitWarning /> : null}
+                {selectedExitConfirmation !== undefined ? (
+                  <ExitWarning />
+                ) : null}
                 {fixedViewport ? <Box flexGrow={1} /> : null}
                 <Composer
                   input={shellMode ? input.slice(1) : input}

@@ -321,6 +321,36 @@ describe('InteractiveApp', () => {
     resumed.unmount()
   })
 
+  it('lets the projected session-picker body replace transcript and composer', () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[
+          {
+            sessionId: 'session-1',
+            lastPrompt: 'pick this session',
+            updatedAt: '2026-08-24T00:00:00.000Z',
+            status: 'ready',
+            issue: null,
+          },
+        ]}
+        initialHistory={[{ kind: 'user', text: 'hidden transcript marker' }]}
+        resume={{ requireSession: true }}
+      />,
+    )
+
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('pick this session')
+    expect(frame).not.toContain('hidden transcript marker')
+    expect(frame).not.toContain('Welcome to Praxis')
+    expect(frame).not.toContain('⏵⏵')
+    app.unmount()
+  })
+
   it('keeps screen-reader transcripts semantic and full under a fullscreen configuration', () => {
     const app = render(
       <InteractiveApp
