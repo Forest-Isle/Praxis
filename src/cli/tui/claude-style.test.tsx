@@ -29,6 +29,7 @@ import {
   activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
+import { projectTuiCommandPalette } from './command-palette-model.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
 import { projectTuiSessionPicker } from './session-picker-model.js'
 import {
@@ -1903,24 +1904,24 @@ describe('Claude-style TUI components', () => {
   })
 
   it('renders a bounded slash command palette with descriptions', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        {
+          name: 'review',
+          description: 'Review the current change.',
+          source: 'command',
+        },
+        {
+          name: 'check',
+          description: 'Check the workspace.',
+          source: 'skill',
+        },
+      ],
+      query: '',
+      selectedIndex: 1,
+    })
     const app = render(
-      <CommandPalette
-        commands={[
-          {
-            name: 'review',
-            description: 'Review the current change.',
-            source: 'command',
-          },
-          {
-            name: 'check',
-            description: 'Check the workspace.',
-            source: 'skill',
-          },
-        ]}
-        selectedIndex={1}
-        width={70}
-        screenReader={false}
-      />,
+      <CommandPalette model={model} width={70} screenReader={false} />,
     )
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('/review')
@@ -1930,25 +1931,25 @@ describe('Claude-style TUI components', () => {
   })
 
   it('keeps the bounded slash command palette on one row per command with long descriptions', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        {
+          name: 'caveman-compress',
+          description:
+            'Compress the conversation with heavy-handed simplification, dropping nuance and detail aggressively to fit the context window',
+          source: 'builtin',
+        },
+        {
+          name: 'review',
+          description: 'Review the current change.',
+          source: 'command',
+        },
+      ],
+      query: '',
+      selectedIndex: 0,
+    })
     const app = render(
-      <CommandPalette
-        commands={[
-          {
-            name: 'caveman-compress',
-            description:
-              'Compress the conversation with heavy-handed simplification, dropping nuance and detail aggressively to fit the context window',
-            source: 'builtin',
-          },
-          {
-            name: 'review',
-            description: 'Review the current change.',
-            source: 'command',
-          },
-        ]}
-        selectedIndex={0}
-        width={80}
-        screenReader={false}
-      />,
+      <CommandPalette model={model} width={80} screenReader={false} />,
     )
     const frame = app.lastFrame() ?? ''
     const lines = frame.split('\n')
@@ -1961,6 +1962,22 @@ describe('Claude-style TUI components', () => {
     // below the first command row instead of after a wrapped description.
     expect(lines.every((line) => line.length <= 80)).toBe(true)
     expect(lines[firstCommandRow + 1]).toContain('/review')
+  })
+
+  it('exposes selected command and actions to screen readers', () => {
+    const model = projectTuiCommandPalette({
+      commands: [
+        { name: 'review', description: 'Review changes.', source: 'command' },
+      ],
+      query: '',
+      selectedIndex: 0,
+    })
+    const app = render(<CommandPalette model={model} width={70} screenReader />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Selected: /review: Review changes.')
+    expect(frame).toContain('Tab to complete')
+    expect(frame).toContain('Enter to run')
+    expect(frame).toContain('Esc to cancel')
   })
 
   it('renders a Claude-shaped file picker with an accessible selection', () => {

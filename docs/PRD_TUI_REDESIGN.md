@@ -142,6 +142,9 @@ around a minimal, low-noise reading model:
 The Session Picker now consumes a pure semantic model with stable choice
 identity across visual, screen-reader, and keyboard paths.
 
+The Command Palette now consumes a pure semantic model with stable command IDs
+across visual, screen-reader, and keyboard paths.
+
 The redesign is an expand-contract migration. Its retained transcript window,
 atomic presentation environment, root `TuiScreenModel`, semantic Help surface,
 Permissions-domain surface, and Decisions-domain surface now form one pure

@@ -9,6 +9,8 @@ import {
 } from './tui-screen-model.js'
 import { projectTuiSessionPicker } from './session-picker-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
+import { projectTuiCommandPalette } from './command-palette-model.js'
+import type { TuiCommandPaletteModel } from './command-palette-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -20,7 +22,8 @@ type Surfaces = TuiScreenSurfaceModels & {
     | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
     | { readonly kind: 'question'; readonly questionIndex: number }
   readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
-  readonly overlay: { readonly kind: 'overlay'; readonly id: number }
+  readonly overlay:
+    { readonly kind: 'overlay'; readonly id: number } | TuiCommandPaletteModel
 }
 
 const presentation = (
@@ -78,6 +81,24 @@ describe('projectTuiScreen', () => {
     expect(screen.body.kind).toBe('session-picker')
     if (screen.body.kind === 'session-picker') {
       expect(screen.body.surface).toBe(picker)
+    }
+  })
+
+  it('preserves the command-palette payload identity through compose overlays', () => {
+    const palette = projectTuiCommandPalette({
+      commands: [
+        { name: 'review', description: 'Review changes', source: 'command' },
+      ],
+      query: 'rev',
+      selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { overlays: [palette] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('compose')
+    if (foreground.kind === 'compose') {
+      expect(foreground.overlays[0]).toBe(palette)
     }
   })
 

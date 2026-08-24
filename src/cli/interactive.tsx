@@ -143,11 +143,15 @@ import type { AgentColorName } from '../compatibility/claude/agent-color.js'
 import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
 import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
-  filterTuiSlashCommands,
   mergeTuiSlashCommands,
   slashCommandQuery,
   type TuiSlashCommand,
 } from './tui/slash-commands.js'
+import {
+  projectTuiCommandPalette,
+  tuiCommandPaletteCommandId,
+  type TuiCommandPaletteModel,
+} from './tui/command-palette-model.js'
 import {
   runDoctor,
   type DoctorProgressListener,
@@ -1379,6 +1383,7 @@ export function InteractiveApp({
   const lastEscapeAtRef = useRef(0)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [commandSelection, setCommandSelection] = useState(0)
+  const commandSelectionRef = useRef(0)
   const [filePickerOpen, setFilePickerOpen] = useState(false)
   const [fileSelection, setFileSelection] = useState(0)
   const [fileEntries, setFileEntries] = useState<
@@ -1689,12 +1694,14 @@ export function InteractiveApp({
     ? fileReferenceAtCursor(input, inputCursor)
     : null
   const shellMode = input.startsWith('!')
-  const matchingSlashCommands = useMemo(
+  const commandPaletteModel = useMemo(
     () =>
-      commandQuery === null
-        ? []
-        : filterTuiSlashCommands(allSlashCommands, commandQuery),
-    [allSlashCommands, commandQuery],
+      projectTuiCommandPalette({
+        commands: allSlashCommands,
+        query: commandQuery ?? '',
+        selectedIndex: commandSelection,
+      }),
+    [allSlashCommands, commandQuery, commandSelection],
   )
   const commandArgumentHint = useMemo(() => {
     if (shellMode || !input.startsWith('/')) return undefined
@@ -1750,10 +1757,6 @@ export function InteractiveApp({
         item.kind === 'shell' ||
         item.kind === 'compact',
     )
-  const selectedSlashCommandIndex = Math.min(
-    commandSelection,
-    Math.max(0, matchingSlashCommands.length - 1),
-  )
   const runtimeDisplay: TuiDisplayMetadata = {
     ...display,
     cwd: runtimeCwd,
@@ -1965,7 +1968,7 @@ export function InteractiveApp({
       | TuiDecisionSurfaceModel
       | { readonly kind: 'elicitation' }
     readonly overlay:
-      | { readonly kind: 'command-palette' }
+      | TuiCommandPaletteModel
       | { readonly kind: 'file-picker' }
       | { readonly kind: 'exit-confirmation' }
     readonly secondary: InteractiveSecondarySurface
@@ -1997,9 +2000,7 @@ export function InteractiveApp({
         ? {}
         : { secondary: secondarySurface }),
       overlays: [
-        ...(commandPaletteVisible
-          ? [{ kind: 'command-palette' as const }]
-          : []),
+        ...(commandPaletteVisible ? [commandPaletteModel] : []),
         ...(filePickerVisible ? [{ kind: 'file-picker' as const }] : []),
         ...(exitConfirmation ? [{ kind: 'exit-confirmation' as const }] : []),
       ],
@@ -2019,6 +2020,7 @@ export function InteractiveApp({
       elicitation,
       secondarySurface,
       commandPaletteVisible,
+      commandPaletteModel,
       filePickerVisible,
       exitConfirmation,
     ],
@@ -2393,6 +2395,7 @@ export function InteractiveApp({
     setShortcutsVisible(false)
     setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
+    commandSelectionRef.current = 0
     setFilePickerOpen(
       fileReferenceAtCursor(editor.text, editor.cursor) !== null,
     )
@@ -2701,9 +2704,13 @@ export function InteractiveApp({
 
   useEffect(() => {
     setCommandSelection((current) =>
-      Math.min(current, Math.max(0, matchingSlashCommands.length - 1)),
+      Math.min(current, Math.max(0, commandPaletteModel.rows.length - 1)),
     )
-  }, [matchingSlashCommands.length])
+    commandSelectionRef.current = Math.min(
+      commandSelectionRef.current,
+      Math.max(0, commandPaletteModel.rows.length - 1),
+    )
+  }, [commandPaletteModel.rows.length])
 
   useEffect(() => {
     setFileSelection((current) =>
@@ -7255,20 +7262,54 @@ export function InteractiveApp({
     }
     if (commandPaletteVisible) {
       if (key.upArrow) {
-        if (matchingSlashCommands.length > 0) {
-          setCommandSelection((current) => Math.max(0, current - 1))
+        if (commandPaletteModel.rows.length > 0) {
+          const current = Math.max(
+            0,
+            Math.min(
+              commandPaletteModel.rows.length - 1,
+              Math.trunc(commandSelectionRef.current),
+            ),
+          )
+          const next = Math.max(0, current - 1)
+          commandSelectionRef.current = next
+          setCommandSelection(next)
         }
         return
       }
       if (key.downArrow) {
-        if (matchingSlashCommands.length > 0) {
-          setCommandSelection((current) =>
-            Math.min(matchingSlashCommands.length - 1, current + 1),
+        if (commandPaletteModel.rows.length > 0) {
+          const current = Math.max(
+            0,
+            Math.min(
+              commandPaletteModel.rows.length - 1,
+              Math.trunc(commandSelectionRef.current),
+            ),
           )
+          const next = Math.min(
+            commandPaletteModel.rows.length - 1,
+            current + 1,
+          )
+          commandSelectionRef.current = next
+          setCommandSelection(next)
         }
         return
       }
-      const selectedCommand = matchingSlashCommands[selectedSlashCommandIndex]
+      const freshCommandPaletteModel = projectTuiCommandPalette({
+        commands: allSlashCommands,
+        query: slashCommandQuery(inputRef.current) ?? '',
+        selectedIndex: commandSelectionRef.current,
+      })
+      const selectedRow =
+        freshCommandPaletteModel.selectedId === null
+          ? undefined
+          : freshCommandPaletteModel.rows.find(
+              (row) => row.id === freshCommandPaletteModel.selectedId,
+            )
+      const selectedCommand = allSlashCommands.find(
+        (command) =>
+          selectedRow !== undefined &&
+          tuiCommandPaletteCommandId(command) === selectedRow.id,
+      )
       const commandNameQuery = inputRef.current.slice(1).toLocaleLowerCase()
       const exactSelectedCommand =
         selectedCommand !== undefined &&
@@ -8348,8 +8389,7 @@ export function InteractiveApp({
               <>
                 {selectedCommandPalette !== undefined ? (
                   <CommandPalette
-                    commands={matchingSlashCommands}
-                    selectedIndex={selectedSlashCommandIndex}
+                    model={selectedCommandPalette}
                     width={width}
                     screenReader={axScreenReader}
                   />

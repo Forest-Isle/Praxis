@@ -19,7 +19,7 @@ import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
-import type { TuiSlashCommand } from './slash-commands.js'
+import type { TuiCommandPaletteModel } from './command-palette-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
 import type {
   TuiHelpShortcut,
@@ -2273,13 +2273,11 @@ export function SessionPicker({
 }
 
 export function CommandPalette({
-  commands,
-  selectedIndex,
+  model,
   width,
   screenReader,
 }: {
-  commands: readonly TuiSlashCommand[]
-  selectedIndex: number
+  model: TuiCommandPaletteModel
   width: number
   screenReader: boolean
 }) {
@@ -2287,15 +2285,10 @@ export function CommandPalette({
   const paletteWidth = Math.max(1, Math.min(100, width))
   const nameWidth = Math.min(30, paletteWidth)
   const descriptionWidth = Math.max(0, paletteWidth - nameWidth)
-  const maxVisible = 12
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      Math.max(0, commands.length - maxVisible),
-    ),
+  const visible = model.rows.slice(
+    model.visibleRange.start,
+    model.visibleRange.end,
   )
-  const visible = commands.slice(start, start + maxVisible)
   if (screenReader) {
     return (
       <Box flexDirection="column">
@@ -2303,12 +2296,17 @@ export function CommandPalette({
         {visible.length === 0 ? (
           <Text>No matching commands.</Text>
         ) : (
-          visible.map((command) => (
-            <Text key={command.name}>
-              /{command.name}: {command.description}
+          visible.map((row) => (
+            <Text key={row.id}>
+              {row.selected ? 'Selected: ' : ''}
+              {row.invocation}: {row.description}
             </Text>
           ))
         )}
+        <Text>
+          Actions: {model.actions.navigate}; {model.actions.complete};{' '}
+          {model.actions.submit}; {model.actions.cancel}
+        </Text>
       </Box>
     )
   }
@@ -2317,22 +2315,20 @@ export function CommandPalette({
       {visible.length === 0 ? (
         <Text dimColor>No matching commands.</Text>
       ) : (
-        visible.map((command, visibleIndex) => {
-          const index = start + visibleIndex
-          const selected = index === selectedIndex
+        visible.map((row) => {
           return (
-            <Box key={command.name} flexDirection="row" width={paletteWidth}>
+            <Box key={row.id} flexDirection="row" width={paletteWidth}>
               <Box width={nameWidth} flexShrink={0}>
                 <Text
                   wrap="truncate-end"
-                  {...(selected ? theme.text.selectedRow : {})}
+                  {...(row.selected ? theme.text.selectedRow : {})}
                 >
-                  /{command.name}
+                  {row.invocation}
                 </Text>
               </Box>
               <Box width={descriptionWidth} flexShrink={1}>
                 <Text dimColor wrap="truncate-end">
-                  {command.description}
+                  {row.description}
                 </Text>
               </Box>
             </Box>
