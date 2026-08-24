@@ -17,6 +17,8 @@ import {
 } from './mention-picker-model.js'
 import { projectTuiMcpSurface } from './mcp-surface-model.js'
 import type { TuiMcpSurfaceModel } from './mcp-surface-model.js'
+import { projectTuiTaskSurface } from './task-surface-model.js'
+import type { TuiTaskSurfaceModel } from './task-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -28,7 +30,9 @@ type Surfaces = TuiScreenSurfaceModels & {
     | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
     | { readonly kind: 'question'; readonly questionIndex: number }
   readonly secondary:
-    { readonly kind: 'menu'; readonly surface?: unknown } | TuiMcpSurfaceModel
+    | { readonly kind: 'menu'; readonly surface?: unknown }
+    | TuiMcpSurfaceModel
+    | TuiTaskSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -133,6 +137,27 @@ describe('projectTuiScreen', () => {
       model: { cwd: '/workspace', servers: [] },
       state: { depth: 'list', serverIndex: 0, selectedIndex: 0 },
     })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the task semantic surface identity through secondary payloads', () => {
+    const tasks = [
+      {
+        id: 'task-1',
+        kind: 'shell' as const,
+        status: 'running' as const,
+        label: 'sleep 1',
+        createdAtMs: 1,
+      },
+    ]
+    const state = { depth: 'list' as const, selectedIndex: 0, scrollOffset: 0 }
+    const surface = projectTuiTaskSurface({ tasks, state })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),
     )
