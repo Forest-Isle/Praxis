@@ -20,6 +20,7 @@ import type {
 } from '../core/runtime.js'
 import type { ClaudePlanApprovalResult } from '../tools/claude-interactive-tools.js'
 import {
+  advanceInteractiveHistoryState,
   InteractiveApp,
   type InteractiveServiceFactory,
   runInteractive,
@@ -46,6 +47,42 @@ const flush = async () => {
   await setImmediate()
   await setImmediate()
 }
+
+it('advances append mutation facts without reading the retained prefix', () => {
+  const retained = Array.from({ length: 10_000 }, (_, index) => ({
+    kind: 'notice' as const,
+    text: `retained-${index}`,
+  }))
+  const next = [...retained, { kind: 'assistant' as const, text: 'appended' }]
+  const guarded = new Proxy(retained, {
+    get(source, property, receiver) {
+      if (/^\d+$/u.test(String(property)))
+        throw new Error(`retained prefix index ${String(property)} was read`)
+      return Reflect.get(source, property, receiver)
+    },
+  })
+  const advanced = advanceInteractiveHistoryState(
+    {
+      items: guarded,
+      change: { revision: 7, changedFrom: 0 },
+    },
+    next,
+    retained.length,
+  )
+
+  expect(advanced.items).toBe(next)
+  expect(advanced.change).toMatchObject({
+    revision: 8,
+    changedFrom: retained.length,
+  })
+  expect(() =>
+    advanceInteractiveHistoryState(
+      { items: retained, change: advanced.change },
+      next,
+      next.length + 1,
+    ),
+  ).toThrow(RangeError)
+})
 
 function expectNoColorSgr(frame: string): void {
   const sgr = new RegExp(String.raw`\u001b\[([0-9;]*)m`, 'gu')

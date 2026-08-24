@@ -24,7 +24,10 @@ import {
 import { ClaudeSessionService } from '../dist/application/session-service.js'
 import { Transcript } from '../dist/cli/tui/claude-style.js'
 import { TuiThemeProvider } from '../dist/cli/tui/theme.js'
-import { projectTuiView } from '../dist/cli/tui/tui-view-model.js'
+import {
+  appendTuiHistory,
+  projectTuiView,
+} from '../dist/cli/tui/tui-view-model.js'
 import { transcriptPresentationLineCount } from '../dist/cli/tui/transcript-viewport.js'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
@@ -41,6 +44,11 @@ const budgets = {
   transcriptLoadHeapMiB: 96,
   transcriptAppendP95Ms: 750,
   transcriptSyntaxRenderP95Ms: 1_500,
+  tuiColdProjection120kMedianMs: 1_000,
+  tuiRetainedAppend120kP95Ms: 50,
+  tuiRetainedScroll120kP95Ms: 25,
+  tuiRetainedHeapMiB: 128,
+  tuiActiveStreamRerenderP95Ms: 50,
 }
 const sessionCount = 500
 const transcriptEntryCount = 20_000
@@ -433,7 +441,315 @@ try {
       `Projection scaling exceeded doubling budget: ${projectionRatio60k.toFixed(2)}x/${projectionRatio120k.toFixed(2)}x`,
     )
   }
-  assertBudget('120k projection median', projectionMedians[2], 1_000)
+  assertBudget(
+    '120k projection median',
+    projectionMedians[2],
+    budgets.tuiColdProjection120kMedianMs,
+  )
+
+  const retainedHistory = projectionFixtures[2]
+  const retainedBase = {
+    initialHistory: retainedHistory,
+    history: retainedHistory,
+    resume: true,
+    fixedViewport: true,
+    screenReader: false,
+    rows: 36,
+    width: 100,
+    scrollOffset: 0,
+    detailedTranscript: false,
+    historyChange: { revision: 0, changedFrom: 0 },
+  }
+  const retainedBaseView = projectTuiView(retainedBase)
+  const stableTailEntry = retainedBaseView.transcriptEntries.at(-1)
+  if (!stableTailEntry)
+    throw new Error('Retained append fixture did not project a visible tail')
+  const retainedAppend = appendTuiHistory(1, retainedHistory, [
+    { kind: 'assistant', text: 'retained append marker' },
+  ])
+  const retainedAppendedHistory = retainedAppend.history
+  const pendingReadHistory = [
+    ...retainedHistory,
+    {
+      kind: 'tool',
+      call: {
+        id: 'retained-append-read',
+        name: 'Read',
+        input: { file_path: '/tmp/retained-read' },
+      },
+      detail: '',
+    },
+  ]
+  const pendingReadView = projectTuiView({
+    ...retainedBase,
+    initialHistory: pendingReadHistory,
+    history: pendingReadHistory,
+  })
+  const completedReadAppend = appendTuiHistory(1, pendingReadHistory, [
+    {
+      kind: 'tool-result',
+      callId: 'retained-append-read',
+      text: 'retained read result marker',
+      isError: false,
+    },
+  ])
+  const completedReadHistory = completedReadAppend.history
+  const retainedAppendSamples = minimumPercentileSampleCount(95)
+  const retainedAppendDurations = await samples(retainedAppendSamples, () => {
+    const nextView = projectTuiView(
+      {
+        ...retainedBase,
+        history: retainedAppendedHistory,
+        historyChange: retainedAppend.change,
+      },
+      retainedBaseView,
+    )
+    if (
+      !nextView.transcriptEntries.some(
+        (entry) =>
+          entry.kind === 'item' &&
+          entry.item.kind === 'assistant' &&
+          entry.item.text === 'retained append marker',
+      )
+    )
+      throw new Error('Retained append lost the visible tail marker')
+    const reusedTailEntry = nextView.transcriptEntries.find(
+      (entry) => entry.key === stableTailEntry.key,
+    )
+    if (reusedTailEntry !== stableTailEntry) {
+      throw new Error('Retained append did not preserve entry identity')
+    }
+    const readView = projectTuiView(
+      {
+        ...retainedBase,
+        initialHistory: pendingReadHistory,
+        history: completedReadHistory,
+        historyChange: completedReadAppend.change,
+      },
+      pendingReadView,
+    )
+    if (
+      !readView.transcriptEntries.some(
+        (entry) =>
+          entry.kind === 'read-summary' &&
+          entry.key === `read-summary-${retainedHistory.length}` &&
+          entry.count === 1,
+      )
+    )
+      throw new Error('Retained Read append did not produce its tail summary')
+  })
+  const tuiRetainedAppendP95Ms = percentile(retainedAppendDurations, 95)
+  assertBudget(
+    '120k retained append p95',
+    tuiRetainedAppendP95Ms,
+    budgets.tuiRetainedAppend120kP95Ms,
+  )
+
+  const scrollHistory = [
+    ...projectionFixtures[2],
+    {
+      kind: 'tool',
+      call: { id: 'retained-tail', name: 'Bash', input: { command: 'pwd' } },
+      detail: '',
+    },
+    {
+      kind: 'tool',
+      call: {
+        id: 'retained-read',
+        name: 'Read',
+        input: { file_path: '/tmp/a' },
+      },
+      detail: '',
+    },
+    {
+      kind: 'tool-result',
+      callId: 'retained-read',
+      text: 'read marker',
+      isError: false,
+    },
+  ]
+  const scrollBase = {
+    ...retainedBase,
+    initialHistory: scrollHistory,
+    history: scrollHistory,
+    fixedViewport: true,
+    rows: 36,
+  }
+  const scrollView = projectTuiView(scrollBase)
+  const scrollAppend = appendTuiHistory(1, scrollHistory, [
+    {
+      kind: 'tool-result',
+      callId: 'retained-tail',
+      text: 'pending result marker',
+      isError: false,
+    },
+  ])
+  const scrollAppendedHistory = scrollAppend.history
+  const scrollAppendChange = scrollAppend.change
+  const scrollAppendedView = projectTuiView(
+    {
+      ...scrollBase,
+      history: scrollAppendedHistory,
+      historyChange: scrollAppendChange,
+    },
+    scrollView,
+  )
+  const tuiRetainedScrollDurations = await samples(
+    retainedAppendSamples,
+    () => {
+      const selected = projectTuiView(
+        {
+          ...scrollBase,
+          history: scrollAppendedHistory,
+          scrollOffset: scrollAppendedView.maxTranscriptScrollOffset,
+          historyChange: scrollAppendChange,
+        },
+        scrollAppendedView,
+      )
+      if (!selected.transcriptEntries.some((entry) => entry.key === 'item-0'))
+        throw new Error('Retained scroll lost the oldest entry marker')
+    },
+  )
+  const tuiRetainedShortScrollP95Ms = percentile(tuiRetainedScrollDurations, 95)
+  assertBudget(
+    '120k retained short-entry scroll-selection p95',
+    tuiRetainedShortScrollP95Ms,
+    budgets.tuiRetainedScroll120kP95Ms,
+  )
+
+  globalThis.gc()
+  const tuiHeapBefore = process.memoryUsage().heapUsed
+  const heapHistory = projectionFixtures[2]
+  const heapView = projectTuiView({
+    ...retainedBase,
+    initialHistory: heapHistory,
+    history: heapHistory,
+  })
+  const heapAppend = appendTuiHistory(1, heapHistory, [
+    { kind: 'assistant', text: 'heap append' },
+  ])
+  const heapAppendedHistory = heapAppend.history
+  const heapNext = projectTuiView(
+    {
+      ...retainedBase,
+      initialHistory: heapHistory,
+      history: heapAppendedHistory,
+      historyChange: heapAppend.change,
+    },
+    heapView,
+  )
+  if (
+    !heapNext.transcriptEntries.some(
+      (entry) =>
+        entry.kind === 'item' &&
+        entry.item.kind === 'assistant' &&
+        entry.item.text === 'heap append',
+    )
+  )
+    throw new Error('Retained heap fixture lost its visible append')
+  const retainedHeapRoots = [heapView, heapNext]
+  globalThis.gc()
+  const tuiHeapAfter = process.memoryUsage().heapUsed
+  if (retainedHeapRoots[0] !== heapView || retainedHeapRoots[1] !== heapNext)
+    throw new Error('Retained heap fixture roots changed during measurement')
+  const tuiRetainedHeapMiB = Math.max(
+    0,
+    (tuiHeapAfter - tuiHeapBefore) / 1024 / 1024,
+  )
+  assertBudget(
+    'Retained TUI projection heap growth',
+    tuiRetainedHeapMiB,
+    budgets.tuiRetainedHeapMiB,
+    'MiB',
+  )
+
+  const oversizedHistory = [
+    {
+      kind: 'assistant',
+      text: Array.from(
+        { length: 120_000 },
+        (_, index) => `oversized-row-${index} alpha beta`,
+      ).join('\n'),
+    },
+  ]
+  const oversizedBase = {
+    ...retainedBase,
+    initialHistory: oversizedHistory,
+    history: oversizedHistory,
+  }
+  const oversizedView = projectTuiView(oversizedBase)
+  const oversizedScrollOffset = Math.floor(
+    oversizedView.maxTranscriptScrollOffset / 2,
+  )
+  const oversizedScrollDurations = await samples(retainedAppendSamples, () => {
+    const selected = projectTuiView(
+      { ...oversizedBase, scrollOffset: oversizedScrollOffset },
+      oversizedView,
+    )
+    if (
+      !selected.transcriptEntries.some(
+        (entry) =>
+          entry.kind === 'item' &&
+          entry.item.kind === 'assistant' &&
+          entry.item.text.includes('oversized-row-'),
+      )
+    )
+      throw new Error('Oversized retained scroll lost its visible row marker')
+  })
+  const tuiOversizedScrollP95Ms = percentile(oversizedScrollDurations, 95)
+  assertBudget(
+    '120k-row oversized-entry scroll-selection p95',
+    tuiOversizedScrollP95Ms,
+    budgets.tuiRetainedScroll120kP95Ms,
+  )
+  const tuiRetainedScrollP95Ms = Math.max(
+    tuiRetainedShortScrollP95Ms,
+    tuiOversizedScrollP95Ms,
+  )
+
+  const streamHistory = projectionFixtures[2]
+  const streamView = projectTuiView({
+    ...retainedBase,
+    initialHistory: streamHistory,
+    history: streamHistory,
+    fixedViewport: true,
+    rows: 36,
+  })
+  const streamApp = renderInk(
+    createElement(
+      TuiThemeProvider,
+      { settings: { theme: 'dark', syntaxHighlightingDisabled: true } },
+      createElement(Transcript, {
+        entries: streamView.transcriptEntries,
+        activeText: '',
+        screenReader: false,
+      }),
+    ),
+  )
+  let streamMarker = 0
+  const tuiActiveStreamDurations = await samples(retainedAppendSamples, () => {
+    const marker = streamMarker++
+    streamApp.rerender(
+      createElement(
+        TuiThemeProvider,
+        { settings: { theme: 'dark', syntaxHighlightingDisabled: true } },
+        createElement(Transcript, {
+          entries: streamView.transcriptEntries,
+          activeText: `active stream marker ${marker}`,
+          screenReader: false,
+        }),
+      ),
+    )
+    if (!streamApp.lastFrame()?.includes(`active stream marker ${marker}`))
+      throw new Error('Active stream rerender marker was incomplete')
+  })
+  streamApp.unmount()
+  const tuiActiveStreamRerenderP95Ms = percentile(tuiActiveStreamDurations, 95)
+  assertBudget(
+    'Unchanged-history active-stream rerender p95',
+    tuiActiveStreamRerenderP95Ms,
+    budgets.tuiActiveStreamRerenderP95Ms,
+  )
 
   console.log(
     [
@@ -445,6 +761,11 @@ try {
       `append p95 ${formatMs(transcriptAppendP95Ms)}/${budgets.transcriptAppendP95Ms}ms`,
       `syntax render p95 ${formatMs(transcriptSyntaxRenderP95Ms)}/${budgets.transcriptSyntaxRenderP95Ms}ms`,
       `projection medians ${formatMs(projectionMedians[0])}/${formatMs(projectionMedians[1])}/${formatMs(projectionMedians[2])} (ratios ${projectionRatio60k.toFixed(2)}x/${projectionRatio120k.toFixed(2)}x)`,
+      `TUI cold 120k median ${formatMs(projectionMedians[2])}/${budgets.tuiColdProjection120kMedianMs}ms`,
+      `TUI retained append p95 ${formatMs(tuiRetainedAppendP95Ms)}/${budgets.tuiRetainedAppend120kP95Ms}ms`,
+      `TUI retained scroll p95 ${formatMs(tuiRetainedScrollP95Ms)}/${budgets.tuiRetainedScroll120kP95Ms}ms`,
+      `TUI retained heap +${tuiRetainedHeapMiB.toFixed(1)}MiB/${budgets.tuiRetainedHeapMiB}MiB`,
+      `TUI active-stream rerender p95 ${formatMs(tuiActiveStreamRerenderP95Ms)}/${budgets.tuiActiveStreamRerenderP95Ms}ms`,
     ].join('; '),
   )
 } finally {

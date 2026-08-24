@@ -36,7 +36,7 @@ type ToolResultItem = Extract<TranscriptItem, { kind: 'tool-result' }>
 type ShellItem = Extract<TranscriptItem, { kind: 'shell' }>
 type ShellResultItem = Extract<TranscriptItem, { kind: 'shell-result' }>
 
-export type TranscriptPresentationEntry =
+type TranscriptPresentationEntryValue =
   | {
       kind: 'item'
       key: string
@@ -51,6 +51,21 @@ export type TranscriptPresentationEntry =
   | { kind: 'orphan-shell-result'; key: string; item: ShellResultItem }
   | { kind: 'read-summary'; key: string; count: number }
 
+/**
+ * Fullscreen-only projection of one oversized renderer row. This metadata is
+ * derived from Transcript content and never enters the authoritative source
+ * item or persisted JSONL.
+ */
+export type TranscriptPresentationEntry = TranscriptPresentationEntryValue & {
+  readonly viewportSlice?: {
+    readonly text: string
+    readonly rows: number
+    readonly assistantMarkdown?: {
+      readonly marginTop: 0 | 1
+    }
+  }
+}
+
 type Pairing = {
   toolResults: Map<number, ToolResultItem>
   toolResultIndexes: Map<number, number>
@@ -62,6 +77,23 @@ type Pairing = {
 }
 
 type ReadSummary = { count: number; end: number }
+
+/** Stable renderer key for one source Transcript item. */
+export function transcriptPresentationEntryKey(
+  item: TranscriptItem,
+  sourceIndex: number,
+): string {
+  if (item.kind === 'tool') return `tool-${sourceIndex}-${item.call.id}`
+  if (item.kind === 'tool-result') return `tool-result-${sourceIndex}`
+  if (item.kind === 'shell') return `shell-${sourceIndex}-${item.callId}`
+  if (item.kind === 'shell-result') return `shell-result-${sourceIndex}`
+  return `item-${sourceIndex}`
+}
+
+/** Stable renderer key for a Normal-mode contiguous Read summary. */
+export function transcriptReadSummaryKey(sourceIndex: number): string {
+  return `read-summary-${sourceIndex}`
+}
 
 function pairResults(items: readonly TranscriptItem[]): Pairing {
   const toolResults = new Map<number, ToolResultItem>()
@@ -193,7 +225,7 @@ export function projectTranscriptPresentation(
       if (summary) {
         entries.push({
           kind: 'read-summary',
-          key: `read-summary-${index}`,
+          key: transcriptReadSummaryKey(index),
           count: summary.count,
         })
         index = summary.end - 1
@@ -205,7 +237,7 @@ export function projectTranscriptPresentation(
       const result = pairing.toolResults.get(index)
       entries.push({
         kind: 'tool',
-        key: `tool-${index}-${item.call.id}`,
+        key: transcriptPresentationEntryKey(item, index),
         item,
         ...(result ? { result } : {}),
       })
@@ -215,7 +247,7 @@ export function projectTranscriptPresentation(
       if (pairing.pairedToolResultIndexes.has(index)) continue
       entries.push({
         kind: 'orphan-tool-result',
-        key: `tool-result-${index}`,
+        key: transcriptPresentationEntryKey(item, index),
         item,
       })
       continue
@@ -224,7 +256,7 @@ export function projectTranscriptPresentation(
       const result = pairing.shellResults.get(index)
       entries.push({
         kind: 'shell',
-        key: `shell-${index}-${item.callId}`,
+        key: transcriptPresentationEntryKey(item, index),
         item,
         ...(result ? { result } : {}),
       })
@@ -234,12 +266,16 @@ export function projectTranscriptPresentation(
       if (pairing.pairedShellResultIndexes.has(index)) continue
       entries.push({
         kind: 'orphan-shell-result',
-        key: `shell-result-${index}`,
+        key: transcriptPresentationEntryKey(item, index),
         item,
       })
       continue
     }
-    entries.push({ kind: 'item', key: `item-${index}`, item })
+    entries.push({
+      kind: 'item',
+      key: transcriptPresentationEntryKey(item, index),
+      item,
+    })
   }
 
   return entries

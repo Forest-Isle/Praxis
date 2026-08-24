@@ -96,7 +96,14 @@ import { loadClaudeReleaseNotes } from './tui/release-notes.js'
 import { fullscreenInkRenderOptions } from './tui/fullscreen-renderer.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
-import { projectTuiView, resolveTuiRenderer } from './tui/tui-view-model.js'
+import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
+import {
+  createTuiHistoryChange,
+  projectTuiView,
+  resolveTuiRenderer,
+  type TuiHistoryChange,
+  type TuiViewModel,
+} from './tui/tui-view-model.js'
 import {
   loadGitDiff,
   visiblePatchLines,
@@ -1072,6 +1079,33 @@ function DecisionOption({
   )
 }
 
+export interface InteractiveHistoryState {
+  readonly items: TranscriptItem[]
+  readonly change: TuiHistoryChange
+}
+
+/** Advances the React-owned transcript plus its exact local mutation fact. */
+export function advanceInteractiveHistoryState(
+  current: InteractiveHistoryState,
+  items: TranscriptItem[],
+  changedFrom: number,
+): InteractiveHistoryState {
+  if (
+    !Number.isInteger(changedFrom) ||
+    changedFrom < 0 ||
+    changedFrom > items.length
+  )
+    throw new RangeError('changedFrom must be a valid next-history index')
+  const revision = current.change.revision + 1
+  return {
+    items,
+    change:
+      changedFrom === current.items.length && items.length > changedFrom
+        ? createTuiAppendHistoryChange(revision, current.items, items)
+        : createTuiHistoryChange(revision, changedFrom, items, current.items),
+  }
+}
+
 export function InteractiveApp({
   dataPlane = resolveDataPlane(),
   configRoot: suppliedConfigRoot,
@@ -1411,7 +1445,37 @@ export function InteractiveApp({
   const [contextWindowTokens, setContextWindowTokens] = useState(
     display.contextWindowTokens,
   )
-  const [history, setHistory] = useState<TranscriptItem[]>([...initialHistory])
+  const [historyState, setHistoryState] = useState(() => {
+    const items = [...initialHistory]
+    return {
+      items,
+      change: createTuiHistoryChange(0, 0, items),
+    }
+  })
+  const history = historyState.items
+  const setHistory = (
+    update:
+      TranscriptItem[] | ((current: TranscriptItem[]) => TranscriptItem[]),
+    knownChangedFrom?:
+      number | ((current: TranscriptItem[], next: TranscriptItem[]) => number),
+  ) => {
+    setHistoryState((current) => {
+      const next = typeof update === 'function' ? update(current.items) : update
+      let changedFrom =
+        typeof knownChangedFrom === 'function'
+          ? knownChangedFrom(current.items, next)
+          : (knownChangedFrom ?? 0)
+      if (knownChangedFrom === undefined) {
+        const limit = Math.min(next.length, current.items.length)
+        while (
+          changedFrom < limit &&
+          next[changedFrom] === current.items[changedFrom]
+        )
+          changedFrom += 1
+      }
+      return advanceInteractiveHistoryState(current, next, changedFrom)
+    })
+  }
   const activeAttemptThinkingItemsRef = useRef<TranscriptItem[]>([])
   const [transcriptScrollOffset, setTranscriptScrollOffsetState] = useState(0)
   const transcriptScrollOffsetRef = useRef(0)
@@ -1434,26 +1498,24 @@ export function InteractiveApp({
   // composer/status chrome intact and keeping the active stream visible.
   // Classic and screen-reader modes always render the full history exactly as
   // before.
-  const {
-    transcriptEntries,
-    transcriptPageRows,
-    maxTranscriptScrollOffset,
-    resumed,
-    freshSession,
-    hasConversationHistory,
-  } = useMemo(
+  const previousTuiViewRef = useRef<TuiViewModel | undefined>(undefined)
+  const tuiView = useMemo(
     () =>
-      projectTuiView({
-        initialHistory,
-        history,
-        resume: resume !== undefined,
-        fixedViewport,
-        screenReader: axScreenReader,
-        rows,
-        width,
-        scrollOffset: transcriptScrollOffset,
-        detailedTranscript: thinkingExpanded || runtimeSettings.verbose,
-      }),
+      projectTuiView(
+        {
+          initialHistory,
+          history,
+          resume: resume !== undefined,
+          fixedViewport,
+          screenReader: axScreenReader,
+          rows,
+          width,
+          scrollOffset: transcriptScrollOffset,
+          detailedTranscript: thinkingExpanded || runtimeSettings.verbose,
+          historyChange: historyState.change,
+        },
+        previousTuiViewRef.current,
+      ),
     [
       initialHistory,
       history,
@@ -1465,8 +1527,20 @@ export function InteractiveApp({
       transcriptScrollOffset,
       thinkingExpanded,
       runtimeSettings.verbose,
+      historyState.change,
     ],
   )
+  const {
+    transcriptEntries,
+    transcriptPageRows,
+    maxTranscriptScrollOffset,
+    resumed,
+    freshSession,
+    hasConversationHistory,
+  } = tuiView
+  useEffect(() => {
+    previousTuiViewRef.current = tuiView
+  }, [tuiView])
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -1834,7 +1908,14 @@ export function InteractiveApp({
     // thinking, or completion entry that it textually precedes.
     streamingFrameRef.current?.flush()
     setTranscriptScrollOffset(0)
-    setHistory((current) => [...current, line])
+    setHistoryState((current) => {
+      const items = [...current.items, line]
+      return advanceInteractiveHistoryState(
+        current,
+        items,
+        current.items.length,
+      )
+    })
   }
 
   useEffect(() => {
@@ -7287,11 +7368,14 @@ export function InteractiveApp({
           skills,
           memoryFiles: [],
         }
-        setHistory((current) => [
-          ...current,
-          { kind: 'user', text: '/context' },
-          contextEntry,
-        ])
+        setHistory(
+          (current) => [
+            ...current,
+            { kind: 'user', text: '/context' },
+            contextEntry,
+          ],
+          (current) => current.length,
+        )
         const loading = (async () => {
           try {
             const files = await loadMemoryFiles(
@@ -7306,14 +7390,17 @@ export function InteractiveApp({
                   tokens: await estimateFileTokens(entry.path),
                 })),
             )
-            setHistory((current) => {
-              const next = [...current]
-              const last = next.at(-1)
-              if (last && last.kind === 'context') {
-                next[next.length - 1] = { ...last, memoryFiles }
-              }
-              return next
-            })
+            setHistory(
+              (current) => {
+                const next = [...current]
+                const last = next.at(-1)
+                if (last && last.kind === 'context') {
+                  next[next.length - 1] = { ...last, memoryFiles }
+                }
+                return next
+              },
+              (_current, next) => Math.max(0, next.length - 1),
+            )
           } catch {
             // Leave the Memory files section empty if files cannot be read.
           }
