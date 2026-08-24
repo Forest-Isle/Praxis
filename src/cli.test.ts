@@ -3096,6 +3096,263 @@ describe('Praxis CLI', () => {
     }
   })
 
+  it('omits Team tools, guidance, operations, and state from a disabled provider turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-disabled-turn-'))
+    const claudeRoot = join(root, 'claude')
+    const nativeRoot = join(root, 'native')
+    const cwd = join(root, 'project')
+    await mkdir(claudeRoot, { recursive: true })
+    await mkdir(cwd, { recursive: true })
+    await writeFile(join(claudeRoot, '.claude.json'), '{}')
+    let requestBody: Record<string, unknown> | undefined
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      requestBody = JSON.parse(Buffer.concat(chunks).toString())
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end(
+        [
+          `data: ${JSON.stringify({ id: 'disabled-team-turn', choices: [{ index: 0, delta: { content: 'done' }, finish_reason: null }] })}`,
+          `data: ${JSON.stringify({ id: 'disabled-team-turn', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
+          'data: [DONE]',
+          '',
+        ].join('\n\n'),
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string')
+        throw new Error('server did not bind')
+      const service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd,
+        configRoot: claudeRoot,
+        providerEnvironment: {
+          CLAUDE_CONFIG_DIR: claudeRoot,
+          PRAXIS_HOME: nativeRoot,
+          PRAXIS_DATA_PLANE: 'claude',
+          PRAXIS_PROVIDER: 'openai',
+          PRAXIS_API_KEY: 'fixture-key',
+          PRAXIS_MODEL: 'fixture-model',
+          PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+        },
+        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude' },
+      })
+      try {
+        expect(service.teamLeadOperations).toBeUndefined()
+        await service.run(
+          'complete without Teams',
+          undefined,
+          '10101010-1010-4010-8010-101010101010',
+        )
+      } finally {
+        await service.close?.()
+      }
+
+      const tools = Array.isArray(requestBody?.tools) ? requestBody.tools : []
+      expect(
+        tools.map((tool) =>
+          String(
+            (tool as { function?: { name?: unknown } }).function?.name ?? '',
+          ),
+        ),
+      ).not.toEqual(expect.arrayContaining(['TeamCreate']))
+      const serializedMessages = JSON.stringify(requestBody?.messages ?? [])
+      for (const name of [
+        'TeamCreate',
+        'TeamResume',
+        'TeamList',
+        'TeamAccept',
+        'TeamStop',
+        'TeamSend',
+      ]) {
+        expect(serializedMessages).not.toContain(name)
+      }
+      await expect(
+        access(join(nativeRoot, 'state', 'teams')),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      )
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes an enabled Team ask through the shared CLI approver', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-cli-approval-'))
+    const claudeRoot = join(root, 'claude')
+    const nativeRoot = join(root, 'native')
+    const cwd = join(root, 'project')
+    await mkdir(claudeRoot, { recursive: true })
+    await mkdir(join(cwd, '.claude'), { recursive: true })
+    await writeFile(join(claudeRoot, '.claude.json'), '{}')
+    await writeFile(
+      join(cwd, '.claude', 'settings.local.json'),
+      JSON.stringify({ permissions: { ask: ['Bash(pwd)'] } }),
+    )
+    let providerTurns = 0
+    const providerRequests: Array<Record<string, unknown>> = []
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      providerRequests.push(JSON.parse(Buffer.concat(chunks).toString()))
+      providerTurns += 1
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      if (providerTurns === 1) {
+        response.end(
+          [
+            `data: ${JSON.stringify({
+              id: 'team-approval-tool',
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'team_bash',
+                        type: 'function',
+                        function: {
+                          name: 'Bash',
+                          arguments: JSON.stringify({ command: 'pwd' }),
+                        },
+                      },
+                    ],
+                  },
+                  finish_reason: 'tool_calls',
+                },
+              ],
+              usage: {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+              },
+            })}`,
+            'data: [DONE]',
+            '',
+          ].join('\n\n'),
+        )
+        return
+      }
+      response.end(
+        [
+          `data: ${JSON.stringify({ id: 'team-approval-done', choices: [{ index: 0, delta: { content: 'permission handled' }, finish_reason: null }] })}`,
+          `data: ${JSON.stringify({ id: 'team-approval-done', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
+          'data: [DONE]',
+          '',
+        ].join('\n\n'),
+      )
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const approvals: Array<{
+      call: ModelToolCall
+      originalCall: ModelToolCall | undefined
+      decision: unknown
+    }> = []
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string')
+        throw new Error('server did not bind')
+      const service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd,
+        configRoot: claudeRoot,
+        providerEnvironment: {
+          CLAUDE_CONFIG_DIR: claudeRoot,
+          PRAXIS_HOME: nativeRoot,
+          PRAXIS_DATA_PLANE: 'claude',
+          PRAXIS_PROVIDER: 'openai',
+          PRAXIS_API_KEY: 'fixture-key',
+          PRAXIS_MODEL: 'fixture-model',
+          PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
+          PRAXIS_ENABLE_TEAMS: 'true',
+        },
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          dataPlane: 'claude',
+          permissionMode: 'manual',
+        },
+        approveTool: (call, originalCall, decision) => {
+          approvals.push({ call, originalCall, decision })
+          return { behavior: 'deny', message: 'Lead denied fixture command' }
+        },
+      })
+      try {
+        const operations = service.teamLeadOperations
+        if (!operations) throw new Error('missing Team lead operations')
+        await operations.create(
+          {
+            teamId: 'team-approval',
+            name: 'Approval Team',
+            roster: [
+              {
+                name: 'worker',
+                agentType: 'general-purpose',
+                access: 'read-only',
+              },
+            ],
+            tasks: [
+              {
+                id: 'permission-task',
+                description: 'Request one denied Bash command.',
+                assignee: 'worker',
+                blockedBy: [],
+                claims: {
+                  files: [],
+                  publicContracts: [],
+                  generatedArtifacts: [],
+                  migrations: [],
+                  mergeTargets: [],
+                },
+              },
+            ],
+          },
+          'lead-session',
+        )
+        const snapshot = await operations.waitForIdle(
+          'team-approval',
+          'lead-session',
+        )
+        expect(snapshot.tasks[0]?.execution?.state).toBe('completed')
+        await operations.stop({ teamId: 'team-approval' }, 'lead-session')
+      } finally {
+        await service.close?.()
+      }
+
+      expect(providerTurns).toBe(2)
+      expect(approvals).toHaveLength(1)
+      expect(approvals[0]?.call).toMatchObject({
+        id: 'team_bash',
+        name: 'Bash',
+      })
+      expect(approvals[0]?.originalCall).toMatchObject({ id: 'team_bash' })
+      expect(approvals[0]?.decision).toMatchObject({
+        behavior: 'ask',
+        metadata: {
+          teamId: 'team-approval',
+          member: 'worker',
+          taskId: 'permission-task',
+          generation: 1,
+        },
+      })
+      expect((approvals[0]?.decision as { reason?: string }).reason).toContain(
+        '[team=team-approval member=worker task=permission-task generation=1]',
+      )
+      expect(JSON.stringify(providerRequests[1]?.messages)).toContain(
+        'Lead denied fixture command',
+      )
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      )
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('activates canonical native transcript writes only for the reduced profile', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-native-activation-'))
     const configRoot = join(root, 'native')

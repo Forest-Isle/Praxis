@@ -12,6 +12,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { NativeTeamStore } from './native-team-store.js'
+import { parseTeamSnapshot } from '../core/team-ownership.js'
 import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 
@@ -106,6 +107,39 @@ describe('native Team store', () => {
     expect(Object.isFrozen(listedTask.claims)).toBe(true)
   })
 
+  it('reads literal v1 state as v2 and persists v2 on the next save', async () => {
+    const root = await makeRoot()
+    const cwd = await makeRoot()
+    const store = await NativeTeamStore.open({ nativeRoot: root, cwd })
+    const path = pathFor(root, store)
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(
+      path,
+      `${JSON.stringify(snapshot(store.projectIdentity))}\n`,
+    )
+
+    const migrated = await store.read('team-1')
+    expect(migrated).toMatchObject({
+      version: 2,
+      policy: { lead: 'hybrid', execution: 'swarm', commit: 'lead' },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+    })
+    if (!migrated) throw new Error('Expected migrated Team state')
+
+    const claim = await store.claim('team-1')
+    await claim.save(0, {
+      ...migrated,
+      revision: 1,
+      updatedAt: '2026-08-24T00:00:01.000Z',
+    })
+    await claim.release()
+
+    const persisted = JSON.parse(await readFile(path, 'utf8'))
+    expect(persisted.version).toBe(2)
+    expect(persisted.policy).toEqual(migrated.policy)
+    expect(persisted.budgets).toEqual(migrated.budgets)
+  })
+
   it('excludes competing owners and publishes newline mode-0600 state', async () => {
     const root = await makeRoot()
     const cwd = await makeRoot()
@@ -197,6 +231,19 @@ describe('native Team store', () => {
         updatedAt: '2026-08-24T00:00:01.000Z',
         createdAt: '2026-08-25T00:00:00.000Z',
       },
+      {
+        revision: 1,
+        updatedAt: '2026-08-24T00:00:01.000Z',
+        policy: { ...current.policy, lead: 'coordinator' as const },
+      },
+      {
+        revision: 1,
+        updatedAt: '2026-08-24T00:00:01.000Z',
+        budgets: {
+          ...current.budgets,
+          maxTokens: current.budgets.maxTokens + 1,
+        },
+      },
       { revision: 2, updatedAt: '2026-08-24T00:00:01.000Z' },
       { revision: 1, updatedAt: '2026-08-23T00:00:01.000Z' },
     ])
@@ -266,9 +313,9 @@ describe('native Team store', () => {
     const claim = await store.createAndClaim(snapshot(store.projectIdentity))
     await Promise.all([claim.release(), claim.release(), claim.release()])
     expect(() => claim.read()).toThrow(/released/u)
-    expect(() => claim.save(0, snapshot(store.projectIdentity))).toThrow(
-      /released/u,
-    )
+    expect(() =>
+      claim.save(0, parseTeamSnapshot(snapshot(store.projectIdentity))),
+    ).toThrow(/released/u)
   })
 
   it('sorts valid IDs and ignores unrelated entries', async () => {

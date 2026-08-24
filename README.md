@@ -157,7 +157,16 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,
-  and bounded model-context projection.
+  and bounded model-context projection. Teams are explicitly experimental and
+  opt-in: `PRAXIS_ENABLE_TEAMS=true` is required; otherwise Team code is not
+  loaded, discovered, or exposed. New Teams default to Hybrid lead control and
+  sequential execution, with optional Coordinator and Swarm policies. Commits
+  remain Lead-owned. Swarm admits only independent, dependency-ready,
+  non-conflicting tasks, within durable agent, concurrency, token, duration,
+  and shutdown-drain budgets.
+  Child permissions can only tighten the parent; concurrent asks form one FIFO
+  Lead Decision queue with provenance. Coordinator leads are restricted to
+  orchestration, and custom Team agents receive no MCP capability.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and transcript data.

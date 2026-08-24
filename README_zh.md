@@ -92,7 +92,9 @@ praxis doctor
   兼容 Claude 的选择性 Bash sandbox（文件系统和网络隔离）、明确的 ask/deny 优先级、仅 sandbox 自动允许、写入允许列表及允许范围内拒绝执行、每命令覆盖和排除、违规报告及 bare repository 控制文件清理、安全属性 Skill 自动允许、交互式工作区目录添加/删除控制、路径限制、凭据脱敏和经过清理的子进程。
 - **持久化本地工作** — 可恢复会话、完整历史分叉、文件检查点、任务、前台/后台 subagent、顶层 Agent，以及兼容 Claude 的主线程 Agent 定义，支持原生 prompt、model、tool、memory、first-turn 和 resume 行为。
   Agent 执行采用统一的持久生命周期术语，支持有界取消与排空、继续、通知及单一所有者的孤儿恢复。实验性本地 Team（`PRAXIS_ENABLE_TEAMS=true`）默认不会进入普通启动路径，
-  并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。
+  并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。Team 仍是实验性功能，必须显式设置
+  `PRAXIS_ENABLE_TEAMS=true` 才会启用；未启用时不会加载、发现或暴露 Team 代码。新 Team 默认使用 Hybrid Lead、sequential 执行和 Lead 持有提交权限，也可选 Coordinator 与 Swarm 策略。
+  Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
 - **Claude 兼容生态** — 支持递归 `@` 导入的共享指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件和 transcript 数据。
 - **提供商无关的模型** — 原生 Anthropic Messages 和 OpenAI 兼容的流式适配器，支持明确的能力检查和计量控制。
 

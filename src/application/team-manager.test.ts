@@ -27,6 +27,31 @@ const baseTools: ToolRegistry = {
 const permissions: PermissionResolver = {
   resolve: () => ({ behavior: 'allow' }),
 }
+const completedResult = {
+  status: 'completed' as const,
+  totalTokens: 0,
+  durationMs: 0,
+}
+const taskInput = (id: string, blockedBy: string[] = []) => ({
+  id,
+  description: id,
+  assignee: member.name,
+  blockedBy,
+  claims: {
+    files: [id],
+    publicContracts: [],
+    generatedArtifacts: [],
+    migrations: [],
+    mergeTargets: [],
+  },
+})
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((settle) => {
+    resolve = settle
+  })
+  return { promise, resolve }
+}
 function mailbox(cwd: string, teamId: string, projectIdentity = cwd) {
   return new TeamMailboxService({
     nativeRoot: cwd,
@@ -46,7 +71,7 @@ describe('LocalTeamManager', () => {
     const runtime: TeamAgentRuntime = {
       run: async ({ mailbox: endpoint }) => {
         received = endpoint.participant
-        return 'completed'
+        return { status: 'completed', totalTokens: 0, durationMs: 0 }
       },
     }
     try {
@@ -87,6 +112,307 @@ describe('LocalTeamManager', () => {
     }
   })
 
+  it('runs independent Swarm tasks concurrently behind a real barrier', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-swarm-'))
+    const cwd = process.cwd()
+    const release = deferred()
+    const bothEntered = deferred()
+    const entered: string[] = []
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 2,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ task }) => {
+            entered.push(task.id)
+            if (entered.length === 2) bothEntered.resolve()
+            await release.promise
+            return completedResult
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-swarm-barrier',
+        name: 'Swarm Barrier',
+        leadSessionId: 'lead-swarm',
+        executionPolicy: 'swarm',
+        roster: [member],
+        tasks: [taskInput('first'), taskInput('second')],
+      })
+
+      await bothEntered.promise
+      expect(entered).toEqual(['first', 'second'])
+      release.resolve()
+      await expect(team.waitForIdle()).resolves.toMatchObject({
+        tasks: [
+          { execution: { state: 'completed' } },
+          { execution: { state: 'completed' } },
+        ],
+      })
+    } finally {
+      release.resolve()
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the default execution policy sequential until the first task settles', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-sequential-'))
+    const cwd = process.cwd()
+    const firstEntered = deferred()
+    const releaseFirst = deferred()
+    const entered: string[] = []
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 2,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ task }) => {
+            entered.push(task.id)
+            if (task.id === 'first') {
+              firstEntered.resolve()
+              await releaseFirst.promise
+            }
+            return completedResult
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-sequential-default',
+        name: 'Sequential Default',
+        leadSessionId: 'lead-sequential',
+        roster: [member],
+        tasks: [taskInput('first'), taskInput('second')],
+      })
+
+      await firstEntered.promise
+      expect(entered).toEqual(['first'])
+      releaseFirst.resolve()
+      await team.waitForIdle()
+      expect(entered).toEqual(['first', 'second'])
+    } finally {
+      releaseFirst.resolve()
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps conflicting and dependency-blocked work out of a Swarm launch batch', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-admission-'))
+    const cwd = process.cwd()
+    const releaseFirst = deferred()
+    const initialBatchEntered = deferred()
+    const entered: string[] = []
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 3,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ task }) => {
+            entered.push(task.id)
+            if (entered.length === 2) initialBatchEntered.resolve()
+            if (task.id === 'first') await releaseFirst.promise
+            return completedResult
+          },
+        },
+      })
+      const first = taskInput('first')
+      const team = await manager.create({
+        teamId: 'team-admission-safety',
+        name: 'Admission Safety',
+        leadSessionId: 'lead-admission',
+        executionPolicy: 'swarm',
+        roster: [member],
+        tasks: [
+          { ...first, claims: { ...first.claims, files: ['shared'] } },
+          {
+            ...taskInput('conflicting'),
+            claims: { ...first.claims, files: ['shared'] },
+          },
+          taskInput('dependent', ['first']),
+          taskInput('free'),
+        ],
+      })
+
+      await initialBatchEntered.promise
+      expect(entered).toEqual(['first', 'free'])
+      releaseFirst.resolve()
+      const idle = await team.waitForIdle()
+      expect(entered).toEqual(['first', 'free', 'conflicting'])
+      expect(
+        idle.tasks.find(({ id }) => id === 'dependent')?.execution,
+      ).toBeNull()
+    } finally {
+      releaseFirst.resolve()
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('persists token exhaustion, aborts active Swarm work, and never launches pending work', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-tokens-'))
+    const cwd = process.cwd()
+    const entered: string[] = []
+    const aborted: string[] = []
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 2,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ task, generation, reportProgress, signal }) => {
+            entered.push(task.id)
+            if (task.id === 'first')
+              reportProgress({ generation, totalTokens: 5, durationMs: 1 })
+            await new Promise<void>((resolve) => {
+              const onAbort = () => {
+                aborted.push(task.id)
+                resolve()
+              }
+              if (signal.aborted) onAbort()
+              else signal.addEventListener('abort', onAbort, { once: true })
+            })
+            return {
+              ...completedResult,
+              totalTokens: task.id === 'first' ? 5 : 0,
+              durationMs: 1,
+            }
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-token-budget',
+        name: 'Token Budget',
+        leadSessionId: 'lead-token',
+        executionPolicy: 'swarm',
+        budgets: { maxTokens: 5, shutdownDrainMs: 100 },
+        roster: [member],
+        tasks: [taskInput('first'), taskInput('second'), taskInput('pending')],
+      })
+
+      const final = await team.waitForIdle()
+      expect(final.usage).toMatchObject({
+        totalTokens: 5,
+        exhausted: { reason: 'tokens' },
+      })
+      expect(entered).toEqual(['first', 'second'])
+      expect(new Set(aborted)).toEqual(new Set(['first', 'second']))
+      expect(final.tasks.map((task) => task.execution?.state ?? null)).toEqual([
+        'cancelled',
+        'cancelled',
+        null,
+      ])
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves valid progress across runtime failure and ignores stale generations', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-progress-'))
+    const cwd = process.cwd()
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ generation, reportProgress }) => {
+            reportProgress({
+              generation: generation + 1,
+              totalTokens: 99,
+              durationMs: 99,
+            })
+            reportProgress({ generation, totalTokens: 3, durationMs: 4 })
+            throw new Error('runtime failed after progress')
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-progress-failure',
+        name: 'Progress Failure',
+        leadSessionId: 'lead-progress',
+        roster: [member],
+        tasks: [taskInput('progress-task')],
+      })
+
+      const final = await team.waitForIdle()
+      expect(final.usage.totalTokens).toBe(3)
+      expect(final.tasks[0]).toMatchObject({
+        execution: { state: 'failed' },
+        usage: { generation: 1, totalTokens: 3, durationMs: 4 },
+      })
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('enforces the durable wall deadline with fake time and returns from idle', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-25T00:00:00.000Z'))
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-duration-'))
+    const cwd = process.cwd()
+    let aborted = false
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        runtime: {
+          run: async ({ signal }) => {
+            await new Promise<void>((resolve) => {
+              const onAbort = () => {
+                aborted = true
+                resolve()
+              }
+              if (signal.aborted) onAbort()
+              else signal.addEventListener('abort', onAbort, { once: true })
+            })
+            return { ...completedResult, durationMs: 100 }
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-duration-budget',
+        name: 'Duration Budget',
+        leadSessionId: 'lead-duration',
+        budgets: { maxDurationMs: 100, shutdownDrainMs: 50 },
+        roster: [member],
+        tasks: [taskInput('duration-task')],
+      })
+      const idle = team.waitForIdle()
+
+      await vi.advanceTimersByTimeAsync(100)
+      const final = await idle
+      expect(aborted).toBe(true)
+      expect(final.usage).toMatchObject({
+        durationMs: 100,
+        exhausted: { reason: 'duration' },
+      })
+      expect(final.tasks[0]?.execution?.state).toBe('cancelled')
+    } finally {
+      vi.useRealTimers()
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
   it('detaches once without mutation and rejects concurrent mutations', async () => {
     const cwd = process.cwd()
     const current = parseTeamSnapshot({
@@ -98,8 +424,8 @@ describe('LocalTeamManager', () => {
       leadSessionId: 'lead-detach',
       roster: [],
       tasks: [],
-      createdAt: '2026-08-24T00:00:00.000Z',
-      updatedAt: '2026-08-24T00:00:00.000Z',
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
     })
     let releaseClaim!: () => void
     const releasePending = new Promise<void>((resolve) => {
@@ -114,7 +440,12 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        runtime: { run: async () => 'completed' },
+        runtime: {
+          run: async ({ reportProgress }) => {
+            reportProgress({ generation: 1, totalTokens: 0, durationMs: 0 })
+            return { status: 'completed', totalTokens: 0, durationMs: 0 }
+          },
+        },
       },
       { acquire: async () => ({ cwd, branch: null }) },
       {
@@ -161,8 +492,8 @@ describe('LocalTeamManager', () => {
       leadSessionId: 'lead-detach',
       roster: [],
       tasks: [],
-      createdAt: '2026-08-24T00:00:00.000Z',
-      updatedAt: '2026-08-24T00:00:00.000Z',
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
     })
     const release = vi
       .fn<NativeTeamClaim['release']>()
@@ -175,7 +506,12 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        runtime: { run: async () => 'completed' },
+        runtime: {
+          run: async ({ reportProgress }) => {
+            reportProgress({ generation: 1, totalTokens: 0, durationMs: 0 })
+            return { status: 'completed', totalTokens: 0, durationMs: 0 }
+          },
+        },
       },
       { acquire: async () => ({ cwd, branch: null }) },
       {
@@ -210,7 +546,7 @@ describe('LocalTeamManager', () => {
       runtime: {
         run: async ({ task }: { task: { id: string } }) => {
           runtimeCalls.push(task.id)
-          return 'completed' as const
+          return { status: 'completed' as const, totalTokens: 0, durationMs: 0 }
         },
       },
     }
@@ -283,7 +619,12 @@ describe('LocalTeamManager', () => {
         baseTools,
         permissions,
         workspace: { acquire: async () => ({ cwd, branch: null }) },
-        runtime: { run: async () => 'completed' },
+        runtime: {
+          run: async ({ reportProgress }) => {
+            reportProgress({ generation: 1, totalTokens: 0, durationMs: 0 })
+            return { status: 'completed', totalTokens: 0, durationMs: 0 }
+          },
+        },
       })
       const team = await manager.create({
         teamId: 'team-a',
@@ -310,6 +651,7 @@ describe('LocalTeamManager', () => {
       expect(completed.tasks[0]?.execution?.state).toBe('completed')
       await expect(team.accept('missing')).rejects.toThrow(/execution|Unknown/u)
       await expect(team.snapshot()).resolves.toMatchObject({
+        policy: { commit: 'lead' },
         tasks: [{ execution: { state: 'completed' } }],
       })
       await expect(team.waitForIdle()).resolves.toMatchObject({
@@ -338,14 +680,23 @@ describe('LocalTeamManager', () => {
         runtime: {
           run: async ({ task, signal }) => {
             if (task.id === 'fast') {
-              return new Promise<'completed'>((resolve) => {
-                const complete = () => resolve('completed')
+              return new Promise<{
+                status: 'completed'
+                totalTokens: number
+                durationMs: number
+              }>((resolve) => {
+                const complete = () =>
+                  resolve({
+                    status: 'completed',
+                    totalTokens: 0,
+                    durationMs: 0,
+                  })
                 if (signal.aborted) complete()
                 else signal.addEventListener('abort', complete, { once: true })
               })
             }
             await new Promise<void>(() => undefined)
-            return 'completed'
+            return { status: 'completed', totalTokens: 0, durationMs: 0 }
           },
         },
       })
@@ -353,6 +704,8 @@ describe('LocalTeamManager', () => {
         teamId: 'team-stop',
         name: 'Stop Team',
         leadSessionId: 'lead-stop',
+        executionPolicy: 'swarm',
+        budgets: { shutdownDrainMs: 0 },
         roster: [member],
         tasks: ['fast', 'hung'].map((id) => ({
           id,
@@ -368,7 +721,8 @@ describe('LocalTeamManager', () => {
           },
         })),
       })
-      const final = await team.stop({ drainMs: 0 })
+      await expect(team.stop({ drainMs: 1 })).rejects.toThrow(/drainMs/u)
+      const final = await team.stop()
       const states = final.tasks.map((task) => task.execution?.state)
       expect(states).toEqual(['cancelled', 'orphaned'])
       await expect(team.snapshot()).resolves.toBe(final)
@@ -407,8 +761,8 @@ describe('LocalTeamManager', () => {
           execution: null,
         },
       ],
-      createdAt: '2026-08-24T00:00:00.000Z',
-      updatedAt: '2026-08-24T00:00:00.000Z',
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+      updatedAt: new Date(Date.now() + 60_000).toISOString(),
     })
     let failedCompletion = false
     const release = vi.fn(async () => undefined)
@@ -437,7 +791,16 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        runtime: { run: async () => 'completed' },
+        runtime: {
+          run: async ({ reportProgress }) => {
+            reportProgress({ generation: 1, totalTokens: 0, durationMs: 0 })
+            return {
+              status: 'completed' as const,
+              totalTokens: 0,
+              durationMs: 0,
+            }
+          },
+        },
       },
       { acquire: async () => ({ cwd, branch: null }) },
       claim,

@@ -11,12 +11,10 @@ import type {
 } from './team-mailbox.js'
 import { teamMailboxMessageId } from './team-mailbox.js'
 
-export interface TeamCreateRequest {
-  readonly teamId: string
-  readonly name: string
-  readonly roster: Parameters<LocalTeamManager['create']>[0]['roster']
-  readonly tasks: Parameters<LocalTeamManager['create']>[0]['tasks']
-}
+export type TeamCreateRequest = Omit<
+  Parameters<LocalTeamManager['create']>[0],
+  'leadSessionId'
+>
 
 export interface TeamLeadSendInput extends Omit<
   TeamMailboxSendInput,
@@ -28,6 +26,7 @@ export interface TeamLeadSendInput extends Omit<
 interface OwnedTeam {
   readonly leadSessionId: string
   readonly team: LocalTeam
+  readonly leadPolicy: 'hybrid' | 'coordinator'
 }
 
 export class TeamLeadOperations {
@@ -44,8 +43,13 @@ export class TeamLeadOperations {
     if (this.owned.has(input.teamId))
       throw new Error(`Team ${input.teamId} is already active`)
     const team = await manager.create({ ...input, leadSessionId })
-    this.owned.set(input.teamId, { leadSessionId, team })
-    return team.snapshot()
+    const snapshot = await team.snapshot()
+    this.owned.set(input.teamId, {
+      leadSessionId,
+      team,
+      leadPolicy: snapshot.policy?.lead ?? 'hybrid',
+    })
+    return snapshot
   }
 
   async resume(teamId: string, leadSessionId: string): Promise<TeamSnapshot> {
@@ -56,8 +60,23 @@ export class TeamLeadOperations {
       return current.team.snapshot()
     }
     const team = await (await this.manager()).resume({ teamId, leadSessionId })
-    this.owned.set(teamId, { leadSessionId, team })
-    return team.snapshot()
+    const snapshot = await team.snapshot()
+    this.owned.set(teamId, {
+      leadSessionId,
+      team,
+      leadPolicy: snapshot.policy?.lead ?? 'hybrid',
+    })
+    return snapshot
+  }
+
+  activeLeadPolicy(leadSessionId: string): 'hybrid' | 'coordinator' {
+    for (const owned of this.owned.values())
+      if (
+        owned.leadSessionId === leadSessionId &&
+        owned.leadPolicy === 'coordinator'
+      )
+        return 'coordinator'
+    return 'hybrid'
   }
 
   async list(): Promise<readonly TeamSnapshot[]> {

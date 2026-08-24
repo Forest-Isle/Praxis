@@ -78,6 +78,74 @@ praxis update
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
 
+## Experimental local Teams
+
+Local Teams are experimental and require explicit activation for every command:
+
+```sh
+export PRAXIS_ENABLE_TEAMS=true
+praxis team create <manifest.json> --lead-session-id <session-id>
+praxis team resume <team-id> --lead-session-id <session-id>
+praxis team list
+praxis team accept <team-id> <task-id> --lead-session-id <session-id> --generation <n> --decision accepted
+praxis team stop <team-id> --lead-session-id <session-id> [--drain-ms <ms>]
+```
+
+`team accept` also accepts `--decision rejected`; generation selects the task
+execution being reviewed, and decision records the Lead's acceptance or
+rejection. `team stop` uses the Team's durable shutdown-drain budget when
+`--drain-ms` is omitted. A create manifest contains the roster, tasks, claims,
+and optional immutable policies and budgets:
+
+```json
+{
+  "teamId": "docs-team",
+  "name": "Documentation",
+  "roster": [
+    { "name": "writer", "agentType": "general-purpose", "access": "write" }
+  ],
+  "tasks": [
+    {
+      "id": "readme",
+      "description": "Update the README",
+      "assignee": "writer",
+      "blockedBy": [],
+      "claims": {
+        "files": ["README.md"],
+        "publicContracts": [],
+        "generatedArtifacts": [],
+        "migrations": [],
+        "mergeTargets": []
+      }
+    }
+  ],
+  "leadPolicy": "hybrid",
+  "executionPolicy": "sequential",
+  "commitPolicy": "lead",
+  "budgets": {
+    "maxAgents": 2,
+    "maxConcurrent": 2,
+    "maxTokens": 50000,
+    "maxDurationMs": 600000,
+    "shutdownDrainMs": 5000
+  }
+}
+```
+
+Omitted policies default to Hybrid lead control, sequential execution, and
+Lead-owned commits. Team members remain unable to create commits.
+
+`swarm` overlaps only independent, dependency-ready tasks whose claims do not
+conflict. Budgets are
+durable and enforce agent count, concurrency, tokens, duration, and shutdown
+drain. Child permissions inherit the parent and may only become stricter;
+concurrent child asks share one FIFO Lead Decision surface with Team, member,
+task, and generation provenance. A `coordinator` Lead can use Agent, task
+lifecycle/board, decision/message/monitor, and Team tools only; repository
+mutation, Workflow, Skill, scheduled, worktree, wrapper, dynamic, and MCP paths
+are denied. Custom Team agents receive their selected prompt but no MCP server
+or tool capability. Teams remain local-first, single-user, and non-remote.
+
 ## Provider environment
 
 | Variable                            | Required           | Meaning                                                                     |
@@ -99,6 +167,7 @@ they are documentation notation, not literal arguments.
 | `PRAXIS_DISABLE_AUTO_MEMORY`        | No                 | `1` or `true`; disables every native Project-memory capability.             |
 | `PRAXIS_PROJECT_MEMORY_EXTRACTION`  | No                 | `1` or `true`; enables isolated background Project-memory extraction.       |
 | `PRAXIS_PROJECT_MEMORY_RECALL`      | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.        |
+| `PRAXIS_ENABLE_TEAMS`               | No                 | `true`; explicitly enables experimental local Team commands and tools.      |
 | `CLAUDE_CONFIG_DIR`                 | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
 | `CLAUDE_CODE_DISABLE_AUTO_MEMORY`   | Claude mode only   | `1` or `true`; disables every Claude-compatible Project-memory capability.  |
 

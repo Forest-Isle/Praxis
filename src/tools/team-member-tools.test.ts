@@ -72,6 +72,11 @@ describe('TeamMemberToolRegistry', () => {
         registry.execute(call('Bash', { command: 'git push' }), { cwd }),
       ).rejects.toThrow(/git operation/u)
       await expect(
+        registry.execute(call('Bash', { command: 'git commit -am changes' }), {
+          cwd,
+        }),
+      ).rejects.toThrow(/git operation/u)
+      await expect(
         registry.execute(call('Bash', { command: 'command git push' }), {
           cwd,
         }),

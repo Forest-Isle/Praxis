@@ -9,10 +9,16 @@ import {
   type TeamMember,
   type TeamSnapshot,
   type TeamTask,
+  type TeamLeadPolicy,
+  type TeamExecutionPolicy,
+  type TeamCommitPolicy,
+  DEFAULT_TEAM_BUDGETS,
   parseTeamSnapshot,
   selectTeamTaskAdmissions,
   withTeamTaskExecution,
   acceptTeamTaskExecution,
+  recordTeamTaskProgress,
+  updateTeamUsageDuration,
 } from '../core/team-ownership.js'
 import {
   NativeTeamStore,
@@ -25,8 +31,13 @@ import {
 import { TeamMemberToolRegistry } from '../tools/team-member-tools.js'
 import { TeamMailboxService, type TeamMailboxEndpoint } from './team-mailbox.js'
 
+const MAX_TIMER_MS = 2_147_483_647
+
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export interface TeamCreateTaskInput extends Omit<TeamTask, 'execution'> {}
+export interface TeamCreateTaskInput extends Omit<
+  TeamTask,
+  'execution' | 'usage'
+> {}
 
 export interface TeamCreateInput {
   readonly teamId: string
@@ -34,6 +45,22 @@ export interface TeamCreateInput {
   readonly leadSessionId: string
   readonly roster: readonly TeamMember[]
   readonly tasks: readonly TeamCreateTaskInput[]
+  readonly leadPolicy?: TeamLeadPolicy
+  readonly executionPolicy?: TeamExecutionPolicy
+  readonly commitPolicy?: TeamCommitPolicy
+  readonly budgets?: Partial<typeof DEFAULT_TEAM_BUDGETS>
+}
+
+export interface TeamAgentProgress {
+  readonly generation: number
+  readonly totalTokens: number
+  readonly durationMs: number
+}
+
+export interface TeamAgentRunResult {
+  readonly status: 'completed' | 'failed' | 'orphaned'
+  readonly totalTokens: number
+  readonly durationMs: number
 }
 
 export interface TeamAgentRuntime {
@@ -48,7 +75,8 @@ export interface TeamAgentRuntime {
     readonly permissions: PermissionResolver
     readonly signal: AbortSignal
     readonly mailbox: TeamMailboxEndpoint
-  }): Promise<'completed' | 'failed' | 'orphaned'>
+    readonly reportProgress: (progress: TeamAgentProgress) => void
+  }): Promise<TeamAgentRunResult>
 }
 
 export interface LocalTeamManagerOptions {
@@ -71,6 +99,28 @@ function owner(claim: NativeTeamClaim): LifecycleOwner {
 
 function now(): string {
   return new Date().toISOString()
+}
+
+function parseTeamAgentRunResult(value: unknown): TeamAgentRunResult {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('Invalid Team agent result')
+  const result = value as Record<string, unknown>
+  if (
+    Object.keys(result).some(
+      (key) => !['status', 'totalTokens', 'durationMs'].includes(key),
+    ) ||
+    !['completed', 'failed', 'orphaned'].includes(String(result.status)) ||
+    !Number.isSafeInteger(result.totalTokens) ||
+    Number(result.totalTokens) < 0 ||
+    !Number.isSafeInteger(result.durationMs) ||
+    Number(result.durationMs) < 0
+  )
+    throw new Error('Invalid Team agent result')
+  return Object.freeze({
+    status: result.status as TeamAgentRunResult['status'],
+    totalTokens: result.totalTokens as number,
+    durationMs: result.durationMs as number,
+  })
 }
 
 export class LocalTeamManager {
@@ -103,16 +153,32 @@ export class LocalTeamManager {
   }
 
   async create(input: TeamCreateInput): Promise<LocalTeam> {
+    if (
+      input.budgets?.maxConcurrent !== undefined &&
+      input.budgets.maxConcurrent > this.options.maxConcurrent
+    )
+      throw new Error('Team maxConcurrent exceeds local host ceiling')
     const timestamp = now()
     const snapshot = parseTeamSnapshot({
-      version: 1,
+      version: 2,
       revision: 0,
       teamId: input.teamId,
       name: input.name,
       projectIdentity: this.store.projectIdentity,
       leadSessionId: input.leadSessionId,
       roster: input.roster,
-      tasks: input.tasks.map((task) => ({ ...task, execution: null })),
+      tasks: input.tasks.map((task) => ({
+        ...task,
+        execution: null,
+        usage: { generation: 0, totalTokens: 0, durationMs: 0 },
+      })),
+      policy: {
+        lead: input.leadPolicy ?? 'hybrid',
+        execution: input.executionPolicy ?? 'sequential',
+        commit: input.commitPolicy ?? 'lead',
+      },
+      budgets: { ...DEFAULT_TEAM_BUDGETS, ...(input.budgets ?? {}) },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
       createdAt: timestamp,
       updatedAt: timestamp,
     })
@@ -198,13 +264,24 @@ export class LocalTeam {
   private finalSnapshot: TeamSnapshot | undefined
   private pumpFailure: unknown
   private readonly indeterminate = new Set<string>()
+  private readonly progressWrites = new Map<string, Promise<void>>()
+  private readonly stopStarted: Promise<void>
+  private readonly resolveStopStarted: () => void
+  private deadlineTimer: ReturnType<typeof setTimeout> | undefined
+  private progressOpen = true
 
   constructor(
     private readonly options: LocalTeamManagerOptions,
     private readonly workspace: TeamWorkspaceProvider,
     private readonly claim: NativeTeamClaim,
     private readonly mailbox: TeamMailboxService,
-  ) {}
+  ) {
+    let resolveStopStarted!: () => void
+    this.stopStarted = new Promise<void>((resolve) => {
+      resolveStopStarted = resolve
+    })
+    this.resolveStopStarted = resolveStopStarted
+  }
 
   mailboxEndpoint(participant: string): TeamMailboxEndpoint {
     return this.mailbox.endpoint(participant)
@@ -213,6 +290,7 @@ export class LocalTeam {
   async initialize(resume: boolean): Promise<void> {
     try {
       if (resume) await this.enqueue(() => this.reconcileOrphans())
+      await this.initializeDeadline()
       await this.pump()
     } catch (error) {
       await this.stop({ drainMs: 0 }).catch(() => undefined)
@@ -223,23 +301,39 @@ export class LocalTeam {
   snapshot(): Promise<TeamSnapshot> {
     if (this.finalSnapshot) return Promise.resolve(this.finalSnapshot)
     if (this.detachedSnapshot) return Promise.resolve(this.detachedSnapshot)
+    if (this.stopping) return this.stopping
     return this.enqueue(() => this.claim.read())
   }
 
   async waitForIdle(): Promise<TeamSnapshot> {
     if (this.finalSnapshot) return this.finalSnapshot
     if (this.detachedSnapshot) return this.detachedSnapshot
+    if (this.stopping) return this.stopping
     for (;;) {
       if (this.pumpFailure) throw this.pumpFailure
       await this.mutation
+      if (this.stopping) return this.stopping
+      if (!this.admissionOpen && this.active.size === 0) {
+        const snapshot = await this.claim.read()
+        if (snapshot.usage.exhausted) {
+          this.beginBudgetShutdown()
+          if (this.stopping) return this.stopping
+        }
+        return snapshot
+      }
       if (this.active.size > 0) {
-        await Promise.allSettled(
-          [...this.active.values()].map((entry) => entry.promise),
-        )
+        await Promise.race([
+          Promise.allSettled(
+            [...this.active.values()].map((entry) => entry.promise),
+          ),
+          this.stopStarted,
+        ])
+        if (this.stopping) return this.stopping
         continue
       }
       await this.pump()
       await this.mutation
+      if (this.stopping) return this.stopping
       if (this.active.size === 0) {
         const snapshot = await this.claim.read()
         if (
@@ -281,12 +375,13 @@ export class LocalTeam {
     if (this.detachedSnapshot) throw new Error('Team is detached')
     if (this.finalSnapshot) return this.finalSnapshot
     if (this.stopping) return this.stopping
-    this.stopping = this.stopInternal(options.drainMs ?? 5_000)
+    const stopping = this.stopWithBudget(options.drainMs)
+    this.stopping = stopping
     try {
-      this.finalSnapshot = await this.stopping
+      this.finalSnapshot = await stopping
       return this.finalSnapshot
     } finally {
-      this.stopping = undefined
+      if (this.stopping === stopping) this.stopping = undefined
     }
   }
 
@@ -311,6 +406,7 @@ export class LocalTeam {
     for (;;) {
       await this.mutation
       if (this.pumpFailure) throw this.pumpFailure
+      if (this.stopping) throw new Error('Team is stopping')
       if (this.active.size > 0) {
         await Promise.allSettled(
           [...this.active.values()].map((entry) => entry.promise),
@@ -328,16 +424,38 @@ export class LocalTeam {
         }).length > 0
       )
         continue
+      this.clearDeadlineTimer()
+      this.progressOpen = false
+      await this.mutation
+      if (this.stopping) throw new Error('Team is stopping')
       const snapshot = await this.enqueue(() => this.claim.read())
-      if (this.active.size > 0) continue
       await this.claim.release()
       return snapshot
     }
   }
 
-  private async stopInternal(drainMs: number): Promise<TeamSnapshot> {
-    if (!Number.isFinite(drainMs) || drainMs < 0)
+  private async stopWithBudget(
+    requestedDrainMs?: number,
+  ): Promise<TeamSnapshot> {
+    const current = await this.enqueue(() => this.claim.read())
+    const drainMs = requestedDrainMs ?? current.budgets.shutdownDrainMs
+    if (
+      !Number.isSafeInteger(drainMs) ||
+      drainMs < 0 ||
+      drainMs > current.budgets.shutdownDrainMs
+    )
       throw new Error('Invalid drainMs')
+    this.resolveStopStarted()
+    try {
+      return await this.stopInternal(drainMs)
+    } catch (error) {
+      this.pumpFailure ??= error
+      throw error
+    }
+  }
+
+  private async stopInternal(drainMs: number): Promise<TeamSnapshot> {
+    this.clearDeadlineTimer()
     this.admissionOpen = false
     await this.enqueue(() => this.markCancelling())
     const activeAtStop = [...this.active.entries()]
@@ -357,9 +475,17 @@ export class LocalTeam {
       // one timed-out sibling must not orphan a sibling that drained.
       void winner
     }
+    this.progressOpen = false
+    await this.mutation
     const snapshot = await this.enqueue(() => this.finishStopping(activeAtStop))
     await this.claim.release()
     return snapshot
+  }
+
+  private clearDeadlineTimer(): void {
+    if (!this.deadlineTimer) return
+    clearTimeout(this.deadlineTimer)
+    this.deadlineTimer = undefined
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -491,37 +617,67 @@ export class LocalTeam {
     const controller = new AbortController()
     const entry = {} as ActiveRuntime
     const promise = (async () => {
-      let result: 'completed' | 'failed' | 'orphaned'
+      let result!: TeamAgentRunResult
       try {
-        result = await this.options.runtime.run({
-          teamId: this.claim.teamId,
-          task,
-          member,
-          generation: task.execution?.generation ?? 1,
-          cwd,
-          branch,
-          tools: new TeamMemberToolRegistry({
-            base: this.options.baseTools,
-            access: member.access,
+        result = parseTeamAgentRunResult(
+          await this.options.runtime.run({
+            teamId: this.claim.teamId,
+            task,
+            member,
+            generation: task.execution?.generation ?? 1,
             cwd,
+            branch,
+            tools: new TeamMemberToolRegistry({
+              base: this.options.baseTools,
+              access: member.access,
+              cwd,
+            }),
+            permissions: this.options.permissions,
+            signal: controller.signal,
+            mailbox: this.mailbox.endpoint(member.name),
+            reportProgress: (progress) => {
+              if (entry.runtimeSettled || entry.settled) return
+              void this.queueProgress(
+                task.id,
+                task.execution?.generation ?? 1,
+                progress,
+              )
+            },
           }),
-          permissions: this.options.permissions,
-          signal: controller.signal,
-          mailbox: this.mailbox.endpoint(member.name),
-        })
+        )
         entry.runtimeSettled = true
       } catch {
         entry.runtimeSettled = true
-        await this.complete(task.id, task.execution?.generation ?? 1, 'failed')
+        try {
+          await (this.progressWrites.get(task.id) ?? Promise.resolve())
+        } catch {
+          entry.settled = true
+          this.active.delete(task.id)
+          this.progressWrites.delete(task.id)
+          return
+        }
+        await this.complete(task.id, task.execution?.generation ?? 1, {
+          status: 'failed',
+        })
         entry.settled = true
         this.active.delete(task.id)
+        this.progressWrites.delete(task.id)
         return
       }
       try {
-        await this.complete(task.id, task.execution?.generation ?? 1, result)
+        await (this.progressWrites.get(task.id) ?? Promise.resolve())
+        await this.queueProgress(task.id, entry.generation, {
+          generation: entry.generation,
+          totalTokens: result.totalTokens,
+          durationMs: result.durationMs,
+        })
+        await this.complete(task.id, entry.generation, {
+          status: result.status,
+        })
       } finally {
         entry.settled = true
         this.active.delete(task.id)
+        this.progressWrites.delete(task.id)
       }
     })()
     entry.generation = task.execution?.generation ?? 1
@@ -535,19 +691,31 @@ export class LocalTeam {
   private async complete(
     taskId: string,
     generation: number,
-    result: 'completed' | 'failed' | 'orphaned',
+    result: Pick<TeamAgentRunResult, 'status'>,
   ): Promise<void> {
+    if (!this.progressOpen || this.finalSnapshot || this.detachedSnapshot)
+      return
     try {
       await this.enqueue(async () => {
         const current = await this.claim.read()
         const task = current.tasks.find((candidate) => candidate.id === taskId)
         if (!task?.execution || task.execution.generation !== generation) return
-        if (!['queued', 'running', 'waiting'].includes(task.execution.state))
+        if (
+          !['queued', 'running', 'waiting', 'cancelling'].includes(
+            task.execution.state,
+          )
+        )
           return
         const nextExecution =
-          result === 'orphaned'
+          result.status === 'orphaned'
             ? markLifecycleOrphaned(task.execution, this.claim.token)
-            : transitionLifecycle(task.execution, result, this.claim.token)
+            : transitionLifecycle(
+                task.execution,
+                task.execution.state === 'cancelling'
+                  ? 'cancelled'
+                  : result.status,
+                this.claim.token,
+              )
         await this.claim.save(
           current.revision,
           withTeamTaskExecution(current, taskId, nextExecution),
@@ -565,6 +733,118 @@ export class LocalTeam {
         this.pumpFailure ??= error
       }
     }
+  }
+
+  private queueProgress(
+    taskId: string,
+    generation: number,
+    progress: TeamAgentProgress,
+  ): Promise<void> {
+    if (!this.progressOpen || this.finalSnapshot || this.detachedSnapshot)
+      return Promise.resolve()
+    const write = this.enqueue(() =>
+      this.persistProgress(taskId, generation, progress),
+    )
+    const settled = write.then((exhausted) => {
+      if (exhausted) this.beginBudgetShutdown()
+    })
+    this.progressWrites.set(taskId, settled)
+    void settled.catch((error) => {
+      this.indeterminate.add(taskId)
+      this.pumpFailure ??= error
+    })
+    return settled
+  }
+
+  private async persistProgress(
+    taskId: string,
+    generation: number,
+    progress: TeamAgentProgress,
+  ): Promise<boolean> {
+    const current = await this.claim.read()
+    const task = current.tasks.find((candidate) => candidate.id === taskId)
+    if (
+      progress.generation !== generation ||
+      !task?.execution ||
+      task.execution.generation !== generation ||
+      !['queued', 'running', 'waiting', 'cancelling'].includes(
+        task.execution.state,
+      )
+    )
+      return false
+    const taskNext = recordTeamTaskProgress(current, taskId, progress)
+    let saved = await this.claim.save(current.revision, taskNext)
+    const next = updateTeamUsageDuration(
+      saved,
+      Math.max(
+        saved.usage.durationMs,
+        Date.now() - Date.parse(saved.createdAt),
+      ),
+    )
+    saved = await this.claim.save(saved.revision, next)
+    const exhausted = saved.usage.exhausted !== null
+    if (exhausted) this.admissionOpen = false
+    return exhausted
+  }
+
+  private async initializeDeadline(): Promise<void> {
+    const snapshot = await this.claim.read()
+    if (snapshot.usage.exhausted) {
+      this.admissionOpen = false
+      this.beginBudgetShutdown()
+      return
+    }
+    const deadline =
+      Date.parse(snapshot.createdAt) + snapshot.budgets.maxDurationMs
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      const exhausted = await this.enqueue(() => this.exhaustDuration())
+      if (exhausted) this.beginBudgetShutdown()
+      return
+    }
+    const delay = Math.min(remaining, MAX_TIMER_MS)
+    this.deadlineTimer = setTimeout(() => {
+      this.deadlineTimer = undefined
+      void this.initializeDeadline().catch((error) => {
+        this.pumpFailure ??= error
+      })
+    }, delay)
+    if (typeof this.deadlineTimer === 'object' && 'unref' in this.deadlineTimer)
+      this.deadlineTimer.unref()
+  }
+
+  private async exhaustDuration(): Promise<boolean> {
+    const current = await this.claim.read()
+    if (current.usage.exhausted) {
+      this.admissionOpen = false
+      return true
+    }
+    const next = updateTeamUsageDuration(
+      current,
+      Math.max(
+        current.usage.durationMs,
+        Date.now() - Date.parse(current.createdAt),
+        current.budgets.maxDurationMs,
+      ),
+    )
+    const saved = await this.claim.save(current.revision, next)
+    const exhausted = saved.usage.exhausted !== null
+    if (exhausted) this.admissionOpen = false
+    return exhausted
+  }
+
+  private beginBudgetShutdown(): void {
+    if (this.stopping || this.finalSnapshot || this.detachedSnapshot) return
+    this.admissionOpen = false
+    const shutdown = this.stopWithBudget()
+    this.stopping = shutdown
+    void shutdown
+      .then((snapshot) => {
+        this.finalSnapshot = snapshot
+      })
+      .catch((error) => {
+        this.pumpFailure ??= error
+      })
   }
 
   private async markCancelling(): Promise<void> {
