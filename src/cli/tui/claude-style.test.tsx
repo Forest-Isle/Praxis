@@ -19,7 +19,6 @@ import {
   MemoryDashboard,
   MarkdownText,
   MentionPicker,
-  PermissionDashboard,
   SelectionMenu,
   SessionIdentity,
   SessionPicker,
@@ -1431,131 +1430,6 @@ describe('Claude-style TUI components', () => {
     expect(detail).not.toContain('─')
     expect(detail).not.toContain('❯')
     expect(detail).not.toContain('\u001B[7m')
-  })
-
-  it('renders permission tabs, scoped rules, search, and workspace modes', () => {
-    const rules = [
-      {
-        behavior: 'allow' as const,
-        rule: 'Bash(npm test:*)',
-        scope: 'project' as const,
-        path: '/project/.claude/settings.json',
-      },
-    ]
-    const allow = render(
-      <PermissionDashboard
-        tabIndex={1}
-        selectedIndex={0}
-        query="npm"
-        rules={rules}
-        recentDenied={[]}
-        workspaceDirectories={[
-          { path: '/project', original: true },
-          { path: '/shared', original: false },
-        ]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(allow.lastFrame()).toContain('Recently denied')
-    expect(allow.lastFrame()).toContain('⌕ npm')
-    expect(allow.lastFrame()).toContain(
-      "Praxis Code won't ask before using allowed tools.",
-    )
-    expect(allow.lastFrame()).toContain('1. Add a new rule…')
-    expect(allow.lastFrame()).toContain('2. Bash(npm test:*)')
-
-    const workspace = render(
-      <PermissionDashboard
-        tabIndex={4}
-        selectedIndex={0}
-        query=""
-        rules={rules}
-        recentDenied={[]}
-        workspaceDirectories={[
-          { path: '/project', original: true },
-          { path: '/shared', original: false },
-        ]}
-        width={100}
-        screenReader={false}
-      />,
-    )
-    expect(workspace.lastFrame()).toContain(
-      '/project (Original working directory)',
-    )
-    expect(workspace.lastFrame()).toContain('/shared')
-    expect(workspace.lastFrame()).toContain('1. /shared')
-    expect(workspace.lastFrame()).toContain('2. Add directory…')
-  })
-
-  it('announces permission tab and row focus textually for screen readers', () => {
-    const props = {
-      query: 'npm',
-      rules: [
-        {
-          behavior: 'allow' as const,
-          rule: 'Bash(npm test:*)',
-          scope: 'project' as const,
-          path: '/project/.claude/settings.json',
-        },
-      ],
-      recentDenied: [],
-      workspaceDirectories: [
-        { path: '/project', original: true },
-        { path: '/shared', original: false },
-      ],
-      width: 100,
-      screenReader: true,
-    }
-    const addRule = render(
-      <PermissionDashboard {...props} tabIndex={1} selectedIndex={0} />,
-    ).lastFrame()
-    const existingRule = render(
-      <PermissionDashboard {...props} tabIndex={1} selectedIndex={1} />,
-    ).lastFrame()
-
-    expect(addRule).toContain('Current tab: Allow')
-    expect(addRule).toContain('Search: npm')
-    expect(addRule).toContain('Selected: 1. Add a new rule…')
-    expect(existingRule).toContain('Selected: 2. Bash(npm test:*)')
-    expect(`${addRule}${existingRule}`).not.toContain('❯')
-    expect(`${addRule}${existingRule}`).not.toContain('⌕')
-  })
-
-  it('renders the native Recently denied action and controls', () => {
-    const frame = render(
-      <PermissionDashboard
-        tabIndex={0}
-        selectedIndex={0}
-        query=""
-        rules={[]}
-        recentDenied={[
-          {
-            id: 'denied-1',
-            call: {
-              id: 'call-1',
-              name: 'Bash',
-              input: { command: 'rm /tmp/target' },
-            },
-            display: 'Delete target',
-            reason: 'Classifier policy',
-            sessionId: 'session-1',
-          },
-        ]}
-        workspaceDirectories={[]}
-        width={100}
-        screenReader={false}
-      />,
-    ).lastFrame()
-
-    expect(frame).toContain(
-      'Commands recently denied by the auto mode classifier.',
-    )
-    expect(frame).toContain('1. ✘ Delete target  Classifier policy')
-    expect(frame).toContain(
-      'Enter to approve · r to retry · ↑/↓ to navigate · Esc to cancel',
-    )
-    expect(frame).not.toContain('Clear recently denied')
   })
 
   it('renders the observed built-in theme choices and active profile', () => {

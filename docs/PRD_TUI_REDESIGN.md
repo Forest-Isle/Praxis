@@ -140,12 +140,15 @@ around a minimal, low-noise reading model:
 ## Further Notes
 
 The redesign is an expand-contract migration. Its retained transcript window,
-atomic presentation environment, root `TuiScreenModel`, and semantic Help
-surface now form one pure projection path for fullscreen, classic, and
-screen-reader structure. Help retains the user's actual `?` or `/help`
-invocation, projects one canonical tab/shortcut/command model, and feeds both
-visual and linear screen-reader adapters without exposing raw menu state.
-Existing leaf dialogs, menus, and dashboards remain behind an explicit legacy
+atomic presentation environment, root `TuiScreenModel`, semantic Help surface,
+and Permissions-domain surface now form one pure projection path for
+fullscreen, classic, and screen-reader structure. Help retains the user's
+actual `?` or `/help` invocation and projects one canonical
+tab/shortcut/command model. Permissions project active tool and recovery
+decisions, dashboard tabs and rows, rule input/scope/deletion, and workspace
+input/deletion through one normalized discriminated model. Their visual and
+linear screen-reader adapters no longer read raw menu or permission state.
+Other leaf dialogs, menus, and dashboards remain behind an explicit legacy
 secondary marker while their own semantic surfaces migrate in later slices.
 Each slice must leave a demoable path working and preserve the shared
 transcript/runtime boundary.

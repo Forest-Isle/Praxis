@@ -10,8 +10,11 @@ import {
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' }
-  readonly priority: { readonly kind: 'priority' }
-  readonly secondary: { readonly kind: 'menu' }
+  readonly priority: {
+    readonly kind: 'priority'
+    readonly surface?: unknown
+  }
+  readonly secondary: { readonly kind: 'menu'; readonly surface?: unknown }
   readonly overlay: { readonly kind: 'overlay'; readonly id: number }
 }
 
@@ -107,6 +110,39 @@ describe('projectTuiScreen', () => {
       expect(foreground.overlays[0]).toBe(first)
       expect(foreground.overlays[1]).toBe(second)
     }
+  })
+
+  it('preserves permission payloads through generic precedence', () => {
+    const permissionPriority = {
+      kind: 'permission-dashboard',
+      selectedIndex: 1,
+    }
+    const permissionSecondary = {
+      kind: 'permission-scope',
+      selectedIndex: 0,
+    }
+    const priority = projectTuiScreen<Surfaces>(
+      makeInput({
+        surfaces: {
+          priority: { kind: 'priority', surface: permissionPriority },
+          secondary: { kind: 'menu', surface: permissionSecondary },
+          overlays: [],
+        },
+      }),
+    )
+    expect(conversation(priority).foreground).toEqual({
+      kind: 'priority',
+      surface: { kind: 'priority', surface: permissionPriority },
+    })
+
+    const legacy = { kind: 'menu' as const }
+    const secondary = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: legacy, overlays: [] } }),
+    )
+    expect(conversation(secondary).foreground).toEqual({
+      kind: 'secondary',
+      surface: legacy,
+    })
   })
 
   it('projects fresh, started, resumed, and screen-reader intros', () => {

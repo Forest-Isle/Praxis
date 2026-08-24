@@ -72,7 +72,6 @@ import {
   MemoryDashboard,
   MentionPicker,
   ModelMenu,
-  PermissionDashboard,
   SelectionMenu,
   SessionPicker,
   ThemePicker,
@@ -261,10 +260,12 @@ import {
   type TuiElicitationFormState,
 } from './tui/mcp-elicitation.js'
 import { openTuiUrl } from './tui/open-url.js'
+import { projectTuiToolPermission } from './tui/tool-permission.js'
 import {
-  projectTuiToolPermission,
-  ToolPermissionDialog,
-} from './tui/tool-permission.js'
+  projectTuiPermissionSurface,
+  type TuiPermissionSurfaceModel,
+} from './tui/permission-surface-model.js'
+import { PermissionSurface } from './tui/permission-surface.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import { DoctorDashboard } from './tui/doctor-dashboard.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
@@ -929,25 +930,6 @@ function questionAnswer(question: ClaudeQuestion, input: string): string {
       return option.label
     })
     .join(', ')
-}
-
-function permissionDeleteTitle(behavior: TuiPermissionBehavior): string {
-  return `Delete ${
-    behavior === 'allow' ? 'allowed' : behavior === 'deny' ? 'denied' : 'ask'
-  } tool?`
-}
-
-function permissionScopeLabel(scope: ClaudeResourceScope): string {
-  return scope === 'local'
-    ? 'From project local settings'
-    : scope === 'project'
-      ? 'From project settings'
-      : 'From user settings'
-}
-
-function permissionRuleDescription(rule: string): string | undefined {
-  const bashPrefix = /^Bash\((.*?)(?::\*| \*)\)$/u.exec(rule)?.[1]?.trim()
-  return bashPrefix ? `Any Bash command starting with ${bashPrefix}` : undefined
 }
 
 function describeTool(
@@ -1700,8 +1682,107 @@ export function InteractiveApp({
     permissionMode: runtimePreferences.permissionMode,
     ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
   }
+  const workspaceDirectories = useMemo(
+    () =>
+      [
+        runtimeCwd,
+        ...runtimePreferences.additionalDirectories.filter(
+          (path) => path !== runtimeCwd,
+        ),
+      ].map((path) => ({ path, original: path === runtimeCwd })),
+    [runtimeCwd, runtimePreferences.additionalDirectories],
+  )
+  const permissionPrioritySurface =
+    useMemo<TuiPermissionSurfaceModel | null>(() => {
+      if (!permission) return null
+      if (permission.kind === 'tool' && toolPermissionModel) {
+        return projectTuiPermissionSurface({
+          kind: 'tool-request',
+          model: toolPermissionModel,
+          selection: permissionSelection,
+          feedbackMode: permissionFeedbackMode,
+          feedback: input,
+          ruleEditor: permissionRuleEditor,
+        })
+      }
+      return projectTuiPermissionSurface({
+        kind: 'recovery-request',
+        heading: `Retry interrupted ${permission.call.name}?`,
+        display: describeTool(permission.call, sensitiveValues),
+        selection: permissionSelection,
+        feedbackMode: permissionFeedbackMode,
+        feedback: input,
+      })
+    }, [
+      input,
+      permission,
+      permissionFeedbackMode,
+      permissionRuleEditor,
+      permissionSelection,
+      sensitiveValues,
+      toolPermissionModel,
+    ])
+  const permissionManagementSurface =
+    useMemo<TuiPermissionSurfaceModel | null>(() => {
+      if (!menu) return null
+      switch (menu.kind) {
+        case 'permission-dashboard':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            tabIndex: menu.tabIndex,
+            selectedIndex: menu.selectedIndex,
+            query: menu.query,
+            rules: menu.rules,
+            recentDenied,
+            retryingDeniedId,
+            workspaceDirectories,
+          })
+        case 'permission-rule-input':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            behavior: menu.behavior,
+            value: input,
+          })
+        case 'permission-scope':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            behavior: menu.behavior,
+            rule: menu.rule,
+            selectedIndex: menu.selectedIndex,
+            settingsDirectory,
+          })
+        case 'permission-delete':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            rule: menu.rule,
+            selectedIndex: menu.selectedIndex,
+          })
+        case 'workspace-directory-input':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            value: input,
+          })
+        case 'workspace-directory-delete':
+          return projectTuiPermissionSurface({
+            kind: menu.kind,
+            path: menu.path,
+            selectedIndex: menu.selectedIndex,
+          })
+        default:
+          return null
+      }
+    }, [
+      input,
+      menu,
+      recentDenied,
+      retryingDeniedId,
+      settingsDirectory,
+      workspaceDirectories,
+    ])
   type InteractiveSecondarySurface =
-    TuiHelpSurfaceModel | { readonly kind: 'legacy-secondary' }
+    | TuiHelpSurfaceModel
+    | TuiPermissionSurfaceModel
+    | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
     [],
@@ -1736,12 +1817,15 @@ export function InteractiveApp({
       ? undefined
       : menu.kind === 'help'
         ? (helpSurface ?? undefined)
-        : legacySecondarySurface
+        : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: { readonly kind: 'session-picker' }
     readonly priority:
       | { readonly kind: 'editor-wait' }
-      | { readonly kind: 'permission' }
+      | {
+          readonly kind: 'permission'
+          readonly surface: TuiPermissionSurfaceModel
+        }
       | { readonly kind: 'plan-approval' }
       | { readonly kind: 'question' }
       | { readonly kind: 'elicitation' }
@@ -1762,8 +1846,13 @@ export function InteractiveApp({
       keybindingsEditing ||
       memoryEditorRequest !== null
         ? { priority: { kind: 'editor-wait' } }
-        : permission !== null
-          ? { priority: { kind: 'permission' } }
+        : permission !== null && permissionPrioritySurface !== null
+          ? {
+              priority: {
+                kind: 'permission',
+                surface: permissionPrioritySurface,
+              },
+            }
           : planApproval !== null
             ? { priority: { kind: 'plan-approval' } }
             : question !== null
@@ -1788,6 +1877,7 @@ export function InteractiveApp({
       keybindingsEditing,
       memoryEditorRequest,
       permission,
+      permissionPrioritySurface,
       planApproval,
       question,
       elicitation,
@@ -1886,12 +1976,6 @@ export function InteractiveApp({
       ) || existsSync(join(runtimeCwd, 'settings.json'))
     return projectSettings ? 'User settings, Project settings' : 'User settings'
   })()
-  const workspaceDirectories = [
-    runtimeCwd,
-    ...runtimePreferences.additionalDirectories.filter(
-      (path) => path !== runtimeCwd,
-    ),
-  ].map((path) => ({ path, original: path === runtimeCwd }))
   const permissionOptions = useMemo(
     () => [
       ...PERMISSION_OPTIONS,
@@ -7723,55 +7807,12 @@ export function InteractiveApp({
             </Box>
             {selectedPriority?.kind === 'editor-wait' ? (
               <ExternalEditorWait screenReader={axScreenReader} />
-            ) : selectedPriority?.kind === 'permission' && permission ? (
-              permission.kind === 'tool' && toolPermissionModel ? (
-                <ToolPermissionDialog
-                  model={toolPermissionModel}
-                  selection={permissionSelection}
-                  feedbackMode={permissionFeedbackMode}
-                  feedback={input}
-                  ruleEditor={permissionRuleEditor}
-                  screenReader={axScreenReader}
-                />
-              ) : (
-                <DialogFrame
-                  title={`Retry interrupted ${permission.call.name}?`}
-                  screenReader={axScreenReader}
-                >
-                  <Box flexDirection="column" paddingX={1} paddingY={1}>
-                    <Text bold>
-                      {describeTool(permission.call, sensitiveValues)}
-                    </Text>
-                  </Box>
-                  <Text>Do you want to proceed?</Text>
-                  <DecisionOption
-                    selected={permissionSelection === 0}
-                    screenReader={axScreenReader}
-                  >
-                    1. Yes
-                  </DecisionOption>
-                  <DecisionOption
-                    selected={permissionSelection === 1}
-                    screenReader={axScreenReader}
-                  >
-                    2. No
-                  </DecisionOption>
-                  {permissionFeedbackMode ? (
-                    <Text>
-                      ›{' '}
-                      {input ||
-                        (permissionSelection === 0
-                          ? 'tell Praxis what to do next'
-                          : 'tell Praxis what to do differently')}
-                    </Text>
-                  ) : null}
-                  <Text dimColor>
-                    {permissionFeedbackMode
-                      ? 'Enter to submit · Tab to collapse · Esc to cancel'
-                      : 'Enter to confirm · Tab to add feedback · Esc to cancel'}
-                  </Text>
-                </DialogFrame>
-              )
+            ) : selectedPriority?.kind === 'permission' ? (
+              <PermissionSurface
+                model={selectedPriority.surface}
+                width={width}
+                screenReader={axScreenReader}
+              />
             ) : selectedPriority?.kind === 'plan-approval' && planApproval ? (
               <DialogFrame title="Ready to code?" screenReader={axScreenReader}>
                 <Text>Here is Praxis&apos;s plan:</Text>
@@ -8039,103 +8080,19 @@ export function InteractiveApp({
                 <Text>add context (optional): {input}</Text>
                 <Text dimColor>Enter to summarize · Esc to go back</Text>
               </DialogFrame>
-            ) : menu?.kind === 'permission-rule-input' ? (
-              <Box flexDirection="column">
-                <Text bold>Add {menu.behavior} permission rule</Text>
-                <Text>
-                  Permission rules are a tool name, optionally followed by a
-                  specifier in parentheses.
-                </Text>
-                <Text>e.g., WebFetch or Bash(ls *)</Text>
-                <Text> </Text>
-                <Box
-                  borderStyle={axScreenReader ? undefined : 'round'}
-                  paddingX={axScreenReader ? 0 : 1}
-                >
-                  <Text {...(input ? {} : { dimColor: true })}>
-                    {input || 'Enter permission rule…'}
-                  </Text>
-                </Box>
-                <Text dimColor>Enter to submit · Esc to cancel</Text>
-              </Box>
-            ) : menu?.kind === 'workspace-directory-input' ? (
-              <Box flexDirection="column">
-                <Text bold>Add directory to workspace</Text>
-                <Text>
-                  Praxis Code will be able to read files in this directory and
-                  make edits when auto-accept edits is on.
-                </Text>
-                <Text> </Text>
-                <Text>Enter the path to the directory:</Text>
-                <Box
-                  borderStyle={axScreenReader ? undefined : 'round'}
-                  paddingX={axScreenReader ? 0 : 1}
-                >
-                  <Text {...(input ? {} : { dimColor: true })}>
-                    {input || 'Directory path…'}
-                  </Text>
-                </Box>
-                <Text dimColor>
-                  Tab to complete · Enter to add · Esc to cancel
-                </Text>
-              </Box>
-            ) : menu?.kind === 'permission-delete' ? (
-              <DialogFrame
-                title={permissionDeleteTitle(menu.rule.behavior)}
-                screenReader={axScreenReader}
-              >
-                <Text>{menu.rule.rule}</Text>
-                {permissionRuleDescription(menu.rule.rule) ? (
-                  <Text dimColor>
-                    {permissionRuleDescription(menu.rule.rule)}
-                  </Text>
-                ) : null}
-                <Text dimColor>{permissionScopeLabel(menu.rule.scope)}</Text>
-                <Text> </Text>
-                <Text>
-                  Are you sure you want to delete this permission rule?
-                </Text>
-                <Text> </Text>
-                <DecisionOption
-                  selected={menu.selectedIndex === 0}
-                  screenReader={axScreenReader}
-                >
-                  1. Yes
-                </DecisionOption>
-                <DecisionOption
-                  selected={menu.selectedIndex === 1}
-                  screenReader={axScreenReader}
-                >
-                  2. No
-                </DecisionOption>
-                <Text dimColor>Esc to cancel</Text>
-              </DialogFrame>
-            ) : menu?.kind === 'workspace-directory-delete' ? (
-              <Box flexDirection="column">
-                <Text bold>Remove directory from workspace?</Text>
-                <Text> {menu.path}</Text>
-                <Text> </Text>
-                <Text>
-                  Praxis Code will no longer have access to files in this
-                  directory.
-                </Text>
-                <Text> </Text>
-                <DecisionOption
-                  selected={menu.selectedIndex === 0}
-                  screenReader={axScreenReader}
-                >
-                  1. Yes
-                </DecisionOption>
-                <DecisionOption
-                  selected={menu.selectedIndex === 1}
-                  screenReader={axScreenReader}
-                >
-                  2. No
-                </DecisionOption>
-                <Text dimColor>Enter to confirm · Esc to cancel</Text>
-              </Box>
             ) : selectedSecondarySurface !== null && menu !== null ? (
-              selectedSecondarySurface.kind === 'help' ? (
+              selectedSecondarySurface.kind === 'permission-dashboard' ||
+              selectedSecondarySurface.kind === 'permission-rule-input' ||
+              selectedSecondarySurface.kind === 'permission-scope' ||
+              selectedSecondarySurface.kind === 'permission-delete' ||
+              selectedSecondarySurface.kind === 'workspace-directory-input' ||
+              selectedSecondarySurface.kind === 'workspace-directory-delete' ? (
+                <PermissionSurface
+                  model={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : selectedSecondarySurface.kind === 'help' ? (
                 <HelpMenu
                   model={selectedSecondarySurface}
                   width={width}
@@ -8151,50 +8108,11 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'permission-dashboard' ? (
-                <PermissionDashboard
-                  tabIndex={menu.tabIndex}
-                  selectedIndex={menu.selectedIndex}
-                  query={menu.query}
-                  rules={menu.rules}
-                  recentDenied={recentDenied}
-                  retryingDeniedId={retryingDeniedId}
-                  workspaceDirectories={workspaceDirectories}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
                   tab={menu.tab}
                   selectedIndex={menu.selectedIndex}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'permission-scope' ? (
-                <SelectionMenu
-                  title="Where should this rule be saved?"
-                  description={`${menu.rule}${
-                    permissionRuleDescription(menu.rule)
-                      ? ` · ${permissionRuleDescription(menu.rule)}`
-                      : ''
-                  }`}
-                  options={[
-                    {
-                      label: 'Project settings (local)',
-                      description: `Saved in ${settingsDirectory}/settings.local.json`,
-                    },
-                    {
-                      label: 'Project settings',
-                      description: `Checked in at ${settingsDirectory}/settings.json`,
-                    },
-                    {
-                      label: 'User settings',
-                      description: `Saved in ~/${settingsDirectory}/settings.json`,
-                    },
-                  ]}
-                  selectedIndex={menu.selectedIndex}
-                  footer="Enter to confirm · Esc to cancel"
                   width={width}
                   screenReader={axScreenReader}
                 />
