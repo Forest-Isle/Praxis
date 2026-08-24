@@ -7,6 +7,7 @@ import type {
   DoctorProgressReport,
   DoctorReport,
 } from '../../maintenance/doctor.js'
+import type { TuiDoctorSurfaceModel } from './doctor-surface-model.js'
 
 export interface DoctorWarningGroup {
   heading: string
@@ -119,18 +120,15 @@ function WarningGroups({
 }
 
 export function DoctorDashboard({
-  loading,
-  report,
-  error,
+  surface,
   width,
   screenReader,
 }: {
-  loading: boolean
-  report: DoctorReport | DoctorProgressReport | null
-  error: string | null
+  surface: TuiDoctorSurfaceModel
   width: number
   screenReader: boolean
 }) {
+  const { loading, report, error } = surface
   const footer = screenReader
     ? 'Enter to continue. Esc to cancel.'
     : 'Enter to continue · Esc to cancel'
