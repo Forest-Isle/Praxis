@@ -28,11 +28,14 @@ describe('SubagentLifecycleStore', () => {
     )
 
     await expect(store.read()).resolves.toBeNull()
-    await store.write('failed', 'provider unavailable')
+    const execution = await store.start()
+    await execution.running()
+    await execution.finish('failed', undefined, 'provider unavailable')
+    await execution.release()
     const record = await store.read()
     if (!record) throw new Error('Expected persisted lifecycle record')
     expect(record).toMatchObject({
-      version: 1,
+      version: 2,
       sessionId,
       agentId,
       status: 'failed',
@@ -78,6 +81,94 @@ describe('SubagentLifecycleStore', () => {
     ).toThrow('Invalid subagent lifecycle agent ID')
   })
 
+  it('reads v1 without rewriting and upgrades only on a legitimate mutation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-lifecycle-v1-'))
+    const path = join(root, 'subagent-lifecycle', sessionId, `${agentId}.json`)
+    await mkdir(dirname(path), { recursive: true })
+    const legacy = {
+      version: 1,
+      sessionId,
+      agentId,
+      status: 'running',
+      updatedAt: '2026-08-24T00:00:00.000Z',
+    }
+    await writeFile(path, `${JSON.stringify(legacy)}\n`)
+    const store = new SubagentLifecycleStore(root, sessionId, agentId)
+    await expect(store.read()).resolves.toMatchObject({
+      version: 2,
+      lifecycle: { state: 'orphaned', generation: 1, previousOwnerToken: null },
+    })
+    await expect(readFile(path, 'utf8')).resolves.toBe(
+      `${JSON.stringify(legacy)}\n`,
+    )
+    const execution = await store.recover()
+    await execution.running()
+    await execution.finish('completed', {
+      text: 'recovered',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      toolUseCount: 0,
+      durationMs: 0,
+    })
+    await execution.release()
+    const raw = await readFile(path, 'utf8')
+    expect(JSON.parse(raw)).toMatchObject({
+      version: 2,
+      lifecycle: { state: 'completed' },
+    })
+    expect(JSON.parse(raw)).not.toHaveProperty('status')
+  })
+
+  it('refuses a second live owner and rotates ownership after orphan recovery', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-subagent-lifecycle-owner-'),
+    )
+    const firstStore = new SubagentLifecycleStore(root, sessionId, agentId)
+    const secondStore = new SubagentLifecycleStore(root, sessionId, agentId)
+    const first = await firstStore.start()
+    await expect(secondStore.start()).rejects.toThrow('already owned')
+    await first.release()
+    const recovered = await secondStore.recover()
+    expect(recovered.token).not.toBe(first.token)
+    expect(recovered.generation).toBe(first.generation + 1)
+    await expect(first.finish('failed')).rejects.toThrow(
+      'Lifecycle execution has been released',
+    )
+    await recovered.running()
+    await recovered.finish('completed', {
+      text: 'new generation only',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      toolUseCount: 0,
+      durationMs: 0,
+    })
+    await recovered.release()
+    await expect(secondStore.read()).resolves.toMatchObject({
+      lifecycle: { generation: first.generation + 1, state: 'completed' },
+      result: { text: 'new generation only' },
+    })
+  })
+
+  it('does not hide terminal durable state behind its still-held cleanup lease', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-subagent-terminal-lease-'),
+    )
+    const firstStore = new SubagentLifecycleStore(root, sessionId, agentId)
+    const secondStore = new SubagentLifecycleStore(root, sessionId, agentId)
+    const execution = await firstStore.start()
+    await execution.running()
+    await execution.finish('completed', {
+      text: 'done',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      toolUseCount: 0,
+      durationMs: 0,
+    })
+    const reconciliation = await secondStore.reconcileOwnerLoss()
+    expect(reconciliation).toMatchObject({
+      owned: false,
+      snapshot: { state: 'completed' },
+    })
+    await execution.release()
+  })
+
   it('durably retains terminal result and acknowledges one notification', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-lifecycle-'))
     const transcriptPath = join(root, 'agent.jsonl')
@@ -100,15 +191,15 @@ describe('SubagentLifecycleStore', () => {
       toolUseCount: 1,
       durationMs: 5,
     }
-    await store.write('completed', undefined, {
-      result,
-      notification: {
-        id,
-        status: 'completed',
-        toolUseId: 'call_agent',
-        error: null,
-      },
+    const execution = await store.start()
+    await execution.running()
+    await execution.finish('completed', result, undefined, {
+      id,
+      status: 'completed',
+      toolUseId: 'call_agent',
+      error: null,
     })
+    await execution.release()
     await expect(store.read()).resolves.toMatchObject({
       status: 'completed',
       result,

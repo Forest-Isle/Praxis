@@ -18,6 +18,9 @@ interface LeaseMetadata {
 }
 
 export interface ExclusiveFileLeaseHandle {
+  readonly token: string
+  readonly pid: number
+  readonly createdAt: string
   release(): Promise<void>
 }
 
@@ -65,6 +68,9 @@ export class ExclusiveFileLease {
     const owner = await this.acquire()
     if (!owner) return null
     return {
+      token: owner.token,
+      pid: owner.pid,
+      createdAt: owner.createdAt,
       release: () => this.releaseOwned(this.lockFile, owner.token),
     }
   }

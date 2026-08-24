@@ -209,6 +209,34 @@ describe('TaskPanel', () => {
     )
   })
 
+  it.each([
+    ['queued', 'running'],
+    ['running', 'running'],
+    ['waiting', 'running'],
+    ['cancelling', 'running'],
+    ['cancelled', 'stopped'],
+    ['orphaned', 'interrupted'],
+    ['completed', 'completed'],
+    ['failed', 'failed'],
+  ] as const)(
+    'projects Agent status %s to TUI status %s',
+    (status, expected) => {
+      const task = projectBackgroundAgentTask({
+        agentId: 'a0123456789abcdef',
+        status,
+        outputFile: '/tmp/agent.output',
+        name: null,
+        description: 'Project lifecycle',
+        startedAt: 1_000,
+        error: null,
+        durationMs: null,
+        result: null,
+      })
+
+      expect(task.status).toBe(expected)
+    },
+  )
+
   it('renders a finished shell with its fixed terminal duration', () => {
     const task = projectBackgroundBashTask({
       taskId: 'bfinished1',

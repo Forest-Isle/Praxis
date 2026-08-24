@@ -6,13 +6,16 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import { isTerminalLifecycleState } from '../core/agent-orchestration.js'
 import type { RuntimeEventSink } from '../core/runtime.js'
 import {
   ClaudeJobStore,
+  type ClaudeJobExecution,
   isProcessAlive,
   newClaudeJobIdentity,
   type ClaudeJobState,
   type ClaudeJobDispatch,
+  type ClaudeJobLifecycleView,
   type ClaudeJobSourceCheckpoint,
   type ClaudeJobTempo,
 } from '../persistence/claude-job-store.js'
@@ -351,6 +354,7 @@ export class TopLevelAgentManager {
     const cwd = await canonicalDirectory(options.cwd ?? this.options.cwd)
     let identity: { id: string; sessionId: string } | undefined
     let state: ClaudeJobState | undefined
+    let execution: ClaudeJobExecution | undefined
     for (let attempt = 0; attempt < JOB_CREATE_ATTEMPTS; attempt += 1) {
       const generated = newClaudeJobIdentity()
       const sessionId = options.sourceSessionId
@@ -388,28 +392,68 @@ export class TopLevelAgentManager {
         socketPath: socketPath(this.options.configRoot, generated.id),
         controlToken: randomBytes(24).toString('hex'),
       }
-      if (
-        await this.store.create(candidate, {
-          version: 1,
-          argv: [...options.argv],
-          resume: options.resumeSessionId !== undefined,
-          ...(options.deferInitialTurn ? { deferInitialTurn: true } : {}),
-          ...(options.sourceSessionId === undefined
-            ? {}
-            : { sourceSessionId: options.sourceSessionId }),
-          ...(options.sourceCheckpoint === undefined
-            ? {}
-            : { sourceCheckpoint: options.sourceCheckpoint }),
-        })
-      ) {
+      const created = await this.store.createExecution(candidate, {
+        version: 1,
+        argv: [...options.argv],
+        resume: options.resumeSessionId !== undefined,
+        ...(options.deferInitialTurn ? { deferInitialTurn: true } : {}),
+        ...(options.sourceSessionId === undefined
+          ? {}
+          : { sourceSessionId: options.sourceSessionId }),
+        ...(options.sourceCheckpoint === undefined
+          ? {}
+          : { sourceCheckpoint: options.sourceCheckpoint }),
+      })
+      if (created) {
         identity = { id: generated.id, sessionId }
         state = candidate
+        execution = created
         break
       }
     }
-    if (!identity || !state) throw new Error('Could not allocate agent ID')
+    if (!identity || !state || !execution)
+      throw new Error('Could not allocate agent ID')
 
-    let child: ChildProcess
+    const allocatedExecution = execution
+    let child: ChildProcess | undefined
+    const failLaunch = async (error: unknown): Promise<never> => {
+      const message = redactSensitiveText(
+        error instanceof Error ? error.message : String(error),
+        sensitiveEnvironmentValues(this.options.environment ?? process.env),
+      )
+      const secondary: unknown[] = []
+      if (child?.pid !== undefined) {
+        try {
+          child.kill('SIGTERM')
+        } catch (killError) {
+          secondary.push(killError)
+        }
+      }
+      try {
+        await allocatedExecution.finish('failed', (current) => {
+          const now = new Date().toISOString()
+          return {
+            ...clearWorkerFields(current),
+            state: 'failed',
+            detail: message,
+            tempo: 'idle',
+            updatedAt: now,
+            firstTerminalAt: current.firstTerminalAt ?? now,
+          }
+        })
+      } catch (finishError) {
+        secondary.push(finishError)
+      }
+      try {
+        await allocatedExecution.release()
+      } catch (releaseError) {
+        secondary.push(releaseError)
+      }
+      throw new AggregateError(
+        [error, ...secondary],
+        'Could not start background agent',
+      )
+    }
     try {
       child = spawn(
         this.options.executablePath ?? process.execPath,
@@ -425,52 +469,67 @@ export class TopLevelAgentManager {
           stdio: 'ignore',
         },
       )
+      const spawnedChild = child
       await new Promise<void>((resolveSpawn, rejectSpawn) => {
         const spawned = () => {
-          child.removeListener('error', failed)
+          spawnedChild.removeListener('error', failed)
           resolveSpawn()
         }
         const failed = (error: Error) => {
-          child.removeListener('spawn', spawned)
+          spawnedChild.removeListener('spawn', spawned)
           rejectSpawn(error)
         }
-        child.once('spawn', spawned)
-        child.once('error', failed)
+        spawnedChild.once('spawn', spawned)
+        spawnedChild.once('error', failed)
       })
     } catch (error) {
-      const failedAt = new Date().toISOString()
-      const message = redactSensitiveText(
-        error instanceof Error ? error.message : String(error),
-        sensitiveEnvironmentValues(this.options.environment ?? process.env),
-      )
-      await this.store.update(identity.id, (current) => ({
-        ...clearWorkerFields(current),
-        state: 'failed',
-        detail: message,
-        tempo: 'idle',
-        updatedAt: failedAt,
-        firstTerminalAt: failedAt,
-      }))
-      throw new Error('Could not start background agent', { cause: error })
+      return failLaunch(error)
     }
-    const childPid = child.pid
+    const childPid = child?.pid
     if (!childPid) {
-      await this.store.update(identity.id, (current) => ({
-        ...clearWorkerFields(current),
-        state: 'failed',
-        detail: 'worker failed to start',
-        tempo: 'idle',
+      return failLaunch(new Error('worker failed to start'))
+    }
+    try {
+      await execution.update((current) => ({
+        ...current,
+        pid: childPid,
         updatedAt: new Date().toISOString(),
-        firstTerminalAt: new Date().toISOString(),
       }))
-      throw new Error('Could not start background agent')
+    } catch (error) {
+      return failLaunch(error)
     }
     child.unref()
-    await this.store.update(identity.id, (current) => ({
-      ...current,
-      pid: childPid,
-      updatedAt: new Date().toISOString(),
-    }))
+    try {
+      await execution.handoff()
+    } catch (error) {
+      const secondary: unknown[] = []
+      try {
+        child.kill('SIGTERM')
+      } catch (killError) {
+        secondary.push(killError)
+      }
+      try {
+        await execution.release()
+      } catch (releaseError) {
+        secondary.push(releaseError)
+      }
+      try {
+        const reconciliation = await this.store.reconcileOwnerLoss(identity.id)
+        if (reconciliation.owned) {
+          secondary.push(
+            new Error(
+              `Background agent handoff owner is still held for ${identity.id}`,
+            ),
+          )
+        }
+      } catch (reconcileError) {
+        secondary.push(reconcileError)
+      }
+      throw new AggregateError(
+        [error, ...secondary],
+        'Background agent handoff failed',
+      )
+    }
     return identity
   }
 
@@ -482,27 +541,11 @@ export class TopLevelAgentManager {
       options.cwd === undefined
         ? undefined
         : await canonicalDirectory(options.cwd)
-    const states = await this.store.list()
     const reconciled = await Promise.all(
-      states.map(async (state) => {
-        if (state.state !== 'working' || (await this.workerAlive(state))) {
-          return state
-        }
-        return this.store.update(state.daemonShort, (current) => {
-          if (current.state !== 'working' || current.pid !== state.pid) {
-            return current
-          }
-          const now = new Date().toISOString()
-          return {
-            ...clearWorkerFields(current),
-            state: 'failed',
-            detail: 'worker exited unexpectedly',
-            tempo: 'idle',
-            updatedAt: now,
-            firstTerminalAt: current.firstTerminalAt ?? now,
-          }
-        })
-      }),
+      (await this.store.listWithLifecycle()).map(
+        async (view) =>
+          (await this.readLifecycleView(view.state.daemonShort, view)).state,
+      ),
     )
     const praxis = reconciled
       .filter((state) => cwd === undefined || state.cwd === cwd)
@@ -538,6 +581,47 @@ export class TopLevelAgentManager {
     return [...praxis, ...native].sort(
       (left, right) => right.startedAt - left.startedAt,
     )
+  }
+
+  private async readLifecycleView(
+    id: string,
+    known?: ClaudeJobLifecycleView,
+    reconcileLegacy = true,
+  ): Promise<ClaudeJobLifecycleView> {
+    const view = known ?? (await this.store.readWithLifecycle(id))
+    if (view.legacy || !view.lifecycle) {
+      if (!reconcileLegacy) return view
+      if (
+        view.state.state !== 'working' ||
+        (await this.workerAlive(view.state))
+      )
+        return view
+      const state = await this.store.update(id, (current) => {
+        if (current.state !== 'working' || current.pid !== view.state.pid)
+          return current
+        const now = new Date().toISOString()
+        return {
+          ...clearWorkerFields(current),
+          state: 'failed',
+          detail: 'worker exited unexpectedly',
+          tempo: 'idle',
+          updatedAt: now,
+          firstTerminalAt: current.firstTerminalAt ?? now,
+        }
+      })
+      return { state, lifecycleState: 'failed', lifecycle: null, legacy: true }
+    }
+    if (isTerminalLifecycleState(view.lifecycle.state)) return view
+    if (
+      view.lifecycle.state === 'queued' &&
+      view.state.pid !== undefined &&
+      Number.isFinite(Date.parse(view.state.updatedAt)) &&
+      Date.now() - Date.parse(view.state.updatedAt) <
+        WORKER_REGISTRATION_GRACE_MS &&
+      (await this.workerAlive(view.state))
+    )
+      return view
+    return (await this.store.reconcileOwnerLoss(id)).view
   }
 
   private async nativeSessions(
@@ -618,10 +702,15 @@ export class TopLevelAgentManager {
   }
 
   async stop(id: string): Promise<void> {
-    const state = await this.store.read(id)
-    if (state.state !== 'working') {
-      throw new Error(`Agent ${id} is not running (state: ${state.state})`)
+    let view = await this.readLifecycleView(id)
+    if (view.lifecycle && isTerminalLifecycleState(view.lifecycleState)) {
+      throw new Error(
+        `Agent ${id} is not running (state: ${view.lifecycleState})`,
+      )
     }
+    if (!view.lifecycle && view.state.state !== 'working')
+      throw new Error(`Agent ${id} is not running (state: ${view.state.state})`)
+    const state = view.state
     let stopped = false
     if (state.socketPath && state.controlToken) {
       try {
@@ -642,15 +731,49 @@ export class TopLevelAgentManager {
     ) {
       process.kill(state.pid, 'SIGTERM')
     }
-    const now = new Date().toISOString()
-    await this.store.update(id, (current) => ({
-      ...clearWorkerFields(current),
-      state: 'stopped',
-      detail: 'stopped',
-      tempo: 'idle',
-      updatedAt: now,
-      firstTerminalAt: current.firstTerminalAt ?? now,
-    }))
+    const deadline = Date.now() + STARTUP_CONTROL_WAIT_MS
+    for (;;) {
+      view = await this.readLifecycleView(id)
+      if (view.lifecycle) {
+        if (view.lifecycleState === 'cancelled') return
+        if (isTerminalLifecycleState(view.lifecycleState))
+          throw new Error(
+            `Agent ${id} stop ended in state ${view.lifecycleState}`,
+          )
+      } else if (stopped || view.state.state !== 'working') {
+        if (stopped || view.state.state === 'stopped') {
+          if (stopped && view.state.state === 'working') {
+            const now = new Date().toISOString()
+            await this.store.update(id, (current) => ({
+              ...clearWorkerFields(current),
+              state: 'stopped',
+              detail: 'stopped',
+              tempo: 'idle',
+              updatedAt: now,
+              firstTerminalAt: current.firstTerminalAt ?? now,
+            }))
+          }
+          return
+        }
+        throw new Error(`Agent ${id} stop ended in state ${view.state.state}`)
+      }
+      if (Date.now() >= deadline) {
+        if (view.legacy) {
+          const now = new Date().toISOString()
+          await this.store.update(id, (current) => ({
+            ...clearWorkerFields(current),
+            state: 'stopped',
+            detail: 'stopped',
+            tempo: 'idle',
+            updatedAt: now,
+            firstTerminalAt: current.firstTerminalAt ?? now,
+          }))
+          return
+        }
+        throw new Error(`Agent ${id} cancellation is still in progress`)
+      }
+      await waitForSocketRetry()
+    }
   }
 
   async attach(
@@ -659,9 +782,18 @@ export class TopLevelAgentManager {
     output: (text: string) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const state = await this.store.read(id)
-    if (state.state !== 'working' || !state.socketPath || !state.controlToken) {
-      throw new Error(`Agent ${id} is not attachable (state: ${state.state})`)
+    const view = await this.readLifecycleView(id, undefined, false)
+    const state = view.state
+    if (
+      (view.lifecycle &&
+        !['queued', 'running', 'waiting'].includes(view.lifecycleState)) ||
+      (!view.lifecycle && state.state !== 'working') ||
+      !state.socketPath ||
+      !state.controlToken
+    ) {
+      throw new Error(
+        `Agent ${id} is not attachable (state: ${view.lifecycleState})`,
+      )
     }
     const socket = await connectToWorker(
       state.socketPath,
@@ -772,17 +904,25 @@ export class TopLevelAgentManager {
   ): Promise<WireMessage> {
     return new Promise((resolveRequest, reject) => {
       const socket = createConnection(path)
+      let settled = false
       const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
         socket.destroy()
         reject(new Error('Agent control request timed out'))
       }, timeoutMs)
       timer.unref?.()
       const finish = (operation: () => void) => {
+        if (settled) return
+        settled = true
         clearTimeout(timer)
         socket.end()
         operation()
       }
       socket.once('error', (error) => finish(() => reject(error)))
+      socket.once('close', () =>
+        finish(() => reject(new Error('Agent control request closed'))),
+      )
       socket.once('connect', () => writeWire(socket, message))
       lines(socket, (response) => finish(() => resolveRequest(response)))
     })
@@ -812,10 +952,10 @@ export class TopLevelAgentManager {
         (value as Record<string, unknown>).sessionId === state.sessionId
       )
     } catch {
-      const createdAt = Date.parse(state.createdAt)
+      const updatedAt = Date.parse(state.updatedAt)
       return (
-        Number.isFinite(createdAt) &&
-        Date.now() - createdAt < WORKER_REGISTRATION_GRACE_MS
+        Number.isFinite(updatedAt) &&
+        Date.now() - updatedAt < WORKER_REGISTRATION_GRACE_MS
       )
     }
   }
@@ -830,6 +970,21 @@ export async function runTopLevelAgentWorker(options: {
     dispatch: ClaudeJobDispatch,
   ): Promise<TopLevelAgentRuntime>
 }): Promise<void> {
+  let stopRequested = false
+  let requestCancellation: () => Promise<void> = async () => undefined
+  let cancellationFinalizer: (() => Promise<void>) | undefined
+  let activeController: AbortController | undefined
+  const captureStop = () => {
+    stopRequested = true
+    void requestCancellation().catch(() => undefined)
+    void cancellationFinalizer?.().catch(() => undefined)
+  }
+  process.once('SIGTERM', captureStop)
+  process.once('SIGINT', captureStop)
+  const removeCaptureListeners = () => {
+    process.removeListener('SIGTERM', captureStop)
+    process.removeListener('SIGINT', captureStop)
+  }
   const store = new ClaudeJobStore(
     options.configRoot,
     join(
@@ -837,392 +992,897 @@ export async function runTopLevelAgentWorker(options: {
       options.dataPlane === 'native' ? 'state' : 'praxis',
     ),
   )
-  const initial = await store.read(options.id)
-  let dispatch = await store.readDispatch(options.id)
-  const sensitiveValues = sensitiveEnvironmentValues(process.env)
-  const safeText = (text: string): string =>
-    redactSensitiveText(text, sensitiveValues)
-  const safeErrorMessage = (error: unknown): string =>
-    safeText(error instanceof Error ? error.message : String(error))
-  if (initial.state !== 'working') return
-  if (!initial.socketPath || !initial.controlToken) {
-    throw new Error(`Agent ${options.id} has no control endpoint`)
+  let execution: ClaudeJobExecution | undefined
+  let cleanupClaimed: (() => Promise<void>) | undefined
+  let executionReleased = false
+  const releaseExecution = async (): Promise<void> => {
+    if (executionReleased || !execution) return
+    const failures: unknown[] = []
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await execution.release()
+        executionReleased = true
+        return
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    throw new AggregateError(failures, 'Could not release agent execution')
   }
-  const socketFile = initial.socketPath
-  const processFile = join(
-    topLevelAgentProcessRegistryRoot(options.configRoot, options.dataPlane),
-    `${process.pid}.json`,
-  )
-  const processStartedAt = Date.now()
-  const writeProcessStatus = (status: 'working' | 'idle') => {
-    const now = Date.now()
-    return writeFileAtomically(
-      processFile,
-      `${JSON.stringify({
-        pid: process.pid,
-        sessionId: initial.sessionId,
-        cwd: initial.cwd,
-        startedAt: processStartedAt,
-        version: initial.cliVersion,
-        kind: 'bg',
-        entrypoint: 'cli',
-        name: initial.intent,
-        jobId: options.id,
-        status,
-        updatedAt: now,
-        statusUpdatedAt: now,
-      })}\n`,
-    )
-  }
-  await mkdir(dirname(socketFile), { recursive: true })
-  await rm(socketFile, { force: true })
-
-  const clients = new Set<Socket>()
-  const broadcast = (message: WireMessage) => {
-    for (const client of clients) writeWire(client, message)
-  }
-  let liveTurnText = ''
-  let sessionStarted = dispatch.resume || dispatch.handoffComplete === true
-  let outputWriteError: unknown
-  let outputWrites = Promise.resolve()
-  let runtime: TopLevelAgentRuntime
+  let claimed = false
+  let postClaimFailure: unknown
+  let deferredFailure: unknown
   try {
-    runtime = await options.createRuntime((event) => {
-      if (event.type === 'text-delta') {
-        const delta = safeText(event.delta)
-        liveTurnText += delta
-        outputWrites = outputWrites
-          .then(() => store.appendOutput(options.id, delta))
-          .catch((error: unknown) => {
-            outputWriteError = error
-          })
-        broadcast({ type: 'output', text: delta })
+    const initialView = await store.readWithLifecycle(options.id)
+    if (
+      initialView.lifecycle &&
+      isTerminalLifecycleState(initialView.lifecycleState) &&
+      initialView.lifecycleState !== 'orphaned'
+    )
+      return
+    if (!initialView.lifecycle && initialView.state.state !== 'working') return
+    const initial = initialView.state
+    let dispatch = await store.readDispatch(options.id)
+    const sensitiveValues = sensitiveEnvironmentValues(process.env)
+    const safeText = (text: string): string =>
+      redactSensitiveText(text, sensitiveValues)
+    const safeErrorMessage = (error: unknown): string =>
+      safeText(error instanceof Error ? error.message : String(error))
+    const hasOwnedContention = (error: unknown): boolean =>
+      error instanceof Error &&
+      error.message ===
+        `Agent ${options.id} lifecycle execution is already owned`
+    const claimDeadline = Date.now() + WORKER_REGISTRATION_GRACE_MS
+    for (;;) {
+      try {
+        execution = await store.claimExecution(options.id)
+        claimed = true
+        break
+      } catch (error) {
+        if (!hasOwnedContention(error) || Date.now() >= claimDeadline)
+          throw error
+        await waitForSocketRetry()
       }
-    }, dispatch)
-  } catch (error) {
-    const message = safeErrorMessage(error)
-    const failedAt = new Date().toISOString()
-    await store.appendOutput(options.id, `${message}\n`)
-    await store.appendTimeline(options.id, {
-      at: failedAt,
-      state: 'failed',
-      detail: message,
-      text: message,
-    })
-    await store.update(options.id, (state) => ({
-      ...clearWorkerFields(state),
-      state: 'failed',
-      detail: message,
-      tempo: 'idle',
-      updatedAt: failedAt,
-      firstTerminalAt: state.firstTerminalAt ?? failedAt,
-    }))
-    return
-  }
-  let activeController: AbortController | undefined
-  let closing = false
-  let turnQueue = Promise.resolve()
-  let finishWorker: (() => void) | undefined
-  const finished = new Promise<void>((resolveFinished) => {
-    finishWorker = resolveFinished
-  })
-
-  const server = createServer((client) => {
-    let authenticated = false
-    lines(client, (message) => {
-      if (!authenticated) {
-        if (message.type === 'stop' && message.token === initial.controlToken) {
-          authenticated = true
-          writeWire(client, { type: 'stopped' })
-          void setStopped('stopped').catch(() => undefined)
-          return
-        }
-        if (
-          message.type !== 'attach' ||
-          message.token !== initial.controlToken
-        ) {
-          client.destroy()
-          return
-        }
-        authenticated = true
-        clients.add(client)
-        void store.output(options.id).then((history) => {
-          writeWire(client, {
-            type: 'ready',
-            text: history,
-          })
-        })
-        return
-      }
-      if (message.type === 'detach') {
-        client.end()
-        return
-      }
-      if (message.type === 'prompt' && message.text && message.requestId) {
-        const { text, requestId } = message
-        turnQueue = turnQueue.then(() =>
-          runTurn(text, sessionStarted, requestId, client),
-        )
-      }
-    })
-    client.once('close', () => clients.delete(client))
-  })
-
-  const closeControl = () => {
-    for (const client of clients) client.end()
-    if (server.listening) server.close()
-    finishWorker?.()
-  }
-
-  const setStopped = async (detail: string) => {
-    if (closing) return
-    liveTurnText = ''
-    closing = true
-    activeController?.abort()
-    const now = new Date().toISOString()
-    try {
-      await store.update(options.id, (state) => ({
-        ...clearWorkerFields(state),
-        state: 'stopped',
-        detail,
-        tempo: 'idle',
-        updatedAt: now,
-        firstTerminalAt: state.firstTerminalAt ?? now,
-      }))
-      await store.appendTimeline(options.id, {
-        at: now,
-        state: 'stopped',
-        detail,
-        text: detail,
-      })
-    } finally {
-      broadcast({ type: 'stopped' })
-      closeControl()
     }
-  }
-
-  const failWorker = async (error: unknown) => {
-    if (closing) return
-    closing = true
-    activeController?.abort()
-    const message = safeErrorMessage(error)
-    const now = new Date().toISOString()
-    try {
-      await store.appendOutput(options.id, `${message}\n`)
-      await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
-      await store.appendTimeline(options.id, {
-        at: now,
-        state: 'failed',
-        detail: message,
-        text: message,
-      })
-      await store.update(options.id, (state) => ({
-        ...clearWorkerFields(state),
-        state: 'failed',
-        detail: message,
-        tempo: 'idle',
-        updatedAt: now,
-        firstTerminalAt: state.firstTerminalAt ?? now,
-      }))
-    } finally {
-      broadcast({ type: 'failed', message })
-      closeControl()
-    }
-  }
-
-  async function runTurn(
-    prompt: string,
-    resume: boolean,
-    requestId?: string,
-    client?: Socket,
-  ): Promise<void> {
-    if (closing) return
-    liveTurnText = ''
-    outputWriteError = undefined
-    activeController = new AbortController()
-    const now = new Date().toISOString()
-    const activated = await store.update(options.id, (state) => {
-      if (state.state !== 'working') return state
-      const next = {
-        ...state,
-        detail: safeText(prompt),
-        tempo: 'active' as const,
-        inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
-        updatedAt: now,
-      }
-      delete next.needs
+    const claimedExecution = execution
+    if (!claimedExecution) throw new Error('Worker execution was not claimed')
+    let runtime: TopLevelAgentRuntime | undefined
+    let runtimeInitialization: Promise<TopLevelAgentRuntime> | undefined
+    let runtimeInitializationError: unknown
+    let runtimeClosed = false
+    let server: ReturnType<typeof createServer> | undefined
+    const clients = new Set<Socket>()
+    let stopClient: Socket | undefined
+    let outputWriteError: unknown
+    let outputWrites = Promise.resolve()
+    let liveTurnText = ''
+    let sessionStarted = dispatch.resume || dispatch.handoffComplete === true
+    let closing = false
+    let setupStep = Promise.resolve()
+    const runSetupStep = <T>(operation: () => Promise<T>): Promise<T> => {
+      const next = setupStep.then(operation)
+      setupStep = next.then(
+        () => undefined,
+        () => undefined,
+      )
       return next
-    })
-    if (closing || activated.state !== 'working') return
-    await writeProcessStatus('working')
-    let resumeTurn = resume
-    try {
-      if (!sessionStarted && dispatch.sourceSessionId) {
-        if (!runtime.ensureFork && !runtime.fork) {
-          throw new Error('Background handoff runtime cannot fork sessions')
-        }
-        if (runtime.ensureFork) {
-          await runtime.ensureFork(
-            dispatch.sourceSessionId,
-            initial.sessionId,
-            dispatch.sourceCheckpoint,
-          )
-        } else {
-          await runtime.fork?.(dispatch.sourceSessionId, initial.sessionId)
-        }
-        dispatch = await store.updateDispatch(options.id, (current) => {
-          const next = {
-            ...current,
-            resume: true,
-            handoffComplete: true,
-          }
-          delete next.sourceSessionId
-          delete next.sourceCheckpoint
-          return next
+    }
+    let listenPending = false
+    let listenCancelled = false
+    let rejectPendingListen: ((error: Error) => void) | undefined
+    let serverClosePromise: Promise<void> | undefined
+    let resolveServerClose: (() => void) | undefined
+    let rejectServerClose: ((error: unknown) => void) | undefined
+    let serverCloseRequested = false
+    let serverCloseStarted = false
+    let serverCloseError: unknown
+    let invokeServerClose: (() => void) | undefined
+    const settleServerClose = (error?: unknown) => {
+      if (error !== undefined) rejectServerClose?.(error)
+      else resolveServerClose?.()
+      resolveServerClose = undefined
+      rejectServerClose = undefined
+    }
+    const closeServer = (): Promise<void> => {
+      if (!server) return Promise.resolve()
+      const currentServer = server
+      if (!serverClosePromise) {
+        serverClosePromise = new Promise<void>((resolveClose, rejectClose) => {
+          resolveServerClose = resolveClose
+          rejectServerClose = rejectClose
         })
-        sessionStarted = true
-        resumeTurn = true
+        const closeNow = () => {
+          if (serverCloseStarted) return
+          serverCloseStarted = true
+          try {
+            currentServer.close((error) => {
+              if (error) {
+                serverCloseError = error
+                settleServerClose(error)
+              } else settleServerClose()
+            })
+          } catch (error) {
+            if (
+              (error as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING'
+            )
+              settleServerClose()
+            else {
+              serverCloseError = error
+              settleServerClose(error)
+            }
+          }
+        }
+        invokeServerClose = closeNow
+        if (currentServer.listening) closeNow()
+        else if (!listenPending) settleServerClose()
+        else serverCloseRequested = true
+      } else if (currentServer.listening && serverCloseRequested) {
+        invokeServerClose?.()
       }
-      const result = resumeTurn
-        ? await runtime.resume(
-            initial.sessionId,
-            prompt,
-            activeController.signal,
+      return serverClosePromise
+    }
+    const closePendingListen = () => {
+      if (!listenPending) return
+      listenCancelled = true
+      const closePromise = closeServer()
+      rejectPendingListen?.(new Error('Agent listen cancelled'))
+      void closePromise.catch(() => undefined)
+    }
+    let turnQueue = Promise.resolve()
+    let finishWorker: (() => void) | undefined
+    const finished = new Promise<void>((resolveFinished) => {
+      finishWorker = resolveFinished
+    })
+    const socketFile =
+      initial.socketPath ?? socketPath(options.configRoot, options.id)
+    const processFile = join(
+      topLevelAgentProcessRegistryRoot(options.configRoot, options.dataPlane),
+      `${process.pid}.json`,
+    )
+    const processStartedAt = Date.now()
+    const writeProcessStatus = (status: 'working' | 'idle') => {
+      const now = Date.now()
+      return writeFileAtomically(
+        processFile,
+        `${JSON.stringify({
+          pid: process.pid,
+          sessionId: initial.sessionId,
+          cwd: initial.cwd,
+          startedAt: processStartedAt,
+          version: initial.cliVersion,
+          kind: 'bg',
+          entrypoint: 'cli',
+          name: initial.intent,
+          jobId: options.id,
+          status,
+          updatedAt: now,
+          statusUpdatedAt: now,
+        })}\n`,
+      )
+    }
+    const closeRuntime = async (): Promise<void> => {
+      if (runtimeClosed) return
+      runtimeClosed = true
+      if (runtimeInitialization) {
+        try {
+          runtime = await runtimeInitialization
+        } catch (error) {
+          runtimeInitializationError = error
+        }
+      }
+      await runtime?.close?.()
+    }
+    const closeControl = (destroy = false) => {
+      for (const client of clients) {
+        if (destroy) client.destroy()
+        else client.end()
+      }
+      if (server?.listening || listenPending)
+        void closeServer().catch(() => undefined)
+    }
+    cleanupClaimed = async () => {
+      const failures: unknown[] = []
+      closePendingListen()
+      try {
+        await setupStep
+      } catch (error) {
+        failures.push(error)
+      }
+      activeController?.abort()
+      try {
+        await outputWrites
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        await closeRuntime()
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        closeControl(true)
+        await closeServer()
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        await rm(socketFile, { force: true })
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        await rm(processFile, { force: true })
+      } catch (error) {
+        failures.push(error)
+      }
+      stopClient?.destroy()
+      stopClient = undefined
+      if (failures.length > 0)
+        throw new AggregateError(failures, 'Agent fallback cleanup failed')
+    }
+    const broadcast = (message: WireMessage) => {
+      for (const client of clients) writeWire(client, message)
+    }
+    const lifecycleWrite = (() => {
+      let chain = Promise.resolve()
+      return <T>(operation: () => Promise<T>): Promise<T> => {
+        const next = chain.then(operation)
+        chain = next.then(
+          () => undefined,
+          () => undefined,
+        )
+        return next
+      }
+    })()
+    let cancellationTransition: Promise<void> | undefined
+    requestCancellation = () => {
+      if (!cancellationTransition) {
+        cancellationTransition = lifecycleWrite(async () => {
+          if (
+            ['queued', 'running', 'waiting'].includes(
+              claimedExecution.snapshot.state,
+            )
           )
-        : await runtime.run(prompt, activeController.signal, initial.sessionId)
-      sessionStarted = true
-      if (closing) return
-      const completedAt = new Date().toISOString()
-      await outputWrites
-      if (outputWriteError) throw outputWriteError
-      const resultText = safeText(result.text)
-      if (liveTurnText.length === 0 && resultText.length > 0) {
-        broadcast({ type: 'output', text: resultText })
-        await store.appendOutput(options.id, resultText)
+            await claimedExecution.beginCancellation()
+        }).then(() => undefined)
       }
-      await store.appendOutput(options.id, '\n')
-      await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
-      await store.appendTimeline(options.id, {
-        at: completedAt,
-        state: 'working',
-        detail: resultText,
-        text: resultText,
-      })
-      const idled = await store.update(options.id, (state) => {
-        if (state.state !== 'working') return state
+      return cancellationTransition
+    }
+    const finalization = (
+      outcome: 'cancelled' | 'failed',
+      error?: unknown,
+      skipTurnDrain = false,
+    ): Promise<void> => {
+      if (finalizationPromise) return finalizationPromise
+      const operation = (async () => {
+        const cancellationAtStart =
+          outcome === 'cancelled' ||
+          stopRequested ||
+          claimedExecution.snapshot.state === 'cancelling'
+        const detail = cancellationAtStart ? 'stopped' : safeErrorMessage(error)
+        const failures: unknown[] = []
+        try {
+          if (cancellationAtStart) await requestCancellation()
+        } catch (failure) {
+          failures.push(failure)
+        }
+        closing = true
+        activeController?.abort()
+        closePendingListen()
+        try {
+          await setupStep
+        } catch (failure) {
+          if (!(cancellationAtStart && listenCancelled)) failures.push(failure)
+        }
+        if (!skipTurnDrain) {
+          try {
+            await turnQueue
+          } catch (failure) {
+            failures.push(failure)
+          }
+        }
+        try {
+          await outputWrites
+          // A streaming write failure is already the primary fatal error when
+          // runTurn routes that same object through failed finalization. It is
+          // still a cancellation cleanup failure, and distinct queued errors
+          // remain cleanup failures.
+          if (
+            outputWriteError &&
+            (cancellationAtStart || outputWriteError !== error)
+          )
+            failures.push(outputWriteError)
+        } catch (failure) {
+          failures.push(failure)
+        }
+        if (!cancellationAtStart) {
+          try {
+            await store.appendOutput(options.id, `${detail}\n`)
+            await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
+          } catch (failure) {
+            failures.push(failure)
+          }
+        }
+        try {
+          await closeRuntime()
+        } catch (failure) {
+          failures.push(failure)
+        }
+        if (cancellationAtStart && runtimeInitializationError)
+          failures.push(runtimeInitializationError)
+        try {
+          const deferServerDrain =
+            cancellationAtStart && stopClient !== undefined
+          closeControl(true)
+          // Starting the close synchronously stops new accepts. For an
+          // authenticated stop, retain the drain promise until after ack.
+          await Promise.resolve()
+          if (serverCloseError) throw serverCloseError
+          if (!deferServerDrain) await closeServer()
+        } catch (failure) {
+          failures.push(failure)
+        }
+        try {
+          await rm(socketFile, { force: true })
+        } catch (failure) {
+          failures.push(failure)
+        }
+        try {
+          await rm(processFile, { force: true })
+        } catch (failure) {
+          failures.push(failure)
+        }
+        const cancellation =
+          cancellationAtStart ||
+          stopRequested ||
+          String(claimedExecution.snapshot.state) === 'cancelling'
+        if (cancellation && !cancellationAtStart) {
+          try {
+            await requestCancellation()
+          } catch (failure) {
+            failures.push(failure)
+          }
+        }
+        if (failures.length > 0) {
+          const diagnostic = safeText(
+            failures.map((failure) => safeErrorMessage(failure)).join('; '),
+          )
+          try {
+            if (!isTerminalLifecycleState(claimedExecution.snapshot.state))
+              await lifecycleWrite(() =>
+                claimedExecution.update((state) => ({
+                  ...clearWorkerFields(state),
+                  detail: diagnostic,
+                  tempo: 'idle',
+                  updatedAt: new Date().toISOString(),
+                })),
+              )
+          } catch (diagnosticError) {
+            failures.push(diagnosticError)
+          }
+          throw new AggregateError(failures, 'Agent cleanup failed')
+        }
+        if (isTerminalLifecycleState(claimedExecution.snapshot.state)) {
+          return
+        }
+        const terminal = await lifecycleWrite(() =>
+          claimedExecution.finish(
+            cancellation ? 'cancelled' : 'failed',
+            (state) => ({
+              ...clearWorkerFields(state),
+              ...(cancellation
+                ? { detail, tempo: 'idle' as const }
+                : {
+                    state: 'failed' as const,
+                    detail,
+                    tempo: 'idle' as const,
+                    firstTerminalAt:
+                      state.firstTerminalAt ?? new Date().toISOString(),
+                  }),
+              updatedAt: new Date().toISOString(),
+            }),
+          ),
+        )
+        let timelineError: unknown
+        try {
+          await store.appendTimeline(options.id, {
+            at: new Date().toISOString(),
+            state: cancellation ? 'stopped' : 'failed',
+            detail,
+            text: detail,
+          })
+        } catch (failure) {
+          timelineError = failure
+        }
+        if (cancellation && terminal.state === 'cancelled') {
+          broadcast({ type: 'stopped' })
+          if (stopClient) {
+            writeWire(stopClient, { type: 'stopped' })
+            stopClient.end()
+            stopClient = undefined
+          }
+          try {
+            await closeServer()
+          } catch (failure) {
+            throw new AggregateError(
+              [failure],
+              'Agent server close failed after cancellation',
+            )
+          }
+        } else if (!cancellation) {
+          broadcast({ type: 'failed', message: detail })
+        }
+        if (timelineError)
+          throw new AggregateError(
+            [timelineError],
+            'Terminal lifecycle timeline projection failed',
+          )
+      })()
+      const finalPromise = operation
+        .catch((failure) => {
+          finalizationError = failure
+          throw failure
+        })
+        .finally(() => {
+          closeControl(true)
+          stopClient?.destroy()
+          stopClient = undefined
+          finishWorker?.()
+        })
+      finalizationPromise = finalPromise
+      return finalPromise
+    }
+    let finalizationError: unknown
+    let finalizationPromise: Promise<void> | undefined
+    cancellationFinalizer = () => finalization('cancelled')
+
+    const runTurn = async (
+      prompt: string,
+      resume: boolean,
+      requestId?: string,
+      client?: Socket,
+    ): Promise<void> => {
+      if (closing || stopRequested) return
+      liveTurnText = ''
+      outputWriteError = undefined
+      activeController = new AbortController()
+      const now = new Date().toISOString()
+      if (
+        !['running', 'waiting'].includes(claimedExecution.snapshot.state) ||
+        closing ||
+        stopRequested
+      )
+        return
+      const activate = (state: ClaudeJobState): ClaudeJobState => {
         const next = {
           ...state,
-          detail: resultText,
-          tempo: 'idle' as const,
-          inFlight: { tasks: 0, queued: 0, kinds: [] },
-          tokens:
-            state.tokens + result.usage.inputTokens + result.usage.outputTokens,
-          updatedAt: completedAt,
+          detail: safeText(prompt),
+          tempo: 'active' as const,
+          inFlight: { tasks: 1, queued: 0, kinds: ['prompt'] },
+          updatedAt: now,
         }
         delete next.needs
         return next
-      })
-      if (!closing && idled.state === 'working') {
-        await writeProcessStatus('idle')
       }
-      if (requestId && client) {
-        writeWire(client, { type: 'turn-complete', requestId })
-      }
-    } catch (error) {
-      if (closing || activeController.signal.aborted) return
-      const message = safeErrorMessage(error)
-      const failedAt = new Date().toISOString()
-      if (resumeTurn) {
-        try {
-          await store.appendOutput(options.id, `${message}\n`)
-          await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
-          await store.appendTimeline(options.id, {
-            at: failedAt,
-            state: 'working',
-            detail: message,
-            text: message,
+      let resumeTurn = resume
+      try {
+        if (claimedExecution.snapshot.state === 'waiting')
+          await lifecycleWrite(() => claimedExecution.running(activate))
+        else await lifecycleWrite(() => claimedExecution.update(activate))
+        if (closing || stopRequested) return
+        await writeProcessStatus('working')
+        if (!sessionStarted && dispatch.sourceSessionId) {
+          if (!runtime?.ensureFork && !runtime?.fork)
+            throw new Error('Background handoff runtime cannot fork sessions')
+          if (runtime.ensureFork)
+            await runtime.ensureFork(
+              dispatch.sourceSessionId,
+              initial.sessionId,
+              dispatch.sourceCheckpoint,
+            )
+          else await runtime.fork?.(dispatch.sourceSessionId, initial.sessionId)
+          dispatch = await store.updateDispatch(options.id, (current) => {
+            const next = {
+              ...current,
+              resume: true,
+              handoffComplete: true,
+            }
+            delete next.sourceSessionId
+            delete next.sourceCheckpoint
+            return next
           })
-          const idled = await store.update(options.id, (state) => {
-            if (state.state !== 'working') return state
+          sessionStarted = true
+          resumeTurn = true
+        }
+        const currentRuntime = runtime
+        const currentController = activeController
+        if (!currentRuntime || !currentController)
+          throw new Error('Background agent runtime is not ready')
+        const result = resumeTurn
+          ? await currentRuntime.resume(
+              initial.sessionId,
+              prompt,
+              currentController.signal,
+            )
+          : await currentRuntime.run(
+              prompt,
+              currentController.signal,
+              initial.sessionId,
+            )
+        sessionStarted = true
+        if (closing || stopRequested) return
+        const completedAt = new Date().toISOString()
+        await outputWrites
+        if (outputWriteError) throw outputWriteError
+        const resultText = safeText(result.text)
+        if (liveTurnText.length === 0 && resultText.length > 0) {
+          broadcast({ type: 'output', text: resultText })
+          await store.appendOutput(options.id, resultText)
+        }
+        await store.appendOutput(options.id, '\n')
+        await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
+        await store.appendTimeline(options.id, {
+          at: completedAt,
+          state: 'working',
+          detail: resultText,
+          text: resultText,
+        })
+        const idled = await lifecycleWrite(() =>
+          claimedExecution.waiting((state) => {
             const next = {
               ...state,
-              detail: message,
+              detail: resultText,
               tempo: 'idle' as const,
               inFlight: { tasks: 0, queued: 0, kinds: [] },
-              updatedAt: failedAt,
+              tokens:
+                state.tokens +
+                result.usage.inputTokens +
+                result.usage.outputTokens,
+              updatedAt: completedAt,
             }
             delete next.needs
             return next
-          })
-          if (!closing && idled.state === 'working') {
-            await writeProcessStatus('idle')
+          }),
+        )
+        if (!closing && idled.state === 'waiting')
+          await writeProcessStatus('idle')
+        if (requestId && client)
+          writeWire(client, { type: 'turn-complete', requestId })
+      } catch (turnError) {
+        if (closing || activeController?.signal.aborted || stopRequested) return
+        const message = safeErrorMessage(turnError)
+        const failedAt = new Date().toISOString()
+        if (resumeTurn) {
+          try {
+            await store.appendOutput(options.id, `${message}\n`)
+            await store.trimOutput(options.id, MAX_JOB_OUTPUT_BYTES)
+            await store.appendTimeline(options.id, {
+              at: failedAt,
+              state: 'working',
+              detail: message,
+              text: message,
+            })
+            const idled = await lifecycleWrite(() =>
+              claimedExecution.waiting((state) => {
+                const next = {
+                  ...state,
+                  detail: message,
+                  tempo: 'idle' as const,
+                  inFlight: { tasks: 0, queued: 0, kinds: [] },
+                  updatedAt: failedAt,
+                }
+                delete next.needs
+                return next
+              }),
+            )
+            if (!closing && idled.state === 'waiting')
+              await writeProcessStatus('idle')
+            if (requestId && client)
+              writeWire(client, { type: 'turn-error', requestId, message })
+          } catch (persistenceError) {
+            await finalization('failed', persistenceError, true).catch(
+              () => undefined,
+            )
           }
-          if (requestId && client) {
-            writeWire(client, { type: 'turn-error', requestId, message })
-          }
-        } catch (persistenceError) {
-          await failWorker(persistenceError)
+        } else {
+          await finalization('failed', turnError, true).catch(() => undefined)
         }
-      } else {
-        await failWorker(error)
+      } finally {
+        activeController = undefined
       }
-    } finally {
-      activeController = undefined
     }
-  }
 
-  server.on(
-    'error',
-    (error) => void failWorker(error).catch(() => closeControl()),
-  )
-
-  await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject)
-    server.listen(socketFile, resolveListen)
-  })
-  const waitingForHandoff =
-    dispatch.deferInitialTurn === true && dispatch.handoffComplete !== true
-  const registered = await store.update(options.id, (state) => {
-    if (state.state !== 'working') return state
-    const next = {
-      ...state,
-      pid: process.pid,
-      detail: dispatch.deferInitialTurn ? state.detail : 'starting',
-      tempo: dispatch.deferInitialTurn
-        ? waitingForHandoff
-          ? ('blocked' as const)
-          : ('idle' as const)
-        : ('active' as const),
-      ...(waitingForHandoff ? { needs: 'send a prompt to start' } : {}),
-      socketPath: socketFile,
-      updatedAt: new Date().toISOString(),
+    try {
+      if (!initial.socketPath || !initial.controlToken) {
+        const token = initial.controlToken ?? randomBytes(24).toString('hex')
+        await runSetupStep(() =>
+          lifecycleWrite(() =>
+            claimedExecution.update((state) => ({
+              ...state,
+              socketPath: socketFile,
+              controlToken: token,
+              updatedAt: new Date().toISOString(),
+            })),
+          ),
+        )
+      }
+      const current = await runSetupStep(() => store.read(options.id))
+      const controlToken = current.controlToken
+      if (!controlToken)
+        throw new Error(`Agent ${options.id} has no control endpoint`)
+      if (stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      await runSetupStep(() =>
+        lifecycleWrite(() =>
+          claimedExecution.update((state) => ({
+            ...state,
+            pid: process.pid,
+            updatedAt: new Date().toISOString(),
+          })),
+        ),
+      )
+      if (stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      await runSetupStep(async () => {
+        await mkdir(dirname(socketFile), { recursive: true })
+        await rm(socketFile, { force: true })
+      })
+      if (stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      if (claimedExecution.snapshot.state === 'queued') {
+        await runSetupStep(() =>
+          lifecycleWrite(() =>
+            claimedExecution.running((state) => ({
+              ...state,
+              tempo: 'active',
+              updatedAt: new Date().toISOString(),
+            })),
+          ),
+        )
+        if (dispatch.deferInitialTurn)
+          await runSetupStep(() =>
+            lifecycleWrite(() =>
+              claimedExecution.waiting((state) => {
+                const next = {
+                  ...state,
+                  tempo:
+                    dispatch.handoffComplete === true
+                      ? ('idle' as const)
+                      : ('blocked' as const),
+                  updatedAt: new Date().toISOString(),
+                }
+                if (dispatch.handoffComplete === true) delete next.needs
+                else next.needs = 'send a prompt to start'
+                return next
+              }),
+            ),
+          )
+      }
+      if (stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      runtimeInitialization = runSetupStep(() =>
+        Promise.resolve().then(() =>
+          options.createRuntime((event) => {
+            if (event.type === 'text-delta') {
+              const delta = safeText(event.delta)
+              liveTurnText += delta
+              outputWrites = outputWrites
+                .then(() => store.appendOutput(options.id, delta))
+                .catch((error: unknown) => {
+                  outputWriteError = error
+                })
+              broadcast({ type: 'output', text: delta })
+            }
+          }, dispatch),
+        ),
+      )
+      try {
+        runtime = await runtimeInitialization
+      } catch (runtimeError) {
+        if (stopRequested || closing)
+          await finalization('cancelled', runtimeError)
+        else await finalization('failed', runtimeError)
+        return
+      }
+      if (stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      server = createServer((client) => {
+        let authenticated = false
+        lines(client, (message) => {
+          if (!authenticated) {
+            if (message.type === 'stop' && message.token === controlToken) {
+              authenticated = true
+              stopClient = client
+              void finalization('cancelled')
+                .catch(() => undefined)
+                .finally(() => {
+                  if (stopClient === client) client.destroy()
+                })
+              return
+            }
+            if (message.type !== 'attach' || message.token !== controlToken) {
+              client.destroy()
+              return
+            }
+            authenticated = true
+            clients.add(client)
+            void store.output(options.id).then((history) => {
+              writeWire(client, { type: 'ready', text: history })
+            })
+            return
+          }
+          if (message.type === 'detach') {
+            client.end()
+            return
+          }
+          if (message.type === 'prompt' && message.text && message.requestId) {
+            const { text, requestId } = message
+            turnQueue = turnQueue.then(() =>
+              runTurn(text, sessionStarted, requestId, client),
+            )
+          }
+        })
+        client.once('close', () => clients.delete(client))
+      })
+      listenPending = true
+      listenCancelled = false
+      await runSetupStep(
+        () =>
+          new Promise<void>((resolveListen, rejectListen) => {
+            let settled = false
+            rejectPendingListen = (listenError) => {
+              if (settled) return
+              settled = true
+              listenPending = false
+              rejectListen(listenError)
+            }
+            const listening = () => {
+              if (listenCancelled) {
+                void closeServer().catch(() => undefined)
+                void rm(socketFile, { force: true }).catch(() => undefined)
+                return
+              }
+              if (settled) return
+              settled = true
+              listenPending = false
+              rejectPendingListen = undefined
+              server?.removeListener('error', failed)
+              server?.removeListener('close', closed)
+              resolveListen()
+            }
+            const closed = () => {
+              if (serverClosePromise) settleServerClose()
+              if (settled) return
+              settled = true
+              listenPending = false
+              rejectPendingListen = undefined
+              server?.removeListener('listening', listening)
+              server?.removeListener('error', failed)
+              rejectListen(new Error('Agent server closed before listening'))
+            }
+            const failed = (listenError: Error) => {
+              if (serverClosePromise) settleServerClose()
+              if (settled) return
+              settled = true
+              listenPending = false
+              rejectPendingListen = undefined
+              server?.removeListener('listening', listening)
+              server?.removeListener('close', closed)
+              rejectListen(listenError)
+            }
+            server?.once('listening', listening)
+            server?.once('close', closed)
+            server?.once('error', failed)
+            try {
+              server?.listen(socketFile)
+            } catch (listenError) {
+              failed(listenError as Error)
+            }
+          }),
+      )
+      if (stopRequested || closing) {
+        closeControl(true)
+        await rm(socketFile, { force: true }).catch(() => undefined)
+        await finalization('cancelled')
+        return
+      }
+      server.on('error', (serverError) => {
+        void finalization('failed', serverError).catch(() => undefined)
+      })
+      const waitingForHandoff =
+        dispatch.deferInitialTurn === true && dispatch.handoffComplete !== true
+      const registered = await runSetupStep(() =>
+        lifecycleWrite(() =>
+          claimedExecution.update((state) => {
+            const next = {
+              ...state,
+              pid: process.pid,
+              detail: dispatch.deferInitialTurn ? state.detail : 'starting',
+              tempo: dispatch.deferInitialTurn
+                ? waitingForHandoff
+                  ? ('blocked' as const)
+                  : ('idle' as const)
+                : ('active' as const),
+              ...(waitingForHandoff ? { needs: 'send a prompt to start' } : {}),
+              socketPath: socketFile,
+              controlToken,
+              updatedAt: new Date().toISOString(),
+            }
+            if (!waitingForHandoff) delete next.needs
+            return next
+          }),
+        ),
+      )
+      if (registered.state !== 'working' || stopRequested || closing) {
+        await finalization('cancelled')
+        return
+      }
+      await runSetupStep(() =>
+        writeProcessStatus(dispatch.deferInitialTurn ? 'idle' : 'working'),
+      )
+      if (stopRequested || closing) {
+        closeControl(true)
+        await rm(socketFile, { force: true }).catch(() => undefined)
+        await rm(processFile, { force: true }).catch(() => undefined)
+        await finalization('cancelled')
+        return
+      }
+      if (!dispatch.deferInitialTurn)
+        turnQueue = turnQueue.then(() =>
+          runTurn(initial.intent, dispatch.resume),
+        )
+      await finished
+      if (finalizationError) throw finalizationError
+    } catch (error) {
+      if (finalizationPromise) {
+        try {
+          await finalizationPromise
+        } catch (finalizationFailure) {
+          postClaimFailure = finalizationFailure
+          throw finalizationFailure
+        }
+      } else if (!closing) {
+        try {
+          await finalization(stopRequested ? 'cancelled' : 'failed', error)
+        } catch (finalizationFailure) {
+          postClaimFailure = finalizationFailure
+          throw finalizationFailure
+        }
+      }
     }
-    if (!waitingForHandoff) delete next.needs
-    return next
-  })
-  if (registered.state !== 'working') {
-    server.close()
-    await runtime.close?.()
-    await rm(socketFile, { force: true })
-    return
-  }
-  await writeProcessStatus(dispatch.deferInitialTurn ? 'idle' : 'working')
-
-  const stop = () => void setStopped('stopped').catch(() => undefined)
-  process.once('SIGTERM', stop)
-  process.once('SIGINT', stop)
-  if (!dispatch.deferInitialTurn) {
-    turnQueue = turnQueue.then(() => runTurn(initial.intent, dispatch.resume))
-  }
-  try {
-    await finished
+  } catch (error) {
+    deferredFailure = error
   } finally {
-    process.removeListener('SIGTERM', stop)
-    process.removeListener('SIGINT', stop)
-    await turnQueue.catch(() => undefined)
-    await outputWrites
-    await runtime.close?.()
-    await rm(socketFile, { force: true })
-    await rm(processFile, { force: true })
+    removeCaptureListeners()
+    if (claimed) {
+      const failures: unknown[] = []
+      try {
+        await cleanupClaimed?.()
+      } catch (error) {
+        failures.push(error)
+      }
+      try {
+        await releaseExecution()
+      } catch (error) {
+        failures.push(error)
+      }
+      if (postClaimFailure !== undefined) failures.unshift(postClaimFailure)
+      if (failures.length > 0)
+        deferredFailure = new AggregateError(
+          failures,
+          'Agent worker cleanup failed',
+        )
+    }
   }
+  if (deferredFailure !== undefined) throw deferredFailure
 }

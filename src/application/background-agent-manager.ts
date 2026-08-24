@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
+import {
+  isTerminalLifecycleState,
+  type LifecycleState,
+} from '../core/agent-orchestration.js'
 import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
 
 const MAX_TIMEOUT_MS = 600_000
@@ -38,6 +42,11 @@ export class BackgroundAgentShutdownError extends Error {
   }
 }
 
+export interface BackgroundAgentLifecycleSource {
+  current(): LifecycleState
+  subscribe(listener: (state: LifecycleState) => void): () => void
+}
+
 export interface BackgroundAgentTaskSpec {
   agentId: string
   name?: string
@@ -47,6 +56,7 @@ export interface BackgroundAgentTaskSpec {
   toolUseId: string
   outputFile: string
   resolvedModel: string
+  lifecycle: BackgroundAgentLifecycleSource
   markBackground?(): void
   acknowledgeNotification?(notificationId: string): Promise<void>
   prepareNotificationDetached?(
@@ -62,8 +72,22 @@ export interface BackgroundAgentTaskSpec {
   ): Promise<BackgroundAgentRunResult>
 }
 
-type BackgroundAgentStatus =
-  'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+type BackgroundAgentStatus = LifecycleState
+
+export function legacyBackgroundStatus(
+  state: BackgroundAgentStatus,
+): 'running' | 'stopped' | 'interrupted' | 'completed' | 'failed' {
+  if (
+    state === 'queued' ||
+    state === 'running' ||
+    state === 'waiting' ||
+    state === 'cancelling'
+  )
+    return 'running'
+  if (state === 'cancelled') return 'stopped'
+  if (state === 'orphaned') return 'interrupted'
+  return state
+}
 
 interface BackgroundAgentTask {
   spec: BackgroundAgentTaskSpec
@@ -73,11 +97,13 @@ interface BackgroundAgentTask {
   result: BackgroundAgentRunResult | null
   error: string | null
   notifications: BackgroundAgentNotification[]
-  generation: number
+  runSequence: number
   queuedMessages: { message: string; toolUseId: string }[]
   startedAt: number
   durationMs: number | null
   suppressNotifications: boolean
+  cancellationRequested: boolean
+  unsubscribeLifecycle: (() => void) | null
 }
 
 interface BackgroundAgentNotification {
@@ -86,6 +112,14 @@ interface BackgroundAgentNotification {
   result: BackgroundAgentRunResult | null
   error: string | null
   toolUseId: string
+}
+
+function notificationWireStatus(
+  status: BackgroundAgentNotification['status'],
+): 'completed' | 'failed' | 'killed' | null {
+  if (status === 'completed' || status === 'failed') return status
+  if (status === 'cancelled') return 'killed'
+  return null
 }
 
 export interface BackgroundAgentNotificationIdentity {
@@ -332,11 +366,11 @@ export class BackgroundAgentManager {
     const { task } = this.registerTask(
       spec,
       {
-        status: 'running',
+        status: spec.lifecycle.current(),
         controller: null,
         result: null,
         error: null,
-        generation: 0,
+        runSequence: 0,
         startedAt: Date.now(),
         durationMs: null,
       },
@@ -357,11 +391,11 @@ export class BackgroundAgentManager {
     const { task } = this.registerTask(
       spec,
       {
-        status: 'running',
+        status: spec.lifecycle.current(),
         controller: options.controller,
         result: null,
         error: null,
-        generation: 1,
+        runSequence: 1,
         startedAt: options.startedAt,
         durationMs: null,
       },
@@ -372,61 +406,29 @@ export class BackgroundAgentManager {
     return this.snapshot(task)
   }
 
-  registerCompleted(
+  registerPersisted(
     spec: BackgroundAgentTaskSpec,
-    result: BackgroundAgentRunResult,
+    presentation: {
+      result?: BackgroundAgentRunResult | null
+      error?: string | null
+      startedAt?: number
+      durationMs?: number | null
+    } = {},
   ): BackgroundAgentSnapshot {
     const { task } = this.registerTask(
       spec,
       {
-        status: 'completed',
+        status: spec.lifecycle.current(),
         controller: null,
-        result,
-        error: null,
-        generation: 0,
-        startedAt: Date.now() - result.durationMs,
-        durationMs: result.durationMs,
-      },
-      'return-existing',
-    )
-    return this.snapshot(task)
-  }
-
-  registerInterrupted(
-    spec: BackgroundAgentTaskSpec,
-    error = 'Persisted agent was interrupted before completion',
-  ): BackgroundAgentSnapshot {
-    const { task } = this.registerTask(
-      spec,
-      {
-        status: 'interrupted',
-        controller: null,
-        result: null,
-        error,
-        generation: 0,
-        startedAt: Date.now(),
-        durationMs: 0,
-      },
-      'return-existing',
-    )
-    return this.snapshot(task)
-  }
-
-  registerTerminal(
-    spec: BackgroundAgentTaskSpec,
-    status: 'failed' | 'stopped',
-    error: string,
-  ): BackgroundAgentSnapshot {
-    const { task } = this.registerTask(
-      spec,
-      {
-        status,
-        controller: null,
-        result: null,
-        error,
-        generation: 0,
-        startedAt: Date.now(),
-        durationMs: 0,
+        result: presentation.result ?? null,
+        error: presentation.error ?? null,
+        runSequence: 0,
+        startedAt:
+          presentation.startedAt ??
+          (presentation.durationMs === undefined
+            ? Date.now()
+            : Date.now() - (presentation.durationMs ?? 0)),
+        durationMs: presentation.durationMs ?? null,
       },
       'return-existing',
     )
@@ -437,7 +439,7 @@ export class BackgroundAgentManager {
     agentId: string,
     notification: {
       id: string
-      status: 'completed' | 'failed' | 'stopped'
+      status: 'completed' | 'failed' | 'cancelled'
       result: BackgroundAgentRunResult | null
       error: string | null
       toolUseId: string
@@ -457,7 +459,12 @@ export class BackgroundAgentManager {
     return [...this.tasks.entries()]
       .filter(
         ([, task]) =>
-          task.status === 'running' || task.notifications.length > 0,
+          task.promise !== null ||
+          task.status === 'queued' ||
+          task.status === 'running' ||
+          task.status === 'waiting' ||
+          task.status === 'cancelling' ||
+          task.notifications.length > 0,
       )
       .map(([agentId]) => agentId)
   }
@@ -499,7 +506,7 @@ export class BackgroundAgentManager {
     // once terminal, not_ready for non-blocking retrievals, and timeout for a
     // blocking retrieval whose window (including zero) closed while live.
     const retrieval: 'not_ready' | 'success' | 'timeout' =
-      task.status !== 'running'
+      isTerminalLifecycleState(task.status)
         ? 'success'
         : options.block
           ? 'timeout'
@@ -521,14 +528,23 @@ export class BackgroundAgentManager {
   ): Promise<string> {
     const message = this.stop(agentId)
     const task = this.tasks.get(agentId)
-    if (task?.promise) await waitBounded(task.promise, timeout)
+    if (task?.promise) {
+      await waitBounded(task.promise, timeout)
+    }
+    if (!task || task.promise || !isTerminalLifecycleState(task.status)) {
+      return `Task ${agentId} cancellation is still in progress`
+    }
+    if (task.status !== 'cancelled') {
+      return `Task ${agentId} cancellation ended with status ${legacyBackgroundStatus(task.status)}`
+    }
     return message
   }
 
   stopAll(): readonly string[] {
     const stopped: string[] = []
     for (const task of this.tasks.values()) {
-      if (task.status !== 'running' || !task.controller) continue
+      if (!task.promise || !task.controller || task.cancellationRequested)
+        continue
       this.stopTask(task, 'Stopped by explicit bulk kill')
       stopped.push(task.spec.agentId)
     }
@@ -550,8 +566,8 @@ export class BackgroundAgentManager {
     this.resolveClosed()
     const running: Promise<void>[] = []
     for (const task of this.tasks.values()) {
-      if (task.status === 'running' && task.controller) {
-        task.status = 'stopped'
+      if (task.promise && task.controller) {
+        task.cancellationRequested = true
         task.error = 'Stopped because the background agent manager closed'
         task.suppressNotifications = true
         task.notifications.length = 0
@@ -564,6 +580,7 @@ export class BackgroundAgentManager {
       Promise.allSettled(running).then(() => undefined),
       drainMilliseconds,
     )
+    for (const task of this.tasks.values()) task.unsubscribeLifecycle?.()
     this.tasks.clear()
     this.names.clear()
   }
@@ -588,10 +605,21 @@ export class BackgroundAgentManager {
       })
     }
     const priorStatus = task.status
-    if (task.promise && task.status === 'running') {
+    if (
+      task.cancellationRequested &&
+      (task.promise !== null || task.status !== 'cancelled')
+    ) {
+      return JSON.stringify({
+        success: false,
+        message: `Agent "${agentId}" is cancelling and cannot receive a continuation yet.`,
+      })
+    }
+    if (task.promise) {
       task.queuedMessages.push({ message, toolUseId })
     } else {
-      this.start(task, message, true, toolUseId)
+      task.queuedMessages.push({ message, toolUseId })
+      const next = task.queuedMessages.shift()
+      if (next) this.start(task, next.message, true, next.toolUseId)
     }
     return JSON.stringify({
       success: true,
@@ -620,7 +648,13 @@ export class BackgroundAgentManager {
     ) {
       const running = eligibleTasks
         .map(([, task]) => task)
-        .filter((task) => task.status === 'running')
+        .filter(
+          (task) =>
+            task.promise !== null ||
+            task.status === 'queued' ||
+            task.status === 'running' ||
+            task.status === 'cancelling',
+        )
         .map((task) => task.promise)
         .filter((promise): promise is Promise<void> => promise !== null)
       if (running.length > 0) {
@@ -633,11 +667,17 @@ export class BackgroundAgentManager {
     let durationApiMs = 0
     let durationApiWithoutRetriesMs = 0
     let durationSeen = false
-    const consumedTasks: BackgroundAgentTask[] = []
+    const consumedNotifications: {
+      task: BackgroundAgentTask
+      notification: BackgroundAgentNotification
+    }[] = []
     for (const [, task] of eligibleTasks) {
       if (task.notifications.length === 0) continue
       for (const notification of task.notifications) {
-        notifications.push(this.formatNotification(task, notification))
+        const message = this.formatNotification(task, notification)
+        if (message === null) continue
+        notifications.push(message)
+        consumedNotifications.push({ task, notification })
         if (notification.result) {
           assertValidResultUsage(notification.result.usage)
           usage = addUsageChecked(undefined, usage, notification.result.usage)
@@ -659,18 +699,14 @@ export class BackgroundAgentManager {
           )
         }
       }
-      consumedTasks.push(task)
     }
     const modelUsage =
       modelUsageByModel.size === 0
         ? undefined
         : Object.fromEntries(modelUsageByModel)
     if (options.consume !== false) {
-      for (const task of consumedTasks) {
-        if (!task.spec.acknowledgeNotification) continue
-        for (const notification of task.notifications) {
-          await task.spec.acknowledgeNotification(notification.id)
-        }
+      for (const { task, notification } of consumedNotifications) {
+        await task.spec.acknowledgeNotification?.(notification.id)
       }
     }
     const result = {
@@ -680,7 +716,9 @@ export class BackgroundAgentManager {
       ...(durationSeen ? { durationApiMs, durationApiWithoutRetriesMs } : {}),
     }
     if (options.consume !== false) {
-      for (const task of consumedTasks) task.notifications.splice(0)
+      for (const { task, notification } of consumedNotifications) {
+        task.notifications.splice(task.notifications.indexOf(notification), 1)
+      }
     }
     return result
   }
@@ -731,6 +769,7 @@ export class BackgroundAgentManager {
     for (const task of this.tasks.values()) {
       for (const notification of [...task.notifications]) {
         const message = this.formatNotification(task, notification)
+        if (message === null) continue
         const index = remaining.indexOf(message)
         if (index < 0) continue
         await operation(task, notification)
@@ -744,9 +783,8 @@ export class BackgroundAgentManager {
   ): Promise<void> {
     for (const [agentId, task] of this.tasks) {
       for (const notification of [...task.notifications]) {
-        if (notification.status === 'interrupted') continue
-        const status =
-          notification.status === 'stopped' ? 'killed' : notification.status
+        const status = notificationWireStatus(notification.status)
+        if (status === null) continue
         if (
           !delivered({ agentId, toolUseId: notification.toolUseId, status })
         ) {
@@ -763,9 +801,8 @@ export class BackgroundAgentManager {
   ): Promise<void> {
     for (const [agentId, task] of this.tasks) {
       for (const notification of [...task.notifications]) {
-        if (notification.status === 'interrupted') continue
-        const status =
-          notification.status === 'stopped' ? 'killed' : notification.status
+        const status = notificationWireStatus(notification.status)
+        if (status === null) continue
         if (
           !delivered({ agentId, toolUseId: notification.toolUseId, status })
         ) {
@@ -788,10 +825,10 @@ export class BackgroundAgentManager {
     continuation: boolean,
     toolUseId: string,
   ): void {
-    task.generation += 1
-    const generation = task.generation
+    task.runSequence += 1
+    const runSequence = task.runSequence
     const controller = new AbortController()
-    task.status = 'running'
+    task.cancellationRequested = false
     task.startedAt = Date.now()
     task.durationMs = null
     task.controller = controller
@@ -800,7 +837,7 @@ export class BackgroundAgentManager {
     this.track(
       task,
       task.spec.run(message, controller.signal, continuation, toolUseId),
-      generation,
+      runSequence,
       toolUseId,
     )
   }
@@ -808,32 +845,32 @@ export class BackgroundAgentManager {
   private track(
     task: BackgroundAgentTask,
     operation: Promise<BackgroundAgentRunResult>,
-    generation: number,
+    runSequence: number,
     toolUseId: string,
   ): void {
     task.promise = operation
       .then((result) => {
-        if (task.generation !== generation) return
-        if (task.status === 'stopped') {
-          this.finishStopped(task, result)
+        if (task.runSequence !== runSequence) return
+        if (task.status === 'cancelled') {
+          this.finishCancelled(task, result)
           return
         }
-        task.status = 'completed'
         task.result = result
         task.durationMs = result.durationMs
         task.error = null
-        task.notifications.push({
-          id: result.notificationId ?? randomUUID(),
-          status: 'completed',
-          result,
-          error: null,
-          toolUseId,
-        })
+        if (task.status === 'completed')
+          task.notifications.push({
+            id: result.notificationId ?? randomUUID(),
+            status: 'completed',
+            result,
+            error: null,
+            toolUseId,
+          })
       })
       .catch((error: unknown) => {
-        if (task.generation !== generation) return
-        if (task.status === 'stopped') {
-          this.finishStopped(
+        if (task.runSequence !== runSequence) return
+        if (task.status === 'cancelled') {
+          this.finishCancelled(
             task,
             error instanceof BackgroundAgentRunError ? error.result : undefined,
           )
@@ -841,26 +878,31 @@ export class BackgroundAgentManager {
         }
         const failedResult =
           error instanceof BackgroundAgentRunError ? error.result : undefined
-        task.status = 'failed'
         task.result = null
         task.durationMs =
           failedResult?.durationMs ?? Date.now() - task.startedAt
         task.error = error instanceof Error ? error.message : String(error)
-        task.notifications.push({
-          id: failedResult?.notificationId ?? randomUUID(),
-          status: 'failed',
-          result: failedResult ?? null,
-          error: task.error,
-          toolUseId,
-        })
+        if (task.status === 'failed')
+          task.notifications.push({
+            id: failedResult?.notificationId ?? randomUUID(),
+            status: 'failed',
+            result: failedResult ?? null,
+            error: task.error,
+            toolUseId,
+          })
       })
       .finally(() => {
-        if (task.generation !== generation) return
+        if (task.runSequence !== runSequence) return
         task.controller = null
         task.promise = null
-        const next = task.queuedMessages.shift()
-        if (next && task.status !== 'stopped') {
-          this.start(task, next.message, true, next.toolUseId)
+        if (
+          !task.cancellationRequested &&
+          (task.status === 'completed' ||
+            task.status === 'failed' ||
+            task.status === 'cancelled')
+        ) {
+          const next = task.queuedMessages.shift()
+          if (next) this.start(task, next.message, true, next.toolUseId)
         }
       })
   }
@@ -873,7 +915,7 @@ export class BackgroundAgentManager {
       | 'controller'
       | 'result'
       | 'error'
-      | 'generation'
+      | 'runSequence'
       | 'startedAt'
       | 'durationMs'
     >,
@@ -903,7 +945,12 @@ export class BackgroundAgentManager {
       notifications: [],
       queuedMessages: [],
       suppressNotifications: false,
+      cancellationRequested: false,
+      unsubscribeLifecycle: null,
     }
+    task.unsubscribeLifecycle = spec.lifecycle.subscribe((state) => {
+      if (!this.closed) task.status = state
+    })
     this.tasks.set(spec.agentId, task)
     return { task, created: true }
   }
@@ -914,12 +961,13 @@ export class BackgroundAgentManager {
   }
 
   private stopTask(task: BackgroundAgentTask, reason: string): void {
-    if (task.status !== 'running' || !task.controller) {
+    if (!task.promise || !task.controller || task.cancellationRequested) {
+      const status = legacyBackgroundStatus(task.status)
       throw new Error(
-        `Task ${task.spec.agentId} is not running (status: ${task.status})`,
+        `Task ${task.spec.agentId} is not running (status: ${status})`,
       )
     }
-    task.status = 'stopped'
+    task.cancellationRequested = true
     task.error = reason
     task.durationMs ??= Date.now() - task.startedAt
     task.queuedMessages.length = 0
@@ -934,7 +982,7 @@ export class BackgroundAgentManager {
     }
   }
 
-  private finishStopped(
+  private finishCancelled(
     task: BackgroundAgentTask,
     result: BackgroundAgentRunResult | undefined,
   ): void {
@@ -949,7 +997,7 @@ export class BackgroundAgentManager {
     if (!task.suppressNotifications) {
       task.notifications.push({
         id: stoppedResult.notificationId ?? randomUUID(),
-        status: 'stopped',
+        status: 'cancelled',
         result: stoppedResult,
         error: task.error,
         toolUseId: task.spec.toolUseId,
@@ -988,11 +1036,12 @@ export class BackgroundAgentManager {
     retrieval: 'not_ready' | 'success' | 'timeout',
   ): string {
     const output = task.result?.text ?? task.error ?? ''
+    const status = legacyBackgroundStatus(task.status)
     return [
       `<retrieval_status>${retrieval}</retrieval_status>`,
       `<task_id>${task.spec.agentId}</task_id>`,
       '<task_type>local_agent</task_type>',
-      `<status>${task.status}</status>`,
+      `<status>${status}</status>`,
       ...(task.result?.isolationPath
         ? [
             `<worktree_path>${escapeXml(task.result.isolationPath)}</worktree_path>`,
@@ -1011,10 +1060,10 @@ export class BackgroundAgentManager {
   private formatNotification(
     task: BackgroundAgentTask,
     notification: BackgroundAgentNotification,
-  ): string {
+  ): string | null {
     const result = notification.result?.text ?? notification.error ?? ''
-    const status =
-      notification.status === 'stopped' ? 'killed' : notification.status
+    const status = notificationWireStatus(notification.status)
+    if (status === null) return null
     const usage = notification.result
       ? `<usage><total_tokens>${notification.result.usage.inputTokens + notification.result.usage.outputTokens}</total_tokens><tool_uses>${notification.result.toolUseCount}</tool_uses><duration_ms>${notification.result.durationMs}</duration_ms></usage>`
       : ''

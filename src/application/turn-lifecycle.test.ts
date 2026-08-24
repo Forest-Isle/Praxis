@@ -10,12 +10,16 @@ describe('TurnTerminalController', () => {
 
     controller.emit({ type: 'state', state: 'completed' })
     controller.emit({ type: 'state', state: 'cancelled' })
+    controller.emit({ type: 'state', state: 'assembling-context' })
     controller.emit({ type: 'text-delta', delta: 'hello' })
+    controller.emit({ type: 'state', state: 'persisting-results' })
     controller.emit({ type: 'failed', message: 'diagnostic', retryable: false })
     controller.complete()
 
     expect(events).toEqual([
+      { type: 'state', state: 'assembling-context' },
       { type: 'text-delta', delta: 'hello' },
+      { type: 'state', state: 'persisting-results' },
       { type: 'failed', message: 'diagnostic', retryable: false },
       { type: 'state', state: 'completed' },
     ])

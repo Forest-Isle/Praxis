@@ -148,7 +148,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, top-level agents, and
   Claude-compatible main-thread agent definitions with native prompt, model,
-  tool, memory, first-turn, and resume behavior.
+  tool, memory, first-turn, and resume behavior. Agent execution uses one
+  durable lifecycle vocabulary with bounded cancellation and drain,
+  continuation, notifications, and single-owner orphan recovery.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and transcript data.

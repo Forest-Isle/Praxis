@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  type BackgroundAgentLifecycleSource,
   BackgroundAgentRunError,
   BackgroundAgentManager,
   type BackgroundAgentRunResult,
 } from './background-agent-manager.js'
+import type { LifecycleState } from '../core/agent-orchestration.js'
 
 const completed = (text: string): BackgroundAgentRunResult => ({
   text,
@@ -19,7 +21,21 @@ function spec(
     signal: AbortSignal,
     continuation: boolean,
   ) => Promise<BackgroundAgentRunResult>,
+  initialState: LifecycleState = 'queued',
 ) {
+  let state = initialState
+  const listeners = new Set<(state: LifecycleState) => void>()
+  const publish = (next: LifecycleState) => {
+    state = next
+    for (const listener of listeners) listener(next)
+  }
+  const lifecycle: BackgroundAgentLifecycleSource = {
+    current: () => state,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
   return {
     agentId: 'a0123456789abcdef',
     agentType: 'general-purpose',
@@ -28,7 +44,40 @@ function spec(
     toolUseId: 'call_agent',
     outputFile: '/tmp/agent.output',
     resolvedModel: 'fixture-model',
-    run,
+    lifecycle,
+    async run(message: string, signal: AbortSignal, continuation: boolean) {
+      publish('running')
+      const onAbort = () => publish('cancelling')
+      signal.addEventListener('abort', onAbort, { once: true })
+      try {
+        const result = await run(message, signal, continuation)
+        publish('completed')
+        return result
+      } catch (error) {
+        publish(signal.aborted ? 'cancelled' : 'failed')
+        throw error
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+      }
+    },
+  }
+}
+
+function controllableLifecycle(initial: LifecycleState = 'queued') {
+  let state = initial
+  const listeners = new Set<(state: LifecycleState) => void>()
+  return {
+    lifecycle: {
+      current: () => state,
+      subscribe(listener: (next: LifecycleState) => void) {
+        listeners.add(listener)
+        return () => listeners.delete(listener)
+      },
+    } satisfies BackgroundAgentLifecycleSource,
+    publish(next: LifecycleState) {
+      state = next
+      for (const listener of listeners) listener(next)
+    },
   }
 }
 
@@ -66,6 +115,7 @@ describe('BackgroundAgentManager', () => {
         startedAt: expect.any(Number),
       }),
     ])
+    expect(manager.notificationClaimAgentIds()).toEqual(['a0123456789abcdef'])
     await expect(
       manager.notifications({ waitForRunning: false }),
     ).resolves.toEqual({
@@ -79,6 +129,200 @@ describe('BackgroundAgentManager', () => {
       messages: [],
       usage: { inputTokens: 0, outputTokens: 0 },
     })
+  })
+
+  it('retains an orphaned lifecycle when its promise rejects', async () => {
+    const lifecycle: BackgroundAgentLifecycleSource = {
+      current: () => 'orphaned',
+      subscribe: () => () => undefined,
+    }
+    const manager = new BackgroundAgentManager()
+    manager.launch({
+      ...spec(async () => {
+        throw new Error('orphan diagnostic')
+      }),
+      lifecycle,
+    })
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('<status>interrupted</status>')
+    expect(manager.snapshots()).toEqual([
+      expect.objectContaining({
+        status: 'orphaned',
+        error: 'orphan diagnostic',
+      }),
+    ])
+    await expect(
+      manager.notifications({ waitForRunning: false }),
+    ).resolves.toEqual({
+      messages: [],
+      usage: { inputTokens: 0, outputTokens: 0 },
+    })
+  })
+
+  it('claims queued admission and keeps a timed-out cancellation nonterminal', async () => {
+    const manager = new BackgroundAgentManager()
+    let admissionClaims: readonly string[] = []
+    manager.launch({
+      ...spec(() => new Promise<BackgroundAgentRunResult>(() => undefined)),
+      markBackground: () => {
+        admissionClaims = manager.notificationClaimAgentIds()
+      },
+    })
+    expect(admissionClaims).toEqual(['a0123456789abcdef'])
+    await expect(
+      manager.stopAndWait('a0123456789abcdef', 0),
+    ).resolves.toContain('cancellation is still in progress')
+    expect(manager.snapshots()).toEqual([
+      expect.objectContaining({ status: 'cancelling' }),
+    ])
+    expect(manager.notificationClaimAgentIds()).toEqual(['a0123456789abcdef'])
+    expect(
+      JSON.parse(
+        manager.send(
+          'a0123456789abcdef',
+          'continue while draining',
+          undefined,
+          'call_continue',
+        ),
+      ),
+    ).toMatchObject({ success: false })
+    await manager.close(0)
+  })
+
+  it('resumes a settled cancelled task under the same agent ID', async () => {
+    const calls: { message: string; continuation: boolean }[] = []
+    let releaseCancellation: (() => void) | undefined
+    const cancellation = new Promise<void>((resolve) => {
+      releaseCancellation = resolve
+    })
+    const manager = new BackgroundAgentManager()
+    manager.launch(
+      spec(async (message, signal, continuation) => {
+        calls.push({ message, continuation })
+        if (!continuation) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener('abort', () => resolve(), { once: true })
+          })
+          await cancellation
+          throw new Error('cancelled')
+        }
+        return completed('CONTINUED')
+      }),
+    )
+
+    manager.stop('a0123456789abcdef')
+    expect(
+      JSON.parse(
+        manager.send('a0123456789abcdef', 'too early', undefined, 'call_early'),
+      ),
+    ).toMatchObject({ success: false })
+    releaseCancellation?.()
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('<status>stopped</status>')
+
+    expect(
+      JSON.parse(
+        manager.send(
+          'a0123456789abcdef',
+          'continue after cancellation',
+          undefined,
+          'call_late',
+        ),
+      ),
+    ).toMatchObject({ success: true })
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('CONTINUED')
+    expect(calls).toEqual([
+      { message: 'initial prompt', continuation: false },
+      { message: 'continue after cancellation', continuation: true },
+    ])
+  })
+
+  it('does not report cancellation success when the source ends orphaned', async () => {
+    const controlled = controllableLifecycle()
+    let rejectRun!: (error: Error) => void
+    const manager = new BackgroundAgentManager()
+    manager.launch({
+      ...spec(
+        () =>
+          new Promise<BackgroundAgentRunResult>((_resolve, reject) => {
+            rejectRun = reject
+          }),
+      ),
+      lifecycle: controlled.lifecycle,
+    })
+    controlled.publish('running')
+
+    const stopping = manager.stopAndWait('a0123456789abcdef', 30_000)
+    controlled.publish('orphaned')
+    rejectRun(new Error('orphan diagnostic'))
+
+    await expect(stopping).resolves.toBe(
+      'Task a0123456789abcdef cancellation ended with status interrupted',
+    )
+    expect(
+      await manager.output('a0123456789abcdef', {
+        block: false,
+        timeout: 30_000,
+      }),
+    ).toContain('<status>interrupted</status>')
+  })
+
+  it('retains queued messages through orphaning and recovers them in FIFO order', async () => {
+    const controlled = controllableLifecycle()
+    const calls: { message: string; continuation: boolean }[] = []
+    const finishers: ((result: BackgroundAgentRunResult) => void)[] = []
+    const manager = new BackgroundAgentManager()
+    manager.launch({
+      ...spec(
+        (message, _signal, continuation) =>
+          new Promise((resolve) => {
+            calls.push({ message, continuation })
+            finishers.push(resolve)
+          }),
+      ),
+      lifecycle: controlled.lifecycle,
+    })
+    controlled.publish('running')
+    manager.send(
+      'a0123456789abcdef',
+      'accepted while live',
+      undefined,
+      'call_queued',
+    )
+
+    controlled.publish('orphaned')
+    finishers[0]?.(completed('FIRST'))
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('<status>interrupted</status>')
+
+    manager.send(
+      'a0123456789abcdef',
+      'recovery trigger',
+      undefined,
+      'call_recovery',
+    )
+    expect(calls).toEqual([
+      { message: 'initial prompt', continuation: false },
+      { message: 'accepted while live', continuation: true },
+    ])
+    controlled.publish('completed')
+    finishers[1]?.(completed('QUEUED_RESULT'))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(calls).toEqual([
+      { message: 'initial prompt', continuation: false },
+      { message: 'accepted while live', continuation: true },
+      { message: 'recovery trigger', continuation: true },
+    ])
+    controlled.publish('completed')
+    finishers[2]?.(completed('RECOVERY_RESULT'))
+    await expect(
+      manager.output('a0123456789abcdef', { block: true, timeout: 30_000 }),
+    ).resolves.toContain('RECOVERY_RESULT')
   })
 
   it('reconciles a transcript-delivered notification before redelivery', async () => {
@@ -915,12 +1159,12 @@ describe('BackgroundAgentManager', () => {
       toolUseId: 'call_agent_two',
       outputFile: '/tmp/agent-two.output',
     })
-    manager.registerCompleted(
+    manager.registerPersisted(
       {
-        ...spec(async () => completed('already done')),
+        ...spec(async () => completed('already done'), 'completed'),
         agentId: 'a2123456789abcdef',
       },
-      completed('already done'),
+      { result: completed('already done') },
     )
 
     expect(manager.stopAll()).toEqual([
