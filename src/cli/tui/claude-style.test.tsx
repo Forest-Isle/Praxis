@@ -29,6 +29,7 @@ import {
   activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
+import { projectTuiDiffSurface } from './diff-surface-model.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
@@ -278,28 +279,30 @@ describe('Claude-style TUI components', () => {
           )}
         />
         <DiffDashboard
-          snapshots={[
-            {
-              label: 'Current',
-              snapshot: {
-                additions: 1,
-                deletions: 1,
-                files: [
-                  {
-                    path: 'fixture.ts',
-                    additions: 1,
-                    deletions: 1,
-                    patch:
-                      '@@ fixture\n-function oldName() {}\n+function newName() {}',
-                  },
-                ],
+          model={projectTuiDiffSurface({
+            sources: [
+              {
+                label: 'Current',
+                snapshot: {
+                  additions: 1,
+                  deletions: 1,
+                  files: [
+                    {
+                      path: 'fixture.ts',
+                      additions: 1,
+                      deletions: 1,
+                      patch:
+                        '@@ fixture\n-function oldName() {}\n+function newName() {}',
+                    },
+                  ],
+                },
               },
-            },
-          ]}
-          sourceIndex={0}
-          selectedIndex={0}
-          viewingFile
-          scrollOffset={0}
+            ],
+            sourceIndex: 0,
+            selectedIndex: 0,
+            viewingFile: true,
+            scrollOffset: 0,
+          })}
           width={100}
           screenReader={false}
         />
@@ -1328,16 +1331,18 @@ describe('Claude-style TUI components', () => {
       additions: 2,
       deletions: 1,
     }
-    const list = render(
+    const list = renderNormal(
       <DiffDashboard
-        snapshots={[
-          { label: 'Current', snapshot },
-          { label: 'T1', snapshot },
-        ]}
-        sourceIndex={0}
-        selectedIndex={0}
-        viewingFile={false}
-        scrollOffset={0}
+        model={projectTuiDiffSurface({
+          sources: [
+            { label: 'Current', snapshot },
+            { label: 'T1', snapshot },
+          ],
+          sourceIndex: 0,
+          selectedIndex: 0,
+          viewingFile: false,
+          scrollOffset: 0,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -1347,13 +1352,15 @@ describe('Claude-style TUI components', () => {
     expect(list.lastFrame()).toContain('T1')
     expect(list.lastFrame()).toContain('❯ fixture.txt')
 
-    const patch = render(
+    const patch = renderNormal(
       <DiffDashboard
-        snapshots={[{ label: 'Current', snapshot }]}
-        sourceIndex={0}
-        selectedIndex={0}
-        viewingFile
-        scrollOffset={0}
+        model={projectTuiDiffSurface({
+          sources: [{ label: 'Current', snapshot }],
+          sourceIndex: 0,
+          selectedIndex: 0,
+          viewingFile: true,
+          scrollOffset: 0,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -1379,57 +1386,150 @@ describe('Claude-style TUI components', () => {
     }
     const first = render(
       <DiffDashboard
-        snapshots={[
-          { label: 'Current', snapshot },
-          { label: 'T1', snapshot },
-        ]}
-        sourceIndex={0}
-        selectedIndex={0}
-        viewingFile={false}
-        scrollOffset={0}
+        model={projectTuiDiffSurface({
+          sources: [
+            { label: 'Current', snapshot },
+            { label: 'T1', snapshot },
+          ],
+          sourceIndex: 0,
+          selectedIndex: 0,
+          viewingFile: false,
+          scrollOffset: 0,
+        })}
         width={100}
         screenReader
       />,
     ).lastFrame()
     const moved = render(
       <DiffDashboard
-        snapshots={[
-          { label: 'Current', snapshot },
-          { label: 'T1', snapshot },
-        ]}
-        sourceIndex={1}
-        selectedIndex={1}
-        viewingFile={false}
-        scrollOffset={0}
+        model={projectTuiDiffSurface({
+          sources: [
+            { label: 'Current', snapshot },
+            { label: 'T1', snapshot },
+          ],
+          sourceIndex: 1,
+          selectedIndex: 1,
+          viewingFile: false,
+          scrollOffset: 0,
+        })}
         width={100}
         screenReader
       />,
     ).lastFrame()
 
-    expect(first).toContain('Current source: Current')
-    expect(first).toContain('Selected: first.ts +2 -0')
-    expect(moved).toContain('Current source: T1')
-    expect(moved).toContain('Selected: second.ts +0 -1')
+    const firstSemantic = (first ?? '').replace(/\s+/gu, ' ')
+    const movedSemantic = (moved ?? '').replace(/\s+/gu, ' ')
+    expect(firstSemantic).toContain('Current source: Current')
+    expect(firstSemantic).toContain(
+      'Selected: first.ts; 2 additions; 0 deletions',
+    )
+    expect(firstSemantic).toContain(
+      'Use left and right arrows to switch source',
+    )
+    expect(firstSemantic).toContain(
+      'Use up and down arrows to select a file, then Enter to view',
+    )
+    expect(firstSemantic).toContain('Escape to close')
+    expect(movedSemantic).toContain('Current source: T1')
+    expect(movedSemantic).toContain(
+      'Selected: second.ts; 0 additions; 1 deletion',
+    )
     expect(`${first}${moved}`).not.toContain('❯')
+    expect(`${first}${moved}`).not.toContain('─')
 
     const detail = render(
       <DiffDashboard
-        snapshots={[{ label: 'Current', snapshot }]}
-        sourceIndex={0}
-        selectedIndex={0}
-        viewingFile
-        scrollOffset={0}
+        model={projectTuiDiffSurface({
+          sources: [{ label: 'Current', snapshot }],
+          sourceIndex: 0,
+          selectedIndex: 0,
+          viewingFile: true,
+          scrollOffset: 0,
+        })}
         width={100}
         screenReader
       />,
     ).lastFrame()
-    expect(detail).toContain('Current source: Current')
-    expect(detail).toContain('first.ts')
-    expect(detail).toContain('-before')
-    expect(detail).toContain('+after')
+    const detailSemantic = (detail ?? '').replace(/\s+/gu, ' ')
+    expect(detailSemantic).toContain('Current source: Current')
+    expect(detailSemantic).toContain(
+      'Selected file: first.ts; 2 additions; 0 deletions',
+    )
+    expect(detailSemantic).toContain('Removed: before')
+    expect(detailSemantic).toContain('Added: after')
+    expect(detailSemantic).toContain('Patch lines 1-2 of 2')
+    expect(detailSemantic).toContain('Escape to go back')
     expect(detail).not.toContain('─')
     expect(detail).not.toContain('❯')
     expect(detail).not.toContain('\u001B[7m')
+  })
+
+  it('collapses diff decoration below 32 columns and remains semantic without color', () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'narrow.ts',
+          additions: 1,
+          deletions: 0,
+          patch: '+const narrow = true',
+        },
+      ],
+      additions: 1,
+      deletions: 0,
+    }
+    const model = projectTuiDiffSurface({
+      sources: [{ label: 'Current', snapshot }],
+      sourceIndex: 0,
+      selectedIndex: 0,
+      viewingFile: false,
+      scrollOffset: 0,
+    })
+    const narrow = render(
+      <DiffDashboard model={model} width={20} screenReader={false} />,
+    ).lastFrame()
+
+    const narrowSemantic = (narrow ?? '').replace(/\s+/gu, ' ')
+    expect(narrowSemantic).toContain('narrow.ts')
+    expect(narrowSemantic).toContain('Enter to view')
+    expect(narrowSemantic).toContain('Esc to close')
+    expect(narrow).not.toContain('─'.repeat(21))
+    for (const invalidWidth of [
+      -4,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+    ]) {
+      expect(() =>
+        render(
+          <DiffDashboard
+            model={model}
+            width={invalidWidth}
+            screenReader={false}
+          />,
+        ),
+      ).not.toThrow()
+    }
+
+    const previousNoColor = process.env.NO_COLOR
+    process.env.NO_COLOR = '1'
+    try {
+      const noColor = render(
+        <TuiThemeProvider
+          settings={{ theme: 'dark', syntaxHighlightingDisabled: false }}
+        >
+          <DiffDashboard model={model} width={20} screenReader={false} />
+        </TuiThemeProvider>,
+      ).lastFrame()
+      const noColorSemantic = (noColor ?? '').replace(/\s+/gu, ' ')
+      expect(noColorSemantic).toContain('Current source: Current')
+      expect(noColorSemantic).toContain('Selected: narrow.ts +1 -0')
+      expect(noColorSemantic).toContain('Enter to view')
+      expect(noColor).not.toContain('❯')
+      expectNoColorSgr(noColor ?? '')
+    } finally {
+      if (previousNoColor === undefined) delete process.env.NO_COLOR
+      else process.env.NO_COLOR = previousNoColor
+    }
   })
 
   it('renders the observed built-in theme choices and active profile', () => {

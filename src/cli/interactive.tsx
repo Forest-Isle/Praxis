@@ -111,11 +111,11 @@ import {
   projectTuiHelpSurface,
   type TuiHelpSurfaceModel,
 } from './tui/help-surface-model.js'
+import { loadGitDiff, type TuiDiffSnapshot } from './tui/git-diff.js'
 import {
-  loadGitDiff,
-  visiblePatchLines,
-  type TuiDiffSnapshot,
-} from './tui/git-diff.js'
+  projectTuiDiffSurface,
+  type TuiDiffSurfaceModel,
+} from './tui/diff-surface-model.js'
 import {
   addTuiPermissionRule,
   loadTuiPermissionRules,
@@ -1861,6 +1861,7 @@ export function InteractiveApp({
   type InteractiveSecondarySurface =
     | TuiHelpSurfaceModel
     | TuiPermissionSurfaceModel
+    | TuiDiffSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -1928,12 +1929,28 @@ export function InteractiveApp({
         : null,
     [question, input],
   )
+  const diffMenu = menu?.kind === 'diff' ? menu : null
+  const diffSurface = useMemo<TuiDiffSurfaceModel | null>(
+    () =>
+      diffMenu === null
+        ? null
+        : projectTuiDiffSurface({
+            sources: diffMenu.snapshots,
+            sourceIndex: diffMenu.sourceIndex,
+            selectedIndex: diffMenu.selectedIndex,
+            viewingFile: diffMenu.viewingFile,
+            scrollOffset: diffMenu.scrollOffset,
+          }),
+    [diffMenu],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
       : menu.kind === 'help'
         ? (helpSurface ?? undefined)
-        : (permissionManagementSurface ?? legacySecondarySurface)
+        : menu.kind === 'diff'
+          ? (diffSurface ?? undefined)
+          : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: { readonly kind: 'session-picker' }
     readonly priority:
@@ -5913,10 +5930,10 @@ export function InteractiveApp({
           return
         }
         if (activeMenu.viewingFile) {
-          const maxOffset = Math.max(
-            0,
-            visiblePatchLines(selectedFile?.patch ?? '').length - 18,
-          )
+          const maxOffset =
+            diffSurface?.view.kind === 'file-detail'
+              ? diffSurface.view.scrollRange.max
+              : 0
           if (key.upArrow || key.downArrow) {
             updateMenu({
               ...activeMenu,
@@ -8108,13 +8125,9 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'diff' ? (
+              ) : selectedSecondarySurface.kind === 'diff' ? (
                 <DiffDashboard
-                  snapshots={menu.snapshots}
-                  sourceIndex={menu.sourceIndex}
-                  selectedIndex={menu.selectedIndex}
-                  viewingFile={menu.viewingFile}
-                  scrollOffset={menu.scrollOffset}
+                  model={selectedSecondarySurface}
                   width={width}
                   screenReader={axScreenReader}
                 />
