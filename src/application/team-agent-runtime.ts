@@ -18,6 +18,7 @@ import {
   type AgentPermissionMode,
 } from './subagent-service.js'
 import type { TeamAgentRuntime } from './team-manager.js'
+import { teamMailboxMessageId } from './team-mailbox.js'
 
 export interface ClaudeTeamAgentRuntimeOptions {
   readonly nativeRoot: string
@@ -133,6 +134,32 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
           }
         : {}),
       ...(this.options.eventSink ? { eventSink: this.options.eventSink } : {}),
+      sendOwnedBackgroundAgent: async (
+        _sessionId: string,
+        _agentId: string,
+        message: string,
+        summary: string | undefined,
+        toolUseId: string,
+      ) => {
+        const recipient = _agentId
+        const to = recipient === 'broadcast' ? 'broadcast' : recipient
+        const endpoint = input.mailbox
+        await endpoint.send({
+          messageId: teamMailboxMessageId(
+            input.teamId,
+            input.member.name,
+            toolUseId,
+          ),
+          to,
+          payload: {
+            kind: 'text',
+            text: message,
+            ...(summary === undefined ? {} : { summary }),
+          },
+        })
+        return 'Message sent successfully.'
+      },
+      durableFollowUpSource: () => input.mailbox.project(),
     })
     let failure: unknown
     try {

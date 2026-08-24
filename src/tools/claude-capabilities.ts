@@ -80,6 +80,7 @@ export const PRAXIS_TEAM_TOOLS = Object.freeze([
   'TeamList',
   'TeamAccept',
   'TeamStop',
+  'TeamSend',
 ] as const)
 
 /** Coordination tools advertised by a coordinator only when explicitly enabled. */

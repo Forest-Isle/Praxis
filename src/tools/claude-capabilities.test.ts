@@ -183,6 +183,7 @@ describe('resolveClaudeToolCapabilities', () => {
   })
 
   it('resolves the Team gate from explicit input before environment and defaults off', () => {
+    expect(PRAXIS_TEAM_TOOLS).toContain('TeamSend')
     expect(
       names({
         role: 'main',

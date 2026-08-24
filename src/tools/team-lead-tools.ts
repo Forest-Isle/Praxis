@@ -9,6 +9,10 @@ import type {
   TeamLeadOperations,
   TeamCreateRequest,
 } from '../application/team-lead-operations.js'
+import {
+  parseTeamMailboxPayload,
+  type TeamMailboxPayload,
+} from '../core/team-mailbox.js'
 
 const names = [
   'TeamCreate',
@@ -16,8 +20,95 @@ const names = [
   'TeamList',
   'TeamAccept',
   'TeamStop',
+  'TeamSend',
 ] as const
 type TeamName = (typeof names)[number]
+
+const teamPayloadSchema = {
+  oneOf: [
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'text'],
+      properties: {
+        kind: { const: 'text' },
+        text: { type: 'string', minLength: 1 },
+        summary: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId', 'taskId', 'text'],
+      properties: {
+        kind: { const: 'task' },
+        phase: { const: 'request' },
+        requestId: { type: 'string', minLength: 1 },
+        taskId: { type: 'string', minLength: 1 },
+        text: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId', 'taskId', 'status'],
+      properties: {
+        kind: { const: 'task' },
+        phase: { const: 'response' },
+        requestId: { type: 'string', minLength: 1 },
+        taskId: { type: 'string', minLength: 1 },
+        status: { enum: ['accepted', 'rejected', 'completed', 'failed'] },
+        text: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId'],
+      properties: {
+        kind: { const: 'shutdown' },
+        phase: { const: 'request' },
+        requestId: { type: 'string', minLength: 1 },
+        reason: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId', 'approved'],
+      properties: {
+        kind: { const: 'shutdown' },
+        phase: { const: 'response' },
+        requestId: { type: 'string', minLength: 1 },
+        approved: { type: 'boolean' },
+        reason: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId', 'plan'],
+      properties: {
+        kind: { const: 'plan' },
+        phase: { const: 'request' },
+        requestId: { type: 'string', minLength: 1 },
+        plan: { type: 'string', minLength: 1 },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'phase', 'requestId', 'approved'],
+      properties: {
+        kind: { const: 'plan' },
+        phase: { const: 'response' },
+        requestId: { type: 'string', minLength: 1 },
+        approved: { type: 'boolean' },
+        feedback: { type: 'string', minLength: 1 },
+      },
+    },
+  ],
+} as const
 
 const definitions: readonly ModelToolDefinition[] = [
   {
@@ -130,6 +221,26 @@ const definitions: readonly ModelToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'TeamSend',
+    description: 'Send a typed message through a local Team mailbox.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['teamId', 'to', 'payload'],
+      properties: {
+        teamId: { type: 'string' },
+        to: {
+          anyOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' }, minItems: 1 },
+            { const: 'broadcast' },
+          ],
+        },
+        payload: teamPayloadSchema,
+      },
+    },
+  },
 ]
 
 function objectInput(
@@ -222,6 +333,24 @@ function validate(
       ...input,
       ...(input.decision === undefined ? { decision: 'accepted' } : {}),
     }
+  }
+  if (name === 'TeamSend') {
+    objectInput(input, ['teamId', 'to', 'payload'])
+    stringValue(input, 'teamId')
+    if (input.to !== 'broadcast') {
+      if (typeof input.to === 'string') {
+        stringValue(input, 'to')
+      } else if (Array.isArray(input.to)) {
+        if (
+          input.to.length === 0 ||
+          input.to.some(
+            (value) => typeof value !== 'string' || value.trim() === '',
+          )
+        )
+          throw new Error('Invalid Team recipients')
+      } else throw new Error('Invalid Team recipients')
+    }
+    return { ...input, payload: parseTeamMailboxPayload(input.payload) }
   }
   objectInput(input, ['teamId', 'drainMs'])
   stringValue(input, 'teamId')
@@ -319,6 +448,17 @@ export class TeamLeadToolRegistry implements ToolRegistry {
           this.sessionId,
         )
         break
+      case 'TeamSend':
+        value = await this.operations.send(
+          input as {
+            teamId: string
+            to: string | readonly string[] | 'broadcast'
+            payload: TeamMailboxPayload
+          },
+          this.sessionId,
+          call.id,
+        )
+        return this.result({ message: value })
     }
     return this.result({ team: value })
   }

@@ -27,6 +27,7 @@ import { TeamMemberToolRegistry } from '../tools/team-member-tools.js'
 import { LocalTeamManager } from './team-manager.js'
 import { ClaudeTeamAgentRuntime } from './team-agent-runtime.js'
 import { ClaudeSubagentExecutor } from './subagent-service.js'
+import type { TeamMailboxEndpoint } from './team-mailbox.js'
 
 const tools: ToolRegistry = {
   definitions: () => [],
@@ -36,6 +37,13 @@ const tools: ToolRegistry = {
 const permissions: PermissionResolver = {
   resolve: () => ({ behavior: 'allow' }),
 }
+const mailbox = {
+  participant: 'worker',
+  send: async () => {
+    throw new Error('unexpected mailbox send')
+  },
+  project: async () => null,
+} as unknown as TeamMailboxEndpoint
 const exec = promisify(execFile)
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -122,6 +130,82 @@ describe('ClaudeTeamAgentRuntime', () => {
     vi.restoreAllMocks()
   })
 
+  it('routes worker SendMessage through the required scoped mailbox and acks inbox after completion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-mailbox-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    const sent: unknown[] = []
+    let acknowledged = 0
+    let delivered = false
+    let turns = 0
+    const endpoint = {
+      participant: 'worker',
+      send: async (input: unknown) => {
+        sent.push(input)
+        return {} as never
+      },
+      project: async () => {
+        if (delivered) return null
+        delivered = true
+        return {
+          id: 'inbox',
+          messages: ['FOLLOWUP'],
+          acknowledge: async () => {
+            acknowledged += 1
+          },
+        }
+      },
+    } as unknown as TeamMailboxEndpoint
+    try {
+      const runtime = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete(request) {
+            void request
+            if (turns++ === 0) {
+              yield {
+                type: 'tool-call',
+                call: {
+                  id: 'send-call',
+                  name: 'SendMessage',
+                  input: { to: 'lead', message: 'hello', summary: 'hi' },
+                },
+              }
+              return
+            }
+            yield { type: 'text-delta', delta: 'done' }
+          },
+        },
+      })
+      await runtime.run({
+        teamId: 'team-a',
+        task,
+        member: {
+          name: 'worker',
+          agentType: 'general-purpose',
+          access: 'read-only',
+        },
+        generation: 1,
+        cwd,
+        branch: null,
+        tools,
+        permissions,
+        signal: new AbortController().signal,
+        mailbox: endpoint,
+      })
+      expect(sent).toHaveLength(1)
+      expect(sent[0]).toMatchObject({
+        to: 'lead',
+        payload: { kind: 'text', text: 'hello' },
+      })
+      expect(acknowledged).toBe(1)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('runs one task through the foreground Claude substrate and retains evidence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-runtime-'))
     const cwd = await mkdtemp(join(root, 'checkout-'))
@@ -152,6 +236,7 @@ describe('ClaudeTeamAgentRuntime', () => {
           tools,
           permissions,
           signal: new AbortController().signal,
+          mailbox,
         }),
       ).resolves.toBe('completed')
       const state = await readdir(join(root, 'state', 'team-executions'), {
@@ -198,6 +283,7 @@ describe('ClaudeTeamAgentRuntime', () => {
         tools,
         permissions,
         signal: new AbortController().signal,
+        mailbox,
       })
       await expect(result).rejects.toSatisfy((error: unknown) => {
         return (
@@ -249,6 +335,7 @@ describe('ClaudeTeamAgentRuntime', () => {
           tools: guarded,
           permissions,
           signal: new AbortController().signal,
+          mailbox,
         }),
       ).resolves.toBe('completed')
       const manager = await LocalTeamManager.open({

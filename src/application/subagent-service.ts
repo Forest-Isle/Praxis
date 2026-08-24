@@ -106,6 +106,10 @@ import {
   type NativeSidechainMetadata,
 } from './native-sidechain-transcript.js'
 import type { NativeSessionTranscriptLease } from './native-session-transcript.js'
+import {
+  DurableFollowUpTracker,
+  type DurableFollowUpBatch,
+} from './durable-follow-up.js'
 
 const DEFAULT_MAX_DEPTH = 4
 const DEFAULT_MAX_CALLS = 16
@@ -717,7 +721,8 @@ export interface ClaudeSubagentExecutorOptions {
     message: string,
     summary: string | undefined,
     toolUseId: string,
-  ) => string | null
+  ) => string | null | Promise<string | null>
+  durableFollowUpSource?: () => Promise<DurableFollowUpBatch | null>
   persistence?: 'disk' | 'memory'
   experimentalNativeTranscriptWrites?: boolean
   onLineChanges?: (changes: {
@@ -2168,7 +2173,7 @@ export class ClaudeSubagentExecutor {
     const agentId = String(call.input.to)
     const summary =
       typeof call.input.summary === 'string' ? call.input.summary : undefined
-    const owned = this.options.sendOwnedBackgroundAgent?.(
+    const owned = await this.options.sendOwnedBackgroundAgent?.(
       sessionId,
       agentId,
       String(call.input.message),
@@ -2816,6 +2821,7 @@ export class ClaudeSubagentExecutor {
         }
       }
     }
+    const durableFollowUps = new DurableFollowUpTracker()
     let toolUseCount = 0
     let taskTokenTotal = 0
     let recordedUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
@@ -3181,6 +3187,7 @@ export class ClaudeSubagentExecutor {
           }
           await this.background.acknowledge([text])
         }
+        await durableFollowUps.followUpUserMessagesCompleted(messages)
       },
     }
 
@@ -3338,10 +3345,18 @@ export class ClaudeSubagentExecutor {
         ...(this.options.onPermissionUpdates
           ? { onPermissionUpdates: this.options.onPermissionUpdates }
           : {}),
-        ...(scopedHooks || this.options.backgroundTaskNotifications
+        ...(scopedHooks ||
+        this.options.backgroundTaskNotifications ||
+        this.options.durableFollowUpSource
           ? {
               onStop: async (text: string) => {
                 const messages: string[] = []
+                const durableBatch =
+                  await this.options.durableFollowUpSource?.()
+                if (durableBatch) {
+                  durableFollowUps.register(durableBatch)
+                  messages.push(...durableBatch.messages)
+                }
                 const outcome = await scopedHooks?.run(
                   {
                     ...hookSession,
