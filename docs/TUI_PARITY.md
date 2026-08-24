@@ -180,9 +180,12 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `conversation-export`: terminal-style, complete in-memory transcript
   projection for native clipboard and cwd-relative file export; it never writes
   an export entry or Praxis-only field into shared JSONL.
-- `PermissionDashboard`: Recently denied, Allow, Ask, Deny, and Workspace tabs;
-  scoped rule search and atomic creation/removal; original/additional workspace
-  directory presentation; and session-local directory add/remove controls.
+- `projectTuiPermissionSurface` and `PermissionSurface`: one pure
+  Permissions-domain projection and visual/screen-reader adapter for active
+  tool and recovery decisions, Recently denied/Allow/Ask/Deny/Workspace tabs,
+  rule input/scope/deletion, and workspace input/deletion. The model owns
+  labels, filtering, empty states, valid ranges, and selection normalization;
+  raw keyboard state and permission persistence remain outside the renderer.
 - `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
   notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
   permission explanations, editable reusable command/Skill rules, `.claude`
@@ -445,10 +448,13 @@ is passed from the CLI composition root and never written to shared JSONL.
   window reachability, and bounded oversized content without source mutation;
 - focused Ink render fixtures at wide and narrow widths, including exact
   built-in syntax/diff preview palettes, persisted normal-render syntax state,
-  and explicit focused-selection announcements in the decoration-free
-  screen-reader branch;
+  explicit focused-selection announcements in the decoration-free
+  screen-reader branch, and all eight Permissions-domain discriminants through
+  the shared semantic model and both presentation adapters;
 - interaction tests for prompts, selection, permission, questions, plan, MCP,
-  streaming, tools, direct shell turns, cancellation, and screen-reader mode;
+  streaming, tools, direct shell turns, cancellation, and screen-reader mode,
+  including permission dashboard, rule, workspace, recovery, and Escape paths
+  driven through actual keyboard input;
 - PTY installed-package capture proving borders, composer, mode footer, bare
   `?` shortcuts, `/` discovery, control-key clearing, `/diff` drill-down,
   context/status/skill dashboards, built-in `/theme` selection, `Ctrl+T` syntax

@@ -601,9 +601,13 @@ export function ToolPermissionDialog({
         </Text>
       ) : null}
       <Text dimColor>
-        {feedbackMode
-          ? 'Enter to submit · Tab to collapse · Esc to cancel'
-          : 'Esc to cancel · Tab to amend'}
+        {screenReader
+          ? feedbackMode
+            ? 'Enter to submit · Tab to collapse · Escape to cancel'
+            : `Enter selection [1-${model.options.length}] · Tab to amend · Escape to cancel`
+          : feedbackMode
+            ? 'Enter to submit · Tab to collapse · Esc to cancel'
+            : 'Esc to cancel · Tab to amend'}
       </Text>
     </Box>
   )

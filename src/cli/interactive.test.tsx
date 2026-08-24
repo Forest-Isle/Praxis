@@ -6650,6 +6650,8 @@ describe('InteractiveApp', () => {
         }}
         initialSessions={[]}
         axScreenReader
+        display={{ version: 'dev', cwd: '/workspace' }}
+        additionalDirectories={['/shared']}
         permissionRuleStore={{
           async load() {
             return rules
@@ -6692,6 +6694,82 @@ describe('InteractiveApp', () => {
     expect(removals).toEqual(['Bash(npm test:*)'])
     expect(app.lastFrame()).toContain('1. Add a new rule…')
     expect(app.lastFrame()).not.toContain('2. Bash(npm test:*)')
+
+    for (let index = 0; index < 3; index += 1) {
+      app.stdin.write('\u001B[C')
+      await flush()
+    }
+    expect(app.lastFrame()).toContain('Current tab: Workspace')
+    expect(app.lastFrame()).toContain('/shared')
+    expect(app.lastFrame()).not.toContain('Selected:')
+    app.stdin.write('\u001B[B')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Remove directory from workspace?')
+  })
+
+  it('accepts rapid workspace selection after async permission removal in fullscreen', async () => {
+    const rules = [
+      {
+        behavior: 'allow' as const,
+        rule: 'Bash(npm test:*)',
+        scope: 'user' as const,
+        path: '/fixture/settings.json',
+      },
+    ]
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'dev', cwd: '/workspace' }}
+        additionalDirectories={['/shared']}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+        permissionRuleStore={{
+          async load() {
+            return rules
+          },
+          async add() {},
+          async remove(rule) {
+            rules.splice(
+              rules.findIndex((candidate) => candidate.rule === rule.rule),
+              1,
+            )
+          },
+        }}
+      />,
+    )
+
+    app.stdin.write('/permissions')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    await flush()
+    expect(app.lastFrame()).not.toContain('2. Bash(npm test:*)')
+
+    for (let index = 0; index < 3; index += 1) {
+      app.stdin.write('\u001B[C')
+      await flush()
+    }
+    expect(app.lastFrame()).toContain('/shared')
+    expect(app.lastFrame()).not.toContain('❯ 1. /shared')
+    app.stdin.write('\u001B[B\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Remove directory from workspace?')
   })
 
   it.each([
@@ -7531,7 +7609,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Current tab: Recently denied')
-    expect(app.lastFrame()).toContain('1. ✘ Delete target  Classifier policy')
+    expect(app.lastFrame()).toContain(
+      'Selected: 1. Denied: Delete target  Classifier policy',
+    )
     expect(app.lastFrame()).not.toContain('rm -rf /tmp/other')
 
     app.stdin.write('r')
@@ -9218,6 +9298,9 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Retry interrupted Bash')
     expect(app.lastFrame()).toContain('npm test')
+    expect(app.lastFrame()).toContain(
+      'Enter to confirm · Tab to add feedback · Esc to cancel',
+    )
 
     app.stdin.write('y')
     await flush()
