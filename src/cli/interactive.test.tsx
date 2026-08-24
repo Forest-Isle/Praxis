@@ -6239,6 +6239,75 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('/review')
   })
 
+  it('projects physical and submitted Help invocations for screen readers', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        slashCommands={[
+          {
+            name: 'review',
+            description: 'Review the current change.',
+            source: 'command',
+          },
+        ]}
+      />,
+    )
+
+    app.stdin.write('?')
+    await flush()
+    let frame = app.lastFrame() ?? ''
+    expect(frame).toContain('You: ?')
+    expect(frame).toContain('Help')
+    expect(frame).toContain('Current tab: General')
+    expect(frame).toContain('! for bash mode')
+    expect(frame).toContain('Left/Right to switch tabs')
+    expect(frame).toContain(
+      'Praxis documentation: https://github.com/Forest-Isle/Praxis',
+    )
+    expect(frame).not.toContain('Prompt:')
+    expect(frame).not.toMatch(/Actions:.*Enter/u)
+    expect(frame).not.toContain('←')
+    expect(frame).not.toContain('→')
+
+    app.stdin.write('?')
+    await flush()
+    expect(app.lastFrame()).toContain('Prompt:')
+
+    app.stdin.write('/help')
+    app.stdin.write('\r')
+    await flush()
+    frame = app.lastFrame() ?? ''
+    expect(frame).toContain('You: /help')
+    expect(frame).toContain('Help')
+    expect(frame).not.toContain('Prompt:')
+
+    app.stdin.write('\u001B[C')
+    await flush()
+    frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Current tab: Commands')
+    expect(frame).toContain('1. /add-dir — Add a new working directory')
+    expect(frame).toContain('Up/Down to browse commands')
+    expect(frame).not.toMatch(/Actions:.*Enter/u)
+    expect(frame).not.toContain('←')
+    expect(frame).not.toContain('→')
+
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).toContain('Focused: 2. /agents')
+
+    app.stdin.write('\u001B')
+    await flush()
+    await waitFor(() =>
+      app.lastFrame()?.includes('Prompt:') ? true : undefined,
+    )
+  })
+
   it('edits at the real cursor and restores submitted prompt history', async () => {
     const calls: string[] = []
     const factory: InteractiveServiceFactory = {

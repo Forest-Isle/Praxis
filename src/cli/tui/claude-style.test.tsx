@@ -41,6 +41,7 @@ import {
   projectTranscriptPresentationTail,
   projectTranscriptPresentationWindow,
 } from './transcript-viewport.js'
+import { projectTuiHelpSurface } from './help-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -2060,25 +2061,55 @@ describe('Claude-style TUI components', () => {
   })
 
   it('renders the shortcut grid and tabbed help surface', () => {
-    const shortcuts = render(<ShortcutHelp width={100} />)
+    const model = projectTuiHelpSurface({
+      invocation: '?',
+      tabIndex: 0,
+      selectedIndex: 0,
+      builtinCommands: [],
+      customCommands: [],
+    })
+    const shortcuts = render(
+      <ShortcutHelp
+        shortcutGroups={
+          model.activeContent.kind === 'general'
+            ? model.activeContent.shortcutGroups
+            : []
+        }
+        width={100}
+      />,
+    )
     expect(shortcuts.lastFrame()).toContain('! for bash mode')
     expect(shortcuts.lastFrame()).toContain('& for background')
     expect(shortcuts.lastFrame()).toContain('shift + tab to auto-accept edits')
     expect(shortcuts.lastFrame()).toContain('ctrl + o for verbose output')
     expect(shortcuts.lastFrame()).toContain('/keybindings to customize')
+    const visualRows = (shortcuts.lastFrame() ?? '').split('\n')
+    const backgroundRow = visualRows.find((row) =>
+      row.includes('& for background'),
+    )
+    const sideQuestionRow = visualRows.find((row) =>
+      row.includes('/btw for side question'),
+    )
+    expect(backgroundRow).toContain('& for background')
+    expect(backgroundRow).not.toContain('ctrl + t')
+    expect(backgroundRow).not.toContain('opt + p')
+    expect(sideQuestionRow).toContain('ctrl + t to toggle tasks')
+    expect(sideQuestionRow).toContain('opt + p to switch model')
 
     const help = render(
       <HelpMenu
-        tabIndex={1}
-        selectedIndex={0}
-        builtinCommands={[
-          {
-            name: 'resume',
-            description: 'Resume a previous conversation',
-            source: 'builtin',
-          },
-        ]}
-        customCommands={[]}
+        model={projectTuiHelpSurface({
+          invocation: '?',
+          tabIndex: 1,
+          selectedIndex: 0,
+          builtinCommands: [
+            {
+              name: 'resume',
+              description: 'Resume a previous conversation',
+            },
+          ],
+          customCommands: [],
+        })}
         width={100}
         screenReader={false}
       />,
@@ -2088,6 +2119,110 @@ describe('Claude-style TUI components', () => {
     )
     expect(help.lastFrame()).toContain('Browse default commands')
     expect(help.lastFrame()).toContain('/resume')
+
+    const windowed = render(
+      <HelpMenu
+        model={projectTuiHelpSurface({
+          invocation: '/help',
+          tabIndex: 1,
+          selectedIndex: 11,
+          builtinCommands: Array.from({ length: 12 }, (_, index) => ({
+            name: `command-${index}`,
+            description: `Description ${index}`,
+          })),
+          customCommands: [],
+        })}
+        width={100}
+        screenReader={false}
+      />,
+    )
+    expect(windowed.lastFrame()).toContain('/command-7')
+    expect(windowed.lastFrame()).toContain('/command-11')
+    expect(windowed.lastFrame()).not.toContain('/command-0')
+
+    const screenReaderHelp = render(
+      <HelpMenu model={model} width={30} screenReader />,
+    )
+    const screenReaderFrame = screenReaderHelp.lastFrame() ?? ''
+    for (const shortcut of [
+      '! for bash mode',
+      '/ for commands',
+      '@ for file paths',
+      '& for background',
+      '/btw for side question',
+      'double tap esc to clear input',
+      'shift + tab to auto-accept edits',
+      'ctrl + o for verbose output',
+      'ctrl + t to toggle tasks',
+      'backslash (\\) + return (⏎) for newline',
+      'ctrl + shift + _ to undo',
+      'ctrl + z to suspend',
+      'ctrl + v to paste images',
+      'opt + p to switch model',
+      'ctrl + s to stash prompt',
+      'ctrl + g to edit in $EDITOR',
+      '/keybindings to customize',
+    ]) {
+      expect(screenReaderFrame).toContain(shortcut)
+    }
+  })
+
+  it('renders complete linear screen-reader help without visual decoration', () => {
+    const general = projectTuiHelpSurface({
+      invocation: '?',
+      tabIndex: 0,
+      selectedIndex: 0,
+      builtinCommands: [],
+      customCommands: [],
+    })
+    const generalHelp = render(
+      <HelpMenu model={general} width={30} screenReader />,
+    )
+    const generalFrame = generalHelp.lastFrame() ?? ''
+    expect(generalFrame).toContain('You: ?')
+    expect(generalFrame).toContain('Current tab: General')
+    expect(generalFrame).toContain('! for bash mode')
+    expect(generalFrame).toContain(
+      'Praxis documentation: https://github.com/Forest-Isle/Praxis',
+    )
+    expect(generalFrame).toContain('Left/Right to switch tabs')
+    expect(generalFrame).toContain('Esc to close')
+    expect(generalFrame).toContain(
+      '(current) General · Commands · Custom commands',
+    )
+    expect(generalFrame).not.toContain('─')
+    expect(generalFrame).not.toContain('❯')
+    expect(generalFrame).not.toContain('←')
+    expect(generalFrame).not.toContain('→')
+    expect(generalFrame).not.toContain('↑')
+    expect(generalFrame).not.toContain('↓')
+
+    const commands = projectTuiHelpSurface({
+      invocation: '/help',
+      tabIndex: 1,
+      selectedIndex: 11,
+      builtinCommands: Array.from({ length: 12 }, (_, index) => ({
+        name: `command-${index}`,
+        description: `Description ${index}`,
+      })),
+      customCommands: [],
+    })
+    const commandHelp = render(
+      <HelpMenu model={commands} width={30} screenReader />,
+    )
+    const commandFrame = commandHelp.lastFrame() ?? ''
+    expect(commandFrame).toContain('You: /help')
+    expect(commandFrame).toContain('Current tab: Commands')
+    expect(commandFrame).toContain('1. /command-0 — Description 0')
+    expect(commandFrame).toContain('6. /command-5 — Description 5')
+    expect(commandFrame).toContain('12. /command-11 — Description 11')
+    expect(commandFrame).toContain('Focused: 12. /command-11')
+    expect(commandFrame).toContain('Up/Down to browse commands')
+    expect(commandFrame).not.toContain('←')
+    expect(commandFrame).not.toContain('→')
+    expect(commandFrame).not.toContain('↑')
+    expect(commandFrame).not.toContain('↓')
+    expect(commandFrame).not.toContain('\n↓ ')
   })
 
   it('renders an accessible selected runtime menu', () => {

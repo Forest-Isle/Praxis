@@ -23,6 +23,11 @@ import type { RecentlyDeniedAction } from './recently-denied.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 import type {
+  TuiHelpShortcut,
+  TuiHelpShortcutGroup,
+  TuiHelpSurfaceModel,
+} from './help-surface-model.js'
+import type {
   TranscriptItem,
   TranscriptPresentationEntry,
 } from './transcript-presentation.js'
@@ -2585,132 +2590,217 @@ export function MentionPicker({
   )
 }
 
-const SHORTCUT_ROWS: readonly (readonly string[])[] = [
-  [
-    '! for bash mode',
-    'double tap esc to clear input',
-    'ctrl + shift + _ to undo',
-  ],
-  ['/ for commands', 'shift + tab to auto-accept edits', 'ctrl + z to suspend'],
-  [
-    '@ for file paths',
-    'ctrl + o for verbose output',
-    'ctrl + v to paste images',
-  ],
-  ['& for background', '', ''],
-  [
-    '/btw for side question',
-    'ctrl + t to toggle tasks',
-    'opt + p to switch model',
-  ],
-  ['', 'backslash (\\) + return (⏎) for newline', 'ctrl + s to stash prompt'],
-  ['', '', 'ctrl + g to edit in $EDITOR'],
-  ['', '', '/keybindings to customize'],
+const SHORTCUT_LAYOUT: readonly (readonly (string | null)[])[] = [
+  ['bash-mode', 'clear-input', 'undo'],
+  ['commands', 'auto-accept-edits', 'suspend'],
+  ['file-paths', 'verbose-output', 'paste-images'],
+  ['background', null, null],
+  ['side-question', 'toggle-tasks', 'switch-model'],
+  [null, 'newline', 'stash-prompt'],
+  [null, null, 'external-editor'],
+  [null, null, 'customize-keybindings'],
 ]
 
-export function ShortcutHelp({ width }: { width: number }) {
-  const wide = width >= 78
+function shortcutMap(
+  groups: readonly TuiHelpShortcutGroup[],
+): ReadonlyMap<string, TuiHelpShortcut> {
+  return new Map(
+    groups.flatMap((group) =>
+      group.shortcuts.map((shortcut) => [shortcut.id, shortcut] as const),
+    ),
+  )
+}
+
+export function ShortcutHelp({
+  shortcutGroups,
+  width,
+  screenReader = false,
+}: {
+  shortcutGroups: readonly TuiHelpShortcutGroup[]
+  width: number
+  screenReader?: boolean
+}) {
+  const shortcuts = shortcutMap(shortcutGroups)
+  const wide = width >= 78 && !screenReader
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        {shortcutGroups.flatMap((group) =>
+          group.shortcuts.map((shortcut) => (
+            <Text key={shortcut.id} dimColor>
+              {shortcut.key} {shortcut.description}
+            </Text>
+          )),
+        )}
+      </Box>
+    )
+  }
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
-      {SHORTCUT_ROWS.map((row, rowIndex) =>
-        wide ? (
-          <Box key={rowIndex} flexDirection="row">
-            {row.map((cell, cellIndex) => (
-              <Box key={cellIndex} width={cellIndex === 2 ? undefined : '33%'}>
-                <Text dimColor>{cell}</Text>
+      {SHORTCUT_LAYOUT.map((row) => {
+        const rowKey = row.filter((id): id is string => id !== null).join('|')
+        const cells = row.map((id) =>
+          id === null ? undefined : shortcuts.get(id),
+        )
+        return wide ? (
+          <Box key={rowKey} flexDirection="row">
+            {cells.map((shortcut, cellIndex) => (
+              <Box
+                key={shortcut?.id ?? `${rowKey}:blank:${cellIndex}`}
+                width={cellIndex === 2 ? undefined : '33%'}
+              >
+                <Text dimColor>
+                  {shortcut ? `${shortcut.key} ${shortcut.description}` : ''}
+                </Text>
               </Box>
             ))}
           </Box>
         ) : (
-          row.filter(Boolean).map((cell, cellIndex) => (
-            <Text key={`${rowIndex}-${cellIndex}`} dimColor>
-              {cell}
-            </Text>
-          ))
-        ),
-      )}
+          cells.flatMap((shortcut) =>
+            shortcut ? (
+              <Text key={shortcut.id} dimColor>
+                {shortcut.key} {shortcut.description}
+              </Text>
+            ) : (
+              []
+            ),
+          )
+        )
+      })}
     </Box>
   )
 }
 
 export function HelpMenu({
-  tabIndex,
-  selectedIndex,
-  builtinCommands,
-  customCommands,
+  model,
   width,
   screenReader,
 }: {
-  tabIndex: number
-  selectedIndex: number
-  builtinCommands: readonly TuiSlashCommand[]
-  customCommands: readonly TuiSlashCommand[]
+  model: TuiHelpSurfaceModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
-  const tabs = ['General', 'Commands', 'Custom commands'] as const
-  const commands = tabIndex === 1 ? builtinCommands : customCommands
+  const content = model.activeContent
   const maxVisible = 10
-  const start = Math.max(
-    0,
-    Math.min(
-      selectedIndex - Math.floor(maxVisible / 2),
-      Math.max(0, commands.length - maxVisible),
-    ),
-  )
+  const focusedIndex = content.kind === 'general' ? null : content.focusedIndex
+  const commands = content.kind === 'general' ? [] : content.commands
+  const start =
+    focusedIndex === null
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            focusedIndex - Math.floor(maxVisible / 2),
+            Math.max(0, commands.length - maxVisible),
+          ),
+        )
   const visible = commands.slice(start, start + maxVisible)
   const line = '─'.repeat(Math.max(12, Math.min(100, width)))
+  if (screenReader) {
+    return (
+      <Box flexDirection="column">
+        <Text>You: {model.invocation}</Text>
+        <Text>{model.title}</Text>
+        <Text>Current tab: {model.activeTab.label}</Text>
+        <Text>
+          Tabs:{' '}
+          {model.tabs
+            .map((tab) => `${tab.current ? '(current) ' : ''}${tab.label}`)
+            .join(' · ')}
+        </Text>
+        {content.kind === 'general' ? (
+          <>
+            <Text>{content.description}</Text>
+            <Text>Shortcuts</Text>
+            <ShortcutHelp
+              shortcutGroups={content.shortcutGroups}
+              width={width}
+              screenReader
+            />
+          </>
+        ) : (
+          <>
+            <Text>{content.heading}</Text>
+            {content.commands.length === 0 ? (
+              <Text>{content.emptyText}</Text>
+            ) : (
+              content.commands.map((command) => (
+                <Text key={command.id}>
+                  {command.ordinal}. {command.invocation} —{' '}
+                  {command.description}
+                </Text>
+              ))
+            )}
+            {content.focusedIndex === null
+              ? null
+              : (() => {
+                  const focused = content.commands[content.focusedIndex]
+                  return focused ? (
+                    <Text>
+                      Focused: {focused.ordinal}. {focused.invocation}
+                    </Text>
+                  ) : null
+                })()}
+          </>
+        )}
+        <Text>
+          Actions: {model.navigation.switchTabs}
+          {model.navigation.browseCommands
+            ? ` · ${model.navigation.browseCommands}`
+            : ''}{' '}
+          · {model.navigation.close}
+        </Text>
+        <Text>
+          {model.documentation.label}: {model.documentation.url}
+        </Text>
+      </Box>
+    )
+  }
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
-      {!screenReader ? <Text dimColor>{line}</Text> : null}
+      <Text dimColor>{line}</Text>
       <Box>
         <Text {...theme.text.navigation} bold>
           {' '}
-          Help{' '}
+          {model.title}{' '}
         </Text>
-        {tabs.map((tab, index) => (
-          <Text
-            key={tab}
-            {...(index === tabIndex ? theme.text.selectedTab : {})}
-          >
+        {model.tabs.map((tab) => (
+          <Text key={tab.id} {...(tab.current ? theme.text.selectedTab : {})}>
             {' '}
-            {tab}{' '}
+            {tab.label}{' '}
           </Text>
         ))}
       </Box>
       <Box flexDirection="column" marginTop={1}>
-        {tabIndex === 0 ? (
+        {content.kind === 'general' ? (
           <>
-            <Text>
-              Praxis understands your codebase, makes edits with your
-              permission, and executes commands from your terminal.
-            </Text>
+            <Text>{content.description}</Text>
             <Text {...theme.text.heading} bold>
               Shortcuts
             </Text>
-            <ShortcutHelp width={width} />
+            <ShortcutHelp
+              shortcutGroups={content.shortcutGroups}
+              width={width}
+            />
           </>
         ) : (
           <>
-            <Text bold>
-              {tabIndex === 1
-                ? 'Browse default commands'
-                : 'Browse shared commands and skills'}
-            </Text>
+            <Text bold>{content.heading}</Text>
             {visible.length === 0 ? (
-              <Text dimColor>No commands found.</Text>
+              <Text dimColor>{content.emptyText}</Text>
             ) : (
               visible.map((command, visibleIndex) => {
                 const index = start + visibleIndex
                 return (
-                  <Box key={command.name} flexDirection="column">
+                  <Box key={command.id} flexDirection="column">
                     <Text
-                      {...(index === selectedIndex
+                      {...(index === focusedIndex
                         ? theme.text.selectedRow
                         : {})}
                     >
-                      {index === selectedIndex ? '↓ ' : '  '}/{command.name}
+                      {index === focusedIndex ? '↓ ' : '  '}
+                      {command.invocation}
                     </Text>
                     <Text dimColor> {command.description}</Text>
                   </Box>
@@ -2721,6 +2811,9 @@ export function HelpMenu({
         )}
       </Box>
       <Text dimColor>←/→ to switch · ↑/↓ to navigate · Esc to cancel</Text>
+      <Text dimColor>
+        {model.documentation.label}: {model.documentation.url}
+      </Text>
     </Box>
   )
 }
@@ -2959,6 +3052,7 @@ export function Composer({
   hasThinking = false,
   thinkingExpanded = false,
   shortcutsVisible = false,
+  shortcutHelp,
   shellMode = false,
   footerMessage,
   reduceMotion = false,
@@ -2982,6 +3076,7 @@ export function Composer({
   hasThinking?: boolean
   thinkingExpanded?: boolean
   shortcutsVisible?: boolean
+  shortcutHelp?: TuiHelpSurfaceModel
   shellMode?: boolean
   footerMessage?: { text: string; isError: boolean }
   reduceMotion?: boolean
@@ -3002,6 +3097,8 @@ export function Composer({
     )
     return () => clearInterval(timer)
   }, [busy, reduceMotion, screenReader])
+  if (screenReader && shortcutsVisible && shortcutHelp)
+    return <HelpMenu model={shortcutHelp} width={width} screenReader />
   if (screenReader)
     return (
       <Text>
@@ -3115,7 +3212,14 @@ export function Composer({
         {line}
       </Text>
       {shortcutsVisible ? (
-        <ShortcutHelp width={width} />
+        <ShortcutHelp
+          shortcutGroups={
+            shortcutHelp?.activeContent.kind === 'general'
+              ? shortcutHelp.activeContent.shortcutGroups
+              : []
+          }
+          width={width}
+        />
       ) : (
         <Box width={footerWidth}>
           <Text wrap="truncate">
