@@ -15,6 +15,7 @@ import {
   updateTuiTaskPanelState,
   type TuiTaskEntry,
 } from './task-panel.js'
+import { projectTuiTaskSurface } from './task-surface-model.js'
 
 interface TaskFixture {
   version: string
@@ -104,8 +105,10 @@ describe('TaskPanel', () => {
   it('matches the observed empty task surface', () => {
     const app = render(
       <TaskPanel
-        tasks={[]}
-        state={initialTuiTaskPanelState([])}
+        surface={projectTuiTaskSurface({
+          tasks: [],
+          state: initialTuiTaskPanelState([]),
+        })}
         screenReader={fixture.terminal.screenReader}
         width={fixture.terminal.columns}
         height={fixture.terminal.lines}
@@ -121,8 +124,10 @@ describe('TaskPanel', () => {
     expect(fixture.multipleRunningShells.order).toBe('most-recent-first')
     const app = render(
       <TaskPanel
-        tasks={runningShells}
-        state={{ depth: 'list', selectedIndex: 0, scrollOffset: 0 }}
+        surface={projectTuiTaskSurface({
+          tasks: runningShells,
+          state: { depth: 'list', selectedIndex: 0, scrollOffset: 0 },
+        })}
         screenReader={fixture.terminal.screenReader}
         width={fixture.terminal.columns}
         height={fixture.terminal.lines}
@@ -144,8 +149,10 @@ describe('TaskPanel', () => {
     const tasks = runningShells.slice(0, 1)
     const app = render(
       <TaskPanel
-        tasks={tasks}
-        state={initialTuiTaskPanelState(tasks)}
+        surface={projectTuiTaskSurface({
+          tasks,
+          state: initialTuiTaskPanelState(tasks),
+        })}
         nowMs={4_500}
         screenReader={fixture.terminal.screenReader}
         width={fixture.terminal.columns}
@@ -251,8 +258,10 @@ describe('TaskPanel', () => {
     })
     const app = render(
       <TaskPanel
-        tasks={[task]}
-        state={initialTuiTaskPanelState([task])}
+        surface={projectTuiTaskSurface({
+          tasks: [task],
+          state: initialTuiTaskPanelState([task]),
+        })}
         nowMs={500_000}
       />,
     )
@@ -269,8 +278,10 @@ describe('TaskPanel', () => {
     }
     const app = render(
       <TaskPanel
-        tasks={[task]}
-        state={{ depth: 'detail', selectedIndex: 0, scrollOffset: 10 }}
+        surface={projectTuiTaskSurface({
+          tasks: [task],
+          state: { depth: 'detail', selectedIndex: 0, scrollOffset: 10 },
+        })}
         width={30}
         height={12}
       />,
@@ -297,8 +308,10 @@ describe('TaskPanel', () => {
     }
     const app = render(
       <TaskPanel
-        tasks={[completed, olderShell]}
-        state={{ depth: 'list', selectedIndex: 0, scrollOffset: 0 }}
+        surface={projectTuiTaskSurface({
+          tasks: [completed, olderShell],
+          state: { depth: 'list', selectedIndex: 0, scrollOffset: 0 },
+        })}
       />,
     )
 
@@ -314,8 +327,10 @@ describe('TaskPanel', () => {
     }))
     const app = render(
       <TaskPanel
-        tasks={tasks}
-        state={{ depth: 'list', selectedIndex: 15, scrollOffset: 0 }}
+        surface={projectTuiTaskSurface({
+          tasks,
+          state: { depth: 'list', selectedIndex: 15, scrollOffset: 0 },
+        })}
         width={25}
         height={6}
         screenReader

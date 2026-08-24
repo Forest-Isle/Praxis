@@ -3,6 +3,7 @@ import { Box, Text } from 'ink'
 import type { BackgroundAgentSnapshot } from '../../application/background-agent-manager.js'
 import type { BackgroundBashSnapshot } from '../../application/background-bash-manager.js'
 import type { WorkflowTaskSnapshot } from '../../application/workflow-manager.js'
+import type { TuiTaskSurfaceModel } from './task-surface-model.js'
 
 export type TuiTaskKind = 'shell' | 'agent' | 'workflow'
 export type TuiTaskStatus =
@@ -252,20 +253,19 @@ function detailTitle(kind: TuiTaskKind): string {
 }
 
 export function TaskPanel({
-  tasks,
-  state,
+  surface,
   nowMs = Date.now(),
   screenReader = false,
   width = 80,
   height = 24,
 }: {
-  tasks: readonly TuiTaskEntry[]
-  state: TuiTaskPanelState
+  surface: TuiTaskSurfaceModel
   nowMs?: number
   screenReader?: boolean
   width?: number
   height?: number
 }) {
+  const { tasks, state } = surface
   const selectedIndex = Math.min(
     Math.max(0, state.selectedIndex),
     Math.max(0, tasks.length - 1),

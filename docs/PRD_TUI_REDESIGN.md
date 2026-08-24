@@ -169,3 +169,4 @@ model shared by visual and screen-reader adapters; other legacy secondary
 surfaces remain behind the legacy marker for later migration.
 MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
 effects remain outside presentation.
+Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle routing retain the raw task state.

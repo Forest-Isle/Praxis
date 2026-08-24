@@ -350,6 +350,10 @@ import {
   type TuiTaskEntry,
   type TuiTaskPanelState,
 } from './tui/task-panel.js'
+import {
+  projectTuiTaskSurface,
+  type TuiTaskSurfaceModel,
+} from './tui/task-surface-model.js'
 import type { BackgroundTaskSnapshot } from '../application/background-task-runtime.js'
 import { ClaudeMcpManagement } from '../mcp/claude-mcp-management.js'
 
@@ -1874,6 +1878,7 @@ export function InteractiveApp({
     | TuiPermissionSurfaceModel
     | TuiDiffSurfaceModel
     | TuiMcpSurfaceModel
+    | TuiTaskSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -1963,6 +1968,17 @@ export function InteractiveApp({
         : projectTuiMcpSurface({ model: mcpMenu.model, state: mcpMenu.state }),
     [mcpMenu],
   )
+  const taskMenu = menu?.kind === 'tasks' ? menu : null
+  const taskSurface = useMemo<TuiTaskSurfaceModel | null>(
+    () =>
+      taskMenu === null
+        ? null
+        : projectTuiTaskSurface({
+            tasks: taskMenu.tasks,
+            state: taskMenu.state,
+          }),
+    [taskMenu],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -1972,7 +1988,9 @@ export function InteractiveApp({
           ? (diffSurface ?? undefined)
           : menu.kind === 'mcp'
             ? (mcpSurface ?? undefined)
-            : (permissionManagementSurface ?? legacySecondarySurface)
+            : menu.kind === 'tasks'
+              ? (taskSurface ?? undefined)
+              : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8234,6 +8252,12 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'tasks-panel' ? (
+                <TaskPanel
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
@@ -8283,13 +8307,6 @@ export function InteractiveApp({
                   loading={menu.loading}
                   report={menu.report}
                   error={menu.error}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'tasks' ? (
-                <TaskPanel
-                  tasks={menu.tasks}
-                  state={menu.state}
                   width={width}
                   screenReader={axScreenReader}
                 />
