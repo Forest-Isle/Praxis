@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   activeEvents,
+  projectActiveMessages,
   projectTranscriptDisplay,
   lastUserPrompt,
 } from './transcript-projection.js'
+import type { TranscriptEvent } from '../core/transcript-event.js'
 
 const base = { sessionId: 's', timestamp: '2026-08-23T00:00:00.000Z' }
 const msg = (id: string, parentId: string | null, content: string) => ({
@@ -78,6 +80,22 @@ describe('transcript projection', () => {
     )
   })
 
+  it('ignores durable tool execution claims in model projection', () => {
+    const events = [
+      msg('root', null, 'ask'),
+      {
+        ...base,
+        kind: 'tool-execution-started' as const,
+        id: 'claim',
+        parentId: 'root',
+        callId: 'call',
+      },
+    ]
+    expect(
+      projectActiveMessages(events as unknown as TranscriptEvent[]),
+    ).toEqual([{ role: 'user', content: 'ask' }])
+  })
+
   it('follows a compact boundary logical parent through the active branch', () => {
     const events = [
       msg('root', null, 'before compact'),
@@ -117,6 +135,13 @@ describe('transcript projection', () => {
       { kind: 'user', text: 'before compact' },
       { kind: 'compact', summary: 'condensed context' },
       { kind: 'user', text: 'after compact' },
+    ])
+    expect(projectActiveMessages(events)).toEqual([
+      { role: 'user', content: 'condensed context' },
+      { role: 'user', content: 'after compact' },
+    ])
+    expect(projectActiveMessages(events, 'root')).toEqual([
+      { role: 'user', content: 'before compact' },
     ])
   })
 

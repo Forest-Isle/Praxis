@@ -44,7 +44,12 @@ export class ToolExecutionScheduler<TResult> {
             this.precedingBarrier,
             ...this.concurrentGroup,
           ]).then(() => undefined)
-        : this.precedingBarrier
+        : policy.startAfterAssistant
+          ? Promise.allSettled([
+              this.exclusiveStart,
+              this.precedingBarrier,
+            ]).then(() => undefined)
+          : this.precedingBarrier
     const signal = this.executionSignal(policy)
     const execution = predecessors.then(async () => {
       let result: TResult

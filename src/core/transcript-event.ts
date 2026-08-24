@@ -36,10 +36,16 @@ export interface TranscriptContextSummaryEvent extends TranscriptEventIdentity {
   readonly summary: string
 }
 
+export interface TranscriptToolExecutionStartedEvent extends TranscriptEventIdentity {
+  readonly kind: 'tool-execution-started'
+  readonly callId: string
+}
+
 export type TranscriptEvent =
   | TranscriptMessagesEvent
   | TranscriptContextBoundaryEvent
   | TranscriptContextSummaryEvent
+  | TranscriptToolExecutionStartedEvent
 
 const terminalReasons = new Set<ModelTerminalReason>([
   'end_turn',
@@ -207,6 +213,20 @@ export function isTranscriptEvent(value: unknown): value is TranscriptEvent {
     typeof value.kind !== 'string'
   )
     return false
+  if (value.kind === 'tool-execution-started') {
+    return (
+      hasOnlyKeys(value, [
+        'kind',
+        'id',
+        'parentId',
+        'sessionId',
+        'timestamp',
+        'callId',
+      ]) &&
+      isNonEmptyString(value.callId) &&
+      value.callId.trim().length > 0
+    )
+  }
   if (value.kind === 'messages') {
     return (
       hasOnlyKeys(value, [

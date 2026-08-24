@@ -611,6 +611,17 @@ export class ClaudeTranscriptCodec implements TranscriptCodec {
           },
         },
       }
+    } else if (event.kind === 'tool-execution-started') {
+      return {
+        ok: false,
+        issue: diagnostic(
+          'unsupported-event',
+          'Claude transcripts do not support native tool execution markers',
+          0,
+          null,
+          { eventKind: event.kind },
+        ),
+      }
     } else
       try {
         entry = {

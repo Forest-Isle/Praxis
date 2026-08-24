@@ -377,6 +377,7 @@ function environment(port, praxis) {
     ? {
         ...process.env,
         CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_DATA_PLANE: 'claude',
         PRAXIS_PROVIDER: 'anthropic',
         PRAXIS_API_KEY: 'fixture-key',
         PRAXIS_MODEL: 'fixture-model',

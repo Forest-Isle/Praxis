@@ -19,6 +19,7 @@ import type {
   ModelMessage,
   ModelProvider,
   ModelRequest,
+  ModelToolCall,
   RuntimeEvent,
   ToolRegistry,
 } from '../core/runtime.js'
@@ -214,6 +215,1073 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('validates experimental native activation before setup', () => {
+    const base = {
+      configRoot: '/tmp/praxis-native-activation-config',
+      cwd: '/tmp/praxis-native-activation-cwd',
+      claudeVersion: '2.1.208',
+      dataPlane: 'native' as const,
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+    }
+    const cases = [
+      ['hooks', { hooks: {} as never }],
+      ['conditionalRuleResolver', { conditionalRuleResolver: {} as never }],
+      ['extensions', { extensions: {} as never }],
+      ['agent', { agent: 'agent' }],
+      ['fileCheckpointing', { fileCheckpointing: true }],
+      ['fileRewindRoots', { fileRewindRoots: ['/tmp'] }],
+      ['interactiveTools', { interactiveTools: {} as never }],
+      ['mcp', { mcp: {} as never }],
+      ['taskToolNames', { taskToolNames: ['Task'] }],
+      ['scheduledToolNames', { scheduledToolNames: ['Schedule'] }],
+      ['enableDynamicWakeups', { enableDynamicWakeups: true }],
+      ['enableSessionMemory', { enableSessionMemory: true }],
+      [
+        'sessionMemoryProviderFactory',
+        { sessionMemoryProviderFactory: () => ({}) as never },
+      ],
+      ['projectMemoryDirectory', { projectMemoryDirectory: '/tmp/memory' }],
+      ['projectMemoryRecall', { projectMemoryRecall: {} as never }],
+      ['projectMemoryExtraction', { projectMemoryExtraction: {} as never }],
+      ['sessionKind', { sessionKind: 'bg' as const }],
+      ['workspace', { workspace: {} as never }],
+      ['initialWorktree', { initialWorktree: true }],
+      ['initialWorktreeName', { initialWorktreeName: 'worktree' }],
+      ['enableWorktrees', { enableWorktrees: true }],
+      ['worktreeToolNames', { worktreeToolNames: ['EnterWorktree'] as const }],
+      ['worktreeBaseRef', { worktreeBaseRef: 'head' as const }],
+    ] as const
+    for (const [option, extra] of cases) {
+      expect(() => new ClaudeSessionService({ ...base, ...extra })).toThrow(
+        new RegExp(`option ${option}`),
+      )
+    }
+    expect(
+      () =>
+        new ClaudeSessionService({
+          ...base,
+          dataPlane: 'claude',
+        }),
+    ).toThrow(/dataPlane/)
+    expect(
+      () =>
+        new ClaudeSessionService({
+          ...base,
+          sessionPersistence: false,
+        }),
+    ).toThrow(/sessionPersistence/)
+  })
+
+  it('allows inactive and runtime-only experimental native options', async () => {
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/praxis-native-allowed-config',
+      cwd: '/tmp/praxis-native-allowed-cwd',
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      resumeInterruptedTurn: false,
+      fileCheckpointing: false,
+      fileRewindRoots: [],
+      enableSubagents: false,
+      subagentToolNames: [],
+      taskToolNames: [],
+      scheduledToolNames: [],
+      enableDynamicWakeups: false,
+      enableWorkflows: false,
+      enableSessionMemory: false,
+      initialWorktree: false,
+      enableWorktrees: false,
+      worktreeToolNames: [],
+      provider: queuedProvider(['allowed']),
+      maxModelTurns: 2,
+      betas: ['runtime-beta'],
+      eventSink: () => undefined,
+    })
+
+    await service.close()
+  })
+
+  it('reports healthy canonical native sessions ready only when enabled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-status-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '90909090-9090-4090-8090-909090909090'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    await mkdir(paths.projectRoot, { recursive: true })
+    await writeFile(
+      paths.sessionFile,
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId,
+          id: '91919191-9191-4191-8191-919191919191',
+          parentId: null,
+          role: 'user',
+          content: 'native status',
+        }),
+      ),
+    )
+    const disabled = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+    })
+    const enabled = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+    })
+
+    await expect(disabled.inspect(sessionId)).resolves.toMatchObject({
+      status: 'read-only',
+      issue: null,
+    })
+    await expect(enabled.inspect(sessionId)).resolves.toMatchObject({
+      status: 'ready',
+      issue: null,
+    })
+    await Promise.all([disabled.close(), enabled.close()])
+  })
+
+  it('fails closed for unsupported experimental native operations', async () => {
+    const service = new ClaudeSessionService({
+      configRoot: '/tmp/praxis-native-activation-config',
+      cwd: '/tmp/praxis-native-activation-cwd',
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+    })
+    await expect(service.compact('session')).rejects.toThrow(
+      'A model provider is required for run and resume',
+    )
+    await expect(service.fork('parent')).rejects.toThrow('Invalid session ID')
+    await expect(service.ensureFork('parent', 'child')).rejects.toThrow(
+      'Invalid session ID',
+    )
+    await expect(service.tag('session', 'tag')).rejects.toThrow(
+      'experimental native operational writes are not enabled',
+    )
+  })
+
+  it('executes native turns from canonical history without Claude metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-9292-4292-8292-929292929292'
+    const requests: ModelRequest[] = []
+    const responses = [
+      'native answer 1',
+      'native answer 2',
+      'native branch answer',
+    ]
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: responses.shift() ?? 'missing' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+    })
+
+    await service.run('native prompt 1', undefined, sessionId)
+    await service.resume(sessionId, 'native prompt 2')
+
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    let events = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(events.flatMap((event) => event.messages)).toEqual([
+      { role: 'user', content: 'native prompt 1' },
+      { role: 'assistant', content: 'native answer 1' },
+      { role: 'user', content: 'native prompt 2' },
+      { role: 'assistant', content: 'native answer 2' },
+    ])
+    expect(events.every((event) => event.type === undefined)).toBe(true)
+    expect(JSON.stringify(requests[1]?.messages)).toContain('native answer 1')
+    const firstAssistantId = events.find(
+      (event) => event.messages?.[0]?.content === 'native answer 1',
+    )?.id
+    expect(firstAssistantId).toEqual(expect.any(String))
+
+    await service.resume(
+      sessionId,
+      'native branch prompt',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      firstAssistantId,
+    )
+
+    const branchRequest = JSON.stringify(requests[2]?.messages)
+    expect(branchRequest).toContain('native answer 1')
+    expect(branchRequest).toContain('native branch prompt')
+    expect(branchRequest).not.toContain('native prompt 2')
+    expect(branchRequest).not.toContain('native answer 2')
+    events = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(events.at(-2)?.parentId).toBe(firstAssistantId)
+    expect(await readFile(sessionFile, 'utf8')).not.toContain('last-prompt')
+    await expect(service.interruption(sessionId)).resolves.toEqual({
+      kind: 'complete',
+    })
+    await service.close()
+  })
+
+  it('manually compacts the native active branch into canonical events', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-compact-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '93939393-9393-4393-8393-939393939393'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        model: 'fixture-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'answer' }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'native summary',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 0,
+          }
+        },
+      },
+    })
+    await service.run('native prompt', undefined, sessionId)
+    await expect(service.compact(sessionId)).resolves.toMatchObject({
+      summary: 'native summary',
+    })
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const events = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(events.slice(-2).map((event) => event.kind)).toEqual([
+      'context-boundary',
+      'context-summary',
+    ])
+    expect(events.slice(-2).every((event) => !('claudeVersion' in event))).toBe(
+      true,
+    )
+    await service.close()
+  })
+
+  it('forks and ensures native sessions without Claude conversion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-fork-test-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sourceId = 'a3939393-9393-4393-8393-939393939393'
+    const targetId = 'b3939393-9393-4393-8393-939393939393'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'answer' }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      },
+    })
+    await service.run('source prompt', undefined, sourceId)
+    const sourceFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: sourceId,
+    }).sessionFile
+    const before = await readFile(sourceFile, 'utf8')
+    await expect(service.fork(sourceId, targetId)).resolves.toEqual({
+      sessionId: targetId,
+      parentSessionId: sourceId,
+    })
+    expect(await readFile(sourceFile, 'utf8')).toBe(before)
+    const targetFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: targetId,
+    }).sessionFile
+    const targetEvents = (await readFile(targetFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(targetEvents.every((event) => event.sessionId === targetId)).toBe(
+      true,
+    )
+    await service.resume(targetId, 'child continuation')
+    const continued = await readFile(targetFile, 'utf8')
+    await expect(service.ensureFork(sourceId, targetId)).resolves.toEqual({
+      sessionId: targetId,
+      parentSessionId: sourceId,
+    })
+    expect(await readFile(targetFile, 'utf8')).toBe(continued)
+    await service.close()
+  })
+
+  it('automatically compacts native history while preserving the complete current-turn suffix and metering', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-auto-compact-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-1111-4111-8111-929292929292'
+    const requests: ModelRequest[] = []
+    const compactInputs: ModelMessage[][] = []
+    let mainTurn = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 900,
+        reserveTokens: 200,
+      }),
+      provider: {
+        model: 'native-main-model',
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: true,
+          contextWindowTokens: 900,
+        },
+        async *complete(request) {
+          requests.push(request)
+          mainTurn += 1
+          if (mainTurn === 1) {
+            yield {
+              type: 'text-delta',
+              delta: `PRIOR_NATIVE_HISTORY ${'prior '.repeat(120)}`,
+            }
+          } else if (mainTurn === 2) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'native-large-call',
+                name: 'fixture_tool',
+                input: {},
+              },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'native compacted answer' }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 10, outputTokens: 2 },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'fixture_tool',
+            description: 'large result fixture',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({
+          content: `CURRENT_TURN_TOOL_RESULT ${'large '.repeat(500)}`,
+          isError: false,
+          followUpUserMessages: ['CURRENT_TURN_FOLLOW_UP'],
+        }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      compactor: {
+        async compact(request) {
+          compactInputs.push([...request.messages])
+          return {
+            summary: 'NATIVE_AUTO_SUMMARY',
+            usage: { inputTokens: 7, outputTokens: 3 },
+            durationMs: 4,
+            model: 'native-compact-model',
+          }
+        },
+      },
+      pricing: new ModelPricingRegistry({
+        'native-main-model': {
+          inputPerMillionUsd: 1,
+          outputPerMillionUsd: 1,
+        },
+        'native-compact-model': {
+          inputPerMillionUsd: 2,
+          outputPerMillionUsd: 4,
+        },
+      }),
+    })
+
+    await service.run('seed native history', undefined, sessionId)
+    const result = await service.resume(sessionId, 'CURRENT_TURN_PROMPT')
+
+    expect(result.text).toBe('native compacted answer')
+    expect(compactInputs).toHaveLength(1)
+    const compactInput = JSON.stringify(compactInputs[0])
+    expect(compactInput).toContain('PRIOR_NATIVE_HISTORY')
+    expect(compactInput).not.toContain('CURRENT_TURN_PROMPT')
+    expect(compactInput).not.toContain('CURRENT_TURN_TOOL_RESULT')
+    const finalRequest = JSON.stringify(requests.at(-1)?.messages)
+    for (const marker of [
+      'NATIVE_AUTO_SUMMARY',
+      'CURRENT_TURN_PROMPT',
+      'CURRENT_TURN_TOOL_RESULT',
+      'CURRENT_TURN_FOLLOW_UP',
+    ])
+      expect(finalRequest).toContain(marker)
+    expect(finalRequest).not.toContain('PRIOR_NATIVE_HISTORY')
+    const finalMessages = requests.at(-1)?.messages ?? []
+    const replayedCall = finalMessages
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) => message.toolCalls ?? [])
+      .find((call) => call.name === 'fixture_tool')
+    const replayedResult = finalMessages.find(
+      (message) => message.role === 'tool',
+    )
+    expect(replayedCall?.id).toEqual(expect.any(String))
+    expect(replayedCall?.id).not.toBe('native-large-call')
+    expect(replayedResult).toMatchObject({
+      role: 'tool',
+      toolCallId: replayedCall?.id,
+      content: expect.stringContaining('CURRENT_TURN_TOOL_RESULT'),
+    })
+
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const events = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(
+      events.filter((event) => event.kind === 'context-boundary'),
+    ).toHaveLength(1)
+    expect(
+      events.filter((event) => event.kind === 'context-summary'),
+    ).toHaveLength(1)
+    expect(JSON.stringify(events)).not.toContain('claudeVersion')
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.modelUsage['native-compact-model']).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 3,
+      costUsd: 26 / 1_000_000,
+    })
+    expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(4)
+    await service.close()
+  })
+
+  it('keeps native transcript bytes unchanged across manual compaction preflight failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-compact-fail-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-2222-4222-8222-929292929292'
+    const base = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native' as const,
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        model: 'native-main-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta' as const, delta: 'native answer' }
+        },
+      },
+    }
+    const service = new ClaudeSessionService({
+      ...base,
+      compactor: {
+        async compact() {
+          return {
+            summary: 'must not persist',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+            model: 'native-main-model',
+          }
+        },
+      },
+    })
+    await service.run('native prompt', undefined, sessionId)
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const before = await readFile(sessionFile, 'utf8')
+
+    await expect(
+      service.compact(sessionId, undefined, {} as never),
+    ).rejects.toThrow(/full active branch/u)
+    const aborted = new AbortController()
+    aborted.abort()
+    await expect(
+      service.compact(sessionId, aborted.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(await readFile(sessionFile, 'utf8')).toBe(before)
+
+    const thrown = new ClaudeSessionService({
+      ...base,
+      compactor: {
+        async compact() {
+          throw new Error('native compactor failed')
+        },
+      },
+    })
+    await expect(thrown.compact(sessionId)).rejects.toThrow(
+      'native compactor failed',
+    )
+    expect(await readFile(sessionFile, 'utf8')).toBe(before)
+    await Promise.all([service.close(), thrown.close()])
+  })
+
+  it('persists native tool calls, results, and follow-up messages exactly once', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-tool-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '93939393-9393-4393-8393-939393939393'
+    const requests: ModelRequest[] = []
+    let providerCalls = 0
+    let toolExecutions = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          providerCalls += 1
+          if (providerCalls === 1) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'native-call', name: 'fixture_tool', input: {} },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'native tool answer' }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'fixture_tool',
+            description: 'fixture',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => {
+          toolExecutions += 1
+          return {
+            content: 'native tool result',
+            isError: false,
+            followUpUserMessages: ['native follow-up'],
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      service.run('use the tool', undefined, sessionId),
+    ).resolves.toMatchObject({
+      text: 'native tool answer',
+      sessionId,
+    })
+
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const messages = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .flatMap((line) => JSON.parse(line).event.messages ?? [])
+    expect(toolExecutions).toBe(1)
+    expect(messages.filter((message) => message.role === 'tool')).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'native-call',
+        content: 'native tool result',
+        isError: false,
+      },
+    ])
+    expect(
+      messages.filter(
+        (message) =>
+          message.role === 'user' && message.content === 'native follow-up',
+      ),
+    ).toHaveLength(1)
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'native tool result',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain('native follow-up')
+    await service.close()
+  })
+
+  it('recovers an approved native tool exactly once before provider continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'a5a5a5a5-a5a5-45a5-85a5-a5a5a5a5a5a5'
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    await mkdir(join(sessionFile, '..'), { recursive: true })
+    const call = { id: 'native-recovery-call', name: 'fixture_tool', input: {} }
+    await writeFile(
+      sessionFile,
+      [
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId,
+            id: 'a6a6a6a6-a6a6-46a6-86a6-a6a6a6a6a6a6',
+            parentId: null,
+            role: 'user',
+            content: 'start recovery',
+          }),
+        ),
+        nativeTranscriptLine({
+          kind: 'messages',
+          id: 'a7a7a7a7-a7a7-47a7-87a7-a7a7a7a7a7a7',
+          parentId: 'a6a6a6a6-a6a6-46a6-86a6-a6a6a6a6a6a6',
+          sessionId,
+          timestamp: '2026-08-23T00:00:01.000Z',
+          messages: [{ role: 'assistant', content: '', toolCalls: [call] }],
+        }),
+      ].join(''),
+    )
+    let approvals = 0
+    let executions = 0
+    let providerCalls = 0
+    const requests: ModelRequest[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      approveRecovery(recovered) {
+        approvals += 1
+        expect(recovered).toEqual(call)
+        return true
+      },
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          providerCalls += 1
+          requests.push(request)
+          const durable = await readFile(sessionFile, 'utf8')
+          expect(durable).toContain('"kind":"tool-execution-started"')
+          expect(durable).toContain('native recovered result')
+          expect(durable).toContain('native recovery follow-up')
+          yield { type: 'text-delta', delta: 'continued after recovery' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        prepare: async (prepared) => prepared,
+        execute: async () => {
+          executions += 1
+          return {
+            content: 'native recovered result',
+            isError: false,
+            followUpUserMessages: ['native recovery follow-up'],
+          }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      service.resume(sessionId, 'continue exactly once'),
+    ).resolves.toMatchObject({ text: 'continued after recovery' })
+    expect(approvals).toBe(1)
+    expect(executions).toBe(1)
+    expect(providerCalls).toBe(1)
+    const events = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(
+      events.filter((event) => event.kind === 'tool-execution-started'),
+    ).toHaveLength(1)
+    const messages = events.flatMap((event) => event.messages ?? [])
+    expect(
+      messages.filter(
+        (message) =>
+          message.role === 'tool' &&
+          message.toolCallId === call.id &&
+          message.content === 'native recovered result',
+      ),
+    ).toHaveLength(1)
+    expect(
+      messages.filter(
+        (message) =>
+          message.role === 'user' &&
+          message.content === 'native recovery follow-up',
+      ),
+    ).toHaveLength(1)
+    expect(
+      messages.filter(
+        (message) =>
+          message.role === 'user' &&
+          message.content === 'continue exactly once',
+      ),
+    ).toHaveLength(1)
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
+      'native recovered result',
+    )
+    await expect(service.interruption(sessionId)).resolves.toEqual({
+      kind: 'complete',
+    })
+    await service.close()
+  })
+
+  it('leaves native bytes unchanged for declined, aborted, and indeterminate recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-recovery-fail-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'b5b5b5b5-b5b5-45b5-85b5-b5b5b5b5b5b5'
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    await mkdir(join(sessionFile, '..'), { recursive: true })
+    const calls = [
+      { id: 'claimed-call', name: 'fixture_tool', input: {} },
+      { id: 'unclaimed-call', name: 'fixture_tool', input: {} },
+    ]
+    const recoverableSource = [
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId,
+          id: 'b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6',
+          parentId: null,
+          role: 'user',
+          content: 'recover safely',
+        }),
+      ),
+      nativeTranscriptLine({
+        kind: 'messages',
+        id: 'b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7',
+        parentId: 'b6b6b6b6-b6b6-46b6-86b6-b6b6b6b6b6b6',
+        sessionId,
+        timestamp: '2026-08-23T00:00:01.000Z',
+        messages: [{ role: 'assistant', content: '', toolCalls: calls }],
+      }),
+    ].join('')
+    await writeFile(sessionFile, recoverableSource)
+    let providerCalls = 0
+    let executions = 0
+    const base = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native' as const,
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta' as const, delta: 'must not run' }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        prepare: async (call: ModelToolCall) => call,
+        execute: async () => {
+          executions += 1
+          return { content: 'must not execute', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    }
+    const declined = new ClaudeSessionService({
+      ...base,
+      approveRecovery: () => false,
+    })
+    await expect(declined.resume(sessionId, 'declined')).rejects.toThrow(
+      'recovery was declined',
+    )
+    expect(await readFile(sessionFile, 'utf8')).toBe(recoverableSource)
+    await declined.close()
+
+    const controller = new AbortController()
+    const aborted = new ClaudeSessionService({
+      ...base,
+      approveRecovery: () => {
+        controller.abort()
+        return true
+      },
+    })
+    await expect(
+      aborted.resume(sessionId, 'aborted', controller.signal),
+    ).rejects.toBeInstanceOf(AgentRunCancelledError)
+    expect(await readFile(sessionFile, 'utf8')).toBe(recoverableSource)
+    await aborted.close()
+
+    const indeterminateSource = `${recoverableSource}${nativeTranscriptLine({
+      kind: 'tool-execution-started',
+      id: 'b8b8b8b8-b8b8-48b8-88b8-b8b8b8b8b8b8',
+      parentId: 'b7b7b7b7-b7b7-47b7-87b7-b7b7b7b7b7b7',
+      sessionId,
+      timestamp: '2026-08-23T00:00:02.000Z',
+      callId: calls[0]?.id,
+    })}`
+    await writeFile(sessionFile, indeterminateSource)
+    let indeterminateApprovals = 0
+    const indeterminate = new ClaudeSessionService({
+      ...base,
+      approveRecovery: () => {
+        indeterminateApprovals += 1
+        return true
+      },
+    })
+    await expect(
+      indeterminate.resume(sessionId, 'must remain unchanged'),
+    ).rejects.toThrow('Native tool execution is indeterminate: claimed-call')
+    expect(await readFile(sessionFile, 'utf8')).toBe(indeterminateSource)
+    expect(indeterminateApprovals).toBe(0)
+    expect(providerCalls).toBe(0)
+    expect(executions).toBe(0)
+    await expect(indeterminate.interruption(sessionId)).resolves.toEqual({
+      kind: 'interrupted-turn',
+    })
+    await indeterminate.close()
+  })
+
+  it('publishes native shell input/output and rejects unresolved history before execution', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-shell-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const shellSessionId = '94949494-9494-4494-8494-949494949494'
+    let providerCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'native shell answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await service.runShell('printf native-shell', undefined, shellSessionId)
+    const shellFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: shellSessionId,
+    }).sessionFile
+    const shellMessages = (await readFile(shellFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .flatMap((line) => JSON.parse(line).event.messages ?? [])
+    expect(shellMessages).toEqual([
+      { role: 'user', content: '<bash-input>printf native-shell</bash-input>' },
+      {
+        role: 'user',
+        content:
+          '<bash-stdout>native-shell</bash-stdout><bash-stderr></bash-stderr>',
+      },
+      { role: 'assistant', content: 'native shell answer' },
+    ])
+
+    const unresolvedSessionId = '95959595-9595-4595-8595-959595959595'
+    const unresolvedFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: unresolvedSessionId,
+    }).sessionFile
+    await mkdir(join(unresolvedFile, '..'), { recursive: true })
+    const unresolvedSource = [
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId: unresolvedSessionId,
+          id: '96969696-9696-4696-8696-969696969696',
+          parentId: null,
+          role: 'user',
+          content: 'before unresolved call',
+        }),
+      ),
+      nativeTranscriptLine({
+        kind: 'messages',
+        id: '97979797-9797-4797-8797-979797979797',
+        parentId: '96969696-9696-4696-8696-969696969696',
+        sessionId: unresolvedSessionId,
+        timestamp: '2026-08-23T00:00:01.000Z',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'unresolved-call', name: 'Read', input: {} }],
+          },
+        ],
+      }),
+    ].join('')
+    await writeFile(unresolvedFile, unresolvedSource)
+
+    await expect(
+      service.resume(unresolvedSessionId, 'must not execute'),
+    ).rejects.toThrow(/requires explicit recovery approval/u)
+    expect(providerCalls).toBe(1)
+    expect(await readFile(unresolvedFile, 'utf8')).toBe(unresolvedSource)
+
+    const invalidFixtures = [
+      {
+        sessionId: '98989898-9898-4898-8898-989898989898',
+        source: nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: '98989898-9898-4898-8898-989898989898',
+            id: '99999999-9999-4999-8999-999999999999',
+            parentId: 'missing-parent',
+            role: 'user',
+            content: 'dangling',
+          }),
+        ),
+        error: /parentId must reference an earlier event/u,
+      },
+      {
+        sessionId: 'a0a0a0a0-a0a0-40a0-80a0-a0a0a0a0a0a0',
+        source: nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: 'a0a0a0a0-a0a0-40a0-80a0-a0a0a0a0a0a0',
+            id: 'a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1',
+            parentId: null,
+            role: 'user',
+            content: 'future version',
+          }),
+          999,
+        ),
+        error: /unsupported native transcript version|unsupported version/iu,
+      },
+      {
+        sessionId: 'a2a2a2a2-a2a2-42a2-82a2-a2a2a2a2a2a2',
+        source: nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId: 'a3a3a3a3-a3a3-43a3-83a3-a3a3a3a3a3a3',
+            id: 'a4a4a4a4-a4a4-44a4-84a4-a4a4a4a4a4a4',
+            parentId: null,
+            role: 'user',
+            content: 'mismatched session',
+          }),
+        ),
+        error: /sessionId does not match/u,
+      },
+    ]
+    for (const fixture of invalidFixtures) {
+      const file = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId: fixture.sessionId,
+      }).sessionFile
+      await mkdir(join(file, '..'), { recursive: true })
+      await writeFile(file, fixture.source)
+      await expect(service.resume(fixture.sessionId, 'reject')).rejects.toThrow(
+        fixture.error,
+      )
+      expect(await readFile(file, 'utf8')).toBe(fixture.source)
+    }
+    expect(providerCalls).toBe(1)
+    await service.close()
+  })
+
   it('prefetches Project memory without blocking and consumes it only after tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
     roots.push(root)

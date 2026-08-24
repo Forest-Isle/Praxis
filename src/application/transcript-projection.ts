@@ -79,9 +79,36 @@ export function projectActiveMessages(
   events: readonly TranscriptEvent[],
   checkpoint?: string,
 ): ModelMessage[] {
-  return activeEvents(events, checkpoint).flatMap((event) =>
-    event.kind === 'messages' ? [...event.messages] : [],
-  )
+  const messages: ModelMessage[] = []
+  for (const event of activeEvents(events, checkpoint)) {
+    if (event.kind === 'context-boundary') {
+      messages.length = 0
+      continue
+    }
+    if (event.kind === 'context-summary') {
+      messages.push({ role: 'user', content: event.summary })
+      continue
+    }
+    if (event.kind === 'tool-execution-started') continue
+    messages.push(...event.messages)
+  }
+  return messages
+}
+
+/** Return tool calls whose results are absent from the selected active branch. */
+export function unresolvedActiveToolCallIds(
+  messages: readonly ModelMessage[],
+): string[] {
+  const calls = new Set<string>()
+  const results = new Set<string>()
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      for (const call of message.toolCalls ?? []) calls.add(call.id)
+    } else if (message.role === 'tool') {
+      results.add(message.toolCallId)
+    }
+  }
+  return [...calls].filter((id) => !results.has(id))
 }
 
 export function projectTranscriptDisplay(

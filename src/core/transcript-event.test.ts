@@ -8,6 +8,28 @@ const identity = {
   timestamp: '2026-08-23T00:00:00.000Z',
 }
 describe('TranscriptEvent', () => {
+  it('accepts a durable tool execution claim and rejects blank claims', () => {
+    expect(
+      isTranscriptEvent({
+        ...identity,
+        kind: 'tool-execution-started',
+        callId: 'call-1',
+      }),
+    ).toBe(true)
+    expect(
+      isTranscriptEvent({
+        ...identity,
+        kind: 'tool-execution-started',
+        callId: '',
+      }),
+    ).toBe(false)
+    expect(
+      isTranscriptEvent({
+        ...identity,
+        kind: 'tool-execution-started',
+      }),
+    ).toBe(false)
+  })
   it('accepts canonical events and rejects provider fields', () => {
     expect(
       isTranscriptEvent({

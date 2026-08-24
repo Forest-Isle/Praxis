@@ -40,6 +40,7 @@ import {
   type PersistedSubagentRunResult,
 } from '../persistence/subagent-lifecycle-store.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
+import { NativeSidechainTranscript } from './native-sidechain-transcript.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
   type AgentPermissionMode,
@@ -258,6 +259,67 @@ describe('foreground Claude Agent execution', () => {
     expect(
       requests.every((request) => request.stableSystemMessageCount === 1),
     ).toBe(true)
+  })
+
+  it('writes workflow Agent sidechains with the canonical native codec', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-workflow-agent-'))
+    roots.push(root)
+    const cwd = join(root, 'project')
+    const transcriptDirectory = join(root, 'workflow')
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      persistence: 'disk',
+      experimentalNativeTranscriptWrites: true,
+      provider: {
+        model: 'native-workflow-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'NATIVE_WORKFLOW_DONE' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      executor.runWorkflowAgent({
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        runId: 'native-workflow-run',
+        agentId: 'a1234567890abcdef',
+        transcriptDirectory,
+        prompt: 'Return the native workflow marker',
+      }),
+    ).resolves.toMatchObject({ result: 'NATIVE_WORKFLOW_DONE' })
+    const source = await readFile(
+      join(transcriptDirectory, 'agent-a1234567890abcdef.jsonl'),
+      'utf8',
+    )
+    expect(source).toContain('"schema":"praxis.transcript"')
+    expect(source).not.toContain('isSidechain')
+    expect(
+      JSON.parse(
+        await readFile(
+          join(transcriptDirectory, 'agent-a1234567890abcdef.meta.json'),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({
+      agentType: 'workflow-subagent',
+      description: 'Workflow agent',
+      toolUseId: 'workflow:native-workflow-run',
+      spawnDepth: 1,
+      cwd,
+      promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    })
+    await executor.close()
   })
 
   it('keeps foreground Agent transcripts in memory without disk sidechains', async () => {
@@ -783,6 +845,12 @@ describe('foreground Claude Agent execution', () => {
         },
         baseTools: emptyTools,
         permissions: { resolve: () => ({ behavior: 'allow' }) },
+        ...(dataPlane === 'native'
+          ? {
+              persistence: 'disk' as const,
+              experimentalNativeTranscriptWrites: true,
+            }
+          : {}),
       })
       const registry = executor.registry(
         sessionId,
@@ -821,9 +889,34 @@ describe('foreground Claude Agent execution', () => {
         'subagents',
         `agent-${agentId}.jsonl`,
       )
-      await expect(readFile(transcript, 'utf8')).resolves.toContain(
-        'SIDECHAIN_DONE',
-      )
+      const source = await readFile(transcript, 'utf8')
+      expect(source).toContain('SIDECHAIN_DONE')
+      if (dataPlane === 'native') {
+        expect(source).toContain('"schema":"praxis.transcript"')
+        expect(source).not.toContain('"isSidechain"')
+        const metadata = JSON.parse(
+          await readFile(
+            join(
+              paths.projectRoot,
+              sessionId,
+              'subagents',
+              `agent-${agentId}.meta.json`,
+            ),
+            'utf8',
+          ),
+        )
+        expect(metadata).toMatchObject({
+          agentType: 'general-purpose',
+          description: 'native paths',
+          toolUseId: 'call_native',
+          spawnDepth: 1,
+          cwd,
+          promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        })
+      } else {
+        expect(source).toContain('"isSidechain":true')
+        expect(source).not.toContain('"schema":"praxis.transcript"')
+      }
       expect((await stat(join(paths.praxisRoot, 'locks'))).isDirectory()).toBe(
         true,
       )
@@ -843,6 +936,212 @@ describe('foreground Claude Agent execution', () => {
       })
     },
   )
+
+  it('persists canonical native Agent tool claims, results, and follow-ups', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-agent-tools-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const sessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const requests: ModelRequest[] = []
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'fixture_tool',
+          description: 'returns a fixture',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      async prepare(call) {
+        return call
+      },
+      async execute() {
+        return {
+          content: 'NATIVE_TOOL_RESULT',
+          isError: false,
+          followUpUserMessages: ['NATIVE_TOOL_FOLLOW_UP'],
+        }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      persistence: 'disk',
+      experimentalNativeTranscriptWrites: true,
+      provider: {
+        model: 'native-agent-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          if (
+            !JSON.stringify(request.messages).includes('NATIVE_TOOL_RESULT')
+          ) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'native-child-call',
+                name: 'fixture_tool',
+                input: {},
+              },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'NATIVE_AGENT_DONE' }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        },
+      },
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    )
+    const result = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_native_agent_tools',
+          name: 'Agent',
+          input: {
+            description: 'Exercise native tools',
+            prompt: 'Use the fixture tool',
+            subagent_type: 'general-purpose',
+            run_in_background: false,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+
+    expect(result.content).toContain('NATIVE_AGENT_DONE')
+    expect(JSON.stringify(requests.at(-1)?.messages)).toContain(
+      'NATIVE_TOOL_FOLLOW_UP',
+    )
+    const agentId = String(result.nativeToolUseResult?.agentId)
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const source = await readFile(
+      join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
+      'utf8',
+    )
+    const events = source
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event)
+    expect(events.map((event) => event.kind)).toEqual([
+      'messages',
+      'messages',
+      'tool-execution-started',
+      'messages',
+      'messages',
+    ])
+    expect(events[2]).toMatchObject({
+      kind: 'tool-execution-started',
+      callId: 'native-child-call',
+    })
+    expect(events[3]?.messages).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'native-child-call',
+        content: 'NATIVE_TOOL_RESULT',
+        isError: false,
+      },
+      { role: 'user', content: 'NATIVE_TOOL_FOLLOW_UP' },
+    ])
+    expect(source).not.toContain('isSidechain')
+    await executor.close()
+  })
+
+  it('runs a canonical native main session and Agent sidechain end to end', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-agent-session-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      cwd,
+      claudeVersion: '2.1.208',
+      autoCompact: false,
+      enableSubagents: true,
+      subagentToolNames: ['Agent'],
+      provider: {
+        model: 'native-session-agent-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          const source = JSON.stringify(request.messages)
+          if (source.includes('general-purpose subagent')) {
+            yield { type: 'text-delta', delta: 'NATIVE_SESSION_CHILD' }
+          } else if (source.includes('NATIVE_SESSION_CHILD')) {
+            yield { type: 'text-delta', delta: 'NATIVE_SESSION_MAIN' }
+          } else {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'native-session-agent-call',
+                name: 'Agent',
+                input: {
+                  description: 'Run canonical child',
+                  prompt: 'Return the child marker',
+                  subagent_type: 'general-purpose',
+                  run_in_background: false,
+                },
+              },
+            }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        },
+      },
+      tools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const result = await service.run('Delegate canonically.')
+
+    expect(result.text).toBe('NATIVE_SESSION_MAIN')
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    })
+    const mainSource = await readFile(paths.sessionFile, 'utf8')
+    expect(mainSource).toContain('"schema":"praxis.transcript"')
+    expect(mainSource).not.toContain('"type":"assistant"')
+    const sidechainDirectory = join(
+      paths.projectRoot,
+      result.sessionId,
+      'subagents',
+    )
+    const sidechainFile = (await readdir(sidechainDirectory)).find((name) =>
+      name.endsWith('.jsonl'),
+    )
+    if (!sidechainFile) throw new Error('Native Agent sidechain is missing')
+    const sidechainSource = await readFile(
+      join(sidechainDirectory, sidechainFile),
+      'utf8',
+    )
+    expect(sidechainSource).toContain('"schema":"praxis.transcript"')
+    expect(sidechainSource).toContain('NATIVE_SESSION_CHILD')
+    expect(sidechainSource).not.toContain('isSidechain')
+    await service.close()
+  })
 
   it('persists native main result metadata, sidechain JSONL, and metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-subagent-test-'))
@@ -3567,6 +3866,216 @@ describe('foreground Claude Agent execution', () => {
     expect(resumedContext).not.toContain('call_dangling')
     expect(resumedContext).not.toContain('ORPHAN_THINKING')
     expect(resumedContext.match(/CONTINUE_ONCE/gu) ?? []).toHaveLength(1)
+  })
+
+  it('hydrates and continues an incomplete canonical native sidechain without replaying dangling tools', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-agent-resume-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const directory = join(paths.projectRoot, sessionId, 'subagents')
+    const transcriptFile = join(directory, `agent-${agentId}.jsonl`)
+    const nativeSidechain = new NativeSidechainTranscript({
+      sessionId,
+      agentId,
+      directory,
+      transcriptFile,
+      metadataFile: join(directory, `agent-${agentId}.meta.json`),
+      lockFile: join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
+    })
+    await nativeSidechain.create('NATIVE_INTERRUPTED_ROOT', {
+      agentType: 'general-purpose',
+      description: 'Native interrupted fixture',
+      toolUseId: 'call_native_origin',
+      spawnDepth: 1,
+      cwd,
+      promptId,
+      name: 'native-interrupted-reviewer',
+    })
+    await nativeSidechain.withLease(async (lease) => {
+      await lease.appendMessages({
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { id: 'native-complete', name: 'Read', input: {} },
+              { id: 'native-dangling', name: 'Read', input: {} },
+            ],
+          },
+        ],
+      })
+      await lease.beginToolExecution('native-complete')
+      await lease.appendToolCompletion({
+        callId: 'native-complete',
+        result: { content: 'NATIVE_COMPLETED_RESULT', isError: false },
+      })
+    })
+    const requests: ModelRequest[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      persistence: 'disk',
+      experimentalNativeTranscriptWrites: true,
+      provider: {
+        model: 'native-resume-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'NATIVE_RESUMED_RESULT' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 2, outputTokens: 1 },
+          }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(sessionId, 0, () => promptId)
+
+    const interrupted = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'native_interrupted_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: false, timeout: 0 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(interrupted.content).toContain('<status>interrupted</status>')
+    expect(requests).toHaveLength(0)
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'native_interrupted_message',
+          name: 'SendMessage',
+          input: {
+            to: 'native-interrupted-reviewer',
+            summary: 'resume native interrupted fixture',
+            message: 'NATIVE_CONTINUE_ONCE',
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'native_interrupted_done',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('NATIVE_RESUMED_RESULT')
+    expect(requests).toHaveLength(1)
+    const resumedContext = JSON.stringify(requests[0]?.messages)
+    expect(resumedContext).toContain('NATIVE_COMPLETED_RESULT')
+    expect(resumedContext).toContain('NATIVE_CONTINUE_ONCE')
+    expect(resumedContext).not.toContain('native-dangling')
+    expect(resumedContext.match(/NATIVE_CONTINUE_ONCE/gu) ?? []).toHaveLength(1)
+    const source = await readFile(transcriptFile, 'utf8')
+    expect(source).toContain('"schema":"praxis.transcript"')
+    expect(source.match(/NATIVE_CONTINUE_ONCE/gu)).toHaveLength(1)
+    await executor.close()
+  })
+
+  it('fails closed without mutation for a legacy Claude-shaped sidechain under the native root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-agent-legacy-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const directory = join(paths.projectRoot, sessionId, 'subagents')
+    await mkdir(directory, { recursive: true })
+    const transcriptFile = join(directory, `agent-${agentId}.jsonl`)
+    const metadataFile = join(directory, `agent-${agentId}.meta.json`)
+    const legacySource = `${JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      agentId,
+      sessionId,
+      promptId,
+      parentUuid: null,
+      uuid: '11111111-1111-4111-8111-111111111111',
+      timestamp: '2026-08-24T00:00:00.000Z',
+      cwd,
+      version: '2.1.208',
+      message: { role: 'user', content: 'LEGACY_NATIVE_ROOT' },
+    })}\n`
+    const metadataSource = `${JSON.stringify({
+      agentType: 'general-purpose',
+      description: 'Legacy native-root fixture',
+      toolUseId: 'call_legacy_native',
+      spawnDepth: 1,
+      cwd,
+      promptId,
+      name: 'legacy-native-reviewer',
+    })}\n`
+    await Promise.all([
+      writeFile(transcriptFile, legacySource),
+      writeFile(metadataFile, metadataSource),
+    ])
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      persistence: 'disk',
+      experimentalNativeTranscriptWrites: true,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'must not run' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(sessionId, 0, () => promptId)
+
+    await expect(
+      registry.execute(
+        await registry.prepare(
+          {
+            id: 'legacy_native_output',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: false, timeout: 0 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      ),
+    ).rejects.toThrow(/Invalid native sidechain transcript/)
+    await expect(readFile(transcriptFile, 'utf8')).resolves.toBe(legacySource)
+    await expect(readFile(metadataFile, 'utf8')).resolves.toBe(metadataSource)
+    await executor.close()
   })
 
   it.each([

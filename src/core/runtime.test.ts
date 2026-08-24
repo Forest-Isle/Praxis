@@ -1255,6 +1255,144 @@ describe('AgentRuntime', () => {
     ).toEqual(['safe_b', 'safe_a'])
   })
 
+  it('waits for durable assistant completion before starting concurrent tools', async () => {
+    const assistantEntered = deferred()
+    const releaseAssistant = deferred()
+    const releases = new Map([
+      ['safe_a', deferred()],
+      ['safe_b', deferred()],
+    ])
+    const startedSignals = new Map([
+      ['safe_a', deferred()],
+      ['safe_b', deferred()],
+    ])
+    const markers: string[] = []
+    const executions: string[] = []
+    let turn = 0
+    const runtime = new AgentRuntime(
+      providerFrom(async function* () {
+        if (turn++ > 0) {
+          yield { type: 'text-delta', delta: 'done' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: 'safe_a', name: 'Safe', input: {} },
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: 'safe_b', name: 'Safe', input: {} },
+        }
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: () => ({ concurrency: 'concurrent' }),
+          prepare: async (call) => call,
+          execute: async (call) => {
+            executions.push(call.id)
+            startedSignals.get(call.id)?.resolve()
+            await releases.get(call.id)?.promise
+            return { content: call.id, isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    const running = runtime.run({
+      messages: [{ role: 'user', content: 'persist then execute' }],
+      observer: {
+        async assistantCompleted(message) {
+          if (!message.toolCalls?.length) return
+          assistantEntered.resolve()
+          await releaseAssistant.promise
+        },
+        async toolExecutionStarted(call) {
+          markers.push(call.id)
+        },
+        async toolCompleted() {},
+      },
+    })
+    await assistantEntered.promise
+    expect(markers).toEqual([])
+    expect(executions).toEqual([])
+
+    releaseAssistant.resolve()
+    await Promise.all(
+      [...startedSignals.values()].map((signal) => signal.promise),
+    )
+    expect(new Set(markers)).toEqual(new Set(['safe_a', 'safe_b']))
+    expect(new Set(executions)).toEqual(new Set(['safe_a', 'safe_b']))
+    releases.get('safe_a')?.resolve()
+    releases.get('safe_b')?.resolve()
+    await expect(running).resolves.toMatchObject({ text: 'done' })
+  })
+
+  it('does not mark unavailable, preparation-failed, or denied calls as started', async () => {
+    for (const failure of [
+      'unavailable',
+      'preparation-failed',
+      'denied',
+    ] as const) {
+      let turn = 0
+      let executions = 0
+      const markers: string[] = []
+      const provider = providerFrom(async function* () {
+        if (turn++ > 0) {
+          yield { type: 'text-delta', delta: 'done' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: failure, name: 'Fixture', input: {} },
+        }
+      })
+      const tools: ToolRegistry = {
+        definitions: () => [],
+        prepare: async (call) => {
+          if (failure === 'preparation-failed')
+            throw new Error('preparation failed')
+          return call
+        },
+        execute: async () => {
+          executions += 1
+          return { content: 'unexpected', isError: false }
+        },
+      }
+      const runtime = new AgentRuntime(
+        provider,
+        undefined,
+        failure === 'unavailable'
+          ? undefined
+          : {
+              tools,
+              permissions: {
+                resolve: () =>
+                  failure === 'denied'
+                    ? { behavior: 'deny', reason: 'denied' }
+                    : { behavior: 'allow' },
+              },
+            },
+      )
+      await expect(
+        runtime.run({
+          messages: [{ role: 'user', content: failure }],
+          observer: {
+            async assistantCompleted() {},
+            async toolExecutionStarted(call) {
+              markers.push(call.id)
+            },
+            async toolCompleted() {},
+          },
+        }),
+      ).resolves.toMatchObject({ text: 'done' })
+      expect(markers).toEqual([])
+      expect(executions).toBe(0)
+    }
+  })
+
   it('treats exclusive tools as FIFO barriers between concurrent groups', async () => {
     const releases = new Map(
       ['safe_a', 'safe_b', 'unsafe_c', 'safe_d'].map((id) => [id, deferred()]),
