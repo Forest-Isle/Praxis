@@ -15,7 +15,7 @@ import type { DataPlane } from '../../persistence/data-plane.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
 import type { TuiFileEntry, TuiMentionEntry } from './file-picker.js'
-import { visiblePatchLines, type TuiDiffSnapshot } from './git-diff.js'
+import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiMemoryFileEntry } from './memory-files.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
@@ -1420,137 +1420,168 @@ export function Transcript({
 }
 
 export function DiffDashboard({
-  snapshots,
-  sourceIndex,
-  selectedIndex,
-  viewingFile,
-  scrollOffset,
+  model,
   width,
   screenReader,
 }: {
-  snapshots: readonly { label: string; snapshot: TuiDiffSnapshot }[]
-  sourceIndex: number
-  selectedIndex: number
-  viewingFile: boolean
-  scrollOffset: number
+  model: TuiDiffSurfaceModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
-  const source = snapshots[sourceIndex]
-  const snapshot = source?.snapshot ?? { files: [], additions: 0, deletions: 0 }
-  const selected = snapshot.files[selectedIndex]
-  const panelWidth = Math.max(32, Math.min(100, width))
+  const accessibleSelection = screenReader || theme.noColor
+  const panelWidth = Number.isFinite(width)
+    ? Math.max(1, Math.min(100, Math.trunc(width)))
+    : 100
   const line = '─'.repeat(panelWidth)
-  if (viewingFile && selected) {
-    const lines = visiblePatchLines(selected.patch).slice(
-      scrollOffset,
-      scrollOffset + 18,
-    )
+  const footer = (
+    view: Pick<TuiDiffSurfaceModel['view'], 'actions' | 'cancellation'>,
+  ) =>
+    screenReader
+      ? [
+          ...view.actions.map((action) => action.screenReaderLabel),
+          view.cancellation.screenReaderLabel,
+        ].join(' · ')
+      : [
+          ...view.actions
+            .map((action) => action.visualLabel)
+            .filter((label): label is string => Boolean(label)),
+          view.cancellation.visualLabel,
+        ].join(' · ')
+  const fileCounts = (file: { additions: number; deletions: number }): string =>
+    `${file.additions} ${file.additions === 1 ? 'addition' : 'additions'}; ${file.deletions} ${file.deletions === 1 ? 'deletion' : 'deletions'}`
+  const sourceTabs = model.sourceTabs.map((item) => (
+    <Text key={item.id} {...(item.selected ? theme.text.selectedTab : {})}>
+      {accessibleSelection && item.selected ? 'Current source: ' : ' '}
+      {item.label}{' '}
+    </Text>
+  ))
+  if (model.view.kind === 'file-detail') {
+    const view = model.view
     return (
-      <Box flexDirection="column">
+      <Box
+        flexDirection="column"
+        {...(screenReader ? {} : { width: panelWidth })}
+      >
         {!screenReader ? <Text dimColor>{line}</Text> : null}
         <Text {...theme.text.heading} bold>
-          {' '}
-          Uncommitted changes (git diff HEAD)
+          {model.title}
         </Text>
         <Text>
           {'  '}
-          {snapshots.map((item, index) => (
-            <Text
-              key={item.label}
-              {...(index === sourceIndex ? theme.text.selectedTab : {})}
-            >
-              {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
-              {item.label}{' '}
-            </Text>
-          ))}
+          {sourceTabs}
         </Text>
         <Text> </Text>
         <Text {...theme.text.heading} bold>
           {' '}
-          {selected.path}
+          {accessibleSelection
+            ? `Selected file: ${view.file.path}; ${fileCounts(view.file)}`
+            : view.file.path}
         </Text>
-        {!screenReader ? (
+        {!screenReader && panelWidth > 4 ? (
           <Text dimColor> {'─'.repeat(Math.max(1, panelWidth - 4))}</Text>
         ) : null}
-        {lines.map((patchLine, index) =>
-          patchLine.startsWith('+') && !patchLine.startsWith('+++') ? (
-            <SyntaxCodeLine
-              key={`${scrollOffset}-${index}`}
-              prefix="  "
-              text={patchLine}
-              change="added"
-            />
-          ) : patchLine.startsWith('-') && !patchLine.startsWith('---') ? (
-            <SyntaxCodeLine
-              key={`${scrollOffset}-${index}`}
-              prefix="  "
-              text={patchLine}
-              change="removed"
-            />
-          ) : (
-            <Text key={`${scrollOffset}-${index}`} dimColor>
-              {'  '}
-              {patchLine}
-            </Text>
-          ),
+        {view.patchRows.length === 0 ? (
+          <Text dimColor>{view.emptyPatchText}</Text>
+        ) : (
+          view.patchRows.map((row) =>
+            screenReader ? (
+              <Text
+                key={row.id}
+              >{`${row.kind === 'added' ? 'Added' : row.kind === 'removed' ? 'Removed' : 'Context'}: ${row.kind === 'added' || row.kind === 'removed' ? row.text.slice(1) : row.text}`}</Text>
+            ) : row.kind === 'added' ? (
+              <SyntaxCodeLine
+                key={row.id}
+                prefix="  "
+                text={row.text}
+                change="added"
+              />
+            ) : row.kind === 'removed' ? (
+              <SyntaxCodeLine
+                key={row.id}
+                prefix="  "
+                text={row.text}
+                change="removed"
+              />
+            ) : (
+              <Text key={row.id} dimColor>
+                {'  '}
+                {screenReader ? `${row.kind}: ${row.text}` : row.text}
+              </Text>
+            ),
+          )
         )}
-        <Text dimColor> ↑/↓ to scroll · Esc to back</Text>
+        {screenReader ? (
+          <>
+            <Text>
+              Patch lines {view.visibleStart}-{view.visibleEnd} of{' '}
+              {view.totalLines}.
+            </Text>
+            <Text>{footer(view)}</Text>
+          </>
+        ) : (
+          <Text dimColor> {footer(view)}</Text>
+        )}
       </Box>
     )
   }
+  const view = model.view
   return (
-    <Box flexDirection="column">
+    <Box
+      flexDirection="column"
+      {...(screenReader ? {} : { width: panelWidth })}
+    >
       {!screenReader ? <Text dimColor>{line}</Text> : null}
       <Text {...theme.text.heading} bold>
         {' '}
-        Uncommitted changes (git diff HEAD)
+        {model.title}
       </Text>
       <Text> </Text>
       <Text>
         {'  '}
-        {snapshots.map((item, index) => (
-          <Text
-            key={item.label}
-            {...(index === sourceIndex ? theme.text.selectedTab : {})}
-          >
-            {screenReader && index === sourceIndex ? 'Current source: ' : ' '}
-            {item.label}{' '}
-          </Text>
-        ))}
+        {sourceTabs}
       </Text>
       <Text> </Text>
       <Text>
         {'  '}
-        {snapshot.files.length} file{snapshot.files.length === 1 ? '' : 's'}{' '}
-        changed <Text {...theme.text.diffAdded}>+{snapshot.additions}</Text>{' '}
-        <Text {...theme.text.diffRemoved}>-{snapshot.deletions}</Text>
+        {view.files.length} file{view.files.length === 1 ? '' : 's'} changed{' '}
+        {screenReader ? (
+          `${view.totals.additions} ${view.totals.additions === 1 ? 'addition' : 'additions'} ${view.totals.deletions} ${view.totals.deletions === 1 ? 'deletion' : 'deletions'}`
+        ) : (
+          <>
+            <Text {...theme.text.diffAdded}>+{view.totals.additions}</Text>{' '}
+            <Text {...theme.text.diffRemoved}>-{view.totals.deletions}</Text>
+          </>
+        )}
       </Text>
       <Text> </Text>
-      {snapshot.files.length === 0 ? (
-        <Text dimColor> No uncommitted changes.</Text>
+      {view.files.length === 0 ? (
+        <Text dimColor> {view.emptyText}</Text>
       ) : (
-        snapshot.files.map((file, index) => (
+        view.files.map((file, index) => (
           <Text
-            key={file.path}
-            {...(index === selectedIndex ? theme.text.selectedRow : {})}
+            key={file.id}
+            {...(index === view.selectedIndex ? theme.text.selectedRow : {})}
           >
-            {selectionPrefix(index === selectedIndex, screenReader)}
-            {file.path}{' '}
-            <Text {...(!screenReader ? theme.text.diffAdded : {})}>
-              +{file.additions}
-            </Text>{' '}
-            <Text {...(!screenReader ? theme.text.diffRemoved : {})}>
-              -{file.deletions}
-            </Text>
+            {accessibleSelection
+              ? index === view.selectedIndex
+                ? 'Selected: '
+                : ''
+              : selectionPrefix(index === view.selectedIndex, screenReader)}
+            {screenReader ? (
+              `${file.path}; ${fileCounts(file)}`
+            ) : (
+              <>
+                {file.path}{' '}
+                <Text {...theme.text.diffAdded}>+{file.additions}</Text>{' '}
+                <Text {...theme.text.diffRemoved}>-{file.deletions}</Text>
+              </>
+            )}
           </Text>
         ))
       )}
       <Text> </Text>
-      <Text dimColor>
-        ←/→ to switch source · ↑/↓ to select · Enter to view · Esc to close
-      </Text>
+      <Text dimColor>{footer(view)}</Text>
     </Box>
   )
 }

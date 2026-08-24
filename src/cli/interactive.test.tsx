@@ -7317,19 +7317,28 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Interrupted by user.')
   })
 
-  it('opens the diff dashboard and drills into the selected file', async () => {
+  it('opens, scrolls, backs out of, and closes the diff dashboard', async () => {
+    const patchLines = Array.from(
+      { length: 20 },
+      (_, index) => `+line-${String(index + 1).padStart(2, '0')}`,
+    )
     const snapshot = {
       files: [
         {
           path: 'fixture.txt',
-          additions: 1,
-          deletions: 1,
-          patch:
-            'diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1 @@\n-before\n+after\n',
+          additions: 20,
+          deletions: 0,
+          patch: [
+            'diff --git a/fixture.txt b/fixture.txt',
+            '--- a/fixture.txt',
+            '+++ b/fixture.txt',
+            '@@ -0,0 +1,20 @@',
+            ...patchLines,
+          ].join('\n'),
         },
       ],
-      additions: 1,
-      deletions: 1,
+      additions: 20,
+      deletions: 0,
     }
     const app = render(
       <InteractiveApp
@@ -7348,7 +7357,69 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
-    expect(app.lastFrame()).toContain('❯ fixture.txt')
+    expect(app.lastFrame()).toContain('fixture.txt')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('+line-01')
+    expect(app.lastFrame()).toContain('+line-18')
+    expect(app.lastFrame()).not.toContain('+line-19')
+    expect(app.lastFrame()).toContain('Esc to back')
+
+    app.stdin.write('\u001B[B')
+    await flush()
+    expect(app.lastFrame()).not.toContain('+line-01')
+    expect(app.lastFrame()).toContain('+line-19')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('fixture.txt')
+    expect(app.lastFrame()).toContain('Esc to close')
+    expect(app.lastFrame()).not.toContain('+line-19')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
+  })
+
+  it('projects the same semantic diff surface through fullscreen', async () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'fullscreen.ts',
+          additions: 1,
+          deletions: 1,
+          patch: '@@ -1 +1 @@\n-before\n+after\n',
+        },
+      ],
+      additions: 1,
+      deletions: 1,
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+        diffLoader={async () => snapshot}
+      />,
+    )
+
+    app.stdin.write('/diff')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).toContain('fullscreen.ts')
+    expect(app.lastFrame()).toContain('Esc to close')
 
     app.stdin.write('\r')
     await flush()
@@ -7442,10 +7513,85 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('current.txt')
     expect(app.lastFrame()).toContain('T1')
 
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('+current')
+    expect(app.lastFrame()).toContain('Esc to back')
+
     app.stdin.write('\u001B[C')
     await flush()
     expect(app.lastFrame()).toContain('turn-one.txt')
     expect(app.lastFrame()).not.toContain('current.txt')
+    expect(app.lastFrame()).toContain('Esc to close')
+    expect(app.lastFrame()).not.toContain('Esc to back')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
+  })
+
+  it('routes semantic screen-reader diff summary, detail, back, and close', async () => {
+    const snapshot = {
+      files: [
+        {
+          path: 'accessible.ts',
+          additions: 1,
+          deletions: 1,
+          patch: '@@ -1 +1 @@\n-before\n+after\n',
+        },
+      ],
+      additions: 1,
+      deletions: 1,
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            throw new Error('unused')
+          },
+        }}
+        initialSessions={[]}
+        axScreenReader
+        diffLoader={async () => snapshot}
+      />,
+    )
+
+    app.stdin.write('/diff')
+    await flush()
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Current source: Current')
+    expect(app.lastFrame()).toContain(
+      'Selected: accessible.ts; 1 addition; 1 deletion',
+    )
+    expect(app.lastFrame()).toContain(
+      'Use up and down arrows to select a file, then Enter to view',
+    )
+    expect(app.lastFrame()).toContain('Escape to close')
+    expect(app.lastFrame()).not.toContain('❯')
+    expect(app.lastFrame()).not.toContain('─')
+
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain(
+      'Selected file: accessible.ts; 1 addition; 1 deletion',
+    )
+    expect(app.lastFrame()).toContain('Removed: before')
+    expect(app.lastFrame()).toContain('Added: after')
+    expect(app.lastFrame()).toContain('Patch lines 1-2 of 2')
+    expect(app.lastFrame()).toContain('Escape to go back')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).toContain('Selected: accessible.ts')
+    expect(app.lastFrame()).toContain('Escape to close')
+
+    app.stdin.write('\u001B')
+    await new Promise((resolve) => setTimeout(resolve, 75))
+    await flush()
+    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
   })
 
   it('renders permission, MCP, and hook lifecycle feedback', async () => {

@@ -155,3 +155,6 @@ question state remains in keyboard/lifecycle routing. Other leaf dialogs,
 menus, and dashboards remain behind an explicit legacy secondary marker while
 their own semantic surfaces migrate in later slices. Each slice must leave a
 demoable path working and preserve the shared transcript/runtime boundary.
+Diff now joins this pure semantic projection path through one summary/detail
+model shared by visual and screen-reader adapters; other legacy secondary
+surfaces remain behind the legacy marker for later migration.
