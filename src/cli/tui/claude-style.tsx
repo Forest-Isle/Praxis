@@ -26,6 +26,12 @@ import type { TuiCommandPaletteModel } from './command-palette-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
 import type { TuiBtwSurfaceModel } from './btw-surface-model.js'
 import type {
+  TuiEffortSurfaceModel,
+  TuiModelSurfaceModel,
+  TuiSelectionOption,
+} from './model-effort-surface-model.js'
+export type { TuiSelectionOption } from './model-effort-surface-model.js'
+import type {
   TuiHelpShortcut,
   TuiHelpShortcutGroup,
   TuiHelpSurfaceModel,
@@ -2646,12 +2652,6 @@ export function HelpMenu({
   )
 }
 
-export interface TuiSelectionOption {
-  label: string
-  description: string
-  selected?: boolean
-}
-
 export function SelectionMenu({
   title,
   description,
@@ -2747,19 +2747,16 @@ export function SelectionMenu({
 }
 
 export function ModelMenu({
-  options,
-  effort,
-  selectedIndex,
+  surface,
   width,
   screenReader,
 }: {
-  options: readonly TuiSelectionOption[]
-  effort: string
-  selectedIndex: number
+  surface: TuiModelSurfaceModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
+  const { options, effort, selectedIndex } = surface
   const current = options.find((option) => option.selected)
   const maxLabelWidth = options.reduce(
     (max, option, index) =>
@@ -2827,6 +2824,28 @@ export function ModelMenu({
         <Text dimColor>Enter to select · Esc to cancel</Text>
       </Box>
     </Box>
+  )
+}
+
+export function EffortMenu({
+  surface,
+  width,
+  screenReader,
+}: {
+  surface: TuiEffortSurfaceModel
+  width: number
+  screenReader: boolean
+}) {
+  return (
+    <SelectionMenu
+      title="Select effort"
+      description="Controls how much reasoning effort the provider should use."
+      options={surface.options}
+      selectedIndex={surface.selectedIndex}
+      footer="↑/↓ select · Enter applies to this session · Esc cancels"
+      width={width}
+      screenReader={screenReader}
+    />
   )
 }
 

@@ -72,6 +72,7 @@ import {
   MemoryDashboard,
   MentionPicker,
   ModelMenu,
+  EffortMenu,
   SelectionMenu,
   SessionPicker,
   ThemePicker,
@@ -82,6 +83,12 @@ import {
   type TranscriptItem,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
+import {
+  projectTuiEffortSurface,
+  projectTuiModelSurface,
+  type TuiEffortSurfaceModel,
+  type TuiModelSurfaceModel,
+} from './tui/model-effort-surface-model.js'
 import {
   projectTuiBtwSurface,
   type TuiBtwEntry,
@@ -1861,6 +1868,76 @@ export function InteractiveApp({
       settingsDirectory,
       workspaceDirectories,
     ])
+  const modelOptions = useMemo(() => {
+    const current = runtimePreferences.model
+    const options: {
+      label: string
+      description: string
+      model?: string
+      selected?: boolean
+    }[] = [
+      {
+        label: 'Default (recommended)',
+        description: `Use the invocation default (currently ${runtimeDisplay.model ?? 'provider default'})`,
+        selected: current === undefined,
+      },
+    ]
+    if ((process.env.PRAXIS_PROVIDER ?? 'openai') === 'anthropic') {
+      options.push(
+        {
+          label: 'Opus',
+          model: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? 'opus',
+          description: 'Most capable for complex work',
+        },
+        {
+          label: 'Sonnet',
+          model: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? 'sonnet',
+          description: 'Best for everyday tasks',
+        },
+        {
+          label: 'Haiku',
+          model: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? 'haiku',
+          description: 'Fastest for quick answers',
+        },
+      )
+    } else if (current) {
+      options.push({
+        label: current,
+        model: current,
+        description: 'Current provider model',
+        selected: true,
+      })
+    }
+    for (const option of options)
+      option.selected = option.model === current || (!option.model && !current)
+    options.push({
+      label: 'Enter a model ID…',
+      description:
+        'Use any model identifier supported by the configured provider.',
+    })
+    return options
+  }, [runtimeDisplay.model, runtimePreferences.model])
+  const modelSurface = useMemo<TuiModelSurfaceModel | null>(
+    () =>
+      menu?.kind === 'model'
+        ? projectTuiModelSurface({
+            options: modelOptions,
+            effort: runtimePreferences.effort,
+            selectedIndex: menu.selectedIndex,
+          })
+        : null,
+    [menu, modelOptions, runtimePreferences.effort],
+  )
+  const effortSurface = useMemo<TuiEffortSurfaceModel | null>(
+    () =>
+      menu?.kind === 'effort'
+        ? projectTuiEffortSurface({
+            effort: runtimePreferences.effort,
+            selectedIndex: menu.selectedIndex,
+          })
+        : null,
+    [menu, runtimePreferences.effort],
+  )
   type InteractiveSecondarySurface =
     | TuiHelpSurfaceModel
     | TuiPermissionSurfaceModel
@@ -1875,6 +1952,8 @@ export function InteractiveApp({
     | TuiListSurfaceModel
     | TuiBtwSurfaceModel
     | TuiRewindSurfaceModel
+    | TuiModelSurfaceModel
+    | TuiEffortSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2150,8 +2229,12 @@ export function InteractiveApp({
                             ? (btwSurface ?? undefined)
                             : rewindMenu !== null
                               ? (rewindSurface ?? undefined)
-                              : (permissionManagementSurface ??
-                                legacySecondarySurface)
+                              : menu.kind === 'model'
+                                ? (modelSurface ?? undefined)
+                                : menu.kind === 'effort'
+                                  ? (effortSurface ?? undefined)
+                                  : (permissionManagementSurface ??
+                                    legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -2216,6 +2299,8 @@ export function InteractiveApp({
       secondarySurface,
       btwSurface,
       rewindSurface,
+      modelSurface,
+      effortSurface,
       commandPaletteVisible,
       commandPaletteModel,
       filePickerVisible,
@@ -2306,56 +2391,6 @@ export function InteractiveApp({
     ],
     [allowDangerouslySkipPermissions],
   )
-  const modelOptions = useMemo(() => {
-    const current = runtimePreferences.model
-    const options: {
-      label: string
-      description: string
-      model?: string
-      selected?: boolean
-    }[] = [
-      {
-        label: 'Default (recommended)',
-        description: `Use the invocation default (currently ${runtimeDisplay.model ?? 'provider default'})`,
-        selected: current === undefined,
-      },
-    ]
-    if ((process.env.PRAXIS_PROVIDER ?? 'openai') === 'anthropic') {
-      options.push(
-        {
-          label: 'Opus',
-          model: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL ?? 'opus',
-          description: 'Most capable for complex work',
-        },
-        {
-          label: 'Sonnet',
-          model: process.env.ANTHROPIC_DEFAULT_SONNET_MODEL ?? 'sonnet',
-          description: 'Best for everyday tasks',
-        },
-        {
-          label: 'Haiku',
-          model: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL ?? 'haiku',
-          description: 'Fastest for quick answers',
-        },
-      )
-    } else if (current) {
-      options.push({
-        label: current,
-        model: current,
-        description: 'Current provider model',
-        selected: true,
-      })
-    }
-    for (const option of options)
-      option.selected = option.model === current || (!option.model && !current)
-    options.push({
-      label: 'Enter a model ID…',
-      description:
-        'Use any model identifier supported by the configured provider.',
-    })
-    return options
-  }, [runtimeDisplay.model, runtimePreferences.model])
-
   useEffect(() => {
     setAvailableSlashCommands(slashCommands)
   }, [slashCommands])
@@ -8442,6 +8477,18 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'model-panel' ? (
+                <ModelMenu
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : selectedSecondarySurface.kind === 'effort-panel' ? (
+                <EffortMenu
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ||
                 menu.kind === 'agents' ||
                 menu.kind === 'config' ||
@@ -8449,35 +8496,9 @@ export function InteractiveApp({
                 menu.kind === 'btw' ||
                 menu.kind === 'rewind' ||
                 menu.kind === 'rewind-confirm' ||
-                menu.kind === 'rewind-context' ? null : menu.kind ===
-                'model' ? (
-                <ModelMenu
-                  options={modelOptions}
-                  effort={runtimePreferences.effort}
-                  selectedIndex={menu.selectedIndex}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'effort' ? (
-                <SelectionMenu
-                  title="Select effort"
-                  description="Controls how much reasoning effort the provider should use."
-                  options={EFFORT_OPTIONS.map((option) => ({
-                    label: option,
-                    description:
-                      option === 'low'
-                        ? 'Fastest and least deliberative.'
-                        : option === 'max'
-                          ? 'Highest available reasoning effort.'
-                          : 'Use this effort for the next session turns.',
-                    selected: option === runtimePreferences.effort,
-                  }))}
-                  selectedIndex={menu.selectedIndex}
-                  footer="↑/↓ select · Enter applies to this session · Esc cancels"
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'theme' ? (
+                menu.kind === 'rewind-context' ||
+                menu.kind === 'model' ||
+                menu.kind === 'effort' ? null : menu.kind === 'theme' ? (
                 <ThemePicker
                   currentTheme={themeSettings.theme}
                   selectedIndex={menu.selectedIndex}

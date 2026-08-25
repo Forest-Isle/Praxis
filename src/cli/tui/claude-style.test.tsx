@@ -20,6 +20,8 @@ import {
   MemoryDashboard,
   MarkdownText,
   MentionPicker,
+  ModelMenu,
+  EffortMenu,
   SelectionMenu,
   SessionIdentity,
   SessionPicker,
@@ -50,6 +52,10 @@ import {
 import { projectTuiHelpSurface } from './help-surface-model.js'
 import { projectTuiListSurface } from './list-surface-model.js'
 import { projectTuiBtwSurface } from './btw-surface-model.js'
+import {
+  projectTuiEffortSurface,
+  projectTuiModelSurface,
+} from './model-effort-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -2320,6 +2326,43 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Select effort')
     expect(frame).toContain('❯ 2. high ✔')
     expect(frame).toContain('Enter applies · Esc cancels')
+  })
+
+  it('renders semantic model and effort surfaces', () => {
+    const model = render(
+      <ModelMenu
+        surface={projectTuiModelSurface({
+          options: [
+            {
+              label: 'Default (recommended)',
+              description: 'Use default',
+              selected: true,
+            },
+            {
+              label: 'custom',
+              description: 'Current provider model',
+              model: 'custom',
+            },
+          ],
+          effort: 'high',
+          selectedIndex: 1,
+        })}
+        width={70}
+        screenReader
+      />,
+    )
+    const effort = render(
+      <EffortMenu
+        surface={projectTuiEffortSurface({ effort: 'high', selectedIndex: 2 })}
+        width={70}
+        screenReader
+      />,
+    )
+    expect(model.lastFrame()).toContain('Select model')
+    expect(model.lastFrame()).toContain('Current: Default (recommended)')
+    expect(model.lastFrame()).toContain('High effort (default)')
+    expect(effort.lastFrame()).toContain('Select effort')
+    expect(effort.lastFrame()).toContain('Current: high')
   })
 
   it('announces generic menu focus and current value for screen readers', () => {
