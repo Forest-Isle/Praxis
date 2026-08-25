@@ -170,3 +170,4 @@ surfaces remain behind the legacy marker for later migration.
 MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
 effects remain outside presentation.
 Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle routing retain the raw task state.
+Doctor now consumes a semantic TuiScreen payload while asynchronous lifecycle routing retains the raw doctor state.

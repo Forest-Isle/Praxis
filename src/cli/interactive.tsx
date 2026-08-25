@@ -288,6 +288,10 @@ import {
 import { DecisionSurface } from './tui/decision-surface.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
 import { DoctorDashboard } from './tui/doctor-dashboard.js'
+import {
+  projectTuiDoctorSurface,
+  type TuiDoctorSurfaceModel,
+} from './tui/doctor-surface-model.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
 import {
   createTuiSandboxStore,
@@ -1879,6 +1883,7 @@ export function InteractiveApp({
     | TuiDiffSurfaceModel
     | TuiMcpSurfaceModel
     | TuiTaskSurfaceModel
+    | TuiDoctorSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -1979,6 +1984,18 @@ export function InteractiveApp({
           }),
     [taskMenu],
   )
+  const doctorMenu = menu?.kind === 'doctor' ? menu : null
+  const doctorSurface = useMemo<TuiDoctorSurfaceModel | null>(
+    () =>
+      doctorMenu === null
+        ? null
+        : projectTuiDoctorSurface({
+            loading: doctorMenu.loading,
+            report: doctorMenu.report,
+            error: doctorMenu.error,
+          }),
+    [doctorMenu],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -1990,7 +2007,9 @@ export function InteractiveApp({
             ? (mcpSurface ?? undefined)
             : menu.kind === 'tasks'
               ? (taskSurface ?? undefined)
-              : (permissionManagementSurface ?? legacySecondarySurface)
+              : menu.kind === 'doctor'
+                ? (doctorSurface ?? undefined)
+                : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8258,6 +8277,12 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'doctor-panel' ? (
+                <DoctorDashboard
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
@@ -8299,14 +8324,6 @@ export function InteractiveApp({
                     settingSources: statusSettingSources.split(', '),
                   }}
                   usage={menu.usage}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'doctor' ? (
-                <DoctorDashboard
-                  loading={menu.loading}
-                  report={menu.report}
-                  error={menu.error}
                   width={width}
                   screenReader={axScreenReader}
                 />

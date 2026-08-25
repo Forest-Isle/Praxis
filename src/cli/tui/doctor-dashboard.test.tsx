@@ -9,6 +9,7 @@ import {
   DoctorDashboard,
   projectDoctorWarningGroups,
 } from './doctor-dashboard.js'
+import { projectTuiDoctorSurface } from './doctor-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -98,9 +99,11 @@ describe('DoctorDashboard', () => {
   it('renders the loading screen before completion', () => {
     const frame = render(
       <DoctorDashboard
-        loading
-        report={null}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: true,
+          report: null,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -113,9 +116,11 @@ describe('DoctorDashboard', () => {
   it('renders completed Diagnostics and Updates with real report fields and no placeholders', () => {
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={report()}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: report(),
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -157,9 +162,11 @@ describe('DoctorDashboard', () => {
   it('renders Diagnostics and the pending checking-updates state for a progress report', () => {
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={progressReport()}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: progressReport(),
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -190,9 +197,11 @@ describe('DoctorDashboard', () => {
 
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={report()}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: report(),
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -226,9 +235,11 @@ describe('DoctorDashboard', () => {
     expect(projectDoctorWarningGroups(clean)).toEqual([])
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={clean}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: clean,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -241,9 +252,11 @@ describe('DoctorDashboard', () => {
   it('renders a current-generation loader failure as a sanitized error screen', () => {
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={null}
-        error="PRAXIS_API_KEY is required"
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: null,
+          error: 'PRAXIS_API_KEY is required',
+        })}
         width={100}
         screenReader={false}
       />,
@@ -258,9 +271,11 @@ describe('DoctorDashboard', () => {
   it('uses screen-reader text and color-free labels in axScreenReader mode', () => {
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={report()}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: report(),
+          error: null,
+        })}
         width={100}
         screenReader
       />,
@@ -288,9 +303,11 @@ describe('DoctorDashboard', () => {
     })
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={missingSearch}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: missingSearch,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -314,9 +331,11 @@ describe('DoctorDashboard', () => {
     })
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={duplicates}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: duplicates,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -332,9 +351,11 @@ describe('DoctorDashboard', () => {
   it('omits the duplicate-installations heading for a single installation', () => {
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={report()}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: report(),
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -354,9 +375,11 @@ describe('DoctorDashboard', () => {
     })
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={unavailable}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: unavailable,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -372,9 +395,11 @@ describe('DoctorDashboard', () => {
     })
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={unknownPermissions}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: unknownPermissions,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -393,9 +418,11 @@ describe('DoctorDashboard', () => {
     })
     const frame = render(
       <DoctorDashboard
-        loading={false}
-        report={source}
-        error={null}
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: source,
+          error: null,
+        })}
         width={100}
         screenReader={false}
       />,
