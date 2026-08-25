@@ -611,32 +611,30 @@ export class TeamLeadToolRegistry implements ToolRegistry {
       throw new Error(`Unsupported Claude Team tool: ${call.name}`)
     if (isClaudeTeamToolName(call.name) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)
-    const claudeTeam = isClaudeTeamToolName(call.name)
-      ? this.claudeTeam
-      : undefined
-    if (isClaudeTeamToolName(call.name) && !claudeTeam)
-      throw new Error(`Tool ${call.name} is unavailable`)
-    if (call.name === 'ClaudeTeamCreate')
+    if (isClaudeTeamToolName(call.name)) {
+      const claudeTeam = this.claudeTeam
+      if (!claudeTeam) throw new Error(`Tool ${call.name} is unavailable`)
+      if (call.name === 'ClaudeTeamCreate')
+        return this.result({
+          claude: await claudeTeam.executeCreate(call.input),
+        })
+      if (call.name === 'ClaudeTeamDelete')
+        return this.result({
+          claude: await claudeTeam.executeDelete(
+            call.input,
+            this.operations,
+            this.sessionId,
+          ),
+        })
       return this.result({
-        claude: await claudeTeam!.executeCreate(call.input),
-      })
-    if (call.name === 'ClaudeTeamDelete')
-      return this.result({
-        claude: await claudeTeam!.executeDelete(
-          call.input,
-          this.operations,
-          this.sessionId,
-        ),
-      })
-    if (call.name === 'ClaudeSendMessage')
-      return this.result({
-        claude: await claudeTeam!.executeSend(
+        claude: await claudeTeam.executeSend(
           call.input,
           this.operations,
           this.sessionId,
           call.id,
         ),
       })
+    }
     this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)
