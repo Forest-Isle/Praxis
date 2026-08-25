@@ -17,6 +17,13 @@ const PROVIDER_ENV_PREFIXES = [
   'VERTEX_',
 ]
 
+const MODEL_ENV = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+]
+
 const AUTHENTICATION_PATTERNS = [
   /authentication_error/iu,
   /not logged in/iu,
@@ -135,12 +142,9 @@ export function applyCompatibilityEndpointModelOverrides(
   ).trim()
   const model = String(hostEnvironment?.PRAXIS_COMPAT_CLAUDE_MODEL ?? '').trim()
   if (endpoint) result.ANTHROPIC_BASE_URL = endpoint
-  if (model) {
-    result.ANTHROPIC_MODEL = model
-    result.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
-    result.ANTHROPIC_DEFAULT_SONNET_MODEL = model
-    result.ANTHROPIC_DEFAULT_OPUS_MODEL = model
-  }
+  for (const key of MODEL_ENV) delete result[key]
+  delete result.PRAXIS_COMPAT_CLAUDE_MODEL
+  if (model) result.PRAXIS_COMPAT_CLAUDE_MODEL = model
   return result
 }
 

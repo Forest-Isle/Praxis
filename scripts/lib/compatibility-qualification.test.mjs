@@ -1,6 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { realpathSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
@@ -17,6 +19,7 @@ import {
   resolvePrimaryReferenceBinary,
   selectPrimaryReferenceBinary,
 } from './compatibility-qualification.mjs'
+import { runClaudeJson } from './claude-probe.mjs'
 
 describe('compatibility qualification environment', () => {
   it('removes ambient selection while preserving credentials and fixed paths', () => {
@@ -92,10 +95,7 @@ describe('compatibility qualification environment', () => {
       PATH: '/usr/bin',
       PRAXIS_API_KEY: 'preserved',
       ANTHROPIC_BASE_URL: 'https://gateway.example',
-      ANTHROPIC_MODEL: 'deepseek-v4-flash',
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
-      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
-      ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
+      PRAXIS_COMPAT_CLAUDE_MODEL: 'deepseek-v4-flash',
     })
     expect(
       applyCompatibilityEndpointModelOverrides(isolated, {
@@ -105,6 +105,64 @@ describe('compatibility qualification environment', () => {
         PRAXIS_COMPAT_CLAUDE_MODEL: '',
       }),
     ).toEqual(isolated)
+  })
+
+  it('scopes the compatibility model to external Claude calls', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-model-scope-'))
+    const executable = join(root, 'fake-claude')
+    const capture = join(root, 'capture')
+    await writeFile(
+      executable,
+      '#!/bin/sh\nprintf "%s|%s|%s|%s|%s" "$ANTHROPIC_MODEL" "$ANTHROPIC_DEFAULT_HAIKU_MODEL" "$ANTHROPIC_DEFAULT_SONNET_MODEL" "$ANTHROPIC_DEFAULT_OPUS_MODEL" "$PRAXIS_COMPAT_CLAUDE_MODEL" > "$TEST_CAPTURE_PATH"\nprintf "{\\"type\\":\\"result\\"}"\n',
+      { mode: 0o755 },
+    )
+    const previousBinary = process.env.PRAXIS_CLAUDE_BINARY
+    const previousModel = process.env.PRAXIS_COMPAT_CLAUDE_MODEL
+    const previousAnthropicModels = Object.fromEntries(
+      [
+        'ANTHROPIC_MODEL',
+        'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+        'ANTHROPIC_DEFAULT_SONNET_MODEL',
+        'ANTHROPIC_DEFAULT_OPUS_MODEL',
+      ].map((key) => [key, process.env[key]]),
+    )
+    process.env.PRAXIS_CLAUDE_BINARY = executable
+    process.env.PRAXIS_COMPAT_CLAUDE_MODEL = 'deepseek-v4-flash'
+    for (const key of Object.keys(previousAnthropicModels))
+      delete process.env[key]
+    try {
+      await runClaudeJson([], root, join(root, 'external-config'), {
+        TEST_CAPTURE_PATH: capture,
+      })
+      await expect(readFile(capture, 'utf8')).resolves.toBe(
+        'deepseek-v4-flash|deepseek-v4-flash|deepseek-v4-flash|deepseek-v4-flash|',
+      )
+
+      await runClaudeJson([], root, join(root, 'explicit-config'), {
+        TEST_CAPTURE_PATH: capture,
+        ANTHROPIC_MODEL: 'explicit-model',
+      })
+      await expect(readFile(capture, 'utf8')).resolves.toBe(
+        'explicit-model|deepseek-v4-flash|deepseek-v4-flash|deepseek-v4-flash|',
+      )
+
+      await runClaudeJson([], root, join(root, 'local-config'), {
+        TEST_CAPTURE_PATH: capture,
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:1',
+      })
+      await expect(readFile(capture, 'utf8')).resolves.toBe('||||')
+    } finally {
+      if (previousBinary === undefined) delete process.env.PRAXIS_CLAUDE_BINARY
+      else process.env.PRAXIS_CLAUDE_BINARY = previousBinary
+      if (previousModel === undefined)
+        delete process.env.PRAXIS_COMPAT_CLAUDE_MODEL
+      else process.env.PRAXIS_COMPAT_CLAUDE_MODEL = previousModel
+      for (const [key, value] of Object.entries(previousAnthropicModels)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('reports every missing required lane before execution', () => {
@@ -221,7 +279,9 @@ describe('compatibility qualification environment', () => {
 
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('[qualification blocked]')
-    expect(result.stderr).toContain('PRAXIS_CLAUDE_CROSS_VERSION_BINARY')
+    expect(result.stderr).toContain(
+      'Claude 2.1.237 binary is missing or invalid; set PRAXIS_CLAUDE_2_1_237 to the pinned executable',
+    )
     expect(`${result.stdout}${result.stderr}`).not.toMatch(/passed|qualified/iu)
   })
 })
