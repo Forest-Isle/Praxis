@@ -70,6 +70,38 @@ afterEach(async () => {
 })
 
 describe('native transcript migration', () => {
+  it.each([
+    'stage-written',
+    'stage-validated',
+    'manifest-prepared',
+    'source-retained',
+    'native-published',
+    'manifest-published',
+  ] as const)('recovers after a crash at %s', async (phase) => {
+    const { sourcePath, source } = await fixture()
+    let injected = false
+    await expect(
+      migrate({
+        sourcePath,
+        sessionId,
+        onPhase: async (current) => {
+          if (!injected && current === phase) {
+            injected = true
+            throw new Error(`injected crash: ${phase}`)
+          }
+        },
+      }),
+    ).rejects.toThrow(`injected crash: ${phase}`)
+
+    const recovered = await migrate({ sourcePath, sessionId })
+    expect(['migrated', 'already-migrated']).toContain(recovered.status)
+    expect(await readNativeTranscript(sourcePath)).toMatchObject({
+      format: 'native',
+    })
+    expect(recovered.legacyPath).toBeTruthy()
+    expect(await readFile(recovered.legacyPath as string)).toEqual(source)
+  })
+
   it('keeps dry-run side-effect free and migrates idempotently', async () => {
     const { sourcePath, source } = await fixture()
     const dryRun = await migrate({

@@ -3,11 +3,14 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { Buffer } from 'node:buffer'
 const output = new URL('../dist-native/', import.meta.url)
 
 async function filesBelow(directory) {
@@ -22,6 +25,7 @@ async function filesBelow(directory) {
 }
 
 const outputPath = output.pathname
+const cliPath = new URL('../dist/cli.js', import.meta.url).pathname
 try {
   const emitted = await filesBelow(outputPath)
   if (
@@ -50,7 +54,9 @@ try {
     import(new URL('./persistence/native-transcript-store.js', output)),
     import(new URL('./application/native-session-transcript.js', output)),
   ])
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'praxis-native-deletion-'))
+  const temporaryRoot = await realpath(
+    await mkdtemp(join(tmpdir(), 'praxis-native-deletion-')),
+  )
   try {
     const adapter = new NativeDataPlaneAdapter()
     const paths = adapter.resolvePaths({
@@ -85,6 +91,54 @@ try {
     const loaded = await store.load()
     if (loaded.records.length !== 1 || loaded.records[0]?.event.id !== event.id)
       throw new Error('native store smoke failed')
+
+    const runCli = (args) => {
+      const result = spawnSync(process.execPath, [cliPath, ...args], {
+        cwd: temporaryRoot,
+        env: {
+          ...process.env,
+          PRAXIS_HOME: temporaryRoot,
+          PRAXIS_DATA_PLANE: 'native',
+          PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: '1',
+          CLAUDE_CONFIG_DIR: join(temporaryRoot, 'claude-sentinel'),
+          ANTHROPIC_API_KEY: undefined,
+          OPENAI_API_KEY: undefined,
+          CLAUDE_CODE_SIMPLE: '1',
+        },
+        encoding: 'utf8',
+      })
+      if (result.status !== 0)
+        throw new Error(
+          `native CLI ${args.join(' ')} failed: ${result.stderr.trim()} ${result.stdout.trim()}`,
+        )
+      if (result.stderr.trim())
+        throw new Error(`native CLI emitted stderr: ${result.stderr.trim()}`)
+      return result.stdout
+    }
+    const listed = JSON.parse(
+      runCli(['--data-plane', 'native', 'sessions', '--json']),
+    )
+    if (!listed.sessions.some((item) => item.sessionId === event.sessionId))
+      throw new Error('native CLI sessions did not list the native transcript')
+    const inspected = JSON.parse(
+      runCli(['--data-plane', 'native', 'inspect', '--json', event.sessionId]),
+    )
+    if (inspected.session?.sessionId !== event.sessionId)
+      throw new Error('native CLI inspect did not return the native transcript')
+    if (
+      Buffer.from(
+        runCli(['--data-plane', 'native', 'export', event.sessionId]),
+      ).toString() !== `${encoded.line}\n`
+    )
+      throw new Error('native CLI export changed native transcript bytes')
+    const forked = runCli([
+      '--data-plane',
+      'native',
+      'fork',
+      event.sessionId,
+    ]).trim()
+    if (!/^[-0-9a-f]{36}$/u.test(forked))
+      throw new Error('native CLI fork did not return a session id')
 
     const sessionId = '00000000-0000-4000-8000-000000000002'
     const sessionPaths = adapter.resolvePaths({

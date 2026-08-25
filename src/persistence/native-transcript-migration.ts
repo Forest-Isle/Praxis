@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, readFile, readdir, realpath, rename } from 'node:fs/promises'
+import {
+  lstat,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  unlink,
+} from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 import type { TranscriptDocumentResult } from '../core/transcript-codec.js'
@@ -62,6 +69,19 @@ const regular = async (path: string) => {
 export type NativeTranscriptLegacyDecoder = (
   source: string,
 ) => TranscriptDocumentResult
+
+/** Publication checkpoints exposed for deterministic crash-recovery tests. */
+export type NativeTranscriptMigrationPhase =
+  | 'stage-written'
+  | 'stage-validated'
+  | 'manifest-prepared'
+  | 'source-retained'
+  | 'native-published'
+  | 'manifest-published'
+
+export type NativeTranscriptMigrationPhaseHook = (
+  phase: NativeTranscriptMigrationPhase,
+) => void | Promise<void>
 
 function decodeLegacy(
   source: string,
@@ -197,6 +217,7 @@ export async function migrateNativeTranscript(options: {
   sessionId: string
   legacyDecoder: NativeTranscriptLegacyDecoder
   dryRun?: boolean
+  onPhase?: NativeTranscriptMigrationPhaseHook
 }): Promise<NativeTranscriptMigrationReport> {
   const lockPath = `${manifestFor(options.sourcePath)}.lock`
   const lease = await new ExclusiveFileLease(lockPath).tryAcquire()
@@ -218,6 +239,7 @@ async function migrateNativeTranscriptUnlocked(options: {
   sessionId: string
   legacyDecoder: NativeTranscriptLegacyDecoder
   dryRun?: boolean
+  onPhase?: NativeTranscriptMigrationPhaseHook
 }): Promise<NativeTranscriptMigrationReport> {
   const manifestPath = manifestFor(options.sourcePath)
   const manifestPresent = await regular(manifestPath)
@@ -297,19 +319,40 @@ async function migrateNativeTranscriptUnlocked(options: {
         })
       }
     }
-    if (!sourcePresent && !legacyPresent && stagePresent)
-      return reportBase(options.sourcePath, options.sessionId, {
-        status: 'blocked',
-        issue:
-          'Prepared migration is missing both source and retained legacy; refusing recovery',
-        manifestPath,
-      })
-    if (!sourcePresent || !legacyPresent || stagePresent)
-      return reportBase(options.sourcePath, options.sessionId, {
-        status: 'blocked',
-        issue: 'Prepared migration has inconsistent paths; refusing recovery',
-        manifestPath,
-      })
+    if (sourcePresent && !legacyPresent && stagePresent) {
+      // A crash before the first rename leaves the original source and a
+      // prepared stage. The source hash proves no publication has started;
+      // discard only the private stage/manifest and retry atomically.
+      const sourceBytes = await readFile(options.sourcePath)
+      const stageRead = await readNativeTranscript(existing.stagePath)
+      if (
+        stageRead.format === 'native' &&
+        hash(sourceBytes) === existing.sourceByteHash
+      ) {
+        await unlink(existing.stagePath)
+        await unlink(manifestPath)
+      } else {
+        return reportBase(options.sourcePath, options.sessionId, {
+          status: 'blocked',
+          issue:
+            'Prepared migration has an untrusted source or stage; refusing recovery',
+          manifestPath,
+        })
+      }
+    }
+    if (!existing || (await regular(manifestPath)) === false) {
+      // The prepared artifact was safely discarded above; continue with a
+      // fresh migration attempt below.
+    } else {
+      // Existing prepared states not covered by the explicit recovery windows
+      // remain fail-closed.
+      if (!sourcePresent || !legacyPresent || stagePresent)
+        return reportBase(options.sourcePath, options.sessionId, {
+          status: 'blocked',
+          issue: 'Prepared migration has inconsistent paths; refusing recovery',
+          manifestPath,
+        })
+    }
   }
   const inspected = await inspect(
     options.sourcePath,
@@ -369,16 +412,22 @@ async function migrateNativeTranscriptUnlocked(options: {
       legacyPath,
     }
   await writeFileAtomically(stagePath, bytes.toString('utf8'))
+  await options.onPhase?.('stage-written')
   await new NativeTranscriptStore({
     transcriptFile: stagePath,
     lockFile: `${stagePath}.lock`,
   }).load()
+  await options.onPhase?.('stage-validated')
   await writeFileAtomically(manifestPath, manifestBytes(manifest))
+  await options.onPhase?.('manifest-prepared')
   await rename(options.sourcePath, legacyPath)
+  await options.onPhase?.('source-retained')
   await rename(stagePath, options.sourcePath)
+  await options.onPhase?.('native-published')
   manifest.status = 'published'
   manifest.updatedAt = new Date().toISOString()
   await writeFileAtomically(manifestPath, manifestBytes(manifest))
+  await options.onPhase?.('manifest-published')
   return {
     ...inspected,
     status: 'migrated',

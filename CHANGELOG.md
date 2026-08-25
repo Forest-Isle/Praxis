@@ -7,6 +7,11 @@ this file from merged Conventional Commit pull requests.
 
 ### Changed
 
+* make native transcript migration recoverable across every publication
+  checkpoint, including a crash before the first rename, with deterministic
+  fault-injection coverage
+* extend the native deletion gate through the built CLI sessions/inspect/export
+  and fork lifecycle while preserving native-only data-plane isolation
 * route explicitly requested Claude Team delete/send compatibility calls through
   the native lead-operation seam, while rejecting lossy create and unsupported
   task/notification/context/session-resume shapes
