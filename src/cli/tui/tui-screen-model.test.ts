@@ -30,6 +30,8 @@ import type { TuiConfigSurfaceModel } from './config-surface-model.js'
 import { projectTuiSandboxSurface } from './sandbox-surface-model.js'
 import type { TuiSandboxSnapshot } from './sandbox-settings.js'
 import type { TuiSandboxSurfaceModel } from './sandbox-surface-model.js'
+import { projectTuiListSurface } from './list-surface-model.js'
+import type { TuiListSurfaceModel } from './list-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -49,6 +51,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiHooksSurfaceModel
     | TuiConfigSurfaceModel
     | TuiSandboxSurfaceModel
+    | TuiListSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -98,6 +101,23 @@ const conversation = (
 }
 
 describe('projectTuiScreen', () => {
+  it('preserves the list semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiListSurface({
+      kind: 'list',
+      title: 'Tasks',
+      rows: [],
+      emptyText: 'No tasks',
+      selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
   it('preserves the projected session-picker payload identity', () => {
     const picker = projectTuiSessionPicker({
       choices: [null, { sessionId: 'session-1', status: 'ready' }],
