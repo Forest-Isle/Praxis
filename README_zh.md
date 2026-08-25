@@ -171,7 +171,7 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` 会编译当前已实现的 Praxis 核心、提供商适配器、原生 transcript/session 与不含 Claude 兼容适配器的数据平面切片；`npm run test:native:deletion` 会执行产物删除门禁。这些是已实现的 profile 检查，并不表示完整原生包已经 qualified。原生 transcript 迁移仍必须显式执行且可恢复。
+`npm run build:native` 会编译当前已实现的 Praxis 核心、提供商适配器、原生 transcript/session 与不含 Claude 兼容适配器的数据平面切片；`npm run test:native:deletion` 会执行产物删除门禁。这些是已实现的 profile 检查，并不表示完整原生包已经 qualified。原生 transcript 迁移仍必须显式执行且可恢复。构建后 CLI smoke gate `npm run verify:native-migration-cli` 会验证全会话 dry-run、发布、文本/JSON 幂等性、回滚及 Claude 数据平面排除；隔离的 active-stream 回归证明可通过 `npm run test:performance:active-stream` 执行，产品 p95 预算仍为 50 ms。
 `npm run check` 还会强制执行对应的源代码依赖方向。
 `npm run test:core-completion` 会运行 #402 的 56 条 user story 审计，并分别报告 implemented、qualified、blocked、deferred 和 out-of-scope；缺少 live 前置条件不会被当作通过。
 

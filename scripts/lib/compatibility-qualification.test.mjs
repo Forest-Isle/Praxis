@@ -159,6 +159,7 @@ describe('compatibility qualification environment', () => {
     }
     expect(files).not.toContain('scripts/verify-native-deletion.mjs')
     expect(files).not.toContain('scripts/verify-core-completion-audit.mjs')
+    expect(files).not.toContain('scripts/verify-active-stream-regression.mjs')
   })
 
   it('blocks the aggregate entrypoint when required version binaries are missing', () => {

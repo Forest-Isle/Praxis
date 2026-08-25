@@ -196,5 +196,5 @@ describeSandbox(`Claude sandbox ${sandboxPlatform} integration`, () => {
         'curl --fail --silent --show-error --max-time 10 https://example.com',
       ),
     ).resolves.toMatchObject({ isError: true })
-  })
+  }, 15_000)
 })

@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
+import { parseTeamSnapshot } from './core/team-ownership.js'
 import { createClaudeTranscriptCodec } from './compatibility/claude/transcript-codec.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
@@ -5852,6 +5853,123 @@ describe('Praxis CLI', () => {
       if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
       else process.env.PRAXIS_ENABLE_TEAMS = oldGate
       await rm(manifestRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('projects Team status, logs, and durable-local attach without a provider', async () => {
+    const nativeRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-team-observability-cli-'),
+    )
+    const snapshot = parseTeamSnapshot({
+      version: 2,
+      revision: 1,
+      teamId: 'team-observe',
+      name: 'Observe team',
+      projectIdentity: 'project',
+      leadSessionId: 'lead',
+      roster: [{ name: 'worker', agentType: 'worker', access: 'write' }],
+      tasks: [
+        {
+          id: 'task-1',
+          description: 'Inspect',
+          assignee: 'worker',
+          blockedBy: [],
+          claims: {
+            files: [],
+            publicContracts: [],
+            generatedArtifacts: [],
+            migrations: [],
+            mergeTargets: [],
+          },
+          execution: null,
+          usage: { generation: 0, totalTokens: 0, durationMs: 0 },
+        },
+      ],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:01.000Z',
+      policy: { lead: 'hybrid', execution: 'sequential', commit: 'lead' },
+      budgets: {
+        maxAgents: 2,
+        maxConcurrent: 1,
+        maxTokens: 100,
+        maxDurationMs: 1000,
+        shutdownDrainMs: 10,
+      },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+    })
+    const oldGate = process.env.PRAXIS_ENABLE_TEAMS
+    const oldHome = process.env.PRAXIS_HOME
+    process.env.PRAXIS_ENABLE_TEAMS = 'true'
+    process.env.PRAXIS_HOME = nativeRoot
+    const calls: string[] = []
+    const requireProvider: boolean[] = []
+    const operations = {
+      async list() {
+        calls.push('list')
+        return [snapshot]
+      },
+    }
+    const deps: CliDependencies = {
+      async createService(options) {
+        requireProvider.push(options.requireProvider)
+        return {
+          teamLeadOperations: operations as never,
+          async close() {
+            calls.push('close')
+          },
+        } as never
+      },
+    }
+    try {
+      for (const command of ['status', 'logs', 'attach']) {
+        calls.length = 0
+        const json = captureIO()
+        await expect(
+          run(['team', command, 'team-observe', '--json'], json.io, deps),
+        ).resolves.toBe(0)
+        const value = JSON.parse(json.stdout.join('')) as Record<
+          string,
+          unknown
+        >
+        expect(value.team).toMatchObject({
+          id: 'team-observe',
+          name: 'Observe team',
+        })
+        expect(value.tasks).toBeDefined()
+        expect(value.health).toBeDefined()
+        expect(value.events).toBeDefined()
+        if (command === 'attach') expect(value.transport).toBe('durable-local')
+        expect(calls).toEqual(['list', 'close'])
+        calls.length = 0
+        const textOutput = captureIO()
+        await expect(
+          run(['team', command, 'team-observe'], textOutput.io, deps),
+        ).resolves.toBe(0)
+        const output = textOutput.stdout.join('')
+        if (command === 'status')
+          expect(output).toContain('Observe team (team-observe)')
+        if (command === 'logs') expect(output).toContain('[team]')
+        if (command === 'attach')
+          expect(output).toContain('transport: durable-local')
+        expect(calls).toEqual(['list', 'close'])
+      }
+      expect(requireProvider).toEqual([
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+      ])
+      await expect(access(join(nativeRoot, 'state'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    } finally {
+      if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
+      else process.env.PRAXIS_ENABLE_TEAMS = oldGate
+      if (oldHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = oldHome
+      await rm(nativeRoot, { recursive: true, force: true })
     }
   })
 

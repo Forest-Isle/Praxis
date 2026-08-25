@@ -230,6 +230,6 @@ dependency-review lanes remain mandatory. The aggregate compatibility suite
 includes real model calls and remains an explicit maintainer qualification gate
 rather than requiring subscription state or billable credentials in public or
 fork CI. The latest qualification attempt stopped at gate 1 when the upstream
-Claude request returned `402 Insufficient Balance`; that external condition does
+Claude request returned `401 Invalid bearer token`; that external condition does
 not establish a Praxis behavior failure or a full live-model pass.
 Release automation does not expand or alter product parity scope.

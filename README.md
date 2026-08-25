@@ -265,7 +265,11 @@ npm run check
 native transcript, and session profile without the Claude compatibility adapter.
 `npm run test:native:deletion` adds an emitted-output deletion gate. These are
 implemented profile checks, not qualification of the full native package.
-Native transcript migration remains explicit and recoverable.
+Native transcript migration remains explicit and recoverable. The built-CLI
+smoke gate `npm run verify:native-migration-cli` exercises all-session dry-run,
+publication, text/JSON idempotence, rollback, and Claude-data-plane exclusion.
+The isolated active-stream regression proof is available through
+`npm run test:performance:active-stream`; the product p95 budget remains 50 ms.
 `npm run check` also enforces the corresponding source dependency direction.
 `npm run test:core-completion` runs the 56-story #402 audit and reports
 implemented, qualified, blocked, deferred, and out-of-scope states separately;

@@ -41,6 +41,7 @@ export const compatibilityScriptExclusions = new Set([
   // Native/core qualification gates are not Claude compatibility lanes.
   'test:native:deletion',
   'test:core-completion',
+  'test:performance:active-stream',
   'test:compat:all',
   'test:docs',
   'test:package',
