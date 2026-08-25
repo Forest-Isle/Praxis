@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstat, readFile, readdir, realpath, rename } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
-import { createClaudeTranscriptCodec } from '../compatibility/claude/transcript-codec.js'
 import { isSessionId } from '../core/session.js'
 import { readNativeTranscript } from './native-transcript-reader.js'
 import { createNativeTranscriptCodec } from './native-transcript-codec.js'
@@ -82,6 +81,8 @@ async function inspect(sourcePath: string, sessionId: string) {
       validPrefixByteLength: read.validPrefixByteLength,
       nativePath: sourcePath,
     })
+  const { createClaudeTranscriptCodec } =
+    await import('../compatibility/claude/transcript-codec.js')
   const codec = createClaudeTranscriptCodec({
     version: '2.1.0',
     cwd: process.cwd(),
@@ -216,6 +217,8 @@ export async function migrateNativeTranscript(options: {
   if (options.dryRun || inspected.status !== 'convertible')
     return { ...inspected, manifestPath }
   const source = await readFile(options.sourcePath)
+  const { createClaudeTranscriptCodec } =
+    await import('../compatibility/claude/transcript-codec.js')
   const codec = createClaudeTranscriptCodec({
     version: '2.1.0',
     cwd: process.cwd(),
