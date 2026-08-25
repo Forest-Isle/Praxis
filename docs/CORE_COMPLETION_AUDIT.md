@@ -30,7 +30,7 @@ cannot be qualified.
 
 ## Current qualification caveats
 
-`src/compatibility/claude/team.ts` currently implements and fixture-covers only the TeamCreate, TeamDelete, SendMessage text, broadcast, shutdown, and plan-response surfaces. Claude task, notification, context, and Session-resume behavior has no independent black-box zero-skip evidence; those surfaces remain blocked/unqualified. The #400 work therefore must not be represented as complete qualified coverage.
+`src/compatibility/claude/team.ts` fixture-covers TeamDelete, SendMessage text/broadcast, shutdown, and plan-response surfaces. TeamCreate is decode-only and rejects payloads that cannot represent native roster/task claims. Claude task, notification, context, and Session-resume behavior has no independent black-box zero-skip evidence; those surfaces remain blocked/unqualified. The #400 work therefore must not be represented as complete qualified coverage.
 
 ## PRD #384 story matrix
 

@@ -21,8 +21,8 @@ this file from merged Conventional Commit pull requests.
   separating implemented, qualified, and blocked evidence
 * keep disabled Team startup free of observability/mailbox module loading, and
   expose durable-local `team status`, `team logs`, and `team attach` projections
-* add a removable, fail-closed Claude Team adapter for the fixture-verified
-  create/delete/send, shutdown, and plan-response shapes
+* add a removable, fail-closed Claude Team adapter for fixture-verified
+  delete/send, shutdown, and plan-response shapes; create rejects lossy input
 
 ## [0.37.0](https://github.com/Forest-Isle/Praxis/compare/v0.36.1...v0.37.0) (2026-08-24)
 

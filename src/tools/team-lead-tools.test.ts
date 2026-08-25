@@ -10,6 +10,7 @@ import {
   CLAUDE_TEAM_TOOL_NAMES,
   TeamLeadToolRegistry,
 } from './team-lead-tools.js'
+import { ClaudeTeamCompatibilityAdapter } from '../compatibility/claude/team.js'
 
 const base: ToolRegistry = {
   definitions: () => [
@@ -45,6 +46,9 @@ function registry(
       operations as never,
       'lead-a',
       enabled,
+      enabled.some((name) => CLAUDE_TEAM_TOOL_NAMES.includes(name as never))
+        ? new ClaudeTeamCompatibilityAdapter()
+        : undefined,
     ),
     operations,
   }

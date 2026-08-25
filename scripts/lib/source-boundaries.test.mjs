@@ -34,13 +34,15 @@ describe('source boundary scanner', () => {
     ])
   })
 
-  it('allows the explicit native transcript migration compatibility adapter', () => {
+  it('rejects native transcript migration imports of Claude compatibility', () => {
     const failures = scan(
       'src/persistence/native-transcript-migration.ts',
       "import { createClaudeTranscriptCodec } from '../compatibility/claude/transcript-codec.js'",
     )
 
-    expect(failures).toEqual([])
+    expect(failures).toEqual([
+      'src/persistence/native-transcript-migration.ts: native cannot import ../compatibility/claude/transcript-codec.js',
+    ])
   })
 
   it('rejects forbidden imports from provider adapters', () => {

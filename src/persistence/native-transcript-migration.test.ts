@@ -17,13 +17,20 @@ import { createClaudeTranscriptCodec } from '../compatibility/claude/transcript-
 import { readNativeTranscript } from './native-transcript-reader.js'
 import {
   discoverNativeTranscriptSessions,
-  configureNativeTranscriptLegacyDecoder,
   migrateNativeTranscript,
   rollbackNativeTranscript,
+  type NativeTranscriptLegacyDecoder,
 } from './native-transcript-migration.js'
 
 const sessionId = '11111111-1111-4111-8111-111111111111'
 const roots: string[] = []
+let legacyDecoder: NativeTranscriptLegacyDecoder
+
+function migrate(
+  options: Omit<Parameters<typeof migrateNativeTranscript>[0], 'legacyDecoder'>,
+) {
+  return migrateNativeTranscript({ ...options, legacyDecoder })
+}
 
 async function fixture(): Promise<{
   root: string
@@ -39,7 +46,7 @@ async function fixture(): Promise<{
     cwd: root,
     entrypoint: 'cli',
   })
-  configureNativeTranscriptLegacyDecoder((value) => codec.decodeDocument(value))
+  legacyDecoder = (value) => codec.decodeDocument(value)
   const encoded = codec.encodeLine({
     kind: 'messages',
     id: 'event-1',
@@ -64,7 +71,7 @@ afterEach(async () => {
 describe('native transcript migration', () => {
   it('keeps dry-run side-effect free and migrates idempotently', async () => {
     const { sourcePath, source } = await fixture()
-    const dryRun = await migrateNativeTranscript({
+    const dryRun = await migrate({
       sourcePath,
       sessionId,
       dryRun: true,
@@ -79,7 +86,7 @@ describe('native transcript migration', () => {
       `${sessionId}.jsonl`,
     ])
 
-    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    const migrated = await migrate({ sourcePath, sessionId })
     expect(migrated).toMatchObject({
       status: 'migrated',
       eventCount: 1,
@@ -91,14 +98,14 @@ describe('native transcript migration', () => {
     const native = await readNativeTranscript(sourcePath)
     expect(native).toMatchObject({ format: 'native', issue: null })
     const activeBytes = await readFile(sourcePath)
-    const repeat = await migrateNativeTranscript({ sourcePath, sessionId })
+    const repeat = await migrate({ sourcePath, sessionId })
     expect(repeat.status).toBe('already-migrated')
     expect(await readFile(sourcePath)).toEqual(activeBytes)
   })
 
   it('rolls back without deleting either representation', async () => {
     const { sourcePath, source } = await fixture()
-    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    const migrated = await migrate({ sourcePath, sessionId })
     if (!migrated.nativePath || !migrated.legacyPath)
       throw new Error('migration did not return retained paths')
     const converted = await readFile(sourcePath)
@@ -118,7 +125,7 @@ describe('native transcript migration', () => {
 
   it('blocks rollback when retained legacy is missing without moving active native', async () => {
     const { sourcePath } = await fixture()
-    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    const migrated = await migrate({ sourcePath, sessionId })
     if (!migrated.legacyPath) throw new Error('missing retained legacy path')
     await rm(migrated.legacyPath)
     const before = await readFile(sourcePath)
@@ -130,13 +137,13 @@ describe('native transcript migration', () => {
 
   it('recovers a prepared manifest after publication completed before manifest update', async () => {
     const { sourcePath } = await fixture()
-    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    const migrated = await migrate({ sourcePath, sessionId })
     if (!migrated.legacyPath || !migrated.manifestPath)
       throw new Error('migration did not return manifest paths')
     const manifest = JSON.parse(await readFile(migrated.manifestPath, 'utf8'))
     manifest.status = 'prepared'
     await writeFile(migrated.manifestPath, `${JSON.stringify(manifest)}\n`)
-    const recovered = await migrateNativeTranscript({ sourcePath, sessionId })
+    const recovered = await migrate({ sourcePath, sessionId })
     expect(recovered.status).toBe('already-migrated')
     expect(await readNativeTranscript(sourcePath)).toMatchObject({
       format: 'native',
@@ -149,7 +156,7 @@ describe('native transcript migration', () => {
   it('blocks corrupt legacy input and retained-path collisions without debris', async () => {
     const { root, sourcePath } = await fixture()
     await writeFile(sourcePath, '{not-json\n')
-    const corrupt = await migrateNativeTranscript({ sourcePath, sessionId })
+    const corrupt = await migrate({ sourcePath, sessionId })
     expect(corrupt.status).toBe('corrupt')
     expect(await readFile(sourcePath, 'utf8')).toBe('{not-json\n')
     await expect(lstat(`${sourcePath}.migration.json`)).rejects.toMatchObject({
@@ -176,7 +183,7 @@ describe('native transcript migration', () => {
         sourceByteHash: 'hash',
       })}\n`,
     )
-    const blocked = await migrateNativeTranscript({
+    const blocked = await migrate({
       sourcePath: valid.sourcePath,
       sessionId,
     })

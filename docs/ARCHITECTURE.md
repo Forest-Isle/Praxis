@@ -364,7 +364,8 @@ or JSON; tmux is optional presentation and never lifecycle authority. The CLI
 keeps Team observability modules behind the explicit Team gate, so a disabled
 Team does not load mailbox, ownership, or dashboard modules during startup.
 The removable Claude Team adapter is fail-closed and currently covers only
-fixture-verified create/delete/send, shutdown, and plan-response shapes.
+fixture-verified delete/send, shutdown, and plan-response shapes; Claude create
+is decode-only and fails closed when native roster/task claims are absent.
 Task, notification, context, and Session-resume compatibility require separate
 black-box evidence and remain unqualified until their zero-skip lanes exist.
 

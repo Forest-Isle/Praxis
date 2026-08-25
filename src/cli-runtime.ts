@@ -113,6 +113,7 @@ import {
   PRAXIS_TEAM_TOOLS,
   resolveClaudeToolCapabilities,
 } from './tools/claude-capabilities.js'
+import type { ClaudeTeamCompatibilityPort } from './tools/team-lead-tools.js'
 import {
   applyRuntimeSettingDefaults,
   loadRuntimeSettings,
@@ -2295,7 +2296,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(simpleMode ? { bare: true } : {}),
     })
-    const teamModules = teamEnabled
+    const teamRuntimeEnabled = teamEnabled || claudeTeamCompatibilityEnabled
+    const teamModules = teamRuntimeEnabled
       ? await Promise.all([
           import('./application/team-capability.js'),
           import('./application/team-agent-runtime.js'),
@@ -2345,18 +2347,26 @@ const createDefaultService: CliDependencies['createService'] = async ({
       teamCapability && teamModules
         ? new teamModules[3].TeamLeadOperations(teamCapability)
         : undefined
+    const claudeTeamCompatibilityPort: ClaudeTeamCompatibilityPort | undefined =
+      claudeTeamCompatibilityEnabled
+        ? new (
+            await import('./compatibility/claude/team.js')
+          ).ClaudeTeamCompatibilityAdapter()
+        : undefined
     const teamLeadToolRegistryFactory = teamModules
       ? (
           base: ToolRegistry,
           operations: TeamLeadOperations,
           sessionId: string,
           names: readonly string[],
+          compatibilityPort?: ClaudeTeamCompatibilityPort,
         ) =>
           new teamModules[4].TeamLeadToolRegistry(
             base,
             operations,
             sessionId,
             names,
+            compatibilityPort,
           )
       : undefined
     const service = new ClaudeSessionService({
@@ -2444,6 +2454,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
             teamLeadOperations,
             ...(teamLeadToolRegistryFactory
               ? { teamLeadToolRegistryFactory }
+              : {}),
+            ...(claudeTeamCompatibilityPort
+              ? { teamLeadCompatibilityPort: claudeTeamCompatibilityPort }
               : {}),
           }
         : {}),
@@ -6299,7 +6312,6 @@ async function execute(
   if (command === 'migrate') {
     if (args[1] === 'native-transcript') {
       const {
-        configureNativeTranscriptLegacyDecoder,
         discoverNativeTranscriptSessions,
         migrateNativeTranscript,
         rollbackNativeTranscript,
@@ -6311,9 +6323,8 @@ async function execute(
         cwd: process.cwd(),
         entrypoint: 'praxis-migration',
       })
-      configureNativeTranscriptLegacyDecoder((source) =>
-        legacyCodec.decodeDocument(source),
-      )
+      const legacyDecoder = (source: string) =>
+        legacyCodec.decodeDocument(source)
       const values = argv.slice(2)
       const all = values.includes('--all')
       const dryRun = values.includes('--dry-run')
@@ -6350,6 +6361,7 @@ async function execute(
               : migrateNativeTranscript({
                   sourcePath: path,
                   sessionId: id,
+                  legacyDecoder,
                   dryRun,
                 })),
           )
@@ -6374,7 +6386,9 @@ async function execute(
           io.stdout(
             `${migration.sessionId}: ${migration.status} (${migration.sourcePath})\n`,
           )
-      return 0
+      return migrations.some((migration) => migration.status === 'blocked')
+        ? 1
+        : 0
     }
     if (args[1] !== 'from-claude' || args[2] !== undefined) {
       throw new Error('Usage: praxis migrate from-claude')

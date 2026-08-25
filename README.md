@@ -175,7 +175,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   orchestration, and custom Team agents receive no MCP capability. The native
   CLI also exposes `praxis team status`, `logs`, and `attach` in human or JSON
   form; durable-local attach does not require tmux. The Claude Team adapter is
-  removable and currently limited to fixture-verified create/delete/send,
+  removable and currently limited to fixture-verified delete/send; Claude create
+  is decoded but rejected when the payload cannot represent native roster/task
+  claims,
   shutdown, and plan-response shapes; task, notification, context, and
   Session-resume compatibility remain explicitly unqualified.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`

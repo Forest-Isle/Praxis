@@ -253,12 +253,14 @@ import type {
   ClaudeMcpToolInspection,
 } from '../mcp/claude-mcp-tools.js'
 import type { TeamLeadOperations } from './team-lead-operations.js'
+import type { ClaudeTeamCompatibilityPort } from '../tools/team-lead-tools.js'
 import { DurableFollowUpTracker } from './durable-follow-up.js'
 type TeamLeadToolRegistryFactory = (
   base: ToolRegistry,
   operations: TeamLeadOperations,
   sessionId: string,
   enabledTools: readonly string[],
+  compatibilityPort?: ClaudeTeamCompatibilityPort,
 ) => ToolRegistry
 
 export interface ClaudeSessionServiceOptions {
@@ -351,6 +353,7 @@ export interface ClaudeSessionServiceOptions {
   teamLeadOperations?: TeamLeadOperations
   /** Lazily supplied Team tool wrapper, so disabled runs do not load Team code. */
   teamLeadToolRegistryFactory?: TeamLeadToolRegistryFactory
+  teamLeadCompatibilityPort?: ClaudeTeamCompatibilityPort
 }
 
 function agentPermissionMode(
@@ -8151,7 +8154,13 @@ export class ClaudeSessionService {
         'Team lead operations require a Team lead tool registry factory',
       )
     }
-    return factory(base, operations, sessionId, enabledTools)
+    return factory(
+      base,
+      operations,
+      sessionId,
+      enabledTools,
+      this.options.teamLeadCompatibilityPort,
+    )
   }
 
   private async append(

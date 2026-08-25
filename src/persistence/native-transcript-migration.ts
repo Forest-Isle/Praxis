@@ -58,20 +58,15 @@ const regular = async (path: string) => {
   }
 }
 
-let legacyDecoder: ((source: string) => TranscriptDocumentResult) | undefined
+export type NativeTranscriptLegacyDecoder = (
+  source: string,
+) => TranscriptDocumentResult
 
-export function configureNativeTranscriptLegacyDecoder(
-  decoder: (source: string) => TranscriptDocumentResult,
-): void {
-  legacyDecoder = decoder
-}
-
-function decodeLegacy(source: string): TranscriptDocumentResult {
-  if (!legacyDecoder)
-    throw new Error(
-      'Native transcript migration requires an explicit legacy transcript decoder',
-    )
-  return legacyDecoder(source)
+function decodeLegacy(
+  source: string,
+  decoder: NativeTranscriptLegacyDecoder,
+): TranscriptDocumentResult {
+  return decoder(source)
 }
 
 function reportBase(
@@ -89,7 +84,11 @@ function reportBase(
   }
 }
 
-async function inspect(sourcePath: string, sessionId: string) {
+async function inspect(
+  sourcePath: string,
+  sessionId: string,
+  legacyDecoder: NativeTranscriptLegacyDecoder,
+) {
   const read = await readNativeTranscript(sourcePath)
   if (read.format === 'native')
     return reportBase(sourcePath, sessionId, {
@@ -98,7 +97,7 @@ async function inspect(sourcePath: string, sessionId: string) {
       validPrefixByteLength: read.validPrefixByteLength,
       nativePath: sourcePath,
     })
-  const decoded = decodeLegacy(read.raw.toString('utf8'))
+  const decoded = decodeLegacy(read.raw.toString('utf8'), legacyDecoder)
   if (decoded.issue)
     return reportBase(sourcePath, sessionId, {
       status: decoded.issue.kind === 'corrupt-line' ? 'corrupt' : 'blocked',
@@ -127,8 +126,9 @@ async function inspect(sourcePath: string, sessionId: string) {
 export async function inspectNativeTranscriptMigration(options: {
   sourcePath: string
   sessionId: string
+  legacyDecoder: NativeTranscriptLegacyDecoder
 }): Promise<NativeTranscriptMigrationReport> {
-  return inspect(options.sourcePath, options.sessionId)
+  return inspect(options.sourcePath, options.sessionId, options.legacyDecoder)
 }
 
 async function readManifest(path: string): Promise<Manifest | null> {
@@ -147,6 +147,7 @@ function manifestBytes(manifest: Manifest) {
 export async function migrateNativeTranscript(options: {
   sourcePath: string
   sessionId: string
+  legacyDecoder: NativeTranscriptLegacyDecoder
   dryRun?: boolean
 }): Promise<NativeTranscriptMigrationReport> {
   const manifestPath = manifestFor(options.sourcePath)
@@ -223,11 +224,15 @@ export async function migrateNativeTranscript(options: {
         manifestPath,
       })
   }
-  const inspected = await inspect(options.sourcePath, options.sessionId)
+  const inspected = await inspect(
+    options.sourcePath,
+    options.sessionId,
+    options.legacyDecoder,
+  )
   if (options.dryRun || inspected.status !== 'convertible')
     return { ...inspected, manifestPath }
   const source = await readFile(options.sourcePath)
-  const decoded = decodeLegacy(source.toString('utf8'))
+  const decoded = decodeLegacy(source.toString('utf8'), options.legacyDecoder)
   if (decoded.issue)
     return {
       ...inspected,

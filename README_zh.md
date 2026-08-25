@@ -98,7 +98,7 @@ praxis doctor
   并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。Team 仍是实验性功能，必须显式设置
   `PRAXIS_ENABLE_TEAMS=true` 才会启用；未启用时不会加载、发现或暴露 Team 代码。新 Team 默认使用 Hybrid Lead、sequential 执行和 Lead 持有提交权限，也可选 Coordinator 与 Swarm 策略。
   Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
-  原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前仅覆盖已有 fixture 证据的 create/delete/send、shutdown 和 plan-response 形状；task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
+  原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前覆盖已有 fixture 证据的 delete/send；create 仅执行解码，无法表达原生 roster/task 声明时会拒绝；shutdown 和 plan-response 仍有 fixture 证据，task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
 - **Claude 兼容生态** — 支持递归 `@` 导入的共享指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件和 transcript 数据。
 - **提供商无关的模型** — 原生 Anthropic Messages 和 OpenAI 兼容的流式适配器，支持明确的能力检查和计量控制。
 
