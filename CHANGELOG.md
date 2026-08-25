@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [Unreleased]
+
+### Changed
+
+* complete the TUI semantic screen projection across selectable surfaces and
+  add deterministic resize-aware URL/form elicitation rendering
+
 ## [0.37.0](https://github.com/Forest-Isle/Praxis/compare/v0.36.1...v0.37.0) (2026-08-24)
 
 

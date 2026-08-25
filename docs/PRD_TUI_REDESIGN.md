@@ -170,12 +170,15 @@ linear adapters consume only projected models; raw menu, permission, plan, and
 question state remains in keyboard/lifecycle routing. The model-input, export,
 copy, export-filename, and compact-progress leaf surfaces now also cross the
 TuiScreen boundary through typed semantic payloads; controller-local values
-remain in keyboard/lifecycle routing. Remaining secondary surfaces continue
-migrating in later slices. Each slice must leave a demoable path working and
-preserve the shared transcript/runtime boundary.
+remain in keyboard/lifecycle routing. All selectable priority, secondary, and
+overlay surfaces now cross the typed TuiScreen semantic seam. Controller-local
+raw menu/input/lifecycle state remains outside renderers. Each slice must leave
+a demoable path working and preserve the shared transcript/runtime boundary.
 Diff now joins this pure semantic projection path through one summary/detail
-model shared by visual and screen-reader adapters; remaining secondary surfaces
-continue behind their typed migration seams.
+model shared by visual and screen-reader adapters. MCP URL/form elicitation is
+also a semantic surface: form viewport capacity is projected from
+`TuiPresentationEnvironment.viewport.rows`, keeping resize behavior and tests
+deterministic.
 MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
 effects remain outside presentation.
 Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle routing retain the raw task state.
@@ -192,3 +195,7 @@ keyboard routing retains the raw menu state.
 Btw now consumes a semantic TuiScreen payload while interaction routing retains
 raw menu state.
 Theme and custom-theme panels now consume a semantic TuiScreen payload while keyboard and persistence routing remains controller-local.
+Composer and StatusLine remain persistent bottom-chrome composition outside
+foreground selection because they have one renderer adapter and carry live
+lifecycle/input state; this is an accepted composition seam, not an unfinished
+migration.

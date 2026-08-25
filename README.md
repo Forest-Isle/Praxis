@@ -123,7 +123,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
   recovery, permission-gated `!` shell turns, navigable current/per-turn Git
   diff views, semantic plan/question decision panels with complete
-  screen-reader actions, and measured context budgets; print mode,
+  screen-reader actions, semantic screen projection across selectable surfaces,
+  deterministic resize-aware URL/form elicitation rendering, and measured
+  context budgets; print mode,
   structured JSON/JSONL, context compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
   image, web, scheduled prompts, workflows, and worktrees.
