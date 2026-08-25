@@ -7681,7 +7681,7 @@ export class ClaudeSessionService {
           this.durableMetadataSnapshots.get(sessionId) ?? [],
           snapshot.tailEntries,
           sessionId,
-        )
+        ).filter((entry) => entry.type !== 'worktree-state')
         if (entries.length === 0) return
         const appended = await lease.appendMetadataSnapshot(
           snapshot.tail,

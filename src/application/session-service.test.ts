@@ -14885,6 +14885,57 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
+  it('does not reappend worktree lifecycle metadata during graceful close', async () => {
+    const { configRoot, cwd, service } = await createService()
+    const run = await service.run('worktree metadata prompt')
+    const sessionFile = resolveClaudePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    await appendFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: 'worktree-state',
+        worktreeSession: {
+          originalCwd: cwd,
+          worktreePath: join(cwd, '.claude', 'worktrees', 'fixture'),
+          worktreeName: 'fixture',
+          worktreeBranch: 'worktree-fixture',
+          originalBranch: 'main',
+          originalHeadCommit: 'fixture-commit',
+          sessionId: run.sessionId,
+        },
+        sessionId: run.sessionId,
+      })}\n${JSON.stringify({
+        type: 'worktree-state',
+        worktreeSession: null,
+        sessionId: run.sessionId,
+      })}\n`,
+    )
+    await service.rename(run.sessionId, 'durable title')
+
+    await service.close()
+
+    const persisted = (await readFile(sessionFile, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const worktreeStates = persisted.filter(
+      (entry) => entry.type === 'worktree-state',
+    )
+    expect(worktreeStates).toHaveLength(2)
+    expect(worktreeStates.map((entry) => entry.worktreeSession)).toEqual([
+      expect.objectContaining({ worktreeName: 'fixture' }),
+      null,
+    ])
+    expect(
+      persisted.filter((entry) => entry.type === 'custom-title').at(-1),
+    ).toMatchObject({
+      customTitle: 'durable title',
+    })
+  })
+
   it('retains a full metadata baseline when title and tag move outside bounded windows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-middle-'))
     roots.push(root)
