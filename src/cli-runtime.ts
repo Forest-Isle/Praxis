@@ -72,11 +72,6 @@ import {
 } from './persistence/native-resources.js'
 import { migrateClaudeData } from './persistence/claude-migration.js'
 import {
-  discoverNativeTranscriptSessions,
-  migrateNativeTranscript,
-  rollbackNativeTranscript,
-} from './persistence/native-transcript-migration.js'
-import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
@@ -6303,6 +6298,11 @@ async function execute(
   }
   if (command === 'migrate') {
     if (args[1] === 'native-transcript') {
+      const {
+        discoverNativeTranscriptSessions,
+        migrateNativeTranscript,
+        rollbackNativeTranscript,
+      } = await import('./persistence/native-transcript-migration.js')
       const values = argv.slice(2)
       const all = values.includes('--all')
       const dryRun = values.includes('--dry-run')

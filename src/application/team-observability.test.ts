@@ -1,4 +1,4 @@
-import { mkdtemp, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -110,5 +110,54 @@ describe('Team observability', () => {
       },
     })
     expect(renderTeamAudit(dashboard)).toContain('[mailbox]')
+  })
+
+  it('retains only the bounded mailbox tail while counting pending records', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-observability-bounded-'))
+    const mailbox = join(
+      root,
+      'state',
+      'teams',
+      '-tmp-project',
+      'observability',
+      'mailbox',
+    )
+    await mkdir(mailbox, { recursive: true })
+    const rows = Array.from({ length: 200 }, (_, index) => ({
+      version: 1,
+      sequence: index + 1,
+      messageId: `m-${index + 1}`,
+      teamId: 'observability',
+      sender: 'lead',
+      recipients: ['worker'],
+      payload: { kind: 'text', text: `message-${index + 1}` },
+      createdAt: '2026-08-01T00:00:00.000Z',
+    }))
+    await writeFile(
+      join(mailbox, 'messages.jsonl'),
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+    )
+    await writeFile(
+      join(mailbox, 'state.json'),
+      `${JSON.stringify({
+        version: 1,
+        teamId: 'observability',
+        projectIdentity: '/tmp/project',
+        cursors: { lead: 0, worker: 0 },
+        prunedThrough: 0,
+      })}\n`,
+    )
+    const audit = await readTeamMailboxAudit({
+      nativeRoot: root,
+      snapshot: snapshot(),
+      maxRecords: 3,
+      maxBytes: 1024,
+    })
+    expect(audit.totalRecords).toBe(200)
+    expect(audit.retainedRecords).toBe(3)
+    expect(audit.records.map((record) => record.sequence)).toEqual([
+      198, 199, 200,
+    ])
+    expect(audit.pendingByRecipient.worker).toBe(200)
   })
 })
