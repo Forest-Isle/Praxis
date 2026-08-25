@@ -112,6 +112,7 @@ components under `src/cli/tui` render that state:
 
 ```text
 RuntimeEvent -> interactive state -> transcript/dialog/composer components
+interactive state -> TuiScreen semantic projection -> priority/secondary/overlay renderers
 shared JSONL -> active-chain projection -> TranscriptItem[]
 TranscriptItem[] -> presentation pairing/grouping -> tail/window viewport -> Transcript
 shared extensions -> slash catalog -> command palette -> existing session service
@@ -134,6 +135,11 @@ Ctrl+Z -> terminal release -> SIGTSTP -> shell job -> fg/SIGCONT -> full redraw
 No React or Ink dependency enters core, application, providers, tools, or
 persistence. TUI-only metadata (version, cwd, model, effort, permission mode)
 is passed from the CLI composition root and never written to shared JSONL.
+Selectable priority, secondary, and overlay surfaces cross the typed
+`TuiScreen` semantic seam; controller-local raw menu/input/lifecycle state stays
+in `InteractiveApp`. Composer and StatusLine remain persistent bottom-chrome
+composition outside foreground selection because their single renderer adapter
+also carries live lifecycle/input state.
 
 ## Components
 
@@ -173,6 +179,9 @@ is passed from the CLI composition root and never written to shared JSONL.
 - `Composer`: prompt or `!` shell mode, cursor, history, clipboard text/image
   markers, effort, permission mode, busy state, measured context/cost status,
   and keyboard help.
+- `McpElicitation`: semantic URL and form elicitation surface. Form viewport
+  capacity is projected from `TuiPresentationEnvironment.viewport.rows`, so
+  resize behavior and tests remain deterministic.
 - `ExternalEditorWait`: terminal-suspension handoff status with a semantic
   screen-reader branch; `external-editor` owns command parsing and private
   temporary prompt-file lifecycle.

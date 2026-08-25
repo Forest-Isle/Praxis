@@ -296,8 +296,7 @@ import {
   elicitationTextValue,
   expandElicitationOptions,
   focusedElicitationField,
-  McpElicitationForm,
-  McpElicitationUrl,
+  ElicitationSurface,
   moveElicitationFocus,
   moveElicitationOption,
   selectElicitationOption,
@@ -307,6 +306,10 @@ import {
   validateTuiElicitationForm,
   type TuiElicitationFormState,
 } from './tui/mcp-elicitation.js'
+import {
+  projectTuiElicitationSurface,
+  type TuiElicitationSurfaceModel,
+} from './tui/mcp-elicitation-surface-model.js'
 import { openTuiUrl } from './tui/open-url.js'
 import { projectTuiToolPermission } from './tui/tool-permission.js'
 import {
@@ -2026,6 +2029,27 @@ export function InteractiveApp({
         : null,
     [question, input],
   )
+  const elicitationSurface = useMemo<TuiElicitationSurfaceModel | null>(
+    () =>
+      elicitation === null
+        ? null
+        : projectTuiElicitationSurface({
+            request: elicitation.request,
+            form: elicitationForm,
+            input,
+            urlWaiting: elicitationUrlWaiting,
+            ...(presentation.viewport.rows === undefined
+              ? {}
+              : { viewportRows: presentation.viewport.rows }),
+          }),
+    [
+      elicitation,
+      elicitationForm,
+      input,
+      elicitationUrlWaiting,
+      presentation.viewport.rows,
+    ],
+  )
   const diffMenu = menu?.kind === 'diff' ? menu : null
   const diffSurface = useMemo<TuiDiffSurfaceModel | null>(
     () =>
@@ -2325,7 +2349,10 @@ export function InteractiveApp({
           readonly surface: TuiPermissionSurfaceModel
         }
       | TuiDecisionSurfaceModel
-      | { readonly kind: 'elicitation' }
+      | {
+          readonly kind: 'elicitation'
+          readonly surface: TuiElicitationSurfaceModel
+        }
     readonly overlay:
       | TuiCommandPaletteModel
       | TuiMentionPickerModel
@@ -2352,8 +2379,13 @@ export function InteractiveApp({
             ? { priority: planDecisionSurface }
             : question !== null && questionDecisionSurface !== null
               ? { priority: questionDecisionSurface }
-              : elicitation !== null
-                ? { priority: { kind: 'elicitation' } }
+              : elicitation !== null && elicitationSurface !== null
+                ? {
+                    priority: {
+                      kind: 'elicitation',
+                      surface: elicitationSurface,
+                    },
+                  }
                 : {}),
       ...(secondarySurface === undefined
         ? {}
@@ -2376,6 +2408,7 @@ export function InteractiveApp({
       question,
       planDecisionSurface,
       questionDecisionSurface,
+      elicitationSurface,
       elicitation,
       secondarySurface,
       btwSurface,
@@ -8298,35 +8331,11 @@ export function InteractiveApp({
                 width={width}
                 screenReader={axScreenReader}
               />
-            ) : selectedPriority?.kind === 'elicitation' && elicitation ? (
-              elicitation.request.mode === 'url' ? (
-                <McpElicitationUrl
-                  serverName={elicitation.request.serverName}
-                  message={elicitation.request.message}
-                  url={elicitation.request.url ?? ''}
-                  waiting={elicitationUrlWaiting}
-                  actionLabel={
-                    elicitation.request.elicitationId
-                      ? 'Skip confirmation'
-                      : 'Continue without waiting'
-                  }
-                  selection={elicitationForm?.focusIndex ?? 0}
-                  screenReader={axScreenReader}
-                />
-              ) : (
-                <McpElicitationForm
-                  serverName={elicitation.request.serverName}
-                  message={elicitation.request.message}
-                  state={
-                    elicitationForm ??
-                    createTuiElicitationForm(
-                      elicitation.request.requestedSchema,
-                    )
-                  }
-                  input={input}
-                  screenReader={axScreenReader}
-                />
-              )
+            ) : selectedPriority?.kind === 'elicitation' ? (
+              <ElicitationSurface
+                model={selectedPriority.surface}
+                screenReader={axScreenReader}
+              />
             ) : selectedSecondarySurface?.kind === 'model-input' ||
               selectedSecondarySurface?.kind === 'export' ||
               selectedSecondarySurface?.kind === 'copy' ||
