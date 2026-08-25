@@ -39,7 +39,9 @@ function merge(base, override) {
 }
 
 async function seedJson(source, destination, selectBase) {
-  const base = selectBase(JSON.parse(await readFile(source, 'utf8')))
+  const base = (await exists(source))
+    ? selectBase(JSON.parse(await readFile(source, 'utf8')))
+    : {}
   const override = (await exists(destination))
     ? JSON.parse(await readFile(destination, 'utf8'))
     : {}
