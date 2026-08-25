@@ -25,13 +25,6 @@ import type {
   TeamLeadOperations,
   TeamCreateRequest,
 } from './application/team-lead-operations.js'
-import {
-  projectTeamDashboard,
-  readTeamMailboxAudit,
-  readTeamWorktreeEvidence,
-  renderTeamAudit,
-  renderTeamSummary,
-} from './application/team-observability.js'
 import type { TeamSnapshot } from './core/team-ownership.js'
 import {
   ProjectMemoryAgentExtractor,
@@ -5743,6 +5736,13 @@ async function executeTeamCommand(
       parsed.command === 'logs' ||
       parsed.command === 'attach'
     ) {
+      const {
+        projectTeamDashboard,
+        readTeamMailboxAudit,
+        readTeamWorktreeEvidence,
+        renderTeamAudit,
+        renderTeamSummary,
+      } = await import('./application/team-observability.js')
       const snapshot = (await operations.list()).find(
         (team) => team.teamId === parsed.teamId,
       )

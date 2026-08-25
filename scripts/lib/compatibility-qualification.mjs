@@ -38,6 +38,9 @@ const BALANCE_PATTERNS = [
 ]
 
 export const compatibilityScriptExclusions = new Set([
+  // Native/core qualification gates are not Claude compatibility lanes.
+  'test:native:deletion',
+  'test:core-completion',
   'test:compat:all',
   'test:docs',
   'test:package',
