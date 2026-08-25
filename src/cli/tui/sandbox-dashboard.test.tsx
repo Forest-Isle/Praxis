@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { TuiSandboxSnapshot } from './sandbox-settings.js'
 import { SandboxDashboard } from './sandbox-dashboard.js'
+import { projectTuiSandboxSurface } from './sandbox-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -33,13 +34,23 @@ function snapshot(
   }
 }
 
+function surface(
+  snapshotValue: TuiSandboxSnapshot,
+  tab: 'mode' | 'dependencies' | 'overrides' | 'config',
+  selectedIndex = 0,
+) {
+  return projectTuiSandboxSurface({
+    snapshot: snapshotValue,
+    tab,
+    selectedIndex,
+  })
+}
+
 describe('SandboxDashboard', () => {
   it('renders macOS and Linux dependency names without crossing platforms', () => {
     const mac = render(
       <SandboxDashboard
-        snapshot={snapshot()}
-        tab="dependencies"
-        selectedIndex={0}
+        surface={surface(snapshot(), 'dependencies')}
         width={100}
         screenReader={false}
       />,
@@ -49,15 +60,16 @@ describe('SandboxDashboard', () => {
 
     const linux = render(
       <SandboxDashboard
-        snapshot={snapshot({
-          platform: 'linux',
-          dependencies: {
-            errors: ['missing bwrap', 'missing socat'],
-            warnings: ['seccomp unavailable'],
-          },
-        })}
-        tab="dependencies"
-        selectedIndex={0}
+        surface={surface(
+          snapshot({
+            platform: 'linux',
+            dependencies: {
+              errors: ['missing bwrap', 'missing socat'],
+              warnings: ['seccomp unavailable'],
+            },
+          }),
+          'dependencies',
+        )}
         width={100}
         screenReader={false}
       />,
@@ -71,12 +83,13 @@ describe('SandboxDashboard', () => {
   it('shows Linux glob compatibility warnings in the config tab', () => {
     const frame = render(
       <SandboxDashboard
-        snapshot={snapshot({
-          platform: 'linux',
-          globPatternWarnings: ['Read(/secrets/*.json)'],
-        })}
-        tab="config"
-        selectedIndex={0}
+        surface={surface(
+          snapshot({
+            platform: 'linux',
+            globPatternWarnings: ['Read(/secrets/*.json)'],
+          }),
+          'config',
+        )}
         width={100}
         screenReader={false}
       />,

@@ -306,6 +306,10 @@ import {
 } from './tui/memory-surface-model.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
 import {
+  projectTuiSandboxSurface,
+  type TuiSandboxSurfaceModel,
+} from './tui/sandbox-surface-model.js'
+import {
   createTuiSandboxStore,
   type TuiSandboxStore,
   type TuiSandboxTab,
@@ -1899,6 +1903,7 @@ export function InteractiveApp({
     | TuiMemorySurfaceModel
     | TuiHooksSurfaceModel
     | TuiConfigSurfaceModel
+    | TuiSandboxSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2040,6 +2045,18 @@ export function InteractiveApp({
           }),
     [hooksMenu],
   )
+  const sandboxMenu = menu?.kind === 'sandbox' ? menu : null
+  const sandboxSurface = useMemo<TuiSandboxSurfaceModel | null>(
+    () =>
+      sandboxMenu === null
+        ? null
+        : projectTuiSandboxSurface({
+            snapshot: sandboxMenu.snapshot,
+            tab: sandboxMenu.tab,
+            selectedIndex: sandboxMenu.selectedIndex,
+          }),
+    [sandboxMenu],
+  )
   const statusAuthSource = process.env.PRAXIS_API_KEY
     ? 'PRAXIS_API_KEY'
     : process.env.ANTHROPIC_API_KEY
@@ -2118,7 +2135,10 @@ export function InteractiveApp({
                     ? (hooksSurface ?? undefined)
                     : menu.kind === 'config'
                       ? (configSurface ?? undefined)
-                      : (permissionManagementSurface ?? legacySecondarySurface)
+                      : menu.kind === 'sandbox'
+                        ? (sandboxSurface ?? undefined)
+                        : (permissionManagementSurface ??
+                          legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8388,15 +8408,13 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'sandbox' ? (
+              ) : selectedSecondarySurface.kind === 'sandbox-panel' ? (
                 <SandboxDashboard
-                  snapshot={menu.snapshot}
-                  tab={menu.tab}
-                  selectedIndex={menu.selectedIndex}
+                  surface={selectedSecondarySurface}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'agents' ? (
+              ) : menu.kind === 'sandbox' ? null : menu.kind === 'agents' ? (
                 <ListDashboard
                   title="Agents"
                   rows={menu.agents.map((agent) => ({
