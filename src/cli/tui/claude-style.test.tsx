@@ -47,6 +47,7 @@ import {
   projectTranscriptPresentationWindow,
 } from './transcript-viewport.js'
 import { projectTuiHelpSurface } from './help-surface-model.js'
+import { projectTuiListSurface } from './list-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -1687,12 +1688,14 @@ describe('Claude-style TUI components', () => {
   it('renders empty and populated local list dashboards', () => {
     const empty = render(
       <ListDashboard
-        title="Skills"
-        rows={[]}
-        emptyText={
-          'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/'
-        }
-        selectedIndex={0}
+        surface={projectTuiListSurface({
+          kind: 'list',
+          title: 'Skills',
+          rows: [],
+          emptyText:
+            'No skills found\nCreate skills in .claude/skills/ or ~/.claude/skills/',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader={false}
       />,
@@ -1702,10 +1705,13 @@ describe('Claude-style TUI components', () => {
 
     const populated = renderNormal(
       <ListDashboard
-        title="Background"
-        rows={[{ label: 'w1 [running] Review repository' }]}
-        emptyText="No tasks currently running"
-        selectedIndex={0}
+        surface={projectTuiListSurface({
+          kind: 'list',
+          title: 'Background',
+          rows: [{ label: 'w1 [running] Review repository' }],
+          emptyText: 'No tasks currently running',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader={false}
       />,
@@ -1732,10 +1738,13 @@ describe('Claude-style TUI components', () => {
     ).lastFrame()
     const list = render(
       <ListDashboard
-        title="Background"
-        rows={[{ label: 'w1 [running] Review repository' }, { label: 'w2' }]}
-        emptyText="No tasks currently running"
-        selectedIndex={0}
+        surface={projectTuiListSurface({
+          kind: 'list',
+          title: 'Background',
+          rows: [{ label: 'w1 [running] Review repository' }, { label: 'w2' }],
+          emptyText: 'No tasks currently running',
+          selectedIndex: 0,
+        })}
         width={80}
         screenReader
       />,
@@ -1802,10 +1811,13 @@ describe('Claude-style TUI components', () => {
               screenReader={false}
             />
             <ListDashboard
-              title="Background"
-              rows={[{ label: 'w1 [running] Review repository' }]}
-              emptyText="No tasks currently running"
-              selectedIndex={0}
+              surface={projectTuiListSurface({
+                kind: 'list',
+                title: 'Background',
+                rows: [{ label: 'w1 [running] Review repository' }],
+                emptyText: 'No tasks currently running',
+                selectedIndex: 0,
+              })}
               width={80}
               screenReader={false}
             />

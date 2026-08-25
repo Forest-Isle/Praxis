@@ -199,6 +199,10 @@ import {
   type TuiMentionPickerModel,
 } from './tui/mention-picker-model.js'
 import {
+  projectTuiListSurface,
+  type TuiListSurfaceModel,
+} from './tui/list-surface-model.js'
+import {
   editTuiPrompt,
   openTuiEditorFile,
   type TuiEditorOptions,
@@ -1904,6 +1908,7 @@ export function InteractiveApp({
     | TuiHooksSurfaceModel
     | TuiConfigSurfaceModel
     | TuiSandboxSurfaceModel
+    | TuiListSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2057,6 +2062,12 @@ export function InteractiveApp({
           }),
     [sandboxMenu],
   )
+  const listMenu =
+    menu?.kind === 'agents' || menu?.kind === 'list' ? menu : null
+  const listSurface = useMemo<TuiListSurfaceModel | null>(
+    () => (listMenu === null ? null : projectTuiListSurface(listMenu)),
+    [listMenu],
+  )
   const statusAuthSource = process.env.PRAXIS_API_KEY
     ? 'PRAXIS_API_KEY'
     : process.env.ANTHROPIC_API_KEY
@@ -2137,8 +2148,10 @@ export function InteractiveApp({
                       ? (configSurface ?? undefined)
                       : menu.kind === 'sandbox'
                         ? (sandboxSurface ?? undefined)
-                        : (permissionManagementSurface ??
-                          legacySecondarySurface)
+                        : menu.kind === 'agents' || menu.kind === 'list'
+                          ? (listSurface ?? undefined)
+                          : (permissionManagementSurface ??
+                            legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8414,28 +8427,16 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'sandbox' ? null : menu.kind === 'agents' ? (
+              ) : selectedSecondarySurface.kind === 'list-panel' ? (
                 <ListDashboard
-                  title="Agents"
-                  rows={menu.agents.map((agent) => ({
-                    label: agent.name,
-                    description: agent.description,
-                  }))}
-                  emptyText="No agents configured"
-                  selectedIndex={menu.selectedIndex}
+                  surface={selectedSecondarySurface}
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'config' ? null : menu.kind === 'list' ? (
-                <ListDashboard
-                  title={menu.title}
-                  rows={menu.rows}
-                  emptyText={menu.emptyText}
-                  selectedIndex={menu.selectedIndex}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'model' ? (
+              ) : menu.kind === 'sandbox' ||
+                menu.kind === 'agents' ||
+                menu.kind === 'config' ||
+                menu.kind === 'list' ? null : menu.kind === 'model' ? (
                 <ModelMenu
                   options={modelOptions}
                   effort={runtimePreferences.effort}

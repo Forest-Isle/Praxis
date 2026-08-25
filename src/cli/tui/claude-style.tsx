@@ -16,6 +16,7 @@ import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
 import type { TuiFileEntry } from './file-picker.js'
 import type { TuiMentionPickerModel } from './mention-picker-model.js'
+import type { TuiListSurfaceModel } from './list-surface-model.js'
 import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiHooksSurfaceModel } from './hooks-surface-model.js'
@@ -1803,20 +1804,15 @@ export function CustomThemeEditor({
 }
 
 export function ListDashboard({
-  title,
-  rows,
-  emptyText,
-  selectedIndex,
+  surface,
   width,
   screenReader,
 }: {
-  title: string
-  rows: readonly { label: string; description?: string }[]
-  emptyText: string
-  selectedIndex: number
+  surface: TuiListSurfaceModel
   width: number
   screenReader: boolean
 }) {
+  const { title, rows, emptyText, selectedIndex } = surface
   const theme = useTuiTheme()
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
