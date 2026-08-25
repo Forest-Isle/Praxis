@@ -26,6 +26,14 @@ import type {
   TeamCreateRequest,
 } from './application/team-lead-operations.js'
 import {
+  projectTeamDashboard,
+  readTeamMailboxAudit,
+  readTeamWorktreeEvidence,
+  renderTeamAudit,
+  renderTeamSummary,
+} from './application/team-observability.js'
+import type { TeamSnapshot } from './core/team-ownership.js'
+import {
   ProjectMemoryAgentExtractor,
   ProjectMemoryExtractionController,
   ProjectMemoryModelSelector,
@@ -1027,6 +1035,9 @@ Commands:
   list [--json]
   accept <team-id> <task-id> --lead-session-id <id> [--generation <n>] [--decision accepted|rejected] [--json]
   stop <team-id> --lead-session-id <id> [--drain-ms <ms>] [--json]
+  status <team-id> [--json]
+  logs <team-id> [--json]
+  attach <team-id> [--json]
 `
 
 export { parseContextEnvironment, parseProviderEnvironment }
@@ -5559,12 +5570,24 @@ type TeamCliCommand =
       drainMs?: number
       json: boolean
     }
+  | { command: 'status' | 'logs' | 'attach'; teamId: string; json: boolean }
 
 function parseTeamCommand(args: readonly string[]): TeamCliCommand {
   if (args[0] !== 'team') throw new Error('Invalid Team command')
   const command = args[1]
   if (!command || command === 'help') throw new Error(TEAM_HELP.trim())
-  if (!['create', 'resume', 'list', 'accept', 'stop'].includes(command))
+  if (
+    ![
+      'create',
+      'resume',
+      'list',
+      'accept',
+      'stop',
+      'status',
+      'logs',
+      'attach',
+    ].includes(command)
+  )
     throw new Error(`Unsupported Team command: ${command}`)
   const operands: string[] = []
   let json = false
@@ -5664,6 +5687,11 @@ function parseTeamCommand(args: readonly string[]): TeamCliCommand {
       json,
     }
   }
+  if (command === 'status' || command === 'logs' || command === 'attach') {
+    rejectOptions([])
+    if (operands.length !== 1) throw new Error(`${command} requires a team ID`)
+    return { command, teamId: operands[0] as string, json }
+  }
   rejectOptions(['--lead-session-id', '--drain-ms'])
   if (operands.length !== 1) throw new Error('stop requires a team ID')
   return {
@@ -5698,7 +5726,9 @@ async function executeTeamCommand(
   }
   const service = await dependencies.createService({
     eventSink: () => undefined,
-    requireProvider: parsed.command !== 'list',
+    requireProvider: !['list', 'status', 'logs', 'attach'].includes(
+      parsed.command,
+    ),
     exposeToolRegistry: true,
     controls: nativeControls,
     configRoot: resolveDataPlaneRoot({ dataPlane: 'native' }),
@@ -5708,6 +5738,38 @@ async function executeTeamCommand(
   try {
     const operations = service.teamLeadOperations
     if (!operations) throw new Error('Team lead operations are unavailable')
+    if (
+      parsed.command === 'status' ||
+      parsed.command === 'logs' ||
+      parsed.command === 'attach'
+    ) {
+      const snapshot = (await operations.list()).find(
+        (team) => team.teamId === parsed.teamId,
+      )
+      if (!snapshot) throw new Error(`Missing Team: ${parsed.teamId}`)
+      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
+      const [mailbox, worktrees] = await Promise.all([
+        readTeamMailboxAudit({ nativeRoot, snapshot }),
+        readTeamWorktreeEvidence({ nativeRoot, snapshot }),
+      ])
+      const dashboard = projectTeamDashboard(snapshot, { mailbox, worktrees })
+      if (parsed.command === 'logs') {
+        if (parsed.json) writeJson(io, dashboard)
+        else
+          io.stdout(
+            `${renderTeamAudit(dashboard)}${dashboard.events.length ? '\n' : ''}`,
+          )
+      } else if (parsed.command === 'attach') {
+        if (parsed.json)
+          writeJson(io, { ...dashboard, transport: 'durable-local' })
+        else
+          io.stdout(
+            `${renderTeamSummary(dashboard)}\ntransport: durable-local\n`,
+          )
+      } else if (parsed.json) writeJson(io, dashboard)
+      else io.stdout(`${renderTeamSummary(dashboard)}\n`)
+      return 0
+    }
     if (parsed.command === 'list') {
       const teams = await operations.list()
       if (parsed.json) writeJson(io, { teams })
@@ -5717,7 +5779,7 @@ async function executeTeamCommand(
         )
       return 0
     }
-    let snapshot
+    let snapshot: TeamSnapshot | undefined
     if (parsed.command === 'create') {
       const raw = await readFile(parsed.manifest, 'utf8')
       const value: unknown = JSON.parse(raw)
@@ -5742,7 +5804,7 @@ async function executeTeamCommand(
         parsed.leadSessionId,
       )
       snapshot = await operations.detach(parsed.teamId, parsed.leadSessionId)
-    } else {
+    } else if (parsed.command === 'stop') {
       snapshot = await operations.stop(
         {
           teamId: parsed.teamId,
@@ -5751,6 +5813,7 @@ async function executeTeamCommand(
         parsed.leadSessionId,
       )
     }
+    if (!snapshot) throw new Error('Team command did not produce a snapshot')
     if (parsed.json) writeJson(io, { team: snapshot })
     else io.stdout(`${snapshot.teamId}\n`)
     return 0
