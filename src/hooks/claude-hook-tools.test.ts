@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   ModelToolCall,
   PermissionResolver,
+  ToolExecutionContext,
   ToolRegistry,
 } from '../core/runtime.js'
 import { ClaudeHookToolCoordinator } from './claude-hook-tools.js'
