@@ -43,10 +43,12 @@ try {
     { NativeDataPlaneAdapter },
     { createNativeTranscriptCodec },
     { NativeTranscriptStore },
+    { NativeSessionTranscript },
   ] = await Promise.all([
     import(new URL('./persistence/native-data-plane-adapter.js', output)),
     import(new URL('./persistence/native-transcript-codec.js', output)),
     import(new URL('./persistence/native-transcript-store.js', output)),
+    import(new URL('./application/native-session-transcript.js', output)),
   ])
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'praxis-native-deletion-'))
   try {
@@ -83,6 +85,73 @@ try {
     const loaded = await store.load()
     if (loaded.records.length !== 1 || loaded.records[0]?.event.id !== event.id)
       throw new Error('native store smoke failed')
+
+    const sessionId = '00000000-0000-4000-8000-000000000002'
+    const sessionPaths = adapter.resolvePaths({
+      root: temporaryRoot,
+      cwd: temporaryRoot,
+      sessionId,
+    })
+    const sessionStore = new NativeTranscriptStore({
+      transcriptFile: sessionPaths.sessionFile,
+      lockFile: `${sessionPaths.sessionFile}.lock`,
+    })
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: sessionStore,
+      createId: (() => {
+        let index = 0
+        return () => `native-session-${++index}`
+      })(),
+      now: () => '2026-01-01T00:00:00.000Z',
+    })
+    await transcript.withLease({ kind: 'start' }, async (lease) => {
+      await lease.appendMessages({
+        messages: [
+          { role: 'user', content: 'native prompt' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'tool-1', name: 'Read', input: {} }],
+          },
+        ],
+      })
+      await lease.beginToolExecution('tool-1')
+      await lease.appendToolCompletion({
+        callId: 'tool-1',
+        result: { content: 'native tool result', isError: false },
+      })
+    })
+    const resumed = new NativeSessionTranscript({
+      sessionId,
+      store: sessionStore,
+      createId: () => 'native-session-resume',
+      now: () => '2026-01-01T00:00:01.000Z',
+    })
+    await resumed.withLease({ kind: 'resume' }, async (lease) => {
+      if (lease.activeMessages().length !== 3)
+        throw new Error('native session resume smoke failed')
+    })
+    const forkId = '00000000-0000-4000-8000-000000000003'
+    const forkPaths = adapter.resolvePaths({
+      root: temporaryRoot,
+      cwd: temporaryRoot,
+      sessionId: forkId,
+    })
+    const forkStore = new NativeTranscriptStore({
+      transcriptFile: forkPaths.sessionFile,
+      lockFile: `${forkPaths.sessionFile}.lock`,
+    })
+    await resumed.forkTo(
+      new NativeSessionTranscript({
+        sessionId: forkId,
+        store: forkStore,
+        createId: () => 'native-fork',
+        now: () => '2026-01-01T00:00:02.000Z',
+      }),
+    )
+    if ((await forkStore.load()).records.length !== 3)
+      throw new Error('native session fork smoke failed')
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }

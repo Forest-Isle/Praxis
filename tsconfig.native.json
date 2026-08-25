@@ -15,6 +15,7 @@
     "src/persistence/native-data-plane-adapter.ts",
     "src/persistence/native-resources.ts",
     "src/application/native-session-transcript.ts",
+    "src/application/transcript-projection.ts",
     "src/persistence/native-transcript-codec.ts",
     "src/persistence/native-transcript-reader.ts",
     "src/persistence/native-transcript-store.ts"
