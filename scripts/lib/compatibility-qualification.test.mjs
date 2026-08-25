@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import {
+  applyCompatibilityEndpointModelOverrides,
   buildQualificationEnvironment,
   canonicalizePrerequisiteBinaries,
   classifyGateError,
@@ -75,6 +76,35 @@ describe('compatibility qualification environment', () => {
     ]) {
       if (key !== 'CLAUDE_CONFIG_DIR') expect(environment[key]).toBeUndefined()
     }
+  })
+
+  it('applies only explicit non-blank endpoint and model overrides', () => {
+    const isolated = { PATH: '/usr/bin', PRAXIS_API_KEY: 'preserved' }
+    expect(
+      applyCompatibilityEndpointModelOverrides(isolated, {
+        ANTHROPIC_BASE_URL: 'https://host.example',
+        ANTHROPIC_MODEL: 'host-model',
+        PRAXIS_COMPAT_ANTHROPIC_BASE_URL: ' https://gateway.example ',
+        PRAXIS_COMPAT_CLAUDE_MODEL: ' deepseek-v4-flash ',
+        PRAXIS_API_KEY: 'preserved',
+      }),
+    ).toEqual({
+      PATH: '/usr/bin',
+      PRAXIS_API_KEY: 'preserved',
+      ANTHROPIC_BASE_URL: 'https://gateway.example',
+      ANTHROPIC_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'deepseek-v4-flash',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'deepseek-v4-flash',
+    })
+    expect(
+      applyCompatibilityEndpointModelOverrides(isolated, {
+        ANTHROPIC_BASE_URL: 'https://host.example',
+        ANTHROPIC_MODEL: 'host-model',
+        PRAXIS_COMPAT_ANTHROPIC_BASE_URL: '  ',
+        PRAXIS_COMPAT_CLAUDE_MODEL: '',
+      }),
+    ).toEqual(isolated)
   })
 
   it('reports every missing required lane before execution', () => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  applyCompatibilityEndpointModelOverrides,
   buildQualificationEnvironment,
   canonicalizePrerequisiteBinaries,
   classifyGateError,
@@ -34,6 +35,10 @@ let compatibilityEnvironment = buildQualificationEnvironment(process.env, {
   realClaudeBinary,
   referenceBinary: realClaudeBinary,
 })
+compatibilityEnvironment = applyCompatibilityEndpointModelOverrides(
+  compatibilityEnvironment,
+  process.env,
+)
 const packageDocument = JSON.parse(
   await readFile(join(projectRoot, 'package.json'), 'utf8'),
 )

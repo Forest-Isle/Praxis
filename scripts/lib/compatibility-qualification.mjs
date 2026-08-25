@@ -125,6 +125,25 @@ export function buildQualificationEnvironment(
   return environment
 }
 
+export function applyCompatibilityEndpointModelOverrides(
+  environment,
+  hostEnvironment,
+) {
+  const result = { ...environment }
+  const endpoint = String(
+    hostEnvironment?.PRAXIS_COMPAT_ANTHROPIC_BASE_URL ?? '',
+  ).trim()
+  const model = String(hostEnvironment?.PRAXIS_COMPAT_CLAUDE_MODEL ?? '').trim()
+  if (endpoint) result.ANTHROPIC_BASE_URL = endpoint
+  if (model) {
+    result.ANTHROPIC_MODEL = model
+    result.ANTHROPIC_DEFAULT_HAIKU_MODEL = model
+    result.ANTHROPIC_DEFAULT_SONNET_MODEL = model
+    result.ANTHROPIC_DEFAULT_OPUS_MODEL = model
+  }
+  return result
+}
+
 function executablePaths(value, pathValue = process.env.PATH) {
   if (!value) return []
   const candidates = isAbsolute(value)
