@@ -30,6 +30,7 @@ import type {
   TuiModelSurfaceModel,
   TuiSelectionOption,
 } from './model-effort-surface-model.js'
+import type { TuiLeafSurfaceModel } from './leaf-surface-model.js'
 export type { TuiSelectionOption } from './model-effort-surface-model.js'
 import type {
   TuiHelpShortcut,
@@ -2715,6 +2716,67 @@ export function SelectionMenu({
       ) : null}
       <Text dimColor>{footer}</Text>
     </Box>
+  )
+}
+
+export function LeafSurface({
+  surface,
+  width,
+  screenReader,
+}: {
+  surface: TuiLeafSurfaceModel
+  width: number
+  screenReader: boolean
+}) {
+  if (surface.kind === 'model-input') {
+    return (
+      <DialogFrame title="Enter model ID" screenReader={screenReader}>
+        <Text dimColor>
+          Enter a model ID supported by the configured provider.
+        </Text>
+        <Text>› {surface.value}</Text>
+        <Text dimColor>Enter confirms · Esc cancels</Text>
+      </DialogFrame>
+    )
+  }
+  if (surface.kind === 'export-filename') {
+    return (
+      <DialogFrame title="Enter filename:" screenReader={screenReader}>
+        <Text>&gt; {surface.value}</Text>
+        <Text dimColor>Enter to save · Esc to go back</Text>
+      </DialogFrame>
+    )
+  }
+  if (surface.kind === 'compact-progress') {
+    const completed = Math.floor(surface.progress / 2)
+    return (
+      <Box flexDirection="column">
+        <Text>✻ Compacting conversation…</Text>
+        <Text>
+          {'▰'.repeat(completed)}
+          {'▱'.repeat(50 - completed)} {surface.progress}%
+        </Text>
+      </Box>
+    )
+  }
+  return (
+    <SelectionMenu
+      title={surface.kind === 'export' ? 'Export conversation' : 'Copy'}
+      description={
+        surface.kind === 'export'
+          ? 'Select export method'
+          : 'Select content to copy:'
+      }
+      options={surface.options}
+      selectedIndex={surface.selectedIndex}
+      footer={
+        surface.kind === 'export'
+          ? 'Esc to cancel'
+          : 'Enter to copy · w to write to /tmp/claude · Esc to cancel'
+      }
+      width={width}
+      screenReader={screenReader}
+    />
   )
 }
 
