@@ -9,11 +9,12 @@ import {
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
+import { createClaudeTranscriptCodec } from './compatibility/claude/transcript-codec.js'
 import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
@@ -6065,5 +6066,71 @@ describe('Praxis CLI', () => {
       else process.env.PRAXIS_ENABLE_TEAMS = oldGate
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('runs native transcript migration in dry-run JSON mode without a service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-migration-'))
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const previousHome = process.env.PRAXIS_HOME
+    process.env.PRAXIS_HOME = root
+    try {
+      const path = resolveDataPlanePaths({
+        dataPlane: 'native',
+        cwd: process.cwd(),
+        sessionId,
+      }).sessionFile
+      await mkdir(dirname(path), { recursive: true })
+      const codec = createClaudeTranscriptCodec({
+        version: '2.1.208',
+        cwd: process.cwd(),
+        entrypoint: 'cli',
+      })
+      const encoded = codec.encodeLine({
+        kind: 'messages',
+        id: 'event-1',
+        parentId: null,
+        sessionId,
+        timestamp: '2026-08-25T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'dry run' }],
+      })
+      if (!encoded.ok) throw new Error(encoded.issue.message)
+      await writeFile(path, `${encoded.line}\n`)
+      const capture = captureIO()
+      await expect(
+        run(
+          ['migrate', 'native-transcript', sessionId, '--dry-run', '--json'],
+          capture.io,
+          dependencies(),
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(capture.stdout.join(''))).toMatchObject({
+        migrations: [{ sessionId, status: 'convertible' }],
+      })
+      expect(capture.stderr).toEqual([])
+    } finally {
+      if (previousHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousHome
+      await rm(root, { recursive: true })
+    }
+  })
+
+  it('rejects mutually exclusive native migration modes before service creation', async () => {
+    const capture = captureIO()
+    await expect(
+      run(
+        [
+          'migrate',
+          'native-transcript',
+          '11111111-1111-4111-8111-111111111111',
+          '--dry-run',
+          '--rollback',
+        ],
+        capture.io,
+        dependencies(),
+      ),
+    ).resolves.toBe(1)
+    expect(capture.stderr.join('')).toContain(
+      '--dry-run and --rollback are mutually exclusive',
+    )
   })
 })

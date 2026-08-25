@@ -31,6 +31,7 @@ import { LocalTeamManager } from './team-manager.js'
 import { ClaudeTeamAgentRuntime } from './team-agent-runtime.js'
 import { ClaudeSubagentExecutor } from './subagent-service.js'
 import type { TeamMailboxEndpoint } from './team-mailbox.js'
+import type { TeamLeadDecisionRequest } from './team-lead-decision-surface.js'
 
 const tools: ToolRegistry = {
   definitions: () => [],
@@ -380,9 +381,27 @@ describe('ClaudeTeamAgentRuntime', () => {
             }
           },
         },
-        approveTool: (call, originalCall, decision) => {
-          approval = { call, originalCall, decision }
-          return { behavior: 'deny', message: 'Team Lead denied the write' }
+        decisionSurface: {
+          request: (request: TeamLeadDecisionRequest) => {
+            approval = {
+              call: request.call,
+              originalCall: request.originalCall,
+              decision: request.decision,
+            }
+            expect(request).toMatchObject({
+              teamId: 'team-a',
+              member: 'worker',
+              taskId: 'task-a',
+              generation: 1,
+              call: { id: 'team_write', name: 'Write' },
+              originalCall: { id: 'team_write' },
+              decision: {
+                behavior: 'ask',
+                metadata: { origin: 'parent' },
+              },
+            })
+            return { behavior: 'deny', message: 'Team Lead denied the write' }
+          },
         },
       })
       const result = await runtime.run({

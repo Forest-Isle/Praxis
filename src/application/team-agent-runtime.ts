@@ -21,6 +21,10 @@ import {
 } from './subagent-service.js'
 import type { TeamAgentRuntime } from './team-manager.js'
 import { teamMailboxMessageId } from './team-mailbox.js'
+import {
+  SerializedTeamLeadDecisionSurface,
+  type TeamLeadDecisionSurface,
+} from './team-lead-decision-surface.js'
 
 export interface ClaudeTeamAgentRuntimeOptions {
   readonly nativeRoot: string
@@ -40,6 +44,7 @@ export interface ClaudeTeamAgentRuntimeOptions {
     originalCall?: ModelToolCall,
     decision?: PermissionDecision,
   ) => PermissionApproval | Promise<PermissionApproval>
+  readonly decisionSurface?: TeamLeadDecisionSurface
 }
 
 function digest(value: string): string {
@@ -92,7 +97,15 @@ function taskPrompt(input: Parameters<TeamAgentRuntime['run']>[0]): string {
 }
 
 export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
-  constructor(private readonly options: ClaudeTeamAgentRuntimeOptions) {}
+  private readonly decisionSurface: TeamLeadDecisionSurface | undefined
+
+  constructor(private readonly options: ClaudeTeamAgentRuntimeOptions) {
+    this.decisionSurface =
+      options.decisionSurface ??
+      (options.approveTool
+        ? new SerializedTeamLeadDecisionSurface(options.approveTool)
+        : undefined)
+  }
 
   async run(input: Parameters<TeamAgentRuntime['run']>[0]): Promise<{
     status: 'completed' | 'failed' | 'orphaned'
@@ -117,7 +130,7 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
       identity.taskDirectory,
     )
     await mkdir(transcriptDirectory, { recursive: true })
-    const approveTool = this.options.approveTool
+    const decisionSurface = this.decisionSurface
     const executor = new ClaudeSubagentExecutor({
       configRoot: this.options.configRoot,
       dataPlane: 'native',
@@ -152,7 +165,7 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
           })
         this.options.eventSink?.(event)
       },
-      ...(approveTool
+      ...(decisionSurface
         ? {
             approveTool: (
               call: ModelToolCall,
@@ -173,7 +186,16 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
                       },
                     }
                   : decision
-              return approveTool(call, originalCall, wrapped)
+              if (wrapped?.behavior !== 'ask') return { behavior: 'allow' }
+              return decisionSurface.request({
+                call,
+                ...(originalCall ? { originalCall } : {}),
+                decision: wrapped,
+                teamId: input.teamId,
+                member: input.member.name,
+                taskId: input.task.id,
+                generation: input.generation,
+              })
             },
           }
         : {}),

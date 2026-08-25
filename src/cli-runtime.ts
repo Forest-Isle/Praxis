@@ -71,6 +71,11 @@ import {
 } from './persistence/native-resources.js'
 import { migrateClaudeData } from './persistence/claude-migration.js'
 import {
+  discoverNativeTranscriptSessions,
+  migrateNativeTranscript,
+  rollbackNativeTranscript,
+} from './persistence/native-transcript-migration.js'
+import {
   loadClaudeContextResources,
   loadClaudeSettings,
   loadClaudeSharedResources,
@@ -399,6 +404,7 @@ Usage:
   praxis doctor [--json]
   praxis import [options] [source]
   praxis migrate from-claude
+  praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
   praxis project purge [options] [path]
@@ -2272,10 +2278,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ? await Promise.all([
           import('./application/team-capability.js'),
           import('./application/team-agent-runtime.js'),
+          import('./application/team-lead-decision-surface.js'),
           import('./application/team-lead-operations.js'),
           import('./tools/team-lead-tools.js'),
         ])
       : undefined
+    const teamDecisionSurface =
+      teamModules && permissionApprover
+        ? new teamModules[2].SerializedTeamLeadDecisionSurface(
+            permissionApprover,
+          )
+        : undefined
     const teamCapability = teamModules
       ? new teamModules[0].LocalTeamCapability({
           nativeRoot: resolveDataPlaneRoot({
@@ -2295,10 +2308,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
               configRoot,
               claudeVersion,
               provider: hostedToolProvider,
-              ...(extensions ? { extensions } : {}),
-              ...(permissionApprover
-                ? { approveTool: permissionApprover }
+              ...(teamDecisionSurface
+                ? { decisionSurface: teamDecisionSurface }
                 : {}),
+              ...(extensions ? { extensions } : {}),
               ...(hooks ? { hooks } : {}),
               ...(contextAssembler ? { contextAssembler } : {}),
               ...(providerForModel ? { providerForModel } : {}),
@@ -2309,7 +2322,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : undefined
     const teamLeadOperations =
       teamCapability && teamModules
-        ? new teamModules[2].TeamLeadOperations(teamCapability)
+        ? new teamModules[3].TeamLeadOperations(teamCapability)
         : undefined
     const teamLeadToolRegistryFactory = teamModules
       ? (
@@ -2318,7 +2331,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           sessionId: string,
           names: readonly string[],
         ) =>
-          new teamModules[3].TeamLeadToolRegistry(
+          new teamModules[4].TeamLeadToolRegistry(
             base,
             operations,
             sessionId,
@@ -5950,7 +5963,18 @@ async function execute(
     return 0
   }
 
-  const invocation = parseCliInvocation(argv)
+  const nativeMigrationCommand =
+    argv[0] === 'migrate' && argv[1] === 'native-transcript'
+  const invocation = parseCliInvocation(
+    nativeMigrationCommand
+      ? argv.filter(
+          (value) =>
+            value !== '--all' &&
+            value !== '--dry-run' &&
+            value !== '--rollback',
+        )
+      : argv,
+  )
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
   const command = args[0]
@@ -6193,6 +6217,53 @@ async function execute(
     )
   }
   if (command === 'migrate') {
+    if (args[1] === 'native-transcript') {
+      const values = argv.slice(2)
+      const all = values.includes('--all')
+      const dryRun = values.includes('--dry-run')
+      const rollback = values.includes('--rollback')
+      const json = values.includes('--json') || invocation.legacyJson
+      if (dryRun && rollback)
+        throw new Error('--dry-run and --rollback are mutually exclusive')
+      const sessionId = values.find((value) => !value.startsWith('--'))
+      if (!all && !sessionId)
+        throw new Error(
+          'Usage: praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]',
+        )
+      if (all && sessionId)
+        throw new Error('Specify either a session ID or --all')
+      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
+      const sessions = all
+        ? await discoverNativeTranscriptSessions(nativeRoot)
+        : [
+            {
+              sessionId: sessionId as string,
+              path: resolveDataPlanePaths({
+                dataPlane: 'native',
+                cwd: process.cwd(),
+                sessionId: sessionId as string,
+              }).sessionFile,
+            },
+          ]
+      const migrations = await Promise.all(
+        sessions.map(({ sessionId: id, path }) =>
+          rollback
+            ? rollbackNativeTranscript({ sourcePath: path, sessionId: id })
+            : migrateNativeTranscript({
+                sourcePath: path,
+                sessionId: id,
+                dryRun,
+              }),
+        ),
+      )
+      if (json) writeJson(io, { migrations })
+      else
+        for (const migration of migrations)
+          io.stdout(
+            `${migration.sessionId}: ${migration.status} (${migration.sourcePath})\n`,
+          )
+      return 0
+    }
     if (args[1] !== 'from-claude' || args[2] !== undefined) {
       throw new Error('Usage: praxis migrate from-claude')
     }

@@ -27,7 +27,6 @@ type TeamName = (typeof names)[number]
 
 /** Tools a Coordinator Lead may use; all other base/MCP tools are denied. */
 export const COORDINATOR_LEAD_ALLOWLIST = Object.freeze([
-  'Agent',
   'TaskOutput',
   'TaskStop',
   'TaskCreate',

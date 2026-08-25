@@ -200,7 +200,6 @@ describe('TeamLeadToolRegistry', () => {
     expect(prepared.name).toBe('Read')
     f.operations.activeLeadPolicy.mockReturnValue('coordinator')
     expect(f.registry.definitions().map(({ name }) => name)).toEqual([
-      'Agent',
       'TaskCreate',
       'AskUserQuestion',
       'SendMessage',
@@ -225,11 +224,8 @@ describe('TeamLeadToolRegistry', () => {
     ).rejects.toThrow(/Coordinator/u)
     await expect(
       f.registry.execute({ id: 'a', name: 'Agent', input: {} }, { cwd: '.' }),
-    ).resolves.toMatchObject({ content: 'Agent' })
-    expect(baseExecute).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Agent' }),
-      expect.anything(),
-    )
+    ).rejects.toThrow(/Coordinator/u)
+    expect(baseExecute).not.toHaveBeenCalled()
     await expect(
       f.registry.execute(
         { id: 't', name: 'TeamList', input: {} },
