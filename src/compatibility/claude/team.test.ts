@@ -139,15 +139,27 @@ describe('Claude Team compatibility adapter', () => {
     )
   })
 
-  it('fails closed when Claude create cannot represent native roster and tasks', async () => {
+  it('creates Claude’s lead-only team without inventing roster or tasks', async () => {
     const operations = {
-      create: vi.fn(),
+      create: vi.fn(async ({ teamId }: { teamId: string }) => ({ teamId })),
       stop: vi.fn(),
       send: vi.fn(),
     }
     await expect(
-      adapter.executeCreate({ team_name: 'team_1', description: 'Ship' }),
-    ).rejects.toBeInstanceOf(Error)
-    expect(operations.create).not.toHaveBeenCalled()
+      adapter.executeCreate(
+        { team_name: 'team_1', description: 'Ship' },
+        operations,
+        'lead-session',
+      ),
+    ).resolves.toEqual({
+      team_name: 'team_1',
+      success: true,
+      message: 'Team team_1 created',
+      lead_agent_id: 'team-lead@team_1',
+    })
+    expect(operations.create).toHaveBeenCalledWith(
+      { teamId: 'team_1', name: 'team_1', roster: [], tasks: [] },
+      'lead-session',
+    )
   })
 })

@@ -21,6 +21,7 @@ import {
   rollbackNativeTranscript,
   type NativeTranscriptLegacyDecoder,
 } from './native-transcript-migration.js'
+import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 
 const sessionId = '11111111-1111-4111-8111-111111111111'
 const roots: string[] = []
@@ -193,6 +194,30 @@ describe('native transcript migration', () => {
     await expect(lstat(join(root, '.unused-stage'))).rejects.toMatchObject({
       code: 'ENOENT',
     })
+  })
+
+  it('fails closed for malformed manifests and an active migration lease', async () => {
+    const { sourcePath } = await fixture()
+    const manifestPath = `${sourcePath}.migration.json`
+    await writeFile(manifestPath, '{"version":1,"status":"published"}\n')
+    await expect(migrate({ sourcePath, sessionId })).resolves.toMatchObject({
+      status: 'blocked',
+      issue: 'Migration manifest is malformed or incomplete',
+    })
+
+    await rm(manifestPath)
+    const lease = await new ExclusiveFileLease(
+      `${manifestPath}.lock`,
+    ).tryAcquire()
+    if (!lease) throw new Error('failed to acquire migration test lease')
+    try {
+      await expect(migrate({ sourcePath, sessionId })).resolves.toMatchObject({
+        status: 'blocked',
+        issue: 'Another migration for this source is already in progress',
+      })
+    } finally {
+      await lease.release()
+    }
   })
 
   it('rejects symlink escapes and discovers valid native session names', async () => {

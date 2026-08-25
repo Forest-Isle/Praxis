@@ -36,7 +36,11 @@ export interface ClaudeTeamCompatibilityPort {
   decodeCreate(input: unknown): unknown
   decodeDelete(input: unknown): unknown
   decodeSendMessage(input: unknown): unknown
-  executeCreate(input: unknown): Promise<Record<string, unknown>>
+  executeCreate(
+    input: unknown,
+    operations: TeamLeadOperations,
+    leadSessionId: string,
+  ): Promise<Record<string, unknown>>
   executeDelete(
     input: unknown,
     operations: TeamLeadOperations,
@@ -616,7 +620,11 @@ export class TeamLeadToolRegistry implements ToolRegistry {
       if (!claudeTeam) throw new Error(`Tool ${call.name} is unavailable`)
       if (call.name === 'ClaudeTeamCreate')
         return this.result({
-          claude: await claudeTeam.executeCreate(call.input),
+          claude: await claudeTeam.executeCreate(
+            call.input,
+            this.operations,
+            this.sessionId,
+          ),
         })
       if (call.name === 'ClaudeTeamDelete')
         return this.result({

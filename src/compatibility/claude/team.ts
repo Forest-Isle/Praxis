@@ -44,6 +44,17 @@ type ClaudeTeamStopOperations = {
     leadSessionId: string,
   ): Promise<{ teamId: string }>
 }
+type ClaudeTeamCreateOperations = {
+  create(
+    input: {
+      teamId: string
+      name: string
+      roster: readonly []
+      tasks: readonly []
+    },
+    leadSessionId: string,
+  ): Promise<{ readonly teamId: string }>
+}
 type ClaudeTeamSendOperations = {
   send(
     input: {
@@ -201,14 +212,26 @@ export class ClaudeTeamCompatibilityAdapter {
     throw new UnsupportedClaudeTeamCompatibilityError(`message type ${type}`)
   }
 
-  /** Execute a decoded Claude Team operation through the native lead seam. */
-  async executeCreate(input: unknown): Promise<Record<string, unknown>> {
+  /** Execute Claude's lead-only TeamCreate through the native lead seam. */
+  async executeCreate(
+    input: unknown,
+    operations: ClaudeTeamCreateOperations,
+    leadSessionId: string,
+  ): Promise<Record<string, unknown>> {
     const canonical = this.decodeCreate(input)
-    // Claude's create payload does not carry the roster/task claims required by
-    // Praxis. Refuse the lossy conversion instead of inventing them.
-    throw new UnsupportedClaudeTeamCompatibilityError(
-      `create ${canonical.teamId} does not include a native roster and task plan`,
+    const result = await operations.create(
+      {
+        teamId: canonical.teamId,
+        name: canonical.name,
+        roster: [],
+        tasks: [],
+      },
+      leadSessionId,
     )
+    return this.encodeCreateResult({
+      teamId: result.teamId,
+      leadAgentId: `team-lead@${result.teamId}`,
+    })
   }
 
   async executeDelete(

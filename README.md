@@ -178,8 +178,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   removable and currently limited to fixture-verified delete/send; Claude create
   is decoded but rejected when the payload cannot represent native roster/task
   claims,
-  shutdown, and plan-response shapes; task, notification, context, and
-  Session-resume compatibility remain explicitly unqualified.
+  shutdown, and plan-response shapes; native task, notification, context, and
+  Team resume/inbox seams are implemented, while their Claude-facing zero-skip
+  qualification remains explicitly separate.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and transcript data.

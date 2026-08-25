@@ -363,11 +363,12 @@ Team and Swarm are explicit, local-only capabilities. The native CLI provides
 or JSON; tmux is optional presentation and never lifecycle authority. The CLI
 keeps Team observability modules behind the explicit Team gate, so a disabled
 Team does not load mailbox, ownership, or dashboard modules during startup.
-The removable Claude Team adapter is fail-closed and currently covers only
-fixture-verified delete/send, shutdown, and plan-response shapes; Claude create
-is decode-only and fails closed when native roster/task claims are absent.
-Task, notification, context, and Session-resume compatibility require separate
-black-box evidence and remain unqualified until their zero-skip lanes exist.
+The removable Claude Team adapter is fail-closed on unknown fields and covers
+fixture-verified lead-only create (empty native roster/task list), delete/send,
+shutdown, and plan-response shapes. Native task persistence, notification
+projection, context assembly, and Team resume/inbox seams are implemented
+behind the same local lead boundary. Their Claude-facing zero-skip black-box
+qualification remains separate and is not implied by adapter fixtures.
 
 ## Clean-room rule
 

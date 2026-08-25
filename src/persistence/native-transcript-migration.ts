@@ -8,6 +8,7 @@ import { readNativeTranscript } from './native-transcript-reader.js'
 import { createNativeTranscriptCodec } from './native-transcript-codec.js'
 import { NativeTranscriptStore } from './native-transcript-store.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import { ExclusiveFileLease } from '../platform/exclusive-file-lease.js'
 
 export interface NativeTranscriptMigrationReport {
   sessionId: string
@@ -131,11 +132,35 @@ export async function inspectNativeTranscriptMigration(options: {
   return inspect(options.sourcePath, options.sessionId, options.legacyDecoder)
 }
 
+function isManifest(value: unknown): value is Manifest {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false
+  const source = value as Record<string, unknown>
+  return (
+    source.version === 1 &&
+    typeof source.migrationId === 'string' &&
+    source.migrationId.length > 0 &&
+    typeof source.sessionId === 'string' &&
+    isSessionId(source.sessionId) &&
+    typeof source.sourcePath === 'string' &&
+    typeof source.activeNativePath === 'string' &&
+    typeof source.retainedLegacyPath === 'string' &&
+    typeof source.stagePath === 'string' &&
+    (source.status === 'prepared' ||
+      source.status === 'published' ||
+      source.status === 'rolled-back') &&
+    typeof source.createdAt === 'string' &&
+    typeof source.updatedAt === 'string' &&
+    typeof source.sourceByteHash === 'string' &&
+    /^[0-9a-f]{64}$/u.test(source.sourceByteHash)
+  )
+}
+
 async function readManifest(path: string): Promise<Manifest | null> {
   if (!(await regular(path))) return null
   try {
     const value = JSON.parse(await readFile(path, 'utf8')) as Manifest
-    return value?.version === 1 ? value : null
+    return isManifest(value) ? value : null
   } catch {
     return null
   }
@@ -150,8 +175,47 @@ export async function migrateNativeTranscript(options: {
   legacyDecoder: NativeTranscriptLegacyDecoder
   dryRun?: boolean
 }): Promise<NativeTranscriptMigrationReport> {
+  const lockPath = `${manifestFor(options.sourcePath)}.lock`
+  const lease = await new ExclusiveFileLease(lockPath).tryAcquire()
+  if (!lease)
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath: manifestFor(options.sourcePath),
+      issue: 'Another migration for this source is already in progress',
+    })
+  try {
+    return await migrateNativeTranscriptUnlocked(options)
+  } finally {
+    await lease.release()
+  }
+}
+
+async function migrateNativeTranscriptUnlocked(options: {
+  sourcePath: string
+  sessionId: string
+  legacyDecoder: NativeTranscriptLegacyDecoder
+  dryRun?: boolean
+}): Promise<NativeTranscriptMigrationReport> {
   const manifestPath = manifestFor(options.sourcePath)
+  const manifestPresent = await regular(manifestPath)
   const existing = await readManifest(manifestPath)
+  if (manifestPresent && !existing)
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath,
+      issue: 'Migration manifest is malformed or incomplete',
+    })
+  if (
+    existing &&
+    (existing.sessionId !== options.sessionId ||
+      existing.sourcePath !== options.sourcePath ||
+      existing.activeNativePath !== options.sourcePath)
+  )
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath,
+      issue: 'Migration manifest does not match the requested source session',
+    })
   if (existing?.status === 'published')
     return reportBase(options.sourcePath, options.sessionId, {
       status: 'already-migrated',
