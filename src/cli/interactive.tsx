@@ -65,6 +65,7 @@ import {
   Composer,
   DiffDashboard,
   DialogFrame,
+  LeafSurface,
   ExternalEditorWait,
   HelpMenu,
   HookDashboard,
@@ -73,7 +74,6 @@ import {
   MentionPicker,
   ModelMenu,
   EffortMenu,
-  SelectionMenu,
   SessionPicker,
   ThemePicker,
   CustomThemeEditor,
@@ -89,6 +89,10 @@ import {
   type TuiEffortSurfaceModel,
   type TuiModelSurfaceModel,
 } from './tui/model-effort-surface-model.js'
+import {
+  projectTuiLeafSurface,
+  type TuiLeafSurfaceModel,
+} from './tui/leaf-surface-model.js'
 import {
   projectTuiThemeSurface,
   type TuiThemeSurfaceModel,
@@ -1959,11 +1963,7 @@ export function InteractiveApp({
     | TuiModelSurfaceModel
     | TuiEffortSurfaceModel
     | TuiThemeSurfaceModel
-    | { readonly kind: 'legacy-secondary' }
-  const legacySecondarySurface = useMemo(
-    () => ({ kind: 'legacy-secondary' as const }),
-    [],
-  )
+    | TuiLeafSurfaceModel
   const helpMenu = menu?.kind === 'help' ? menu : null
   const helpSurface = useMemo(
     () =>
@@ -2250,6 +2250,30 @@ export function InteractiveApp({
     customThemeDeleteMenu,
     input,
   ])
+  const leafSurface = useMemo<TuiLeafSurfaceModel | null>(() => {
+    if (menu?.kind === 'model-input')
+      return projectTuiLeafSurface({ kind: 'model-input', value: input })
+    if (menu?.kind === 'export')
+      return projectTuiLeafSurface({
+        kind: 'export',
+        selectedIndex: menu.selectedIndex,
+      })
+    if (menu?.kind === 'copy')
+      return projectTuiLeafSurface({
+        kind: 'copy',
+        candidates: menu.candidates,
+        selectedIndex: menu.selectedIndex,
+        messageAge: menu.messageAge,
+      })
+    if (menu?.kind === 'export-filename')
+      return projectTuiLeafSurface({ kind: 'export-filename', value: input })
+    if (menu?.kind === 'compact-progress')
+      return projectTuiLeafSurface({
+        kind: 'compact-progress',
+        progress: compactProgress,
+      })
+    return null
+  }, [menu, input, compactProgress])
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -2289,8 +2313,9 @@ export function InteractiveApp({
                                     ? (themeSurface ??
                                       customThemeSurface ??
                                       undefined)
-                                    : (permissionManagementSurface ??
-                                      legacySecondarySurface)
+                                    : (leafSurface ??
+                                      permissionManagementSurface ??
+                                      undefined)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8302,31 +8327,16 @@ export function InteractiveApp({
                   screenReader={axScreenReader}
                 />
               )
-            ) : menu?.kind === 'model-input' ? (
-              <DialogFrame title="Enter model ID" screenReader={axScreenReader}>
-                <Text dimColor>
-                  Enter a model ID supported by the configured provider.
-                </Text>
-                <Text>› {input}</Text>
-                <Text dimColor>Enter confirms · Esc cancels</Text>
-              </DialogFrame>
-            ) : menu?.kind === 'export-filename' ? (
-              <DialogFrame
-                title="Enter filename:"
+            ) : selectedSecondarySurface?.kind === 'model-input' ||
+              selectedSecondarySurface?.kind === 'export' ||
+              selectedSecondarySurface?.kind === 'copy' ||
+              selectedSecondarySurface?.kind === 'export-filename' ||
+              selectedSecondarySurface?.kind === 'compact-progress' ? (
+              <LeafSurface
+                surface={selectedSecondarySurface}
+                width={width}
                 screenReader={axScreenReader}
-              >
-                <Text>&gt; {input}</Text>
-                <Text dimColor>Enter to save · Esc to go back</Text>
-              </DialogFrame>
-            ) : menu?.kind === 'compact-progress' ? (
-              <Box flexDirection="column">
-                <Text>✻ Compacting conversation…</Text>
-                <Text>
-                  {'▰'.repeat(Math.floor(compactProgress / 2))}
-                  {'▱'.repeat(50 - Math.floor(compactProgress / 2))}{' '}
-                  {compactProgress}%
-                </Text>
-              </Box>
+              />
             ) : selectedSecondarySurface?.kind === 'rewind-panel' ? (
               selectedSecondarySurface.view === 'points' ? (
                 <Box flexDirection="column">
@@ -8583,46 +8593,6 @@ export function InteractiveApp({
                   </Text>
                   <Text dimColor>Enter to confirm · Esc to cancel</Text>
                 </DialogFrame>
-              ) : menu.kind === 'sandbox' ||
-                menu.kind === 'agents' ||
-                menu.kind === 'config' ||
-                menu.kind === 'list' ||
-                menu.kind === 'btw' ||
-                menu.kind === 'rewind' ||
-                menu.kind === 'rewind-confirm' ||
-                menu.kind === 'rewind-context' ||
-                menu.kind === 'model' ||
-                menu.kind === 'effort' ? null : menu.kind === 'export' ? (
-                <SelectionMenu
-                  title="Export conversation"
-                  description="Select export method"
-                  options={[
-                    {
-                      label: 'Copy to clipboard',
-                      description:
-                        'Copy the conversation to your system clipboard',
-                    },
-                    {
-                      label: 'Save to file',
-                      description:
-                        'Save the conversation to a file in the current directory',
-                    },
-                  ]}
-                  selectedIndex={menu.selectedIndex}
-                  footer="Esc to cancel"
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'copy' ? (
-                <SelectionMenu
-                  title="Copy"
-                  description="Select content to copy:"
-                  options={menu.candidates}
-                  selectedIndex={menu.selectedIndex}
-                  footer="Enter to copy · w to write to /tmp/claude · Esc to cancel"
-                  width={width}
-                  screenReader={axScreenReader}
-                />
               ) : null
             ) : (
               <>

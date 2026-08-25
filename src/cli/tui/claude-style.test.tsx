@@ -16,6 +16,7 @@ import {
   FilePicker,
   HelpMenu,
   HookDashboard,
+  LeafSurface,
   ListDashboard,
   MemoryDashboard,
   MarkdownText,
@@ -57,6 +58,7 @@ import {
   projectTuiModelSurface,
 } from './model-effort-surface-model.js'
 import { projectTuiThemeSurface } from './theme-surface-model.js'
+import { projectTuiLeafSurface } from './leaf-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -2375,6 +2377,29 @@ describe('Claude-style TUI components', () => {
     expect(model.lastFrame()).toContain('High effort (default)')
     expect(effort.lastFrame()).toContain('Select effort')
     expect(effort.lastFrame()).toContain('Current: high')
+  })
+
+  it('renders semantic leaf surfaces for visual and screen-reader paths', () => {
+    const exportPanel = render(
+      <LeafSurface
+        surface={projectTuiLeafSurface({ kind: 'export', selectedIndex: 1 })}
+        width={70}
+        screenReader={false}
+      />,
+    )
+    expect(exportPanel.lastFrame()).toContain('Export conversation')
+    expect(exportPanel.lastFrame()).toContain('❯ 2. Save to file')
+
+    const modelInput = render(
+      <LeafSurface
+        surface={projectTuiLeafSurface({ kind: 'model-input', value: '' })}
+        width={70}
+        screenReader
+      />,
+    )
+    expect(modelInput.lastFrame()).toContain('Enter model ID')
+    expect(modelInput.lastFrame()).toContain('›')
+    expect(modelInput.lastFrame()).not.toContain('undefined')
   })
 
   it('announces generic menu focus and current value for screen readers', () => {

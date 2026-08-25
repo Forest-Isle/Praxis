@@ -167,13 +167,15 @@ plan approval and `AskUserQuestion` through one two-discriminant model with
 normalized indices, exact choices and progress, truthful custom-text guidance,
 feedback semantics, and complete screen-reader actions. Their visual and
 linear adapters consume only projected models; raw menu, permission, plan, and
-question state remains in keyboard/lifecycle routing. Other leaf dialogs,
-menus, and dashboards remain behind an explicit legacy secondary marker while
-their own semantic surfaces migrate in later slices. Each slice must leave a
-demoable path working and preserve the shared transcript/runtime boundary.
+question state remains in keyboard/lifecycle routing. The model-input, export,
+copy, export-filename, and compact-progress leaf surfaces now also cross the
+TuiScreen boundary through typed semantic payloads; controller-local values
+remain in keyboard/lifecycle routing. Remaining secondary surfaces continue
+migrating in later slices. Each slice must leave a demoable path working and
+preserve the shared transcript/runtime boundary.
 Diff now joins this pure semantic projection path through one summary/detail
-model shared by visual and screen-reader adapters; other legacy secondary
-surfaces remain behind the legacy marker for later migration.
+model shared by visual and screen-reader adapters; remaining secondary surfaces
+continue behind their typed migration seams.
 MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
 effects remain outside presentation.
 Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle routing retain the raw task state.

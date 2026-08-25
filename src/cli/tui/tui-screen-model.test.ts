@@ -46,6 +46,8 @@ import type {
   TuiEffortSurfaceModel,
   TuiModelSurfaceModel,
 } from './model-effort-surface-model.js'
+import { projectTuiLeafSurface } from './leaf-surface-model.js'
+import type { TuiLeafSurfaceModel } from './leaf-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -71,6 +73,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiRewindSurfaceModel
     | TuiModelSurfaceModel
     | TuiEffortSurfaceModel
+    | TuiLeafSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -120,6 +123,17 @@ const conversation = (
 }
 
 describe('projectTuiScreen', () => {
+  it('preserves leaf semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiLeafSurface({ kind: 'export', selectedIndex: 0 })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
   it('preserves model and effort semantic surface identity', () => {
     const model = projectTuiModelSurface({
       options: [],
