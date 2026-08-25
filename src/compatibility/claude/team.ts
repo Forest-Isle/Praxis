@@ -38,13 +38,13 @@ export type ClaudeTeamCanonical =
   | ClaudeTeamDeleteCanonical
   | ClaudeTeamMessageCanonical
 
-/** The narrow lead-operation seam required by the Claude compatibility bridge. */
-export interface ClaudeTeamBridgeOperations {
-  create(input: unknown, leadSessionId: string): Promise<unknown>
+type ClaudeTeamStopOperations = {
   stop(
     input: { teamId: string },
     leadSessionId: string,
   ): Promise<{ teamId: string }>
+}
+type ClaudeTeamSendOperations = {
   send(
     input: {
       teamId: string
@@ -54,12 +54,6 @@ export interface ClaudeTeamBridgeOperations {
     leadSessionId: string,
     operationId: string,
   ): Promise<{ recipients: readonly string[] }>
-}
-
-export interface ClaudeTeamBridge {
-  create(input: unknown): Promise<Record<string, unknown>>
-  delete(teamId: string): Promise<Record<string, unknown>>
-  send(input: unknown, operationId: string): Promise<Record<string, unknown>>
 }
 
 function object(value: unknown, reason: string): Record<string, unknown> {
@@ -219,7 +213,7 @@ export class ClaudeTeamCompatibilityAdapter {
 
   async executeDelete(
     input: unknown,
-    operations: Pick<ClaudeTeamBridgeOperations, 'stop'>,
+    operations: ClaudeTeamStopOperations,
     leadSessionId: string,
   ): Promise<Record<string, unknown>> {
     const canonical = this.decodeDelete(input)
@@ -240,7 +234,7 @@ export class ClaudeTeamCompatibilityAdapter {
 
   async executeSend(
     input: unknown,
-    operations: Pick<ClaudeTeamBridgeOperations, 'send'>,
+    operations: ClaudeTeamSendOperations,
     leadSessionId: string,
     operationId: string,
   ): Promise<Record<string, unknown>> {
@@ -326,25 +320,5 @@ export class ClaudeTeamCompatibilityAdapter {
       message: result.message ?? 'Message sent',
       routing: { recipients: [...result.recipients] },
     }
-  }
-}
-
-/**
- * Expose the Claude Team wire shapes through the native lead-operation seam.
- *
- * Keeping this as a small factory makes the compatibility path production
- * callable without changing the native Team tool contract.
- */
-export function createClaudeTeamBridge(
-  operations: ClaudeTeamBridgeOperations,
-  leadSessionId: string,
-): ClaudeTeamBridge {
-  const adapter = new ClaudeTeamCompatibilityAdapter()
-  return {
-    create: (input) => adapter.executeCreate(input),
-    delete: (teamId) =>
-      adapter.executeDelete({ team_name: teamId }, operations, leadSessionId),
-    send: (input, operationId) =>
-      adapter.executeSend(input, operations, leadSessionId, operationId),
   }
 }

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   ClaudeTeamCompatibilityAdapter,
-  createClaudeTeamBridge,
   isClaudeTeamCompatibilityError,
 } from './team.js'
 
@@ -101,16 +100,22 @@ describe('Claude Team compatibility adapter', () => {
         recipients: ['worker'],
       })),
     }
-    const bridge = createClaudeTeamBridge(operations as never, 'lead-session')
-
-    await expect(bridge.delete('team_1')).resolves.toEqual({
+    await expect(
+      adapter.executeDelete(
+        { team_name: 'team_1' },
+        operations as never,
+        'lead-session',
+      ),
+    ).resolves.toEqual({
       team_name: 'team_1',
       success: true,
       message: 'Team team_1 deleted',
     })
     await expect(
-      bridge.send(
+      adapter.executeSend(
         { team_name: 'team_1', to: 'worker', message: 'hello' },
+        operations as never,
+        'lead-session',
         'operation-1',
       ),
     ).resolves.toEqual({
@@ -140,9 +145,8 @@ describe('Claude Team compatibility adapter', () => {
       stop: vi.fn(),
       send: vi.fn(),
     }
-    const bridge = createClaudeTeamBridge(operations as never, 'lead-session')
     await expect(
-      bridge.create({ team_name: 'team_1', description: 'Ship' }),
+      adapter.executeCreate({ team_name: 'team_1', description: 'Ship' }),
     ).rejects.toBeInstanceOf(Error)
     expect(operations.create).not.toHaveBeenCalled()
   })
