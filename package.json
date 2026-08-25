@@ -30,7 +30,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run check:boundaries && npm run typecheck && npm run build:native && npm test && npm run build",
+    "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run check:boundaries && npm run typecheck && npm run build:native && npm run build && npm test",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "dev": "tsx src/cli.ts",
     "format": "prettier --write .",

@@ -21,7 +21,9 @@ const commandTimeoutMs = 2 * 60 * 1_000
 const commandTerminationGraceMs = 1_000
 const maxCommandOutputBytes = 4 * 1024 * 1024
 const maxPackageBytes = 1024 * 1024
-const maxUnpackedBytes = 4 * 1024 * 1024
+// Keep a small headroom for the native Team/migration closure modules while
+// retaining a hard upper bound on the installed release footprint.
+const maxUnpackedBytes = 4.25 * 1024 * 1024
 const maxProviderRequestBytes = 1024 * 1024
 const ZERO_COST_SUMMARY =
   'Total cost:            $0.0000\n' +
