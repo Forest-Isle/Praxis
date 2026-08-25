@@ -6308,18 +6308,34 @@ async function execute(
               }).sessionFile,
             },
           ]
-      const migrations = await Promise.all(
-        sessions.map(({ sessionId: id, path }) =>
-          rollback
-            ? rollbackNativeTranscript({ sourcePath: path, sessionId: id })
-            : migrateNativeTranscript({
-                sourcePath: path,
-                sessionId: id,
-                dryRun,
-              }),
-        ),
-      )
-      if (json) writeJson(io, { migrations })
+      const migrations = []
+      for (const { sessionId: id, path } of sessions) {
+        try {
+          migrations.push(
+            await (rollback
+              ? rollbackNativeTranscript({ sourcePath: path, sessionId: id })
+              : migrateNativeTranscript({
+                  sourcePath: path,
+                  sessionId: id,
+                  dryRun,
+                })),
+          )
+        } catch (error) {
+          migrations.push({
+            sessionId: id,
+            sourcePath: path,
+            status: 'blocked',
+            eventCount: 0,
+            validPrefixByteLength: 0,
+            issue: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      if (json)
+        writeJson(
+          io,
+          all ? { atomicity: 'per-session', migrations } : { migrations },
+        )
       else
         for (const migration of migrations)
           io.stdout(

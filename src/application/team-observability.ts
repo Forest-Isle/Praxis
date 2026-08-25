@@ -1,4 +1,6 @@
 import { readFile, lstat } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { createInterface } from 'node:readline'
 import { resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
@@ -260,9 +262,8 @@ export async function readTeamMailboxAudit(input: {
   )
   const messagesPath = join(mailboxDir, 'messages.jsonl')
   const statePath = join(mailboxDir, 'state.json')
-  let source: string
   try {
-    source = await readFile(messagesPath, 'utf8')
+    await lstat(messagesPath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT')
       return {
@@ -306,51 +307,66 @@ export async function readTeamMailboxAudit(input: {
         cause: error,
       })
   }
-  const lines = source.split('\n').filter(Boolean)
-  const records: TeamMailboxMessage[] = []
+  const retainedRows: TeamMailboxMessage[] = []
+  const retainedSizes: number[] = []
+  let retainedBytes = 0
+  let totalRecords = 0
+  let highestSequence = 0
   let previous = prunedThrough
-  const serializedBytes: number[] = []
-  for (const line of lines) {
-    try {
-      const record = parseTeamMailboxMessage(JSON.parse(line))
+  const pendingByRecipient: Record<string, number> = {}
+  for (const member of ['lead', ...input.snapshot.roster.map((m) => m.name)])
+    pendingByRecipient[member] = 0
+  const reader = createInterface({
+    input: createReadStream(messagesPath, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  })
+  try {
+    for await (const line of reader) {
+      if (!line) continue
+      const bytes = Buffer.byteLength(line, 'utf8') + 1
+      let record: TeamMailboxMessage
+      try {
+        record = parseTeamMailboxMessage(JSON.parse(line))
+      } catch (error) {
+        throw new Error(`Corrupt Team mailbox record: ${messagesPath}`, {
+          cause: error,
+        })
+      }
       if (
         record.teamId !== input.snapshot.teamId ||
         record.sequence <= previous
       )
-        throw new Error('Invalid Team mailbox identity or ordering')
+        throw new Error(`Corrupt Team mailbox record: ${messagesPath}`)
       previous = record.sequence
-      records.push(record)
-      serializedBytes.push(Buffer.byteLength(line, 'utf8') + 1)
-    } catch (error) {
-      throw new Error(`Corrupt Team mailbox record: ${messagesPath}`, {
-        cause: error,
-      })
+      totalRecords += 1
+      highestSequence = record.sequence
+      for (const recipient of record.recipients)
+        if (
+          recipient in pendingByRecipient &&
+          record.sequence > (cursors[recipient] ?? prunedThrough)
+        )
+          pendingByRecipient[recipient] =
+            (pendingByRecipient[recipient] ?? 0) + 1
+      retainedRows.push(record)
+      retainedSizes.push(bytes)
+      retainedBytes += bytes
+      while (retainedRows.length > maxRecords || retainedBytes > maxBytes) {
+        retainedBytes -= retainedSizes.shift() ?? 0
+        retainedRows.shift()
+      }
     }
+  } finally {
+    reader.close()
   }
-  const retainedRows: TeamMailboxMessage[] = []
-  let retainedBytes = 0
-  for (
-    let index = records.length - 1;
-    index >= 0 && retainedRows.length < maxRecords;
-    index -= 1
-  ) {
-    const bytes = serializedBytes[index] as number
-    if (retainedBytes + bytes > maxBytes) break
-    retainedRows.unshift(records[index] as TeamMailboxMessage)
-    retainedBytes += bytes
-  }
-  const pendingByRecipient: Record<string, number> = {}
-  for (const member of ['lead', ...input.snapshot.roster.map((m) => m.name)])
-    pendingByRecipient[member] = records.filter(
-      (m) =>
-        m.sequence > (cursors[member] ?? prunedThrough) &&
-        m.recipients.includes(member),
-    ).length
+  /*
+   * The stream above deliberately keeps only the bounded tail while still
+   * validating ordering and counting pending messages across the file.
+   */
   return {
-    totalRecords: records.length,
+    totalRecords,
     retainedRecords: retainedRows.length,
     pendingByRecipient,
-    highestSequence: records.at(-1)?.sequence ?? 0,
+    highestSequence,
     prunedThrough,
     records: freeze(retainedRows),
   }

@@ -30,6 +30,9 @@ Praxis 中相似的界面不能替代对应的 Claude 命令或运行时契约�
 Praxis 不使用 Claude 订阅认证。Claude Code 互操作性涵盖本地会话、配置、权限、记忆、
 技能、钩子、Agent、插件和 MCP 数据。
 
+Claude Team 兼容模式必须显式启用并遵循 fail-closed 语义：支持的删除/发送线协议会路由到原生 Team 操作，
+无法无损表示或尚未支持的 Team 面会被拒绝，不会静默简化。
+
 ## 安装
 
 ```sh

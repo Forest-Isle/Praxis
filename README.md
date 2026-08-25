@@ -38,6 +38,10 @@ Praxis does not use Claude subscription authentication. Claude Code
 interoperability covers local sessions, configuration, permissions, memory,
 skills, hooks, agents, plugins, and MCP data.
 
+Claude Team compatibility is explicit and fail-closed: supported delete/send
+wire shapes route through native Team operations, while lossy or unsupported
+Team surfaces are rejected rather than silently simplified.
+
 ## Install
 
 ```sh

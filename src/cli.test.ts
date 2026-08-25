@@ -6251,4 +6251,67 @@ describe('Praxis CLI', () => {
       '--dry-run and --rollback are mutually exclusive',
     )
   })
+
+  it('reports mixed all-session migration outcomes deterministically', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-cli-native-migration-all-'),
+    )
+    const previousHome = process.env.PRAXIS_HOME
+    process.env.PRAXIS_HOME = root
+    const validId = '11111111-1111-4111-8111-111111111111'
+    const corruptId = '22222222-2222-4222-8222-222222222222'
+    try {
+      const validPath = resolveDataPlanePaths({
+        dataPlane: 'native',
+        cwd: process.cwd(),
+        sessionId: validId,
+      }).sessionFile
+      const corruptPath = resolveDataPlanePaths({
+        dataPlane: 'native',
+        cwd: process.cwd(),
+        sessionId: corruptId,
+      }).sessionFile
+      await mkdir(dirname(validPath), { recursive: true })
+      const codec = createClaudeTranscriptCodec({
+        version: '2.1.208',
+        cwd: process.cwd(),
+        entrypoint: 'cli',
+      })
+      const encoded = codec.encodeLine({
+        kind: 'messages',
+        id: 'event-1',
+        parentId: null,
+        sessionId: validId,
+        timestamp: '2026-08-25T00:00:00.000Z',
+        messages: [{ role: 'user', content: 'all' }],
+      })
+      if (!encoded.ok) throw new Error(encoded.issue.message)
+      await writeFile(validPath, `${encoded.line}\n`)
+      await writeFile(corruptPath, '{not-json\n')
+      const capture = captureIO()
+      await expect(
+        run(
+          ['migrate', 'native-transcript', '--all', '--json'],
+          capture.io,
+          dependencies(),
+        ),
+      ).resolves.toBe(0)
+      const result = JSON.parse(capture.stdout.join(''))
+      expect(result.atomicity).toBe('per-session')
+      expect(
+        result.migrations.map(
+          (migration: { sessionId: string }) => migration.sessionId,
+        ),
+      ).toEqual([validId, corruptId])
+      expect(
+        result.migrations.map(
+          (migration: { status: string }) => migration.status,
+        ),
+      ).toEqual(['migrated', 'corrupt'])
+    } finally {
+      if (previousHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousHome
+      await rm(root, { recursive: true })
+    }
+  })
 })

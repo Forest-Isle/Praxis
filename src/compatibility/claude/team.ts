@@ -25,9 +25,11 @@ export interface ClaudeTeamCreateCanonical {
 }
 export interface ClaudeTeamDeleteCanonical {
   readonly kind: 'team.delete'
+  readonly teamId?: string
 }
 export interface ClaudeTeamMessageCanonical {
   readonly kind: 'team.message'
+  readonly teamId?: string
   readonly to: string | 'broadcast'
   readonly payload: TeamMailboxPayload
 }
@@ -35,6 +37,30 @@ export type ClaudeTeamCanonical =
   | ClaudeTeamCreateCanonical
   | ClaudeTeamDeleteCanonical
   | ClaudeTeamMessageCanonical
+
+/** The narrow lead-operation seam required by the Claude compatibility bridge. */
+export interface ClaudeTeamBridgeOperations {
+  create(input: unknown, leadSessionId: string): Promise<unknown>
+  stop(
+    input: { teamId: string },
+    leadSessionId: string,
+  ): Promise<{ teamId: string }>
+  send(
+    input: {
+      teamId: string
+      to: string | readonly string[] | 'broadcast'
+      payload: TeamMailboxPayload
+    },
+    leadSessionId: string,
+    operationId: string,
+  ): Promise<{ recipients: readonly string[] }>
+}
+
+export interface ClaudeTeamBridge {
+  create(input: unknown): Promise<Record<string, unknown>>
+  delete(teamId: string): Promise<Record<string, unknown>>
+  send(input: unknown, operationId: string): Promise<Record<string, unknown>>
+}
 
 function object(value: unknown, reason: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
@@ -83,19 +109,29 @@ export class ClaudeTeamCompatibilityAdapter {
 
   decodeDelete(input: unknown): ClaudeTeamDeleteCanonical {
     const source = object(input, 'delete must be an object')
-    strict(source, [])
-    return { kind: 'team.delete' }
+    strict(source, ['team_name', 'team_id'])
+    const rawTeamId = source.team_name ?? source.team_id
+    return {
+      kind: 'team.delete',
+      ...(rawTeamId === undefined
+        ? {}
+        : { teamId: text(rawTeamId, 'team_name') }),
+    }
   }
 
   decodeSendMessage(input: unknown): ClaudeTeamMessageCanonical {
     const source = object(input, 'send must be an object')
-    strict(source, ['to', 'summary', 'message'])
+    strict(source, ['team_name', 'team_id', 'to', 'summary', 'message'])
+    const rawTeamId = source.team_name ?? source.team_id
+    const teamId =
+      rawTeamId === undefined ? undefined : text(rawTeamId, 'team_name')
     const recipient = source.to === '*' ? 'broadcast' : text(source.to, 'to')
     const summary =
       source.summary === undefined ? undefined : text(source.summary, 'summary')
     if (typeof source.message === 'string')
       return {
         kind: 'team.message',
+        ...(teamId === undefined ? {} : { teamId }),
         to: recipient,
         payload: {
           kind: 'text',
@@ -113,6 +149,7 @@ export class ClaudeTeamCompatibilityAdapter {
       const requestId = text(message.request_id, 'request_id')
       return {
         kind: 'team.message',
+        ...(teamId === undefined ? {} : { teamId }),
         to: recipient,
         payload: {
           kind: 'shutdown',
@@ -133,6 +170,7 @@ export class ClaudeTeamCompatibilityAdapter {
         )
       return {
         kind: 'team.message',
+        ...(teamId === undefined ? {} : { teamId }),
         to: recipient,
         payload: {
           kind: 'shutdown',
@@ -167,6 +205,63 @@ export class ClaudeTeamCompatibilityAdapter {
       }
     }
     throw new UnsupportedClaudeTeamCompatibilityError(`message type ${type}`)
+  }
+
+  /** Execute a decoded Claude Team operation through the native lead seam. */
+  async executeCreate(input: unknown): Promise<Record<string, unknown>> {
+    const canonical = this.decodeCreate(input)
+    // Claude's create payload does not carry the roster/task claims required by
+    // Praxis. Refuse the lossy conversion instead of inventing them.
+    throw new UnsupportedClaudeTeamCompatibilityError(
+      `create ${canonical.teamId} does not include a native roster and task plan`,
+    )
+  }
+
+  async executeDelete(
+    input: unknown,
+    operations: Pick<ClaudeTeamBridgeOperations, 'stop'>,
+    leadSessionId: string,
+  ): Promise<Record<string, unknown>> {
+    const canonical = this.decodeDelete(input)
+    if (!canonical.teamId)
+      throw new UnsupportedClaudeTeamCompatibilityError(
+        'delete requires team_name or team_id',
+      )
+    const result = await operations.stop(
+      { teamId: canonical.teamId },
+      leadSessionId,
+    )
+    return this.encodeDeleteResult({
+      teamId: result.teamId,
+      success: true,
+      message: `Team ${result.teamId} deleted`,
+    })
+  }
+
+  async executeSend(
+    input: unknown,
+    operations: Pick<ClaudeTeamBridgeOperations, 'send'>,
+    leadSessionId: string,
+    operationId: string,
+  ): Promise<Record<string, unknown>> {
+    const canonical = this.decodeSendMessage(input)
+    if (!canonical.teamId)
+      throw new UnsupportedClaudeTeamCompatibilityError(
+        'send requires team_name or team_id',
+      )
+    const result = await operations.send(
+      {
+        teamId: canonical.teamId,
+        to: canonical.to,
+        payload: canonical.payload,
+      },
+      leadSessionId,
+      operationId,
+    )
+    return this.encodeSendResult({
+      teamId: canonical.teamId,
+      recipients: result.recipients,
+    })
   }
 
   encodeCreateResult(result: {
@@ -231,5 +326,25 @@ export class ClaudeTeamCompatibilityAdapter {
       message: result.message ?? 'Message sent',
       routing: { recipients: [...result.recipients] },
     }
+  }
+}
+
+/**
+ * Expose the Claude Team wire shapes through the native lead-operation seam.
+ *
+ * Keeping this as a small factory makes the compatibility path production
+ * callable without changing the native Team tool contract.
+ */
+export function createClaudeTeamBridge(
+  operations: ClaudeTeamBridgeOperations,
+  leadSessionId: string,
+): ClaudeTeamBridge {
+  const adapter = new ClaudeTeamCompatibilityAdapter()
+  return {
+    create: (input) => adapter.executeCreate(input),
+    delete: (teamId) =>
+      adapter.executeDelete({ team_name: teamId }, operations, leadSessionId),
+    send: (input, operationId) =>
+      adapter.executeSend(input, operations, leadSessionId, operationId),
   }
 }

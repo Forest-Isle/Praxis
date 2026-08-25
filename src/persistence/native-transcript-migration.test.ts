@@ -114,6 +114,36 @@ describe('native transcript migration', () => {
     })
   })
 
+  it('blocks rollback when retained legacy is missing without moving active native', async () => {
+    const { sourcePath } = await fixture()
+    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    if (!migrated.legacyPath) throw new Error('missing retained legacy path')
+    await rm(migrated.legacyPath)
+    const before = await readFile(sourcePath)
+    const rolledBack = await rollbackNativeTranscript({ sourcePath, sessionId })
+    expect(rolledBack).toMatchObject({ status: 'blocked' })
+    expect(rolledBack.issue).toMatch(/retained legacy/i)
+    expect(await readFile(sourcePath)).toEqual(before)
+  })
+
+  it('recovers a prepared manifest after publication completed before manifest update', async () => {
+    const { sourcePath } = await fixture()
+    const migrated = await migrateNativeTranscript({ sourcePath, sessionId })
+    if (!migrated.legacyPath || !migrated.manifestPath)
+      throw new Error('migration did not return manifest paths')
+    const manifest = JSON.parse(await readFile(migrated.manifestPath, 'utf8'))
+    manifest.status = 'prepared'
+    await writeFile(migrated.manifestPath, `${JSON.stringify(manifest)}\n`)
+    const recovered = await migrateNativeTranscript({ sourcePath, sessionId })
+    expect(recovered.status).toBe('already-migrated')
+    expect(await readNativeTranscript(sourcePath)).toMatchObject({
+      format: 'native',
+    })
+    expect(
+      JSON.parse(await readFile(migrated.manifestPath, 'utf8')).status,
+    ).toBe('published')
+  })
+
   it('blocks corrupt legacy input and retained-path collisions without debris', async () => {
     const { root, sourcePath } = await fixture()
     await writeFile(sourcePath, '{not-json\n')

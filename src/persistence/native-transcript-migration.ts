@@ -151,8 +151,8 @@ export async function migrateNativeTranscript(options: {
     })
   if (existing?.status === 'prepared') {
     const sourcePresent = await exists(options.sourcePath)
-    const legacyPresent = await exists(existing.retainedLegacyPath)
-    const stagePresent = await exists(existing.stagePath)
+    const legacyPresent = await regular(existing.retainedLegacyPath)
+    const stagePresent = await regular(existing.stagePath)
     if (!sourcePresent && legacyPresent && stagePresent) {
       const stageRead = await readNativeTranscript(existing.stagePath)
       if (stageRead.format !== 'native')
@@ -178,7 +178,34 @@ export async function migrateNativeTranscript(options: {
         validPrefixByteLength: stageRead.validPrefixByteLength,
       })
     }
-    if (!sourcePresent || legacyPresent || stagePresent)
+    if (sourcePresent && legacyPresent && !stagePresent) {
+      const activeRead = await readNativeTranscript(options.sourcePath)
+      const legacyBytes = await readFile(existing.retainedLegacyPath)
+      if (
+        activeRead.format === 'native' &&
+        hash(legacyBytes) === existing.sourceByteHash
+      ) {
+        existing.status = 'published'
+        existing.updatedAt = new Date().toISOString()
+        await writeFileAtomically(manifestPath, manifestBytes(existing))
+        return reportBase(options.sourcePath, options.sessionId, {
+          status: 'already-migrated',
+          manifestPath,
+          nativePath: options.sourcePath,
+          legacyPath: existing.retainedLegacyPath,
+          eventCount: activeRead.records.length,
+          validPrefixByteLength: activeRead.validPrefixByteLength,
+        })
+      }
+    }
+    if (!sourcePresent && !legacyPresent && stagePresent)
+      return reportBase(options.sourcePath, options.sessionId, {
+        status: 'blocked',
+        issue:
+          'Prepared migration is missing both source and retained legacy; refusing recovery',
+        manifestPath,
+      })
+    if (!sourcePresent || !legacyPresent || stagePresent)
       return reportBase(options.sourcePath, options.sessionId, {
         status: 'blocked',
         issue: 'Prepared migration has inconsistent paths; refusing recovery',
@@ -276,12 +303,35 @@ export async function rollbackNativeTranscript(options: {
       issue: 'No published migration to roll back',
     })
   const convertedPath = `${options.sourcePath}.praxis-${manifest.migrationId}`
+  if (!(await regular(manifest.retainedLegacyPath)))
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath,
+      issue:
+        'Retained legacy file is missing or not a regular file; active native was left untouched',
+    })
+  const legacyBytes = await readFile(manifest.retainedLegacyPath)
+  if (hash(legacyBytes) !== manifest.sourceByteHash)
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath,
+      issue:
+        'Retained legacy file hash does not match migration manifest; active native was left untouched',
+    })
   if (await exists(convertedPath))
-    throw new Error(
-      `Refusing to overwrite retained native file: ${convertedPath}`,
-    )
+    return reportBase(options.sourcePath, options.sessionId, {
+      status: 'blocked',
+      manifestPath,
+      issue: `Refusing to overwrite retained native file: ${convertedPath}`,
+    })
   await rename(options.sourcePath, convertedPath)
-  await rename(manifest.retainedLegacyPath, options.sourcePath)
+  try {
+    await rename(manifest.retainedLegacyPath, options.sourcePath)
+  } catch (error) {
+    if (!(await exists(options.sourcePath)) && (await regular(convertedPath)))
+      await rename(convertedPath, options.sourcePath)
+    throw error
+  }
   manifest.status = 'rolled-back'
   manifest.updatedAt = new Date().toISOString()
   await writeFileAtomically(manifestPath, manifestBytes(manifest))

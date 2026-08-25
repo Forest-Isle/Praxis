@@ -7,6 +7,11 @@ this file from merged Conventional Commit pull requests.
 
 ### Changed
 
+* route explicitly requested Claude Team delete/send compatibility calls through
+  the native lead-operation seam, while rejecting lossy create and unsupported
+  task/notification/context/session-resume shapes
+* stream Team mailbox audits with bounded retained tails instead of loading the
+  complete mailbox into memory
 * complete the TUI semantic screen projection across selectable surfaces and
   add deterministic resize-aware URL/form elicitation rendering
 * extend the implemented native build profile with transcript/session closure
