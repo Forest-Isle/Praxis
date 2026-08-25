@@ -146,6 +146,8 @@ to the interactive controller while a typed semantic surface reaches the
 renderer.
 Rewind now carries a semantic TuiRewind payload through TuiScreen while raw
 interaction routing remains in the controller.
+Model and Effort panels now carry semantic payloads through TuiScreen while
+their raw keyboard routing remains in the interactive controller.
 
 The Command Palette now consumes a pure semantic model with stable command IDs
 across visual, screen-reader, and keyboard paths.

@@ -36,6 +36,14 @@ import { projectTuiBtwSurface } from './btw-surface-model.js'
 import type { TuiBtwSurfaceModel } from './btw-surface-model.js'
 import { projectTuiRewindSurface } from './rewind-surface-model.js'
 import type { TuiRewindSurfaceModel } from './rewind-surface-model.js'
+import {
+  projectTuiEffortSurface,
+  projectTuiModelSurface,
+} from './model-effort-surface-model.js'
+import type {
+  TuiEffortSurfaceModel,
+  TuiModelSurfaceModel,
+} from './model-effort-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -58,6 +66,8 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiListSurfaceModel
     | TuiBtwSurfaceModel
     | TuiRewindSurfaceModel
+    | TuiModelSurfaceModel
+    | TuiEffortSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -107,6 +117,23 @@ const conversation = (
 }
 
 describe('projectTuiScreen', () => {
+  it('preserves model and effort semantic surface identity', () => {
+    const model = projectTuiModelSurface({
+      options: [],
+      effort: 'high',
+      selectedIndex: 0,
+    })
+    const effort = projectTuiEffortSurface({ effort: 'high', selectedIndex: 2 })
+    for (const surface of [model, effort]) {
+      const screen = projectTuiScreen<Surfaces>(
+        makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+      )
+      const foreground = conversation(screen).foreground
+      expect(foreground.kind).toBe('secondary')
+      if (foreground.kind === 'secondary')
+        expect(foreground.surface).toBe(surface)
+    }
+  })
   it('preserves the Rewind semantic surface identity through secondary payloads', () => {
     const point = {
       messageId: 'm1',
