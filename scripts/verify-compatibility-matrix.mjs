@@ -81,6 +81,7 @@ const claude237PrimaryEntrypoints = new Set([
   'scripts/verify-subagent-compatibility.mjs',
   'scripts/verify-background-agent-compatibility.mjs',
   'scripts/verify-plugin-maintenance.mjs',
+  'scripts/verify-mcp-oauth-serve.mjs',
 ])
 const optionalEnvironment = new Map()
 const retryableTransientGates = new Set([
