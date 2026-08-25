@@ -132,6 +132,82 @@ try {
       if (lease.activeMessages().length !== 3)
         throw new Error('native session resume smoke failed')
     })
+
+    const interruptedId = '00000000-0000-4000-8000-000000000004'
+    const interruptedPaths = adapter.resolvePaths({
+      root: temporaryRoot,
+      cwd: temporaryRoot,
+      sessionId: interruptedId,
+    })
+    const interrupted = new NativeSessionTranscript({
+      sessionId: interruptedId,
+      store: new NativeTranscriptStore({
+        transcriptFile: interruptedPaths.sessionFile,
+        lockFile: `${interruptedPaths.sessionFile}.lock`,
+      }),
+      createId: (() => {
+        let index = 0
+        return () => `native-interrupted-${++index}`
+      })(),
+      now: () => '2026-01-01T00:00:03.000Z',
+    })
+    await interrupted.withLease({ kind: 'start' }, async (lease) => {
+      await lease.appendMessages({
+        messages: [
+          { role: 'user', content: 'interrupt me' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'tool-interrupted', name: 'Read', input: {} }],
+          },
+        ],
+      })
+      await lease.beginToolExecution('tool-interrupted')
+    })
+    const interruptedResume = new NativeSessionTranscript({
+      sessionId: interruptedId,
+      store: new NativeTranscriptStore({
+        transcriptFile: interruptedPaths.sessionFile,
+        lockFile: `${interruptedPaths.sessionFile}.lock`,
+      }),
+    })
+    await interruptedResume.withLease({ kind: 'resume' }, async (lease) => {
+      if (lease.interruption().kind !== 'indeterminate-tools')
+        throw new Error('native interruption recovery smoke failed')
+    })
+
+    const compactedId = '00000000-0000-4000-8000-000000000005'
+    const compactedPaths = adapter.resolvePaths({
+      root: temporaryRoot,
+      cwd: temporaryRoot,
+      sessionId: compactedId,
+    })
+    const compacted = new NativeSessionTranscript({
+      sessionId: compactedId,
+      store: new NativeTranscriptStore({
+        transcriptFile: compactedPaths.sessionFile,
+        lockFile: `${compactedPaths.sessionFile}.lock`,
+      }),
+      now: () => '2026-01-01T00:00:04.000Z',
+    })
+    await compacted.withLease({ kind: 'start' }, async (lease) => {
+      await lease.appendMessages({
+        messages: [{ role: 'user', content: 'before compaction' }],
+      })
+      await lease.appendCompaction({
+        summary: 'compacted native context',
+        trigger: 'manual',
+        preTokens: 100,
+        postTokens: 20,
+        durationMs: 1,
+        preservedMessages: [{ role: 'user', content: 'preserved context' }],
+      })
+    })
+    await compacted.withLease({ kind: 'resume' }, async (lease) => {
+      const messages = lease.activeMessages()
+      if (!messages.some((message) => message.content === 'preserved context'))
+        throw new Error('native compaction resume smoke failed')
+    })
     const forkId = '00000000-0000-4000-8000-000000000003'
     const forkPaths = adapter.resolvePaths({
       root: temporaryRoot,
