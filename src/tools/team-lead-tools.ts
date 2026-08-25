@@ -495,8 +495,10 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     toolNames: readonly string[],
   ) {
     this.enabled = new Set(
-      toolNames.filter((name): name is TeamName =>
-        names.includes(name as TeamName),
+      toolNames.filter(
+        (name): name is TeamName | ClaudeTeamToolName =>
+          names.includes(name as TeamName) ||
+          CLAUDE_TEAM_TOOL_NAMES.includes(name as ClaudeTeamToolName),
       ),
     )
   }
@@ -506,6 +508,10 @@ export class TeamLeadToolRegistry implements ToolRegistry {
         .definitions()
         .filter((definition) => this.isAllowed(definition.name)),
       ...definitions.filter(
+        (definition) =>
+          this.enabled.has(definition.name) && this.isAllowed(definition.name),
+      ),
+      ...claudeDefinitions.filter(
         (definition) =>
           this.enabled.has(definition.name) && this.isAllowed(definition.name),
       ),
@@ -519,8 +525,11 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     return CLAUDE_TEAM_TOOL_NAMES
   }
   schedulingPolicy(call: ModelToolCall) {
-    if (isClaudeTeamToolName(call.name))
+    if (isClaudeTeamToolName(call.name)) {
+      if (!this.enabled.has(call.name))
+        throw new Error(`Tool ${call.name} is unavailable`)
       return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
     if (unsupportedClaudeTeamToolNames.has(call.name))
       throw new Error(`Unsupported Claude Team tool: ${call.name}`)
     this.assertLeadPolicyAllows(call.name)
@@ -541,6 +550,8 @@ export class TeamLeadToolRegistry implements ToolRegistry {
   ): Promise<ModelToolCall> {
     this.assertLeadPolicyAllows(call.name)
     if (isClaudeTeamToolName(call.name)) {
+      if (!this.enabled.has(call.name))
+        throw new Error(`Tool ${call.name} is unavailable`)
       if (call.name === 'ClaudeTeamCreate')
         this.claudeTeam.decodeCreate(call.input)
       else if (call.name === 'ClaudeTeamDelete')
@@ -561,6 +572,8 @@ export class TeamLeadToolRegistry implements ToolRegistry {
   ): Promise<ToolExecutionResult> {
     if (unsupportedClaudeTeamToolNames.has(call.name))
       throw new Error(`Unsupported Claude Team tool: ${call.name}`)
+    if (isClaudeTeamToolName(call.name) && !this.enabled.has(call.name))
+      throw new Error(`Tool ${call.name} is unavailable`)
     if (call.name === 'ClaudeTeamCreate')
       return this.result({
         claude: await this.claudeTeam.executeCreate(call.input),

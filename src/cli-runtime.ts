@@ -2076,6 +2076,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ] as const
     const workflowToolNames = ['Workflow'] as const
     const teamToolNames = PRAXIS_TEAM_TOOLS
+    const claudeTeamCompatibilityEnabled =
+      dataPlane === 'claude' &&
+      /^(?:1|true|yes|on)$/iu.test(
+        (runtimeEnvironment.PRAXIS_CLAUDE_TEAM_COMPAT ?? '').trim(),
+      )
+    const claudeTeamCompatibilityToolNames = [
+      'ClaudeTeamCreate',
+      'ClaudeTeamDelete',
+      'ClaudeSendMessage',
+    ] as const
     const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
     const interactiveToolNames = [
       'AskUserQuestion',
@@ -2122,15 +2132,27 @@ const createDefaultService: CliDependencies['createService'] = async ({
       simpleMode,
       env: runtimeEnvironment,
     }).has('TeamCreate')
-    const selectedTeamTools = teamToolNames.filter(
-      (name) =>
-        teamEnabled &&
-        !simpleMode &&
-        (cli.tools === undefined ||
-          cli.tools.includes('default') ||
-          cli.tools.includes(name)) &&
-        !cli.disallowedTools.includes(name),
-    )
+    const selectedTeamTools = [
+      ...teamToolNames.filter(
+        (name) =>
+          teamEnabled &&
+          !simpleMode &&
+          (cli.tools === undefined ||
+            cli.tools.includes('default') ||
+            cli.tools.includes(name)) &&
+          !cli.disallowedTools.includes(name),
+      ),
+      ...(claudeTeamCompatibilityEnabled &&
+      (cli.tools === undefined || cli.tools.includes('default')
+        ? true
+        : claudeTeamCompatibilityToolNames.some((name) =>
+            cli.tools?.includes(name),
+          ))
+        ? claudeTeamCompatibilityToolNames.filter(
+            (name) => !cli.disallowedTools.includes(name),
+          )
+        : []),
+    ]
     const selectedWorktreeTools = worktreeToolNames.filter(
       (name) =>
         !simpleMode &&

@@ -52,11 +52,11 @@ function registry(
 
 describe('TeamLeadToolRegistry', () => {
   it('exposes Claude Team tools only through explicit compatibility discovery', async () => {
-    const f = registry([])
+    const f = registry([...CLAUDE_TEAM_TOOL_NAMES])
     f.operations.send.mockImplementation(
       async () => ({ teamId: 'team-a', recipients: ['worker'] }) as never,
     )
-    expect(f.registry.definitions().map(({ name }) => name)).not.toEqual(
+    expect(f.registry.definitions().map(({ name }) => name)).toEqual(
       expect.arrayContaining([...CLAUDE_TEAM_TOOL_NAMES]),
     )
     expect(f.registry.claudeToolNames()).toEqual(CLAUDE_TEAM_TOOL_NAMES)
@@ -83,6 +83,13 @@ describe('TeamLeadToolRegistry', () => {
         { cwd: '.' },
       ),
     ).rejects.toThrow(/Unsupported Claude Team tool/u)
+    const disabled = registry([])
+    expect(disabled.registry.definitions().map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining([...CLAUDE_TEAM_TOOL_NAMES]),
+    )
+    await expect(disabled.registry.execute(send, { cwd: '.' })).rejects.toThrow(
+      /unavailable/u,
+    )
   })
 
   it('validates and routes the gated typed TeamSend tool', async () => {
