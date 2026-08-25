@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstat, readFile, readdir, realpath, rename } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
+import type { TranscriptDocumentResult } from '../core/transcript-codec.js'
 import { isSessionId } from '../core/session.js'
 import { readNativeTranscript } from './native-transcript-reader.js'
 import { createNativeTranscriptCodec } from './native-transcript-codec.js'
@@ -57,6 +58,22 @@ const regular = async (path: string) => {
   }
 }
 
+let legacyDecoder: ((source: string) => TranscriptDocumentResult) | undefined
+
+export function configureNativeTranscriptLegacyDecoder(
+  decoder: (source: string) => TranscriptDocumentResult,
+): void {
+  legacyDecoder = decoder
+}
+
+function decodeLegacy(source: string): TranscriptDocumentResult {
+  if (!legacyDecoder)
+    throw new Error(
+      'Native transcript migration requires an explicit legacy transcript decoder',
+    )
+  return legacyDecoder(source)
+}
+
 function reportBase(
   sourcePath: string,
   sessionId: string,
@@ -81,14 +98,7 @@ async function inspect(sourcePath: string, sessionId: string) {
       validPrefixByteLength: read.validPrefixByteLength,
       nativePath: sourcePath,
     })
-  const { createClaudeTranscriptCodec } =
-    await import('../compatibility/claude/transcript-codec.js')
-  const codec = createClaudeTranscriptCodec({
-    version: '2.1.0',
-    cwd: process.cwd(),
-    entrypoint: 'praxis-migration',
-  })
-  const decoded = codec.decodeDocument(read.raw)
+  const decoded = decodeLegacy(read.raw.toString('utf8'))
   if (decoded.issue)
     return reportBase(sourcePath, sessionId, {
       status: decoded.issue.kind === 'corrupt-line' ? 'corrupt' : 'blocked',
@@ -217,14 +227,7 @@ export async function migrateNativeTranscript(options: {
   if (options.dryRun || inspected.status !== 'convertible')
     return { ...inspected, manifestPath }
   const source = await readFile(options.sourcePath)
-  const { createClaudeTranscriptCodec } =
-    await import('../compatibility/claude/transcript-codec.js')
-  const codec = createClaudeTranscriptCodec({
-    version: '2.1.0',
-    cwd: process.cwd(),
-    entrypoint: 'praxis-migration',
-  })
-  const decoded = codec.decodeDocument(source)
+  const decoded = decodeLegacy(source.toString('utf8'))
   if (decoded.issue)
     return {
       ...inspected,

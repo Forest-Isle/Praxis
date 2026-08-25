@@ -6299,10 +6299,21 @@ async function execute(
   if (command === 'migrate') {
     if (args[1] === 'native-transcript') {
       const {
+        configureNativeTranscriptLegacyDecoder,
         discoverNativeTranscriptSessions,
         migrateNativeTranscript,
         rollbackNativeTranscript,
       } = await import('./persistence/native-transcript-migration.js')
+      const { createClaudeTranscriptCodec } =
+        await import('./compatibility/claude/transcript-codec.js')
+      const legacyCodec = createClaudeTranscriptCodec({
+        version: '2.1.0',
+        cwd: process.cwd(),
+        entrypoint: 'praxis-migration',
+      })
+      configureNativeTranscriptLegacyDecoder((source) =>
+        legacyCodec.decodeDocument(source),
+      )
       const values = argv.slice(2)
       const all = values.includes('--all')
       const dryRun = values.includes('--dry-run')

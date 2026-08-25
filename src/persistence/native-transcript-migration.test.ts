@@ -17,6 +17,7 @@ import { createClaudeTranscriptCodec } from '../compatibility/claude/transcript-
 import { readNativeTranscript } from './native-transcript-reader.js'
 import {
   discoverNativeTranscriptSessions,
+  configureNativeTranscriptLegacyDecoder,
   migrateNativeTranscript,
   rollbackNativeTranscript,
 } from './native-transcript-migration.js'
@@ -38,6 +39,7 @@ async function fixture(): Promise<{
     cwd: root,
     entrypoint: 'cli',
   })
+  configureNativeTranscriptLegacyDecoder((value) => codec.decodeDocument(value))
   const encoded = codec.encodeLine({
     kind: 'messages',
     id: 'event-1',
