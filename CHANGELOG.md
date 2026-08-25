@@ -9,6 +9,9 @@ this file from merged Conventional Commit pull requests.
 
 * complete the TUI semantic screen projection across selectable surfaces and
   add deterministic resize-aware URL/form elicitation rendering
+* extend the implemented native build profile with transcript/session closure
+  and an emitted-output Claude deletion gate; the full native package remains
+  unqualified and transcript migration remains explicit and recoverable
 
 ## [0.37.0](https://github.com/Forest-Isle/Praxis/compare/v0.36.1...v0.37.0) (2026-08-24)
 

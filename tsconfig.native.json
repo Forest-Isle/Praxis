@@ -13,7 +13,11 @@
     "src/providers/**/*.ts",
     "src/persistence/data-plane-adapter.ts",
     "src/persistence/native-data-plane-adapter.ts",
-    "src/persistence/native-resources.ts"
+    "src/persistence/native-resources.ts",
+    "src/application/native-session-transcript.ts",
+    "src/persistence/native-transcript-codec.ts",
+    "src/persistence/native-transcript-reader.ts",
+    "src/persistence/native-transcript-store.ts"
   ],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

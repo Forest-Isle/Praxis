@@ -47,10 +47,12 @@ src/
 - Native modules depend on core, platform, and shared seams, never on the
   Claude compatibility adapter. Claude compatibility modules implement the
   same seams without becoming dependencies of native modules.
-- `npm run check:boundaries` rejects reverse source imports, and
-  `npm run build:native` emits the current core/provider/native slice without
-  Claude compatibility sources. This profile is the incremental foundation
-  for the final installed-native deletion proof; it is not yet that proof.
+- `npm run check:boundaries` rejects reverse source imports. `npm run
+build:native` emits the implemented core/provider/native transcript and
+  session profile without Claude compatibility sources, while
+  `npm run test:native:deletion` is an executable emitted-output deletion gate.
+  This profile and gate are implemented; the full native package is not yet
+  qualified.
 - The CLI observes runtime events; it does not own agent state.
 - Claude Code-compatible JSONL transcripts remain authoritative and
   append-only.

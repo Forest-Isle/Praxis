@@ -39,6 +39,7 @@
     "clean:native": "node -e \"require('node:fs').rmSync('dist-native',{recursive:true,force:true})\"",
     "prebuild:native": "npm run clean:native",
     "build:native": "tsc -p tsconfig.native.json",
+    "test:native:deletion": "npm run build:native && node scripts/verify-native-deletion.mjs",
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "prepack": "npm run build",
     "release:artifacts": "node scripts/build-release-artifacts.mjs",

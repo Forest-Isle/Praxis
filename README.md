@@ -256,8 +256,11 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` compiles the current Praxis-owned core, provider
-adapters, and native data-plane slice without the Claude compatibility adapter.
+`npm run build:native` compiles the implemented Praxis-owned core, provider,
+native transcript, and session profile without the Claude compatibility adapter.
+`npm run test:native:deletion` adds an emitted-output deletion gate. These are
+implemented profile checks, not qualification of the full native package.
+Native transcript migration remains explicit and recoverable.
 `npm run check` also enforces the corresponding source dependency direction.
 
 Contributions use Conventional Commit pull-request titles and the protected

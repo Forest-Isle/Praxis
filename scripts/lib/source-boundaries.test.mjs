@@ -34,6 +34,15 @@ describe('source boundary scanner', () => {
     ])
   })
 
+  it('allows the explicit native transcript migration compatibility adapter', () => {
+    const failures = scan(
+      'src/persistence/native-transcript-migration.ts',
+      "import { createClaudeTranscriptCodec } from '../compatibility/claude/transcript-codec.js'",
+    )
+
+    expect(failures).toEqual([])
+  })
+
   it('rejects forbidden imports from provider adapters', () => {
     const failures = scan(
       'src/providers/example.ts',

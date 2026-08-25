@@ -170,7 +170,7 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` 会编译当前由 Praxis 拥有的核心、提供商适配器和不含 Claude 兼容适配器的原生数据平面切片。
+`npm run build:native` 会编译当前已实现的 Praxis 核心、提供商适配器、原生 transcript/session 与不含 Claude 兼容适配器的数据平面切片；`npm run test:native:deletion` 会执行产物删除门禁。这些是已实现的 profile 检查，并不表示完整原生包已经 qualified。原生 transcript 迁移仍必须显式执行且可恢复。
 `npm run check` 还会强制执行对应的源代码依赖方向。
 
 贡献使用 Conventional Commit pull request 标题和受保护的 squash-merge 工作流。

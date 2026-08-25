@@ -76,6 +76,8 @@ function importsIn(projectPath, source) {
 }
 
 function moduleKind(projectPath) {
+  if (projectPath === 'src/persistence/native-transcript-migration.ts')
+    return undefined
   const segments = projectPath.split('/')
   if (segments[1] === 'core') return 'core'
   if (segments[1] === 'providers') return 'provider'
