@@ -29,6 +29,7 @@ import {
   activeStreamWindow,
 } from './claude-style.js'
 import { projectTuiHooks } from './hook-settings.js'
+import { projectTuiHooksSurface } from './hooks-surface-model.js'
 import { projectTuiCommandPalette } from './command-palette-model.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
 import { projectTuiSessionPicker } from './session-picker-model.js'
@@ -1872,11 +1873,13 @@ describe('Claude-style TUI components', () => {
     ])
     const events = render(
       <HookDashboard
-        configuration={configuration}
-        depth="events"
-        eventIndex={0}
-        matcherIndex={0}
-        hookIndex={0}
+        surface={projectTuiHooksSurface({
+          configuration,
+          depth: 'events',
+          eventIndex: 0,
+          matcherIndex: 0,
+          hookIndex: 0,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -1887,11 +1890,13 @@ describe('Claude-style TUI components', () => {
 
     const hooks = render(
       <HookDashboard
-        configuration={configuration}
-        depth="hooks"
-        eventIndex={0}
-        matcherIndex={0}
-        hookIndex={0}
+        surface={projectTuiHooksSurface({
+          configuration,
+          depth: 'hooks',
+          eventIndex: 0,
+          matcherIndex: 0,
+          hookIndex: 0,
+        })}
         width={80}
         screenReader
       />,
@@ -1902,11 +1907,13 @@ describe('Claude-style TUI components', () => {
 
     const detail = render(
       <HookDashboard
-        configuration={configuration}
-        depth="detail"
-        eventIndex={0}
-        matcherIndex={0}
-        hookIndex={0}
+        surface={projectTuiHooksSurface({
+          configuration,
+          depth: 'detail',
+          eventIndex: 0,
+          matcherIndex: 0,
+          hookIndex: 0,
+        })}
         width={80}
         screenReader={false}
       />,
