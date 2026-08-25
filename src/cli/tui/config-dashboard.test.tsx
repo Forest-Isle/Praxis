@@ -7,8 +7,12 @@ import {
   projectConfigRows,
   projectContextUsage,
 } from './config-dashboard.js'
+import { projectTuiConfigSurface } from './config-surface-model.js'
 
 afterEach(() => cleanup())
+
+const surface = (input: Parameters<typeof projectTuiConfigSurface>[0]) =>
+  projectTuiConfigSurface(input)
 
 const snapshot = {
   settings: {
@@ -46,10 +50,12 @@ describe('Claude-style config dashboard', () => {
   it('renders the fixed config hierarchy, selection, overflow, and footer', () => {
     const app = render(
       <ConfigDashboard
-        tab="config"
-        snapshot={snapshot}
-        selectedIndex={2}
-        searchFocused={false}
+        surface={surface({
+          tab: 'config',
+          snapshot,
+          selectedIndex: 2,
+          searchFocused: false,
+        })}
         width={100}
         screenReader={false}
         maxRows={8}
@@ -72,10 +78,12 @@ describe('Claude-style config dashboard', () => {
   it('renders the screen-reader search state without decorative borders', () => {
     const app = render(
       <ConfigDashboard
-        tab="config"
-        snapshot={snapshot}
-        query="permission"
-        searchFocused
+        surface={surface({
+          tab: 'config',
+          snapshot,
+          query: 'permission',
+          searchFocused: true,
+        })}
         width={40}
         screenReader
         maxRows={4}
@@ -93,10 +101,12 @@ describe('Claude-style config dashboard', () => {
   it('stacks labels and values without exceeding a narrow terminal', () => {
     const app = render(
       <ConfigDashboard
-        tab="config"
-        snapshot={snapshot}
-        selectedIndex={1}
-        searchFocused={false}
+        surface={surface({
+          tab: 'config',
+          snapshot,
+          selectedIndex: 1,
+          searchFocused: false,
+        })}
         width={32}
         screenReader={false}
         maxRows={5}
@@ -111,17 +121,19 @@ describe('Claude-style config dashboard', () => {
   it('renders measured status and usage', () => {
     const status = render(
       <ConfigDashboard
-        tab="status"
-        snapshot={snapshot}
-        status={{
-          version: '0.7.0',
-          sessionId: 'session-fixture',
-          cwd: '/work',
-          authSource: 'PRAXIS_API_KEY',
-          baseUrl: 'https://provider.test',
-          model: 'fixture-model',
-          settingSources: ['user', 'project'],
-        }}
+        surface={surface({
+          tab: 'status',
+          snapshot,
+          status: {
+            version: '0.7.0',
+            sessionId: 'session-fixture',
+            cwd: '/work',
+            authSource: 'PRAXIS_API_KEY',
+            baseUrl: 'https://provider.test',
+            model: 'fixture-model',
+            settingSources: ['user', 'project'],
+          },
+        })}
         width={100}
         screenReader={false}
       />,
@@ -152,9 +164,7 @@ describe('Claude-style config dashboard', () => {
     }
     const usage = render(
       <ConfigDashboard
-        tab="usage"
-        snapshot={snapshot}
-        usage={usageData}
+        surface={surface({ tab: 'usage', snapshot, usage: usageData })}
         width={100}
         screenReader={false}
       />,
@@ -170,18 +180,20 @@ describe('Claude-style config dashboard', () => {
   it('renders the three source tabs and rejects missing measured data', () => {
     const status = render(
       <ConfigDashboard
-        tab="status"
-        snapshot={snapshot}
-        status={{
-          version: '0.7.0',
-          sessionName: 'fixture',
-          sessionId: 'session-fixture',
-          cwd: '/work',
-          authSource: 'PRAXIS_API_KEY',
-          baseUrl: 'https://provider.test',
-          model: 'fixture-model',
-          settingSources: ['user'],
-        }}
+        surface={surface({
+          tab: 'status',
+          snapshot,
+          status: {
+            version: '0.7.0',
+            sessionName: 'fixture',
+            sessionId: 'session-fixture',
+            cwd: '/work',
+            authSource: 'PRAXIS_API_KEY',
+            baseUrl: 'https://provider.test',
+            model: 'fixture-model',
+            settingSources: ['user'],
+          },
+        })}
         width={100}
         screenReader={false}
       />,
@@ -198,17 +210,19 @@ describe('Claude-style config dashboard', () => {
 
     const usage = render(
       <ConfigDashboard
-        tab="usage"
-        snapshot={snapshot}
-        usage={{
-          totalCostUsd: 0,
-          apiDurationMs: 0,
-          wallDurationMs: 0,
-          linesAdded: 0,
-          linesRemoved: 0,
-          hasUnknownModelCost: false,
-          modelUsage: [],
-        }}
+        surface={surface({
+          tab: 'usage',
+          snapshot,
+          usage: {
+            totalCostUsd: 0,
+            apiDurationMs: 0,
+            wallDurationMs: 0,
+            linesAdded: 0,
+            linesRemoved: 0,
+            hasUnknownModelCost: false,
+            modelUsage: [],
+          },
+        })}
         width={100}
         screenReader={false}
       />,
@@ -223,16 +237,14 @@ describe('Claude-style config dashboard', () => {
       expect(usage.lastFrame()).toContain(`${label}:`)
     expect(() =>
       ConfigDashboard({
-        tab: 'status',
-        snapshot,
+        surface: surface({ tab: 'status', snapshot }),
         width: 100,
         screenReader: false,
       }),
     ).toThrow('requires measured status data')
     expect(() =>
       ConfigDashboard({
-        tab: 'usage',
-        snapshot,
+        surface: surface({ tab: 'usage', snapshot }),
         width: 100,
         screenReader: false,
       }),

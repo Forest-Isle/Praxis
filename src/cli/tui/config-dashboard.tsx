@@ -9,6 +9,7 @@ import {
   type ConfigSettingsSnapshot,
   type ConfigValue,
 } from './config-settings.js'
+import type { TuiConfigSurfaceModel } from './config-surface-model.js'
 
 export type ConfigDashboardTab = 'status' | 'config' | 'usage'
 
@@ -287,30 +288,26 @@ function UsageRows({ usage }: { usage: ConfigUsageData }) {
 }
 
 export function ConfigDashboard({
-  tab,
-  snapshot,
-  query = '',
-  selectedIndex = 0,
-  searchFocused = true,
-  status,
-  usage,
-  effectiveValues,
+  surface,
   width,
   screenReader,
   maxRows = 18,
 }: {
-  tab: ConfigDashboardTab
-  snapshot: ConfigSettingsSnapshot
-  query?: string
-  selectedIndex?: number
-  searchFocused?: boolean
-  status?: ConfigStatusData
-  usage?: ConfigUsageData
-  effectiveValues?: ConfigEffectiveValues
+  surface: TuiConfigSurfaceModel
   width: number
   screenReader: boolean
   maxRows?: number
 }) {
+  const {
+    tab,
+    snapshot,
+    query,
+    selectedIndex,
+    searchFocused,
+    status,
+    usage,
+    effectiveValues,
+  } = surface
   const rows = projectConfigRows(snapshot, query, effectiveValues)
   let content: React.ReactNode
   switch (tab) {

@@ -176,3 +176,6 @@ Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle rout
 Doctor now consumes a semantic TuiScreen payload while asynchronous lifecycle routing retains the raw doctor state.
 Memory now consumes a semantic TuiScreen payload while memory loading, editing,
 folder-opening, and keyboard routing retain the raw menu state.
+Config now consumes a semantic TuiScreen payload while settings loading, saving,
+search, and keyboard routing retain the raw menu state; status and usage
+presentation data are assembled in the pure config surface projection.
