@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink'
 
+import type { TuiSandboxSurfaceModel } from './sandbox-surface-model.js'
 import type { TuiSandboxSnapshot, TuiSandboxTab } from './sandbox-settings.js'
 
 const TABS: Readonly<Record<TuiSandboxTab, string>> = {
@@ -29,18 +30,15 @@ function prefix(selected: boolean, screenReader: boolean): string {
 }
 
 export function SandboxDashboard({
-  snapshot,
-  tab,
-  selectedIndex,
+  surface,
   width,
   screenReader,
 }: {
-  snapshot: TuiSandboxSnapshot
-  tab: TuiSandboxTab
-  selectedIndex: number
+  surface: TuiSandboxSurfaceModel
   width: number
   screenReader: boolean
 }) {
+  const { snapshot, tab, selectedIndex } = surface
   const tabs = tuiSandboxTabs(snapshot)
   const mode = !snapshot.settings.enabled
     ? 'disabled'
