@@ -24,6 +24,7 @@ import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiCommandPaletteModel } from './command-palette-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
+import type { TuiBtwSurfaceModel } from './btw-surface-model.js'
 import type {
   TuiHelpShortcut,
   TuiHelpShortcutGroup,
@@ -53,13 +54,7 @@ export interface TuiDisplayMetadata {
 }
 export type { TranscriptItem } from './transcript-presentation.js'
 
-export interface TuiBtwEntry {
-  id: number
-  question: string
-  answer: string
-  status: 'answering' | 'complete' | 'forking' | 'error'
-  error?: string
-}
+export type { TuiBtwEntry } from './btw-surface-model.js'
 
 function compactPath(cwd: string): string {
   const home = process.env.HOME
@@ -2105,21 +2100,16 @@ export function HookDashboard({
 }
 
 export function BtwPanel({
-  entries,
-  selectedIndex,
-  scrollOffset,
-  copied,
+  surface,
   width,
   screenReader,
 }: {
-  entries: readonly TuiBtwEntry[]
-  selectedIndex: number
-  scrollOffset: number
-  copied: boolean
+  surface: TuiBtwSurfaceModel
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
+  const { entries, selectedIndex, scrollOffset, copied } = surface
   const selected = entries[selectedIndex]
   const lines = selected?.answer.split('\n') ?? []
   const visibleLines = lines.slice(scrollOffset, scrollOffset + 16)
