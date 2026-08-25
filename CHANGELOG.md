@@ -12,6 +12,12 @@ this file from merged Conventional Commit pull requests.
 * extend the implemented native build profile with transcript/session closure
   and an emitted-output Claude deletion gate; the full native package remains
   unqualified and transcript migration remains explicit and recoverable
+* add an executable #402 core-completion audit covering all 56 PRD stories and
+  separating implemented, qualified, and blocked evidence
+* keep disabled Team startup free of observability/mailbox module loading, and
+  expose durable-local `team status`, `team logs`, and `team attach` projections
+* add a removable, fail-closed Claude Team adapter for the fixture-verified
+  create/delete/send, shutdown, and plan-response shapes
 
 ## [0.37.0](https://github.com/Forest-Isle/Praxis/compare/v0.36.1...v0.37.0) (2026-08-24)
 

@@ -356,6 +356,18 @@ main chain.
 
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
+## Local Team observability and qualification
+
+Team and Swarm are explicit, local-only capabilities. The native CLI provides
+`team status`, `team logs`, and durable-local `team attach` projections in text
+or JSON; tmux is optional presentation and never lifecycle authority. The CLI
+keeps Team observability modules behind the explicit Team gate, so a disabled
+Team does not load mailbox, ownership, or dashboard modules during startup.
+The removable Claude Team adapter is fail-closed and currently covers only
+fixture-verified create/delete/send, shutdown, and plan-response shapes.
+Task, notification, context, and Session-resume compatibility require separate
+black-box evidence and remain unqualified until their zero-skip lanes exist.
+
 ## Clean-room rule
 
 Claude Code may be used to identify observable behavior and build black-box

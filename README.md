@@ -168,7 +168,12 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   and shutdown-drain budgets.
   Child permissions can only tighten the parent; concurrent asks form one FIFO
   Lead Decision queue with provenance. Coordinator leads are restricted to
-  orchestration, and custom Team agents receive no MCP capability.
+  orchestration, and custom Team agents receive no MCP capability. The native
+  CLI also exposes `praxis team status`, `logs`, and `attach` in human or JSON
+  form; durable-local attach does not require tmux. The Claude Team adapter is
+  removable and currently limited to fixture-verified create/delete/send,
+  shutdown, and plan-response shapes; task, notification, context, and
+  Session-resume compatibility remain explicitly unqualified.
 - **Claude-compatible ecosystem** — shared instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and transcript data.
@@ -262,6 +267,9 @@ native transcript, and session profile without the Claude compatibility adapter.
 implemented profile checks, not qualification of the full native package.
 Native transcript migration remains explicit and recoverable.
 `npm run check` also enforces the corresponding source dependency direction.
+`npm run test:core-completion` runs the 56-story #402 audit and reports
+implemented, qualified, blocked, deferred, and out-of-scope states separately;
+it never treats missing live prerequisites as a pass.
 
 Contributions use Conventional Commit pull-request titles and the protected
 squash-merge workflow. Read
