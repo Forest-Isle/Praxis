@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink'
+import type { TuiElicitationSurfaceModel } from './mcp-elicitation-surface-model.js'
 
 export type TuiElicitationValue = string | number | boolean | string[]
 
@@ -659,19 +660,17 @@ export function McpElicitationForm({
   message,
   state,
   input,
+  maxVisibleFields,
   screenReader,
 }: {
   serverName: string
   message: string
   state: TuiElicitationFormState
   input: string
+  maxVisibleFields: number
   screenReader: boolean
 }) {
   const field = focusedElicitationField(state)
-  const maxVisibleFields = Math.max(
-    2,
-    Math.floor(((process.stdout.rows ?? 24) - 14) / 3),
-  )
   const focusForWindow = Math.min(
     state.focusIndex,
     Math.max(0, state.fields.length - 1),
@@ -774,4 +773,16 @@ export function McpElicitationForm({
       </Text>
     </Box>
   )
+}
+
+export function ElicitationSurface({
+  model,
+  screenReader,
+}: {
+  model: TuiElicitationSurfaceModel
+  screenReader: boolean
+}) {
+  if (model.kind === 'elicitation-url')
+    return <McpElicitationUrl {...model} screenReader={screenReader} />
+  return <McpElicitationForm {...model} screenReader={screenReader} />
 }

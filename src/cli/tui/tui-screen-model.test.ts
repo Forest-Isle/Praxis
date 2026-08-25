@@ -48,6 +48,8 @@ import type {
 } from './model-effort-surface-model.js'
 import { projectTuiLeafSurface } from './leaf-surface-model.js'
 import type { TuiLeafSurfaceModel } from './leaf-surface-model.js'
+import { projectTuiElicitationSurface } from './mcp-elicitation-surface-model.js'
+import type { TuiElicitationSurfaceModel } from './mcp-elicitation-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -58,6 +60,10 @@ type Surfaces = TuiScreenSurfaceModels & {
       }
     | { readonly kind: 'plan-approval'; readonly selectedIndex: number }
     | { readonly kind: 'question'; readonly questionIndex: number }
+    | {
+        readonly kind: 'elicitation'
+        readonly surface: TuiElicitationSurfaceModel
+      }
   readonly secondary:
     | { readonly kind: 'menu'; readonly surface?: unknown }
     | TuiMcpSurfaceModel
@@ -489,6 +495,30 @@ describe('projectTuiScreen', () => {
     })
     if (foreground.kind === 'priority') {
       expect(foreground.surface).toBe(decisionPlan)
+    }
+  })
+
+  it('preserves elicitation payload identity through generic precedence', () => {
+    const surface = projectTuiElicitationSurface({
+      request: {
+        mode: 'url',
+        serverName: 'demo',
+        message: 'Continue',
+        url: 'https://example.com',
+      },
+      input: '',
+      urlWaiting: false,
+    })
+    const priority = { kind: 'elicitation' as const, surface }
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { priority, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('priority')
+    if (foreground.kind === 'priority') {
+      expect(foreground.surface).toBe(priority)
+      if (foreground.surface.kind === 'elicitation')
+        expect(foreground.surface.surface).toBe(surface)
     }
   })
 
