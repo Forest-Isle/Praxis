@@ -33,6 +33,7 @@ import { projectTuiCommandPalette } from './command-palette-model.js'
 import { projectTuiDiffSurface } from './diff-surface-model.js'
 import { projectTuiSessionPicker } from './session-picker-model.js'
 import { projectTuiMentionPicker } from './mention-picker-model.js'
+import { projectTuiMemorySurface } from './memory-surface-model.js'
 import {
   projectTranscriptPresentation,
   type TranscriptItem,
@@ -118,10 +119,13 @@ describe('Claude-style TUI components', () => {
     ]
     const app = render(
       <MemoryDashboard
-        autoMemoryEnabled
-        entries={entries}
-        selectedIndex={1}
-        openedIndex={1}
+        surface={projectTuiMemorySurface({
+          autoMemoryEnabled: true,
+          entries,
+          selectedIndex: 1,
+          openedIndex: 1,
+          dataPlane: 'claude',
+        })}
         width={100}
         screenReader={false}
       />,
@@ -137,10 +141,13 @@ describe('Claude-style TUI components', () => {
 
     const accessible = render(
       <MemoryDashboard
-        autoMemoryEnabled={false}
-        entries={entries.slice(0, 1)}
-        selectedIndex={0}
-        openedIndex={null}
+        surface={projectTuiMemorySurface({
+          autoMemoryEnabled: false,
+          entries: entries.slice(0, 1),
+          selectedIndex: 0,
+          openedIndex: null,
+          dataPlane: 'claude',
+        })}
         width={40}
         screenReader
       />,
@@ -1734,18 +1741,21 @@ describe('Claude-style TUI components', () => {
     ).lastFrame()
     const memory = render(
       <MemoryDashboard
-        autoMemoryEnabled
-        entries={[
-          {
-            kind: 'file',
-            label: 'User memory',
-            path: '/memory/CLAUDE.md',
-            displayPath: '/memory/CLAUDE.md',
-            scope: 'user',
-          },
-        ]}
-        selectedIndex={0}
-        openedIndex={null}
+        surface={projectTuiMemorySurface({
+          autoMemoryEnabled: true,
+          entries: [
+            {
+              kind: 'file',
+              label: 'User memory',
+              path: '/memory/CLAUDE.md',
+              displayPath: '/memory/CLAUDE.md',
+              scope: 'user',
+            },
+          ],
+          selectedIndex: 0,
+          openedIndex: null,
+          dataPlane: 'claude',
+        })}
         width={80}
         screenReader
       />,
@@ -1799,18 +1809,21 @@ describe('Claude-style TUI components', () => {
               screenReader={false}
             />
             <MemoryDashboard
-              autoMemoryEnabled
-              entries={[
-                {
-                  kind: 'file',
-                  label: 'User memory',
-                  path: '/memory/CLAUDE.md',
-                  displayPath: '/memory/CLAUDE.md',
-                  scope: 'user',
-                },
-              ]}
-              selectedIndex={0}
-              openedIndex={null}
+              surface={projectTuiMemorySurface({
+                autoMemoryEnabled: true,
+                entries: [
+                  {
+                    kind: 'file',
+                    label: 'User memory',
+                    path: '/memory/CLAUDE.md',
+                    displayPath: '/memory/CLAUDE.md',
+                    scope: 'user',
+                  },
+                ],
+                selectedIndex: 0,
+                openedIndex: null,
+                dataPlane: 'claude',
+              })}
               width={80}
               screenReader={false}
             />

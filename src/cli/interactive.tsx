@@ -292,6 +292,10 @@ import {
   projectTuiDoctorSurface,
   type TuiDoctorSurfaceModel,
 } from './tui/doctor-surface-model.js'
+import {
+  projectTuiMemorySurface,
+  type TuiMemorySurfaceModel,
+} from './tui/memory-surface-model.js'
 import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
 import {
   createTuiSandboxStore,
@@ -1884,6 +1888,7 @@ export function InteractiveApp({
     | TuiMcpSurfaceModel
     | TuiTaskSurfaceModel
     | TuiDoctorSurfaceModel
+    | TuiMemorySurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -1996,6 +2001,21 @@ export function InteractiveApp({
           }),
     [doctorMenu],
   )
+  const memoryMenu = menu?.kind === 'memory' ? menu : null
+  const memorySurface = useMemo<TuiMemorySurfaceModel | null>(
+    () =>
+      memoryMenu === null
+        ? null
+        : projectTuiMemorySurface({
+            autoMemoryEnabled: memoryMenu.autoMemoryEnabled,
+            entries: memoryMenu.entries,
+            selectedIndex: memoryMenu.selectedIndex,
+            openedIndex: memoryMenu.openedIndex,
+            loading: memoryMenu.loading,
+            dataPlane,
+          }),
+    [memoryMenu, dataPlane],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -2009,7 +2029,9 @@ export function InteractiveApp({
               ? (taskSurface ?? undefined)
               : menu.kind === 'doctor'
                 ? (doctorSurface ?? undefined)
-                : (permissionManagementSurface ?? legacySecondarySurface)
+                : menu.kind === 'memory'
+                  ? (memorySurface ?? undefined)
+                  : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8283,6 +8305,12 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'memory-panel' ? (
+                <MemoryDashboard
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
@@ -8326,17 +8354,6 @@ export function InteractiveApp({
                   usage={menu.usage}
                   width={width}
                   screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'memory' ? (
-                <MemoryDashboard
-                  autoMemoryEnabled={menu.autoMemoryEnabled}
-                  entries={menu.entries}
-                  selectedIndex={menu.selectedIndex}
-                  openedIndex={menu.openedIndex}
-                  loading={menu.loading}
-                  width={width}
-                  screenReader={axScreenReader}
-                  dataPlane={dataPlane}
                 />
               ) : menu.kind === 'hooks' ? (
                 <HookDashboard
