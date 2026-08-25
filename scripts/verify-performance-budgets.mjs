@@ -29,7 +29,6 @@ import {
   appendTuiHistory,
   projectTuiView,
 } from '../dist/cli/tui/tui-view-model.js'
-import { transcriptPresentationLineCount } from '../dist/cli/tui/transcript-viewport.js'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { selectClaudeSchemaAdapter } from '../dist/compatibility/claude/schema.js'
 import {
@@ -126,6 +125,54 @@ function runActiveStreamBenchmark(repositoryRoot) {
         reject(
           new Error(
             `Active-stream benchmark produced invalid JSON: ${error.message}`,
+          ),
+        )
+      }
+    })
+  })
+}
+
+function runProjectionBenchmark(repositoryRoot) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--expose-gc',
+        new URL('./verify-projection-scaling.mjs', import.meta.url).pathname,
+      ],
+      {
+        cwd: repositoryRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.once('error', reject)
+    child.once('close', (code) => {
+      try {
+        const result = JSON.parse(stdout.trim())
+        if (code !== 0) {
+          reject(
+            new Error(
+              `Projection benchmark failed (${code}): ${stderr.trim() || stdout.trim()}`,
+            ),
+          )
+          return
+        }
+        resolve(result)
+      } catch (error) {
+        reject(
+          new Error(
+            `Projection benchmark produced invalid JSON: ${error.message}`,
           ),
         )
       }
@@ -494,69 +541,17 @@ try {
     budgets.transcriptSyntaxRenderP95Ms,
   )
 
-  const projectionSizes = [30_000, 60_000, 120_000]
+  const projectionResult = await runProjectionBenchmark(process.cwd())
+  const projectionSizes = projectionResult.projectionSizes
   const projectionFixtures = projectionSizes.map((size) =>
     Array.from({ length: size }, (_, index) => ({
       kind: 'assistant',
       text: `projection marker ${index}`,
     })),
   )
-  const projectionMedians = []
-  for (
-    let fixtureIndex = 0;
-    fixtureIndex < projectionFixtures.length;
-    fixtureIndex += 1
-  ) {
-    const history = projectionFixtures[fixtureIndex]
-    const size = projectionSizes[fixtureIndex]
-    const newestMarker = `projection marker ${size - 1}`
-    const project = () => {
-      const result = projectTuiView({
-        initialHistory: history,
-        history,
-        resume: true,
-        fixedViewport: true,
-        screenReader: false,
-        rows: 36,
-        width: 100,
-        scrollOffset: 0,
-        detailedTranscript: false,
-      })
-      const visibleRows = transcriptPresentationLineCount(
-        result.transcriptEntries,
-        100,
-        'normal',
-      )
-      if (visibleRows <= 0 || visibleRows > result.transcriptPageRows) {
-        throw new Error(
-          `Projection row bounds failed for ${size}: ${visibleRows}/${result.transcriptPageRows}`,
-        )
-      }
-      if (
-        !result.transcriptEntries.some(
-          (entry) =>
-            entry.kind === 'item' &&
-            JSON.stringify(entry).includes(newestMarker),
-        )
-      ) {
-        throw new Error(`Projection lost newest marker for ${size}`)
-      }
-    }
-    const durations = await samples(5, project)
-    projectionMedians.push(percentile(durations, 50))
-  }
-  const projectionRatio60k = projectionMedians[1] / projectionMedians[0]
-  const projectionRatio120k = projectionMedians[2] / projectionMedians[1]
-  if (
-    !Number.isFinite(projectionRatio60k) ||
-    !Number.isFinite(projectionRatio120k) ||
-    projectionRatio60k > 3.25 ||
-    projectionRatio120k > 3.25
-  ) {
-    throw new Error(
-      `Projection scaling exceeded doubling budget: ${projectionRatio60k.toFixed(2)}x/${projectionRatio120k.toFixed(2)}x`,
-    )
-  }
+  const projectionMedians = projectionResult.projectionMedians
+  const projectionRatio60k = projectionResult.projectionRatio60k
+  const projectionRatio120k = projectionResult.projectionRatio120k
   assertBudget(
     '120k projection median',
     projectionMedians[2],
