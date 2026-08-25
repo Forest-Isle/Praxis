@@ -44,6 +44,8 @@ export class ClaudeFileChangeWatcher {
   private readonly watchers = new Map<string, DirectoryWatcher>()
   private readonly knownExistence = new Map<string, boolean>()
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly pendingExistence = new Map<string, boolean[]>()
+  private readonly processing = new Set<string>()
   private readonly inFlight = new Map<Promise<void>, AbortController>()
   private readonly debounceMs: number
   private readonly pathExists: (path: string) => boolean
@@ -82,7 +84,7 @@ export class ClaudeFileChangeWatcher {
       return
     }
     this.dynamicPaths = next
-    this.rebuild()
+    this.rebuild(true)
   }
 
   async close(timeoutMs = 5_000): Promise<void> {
@@ -139,9 +141,23 @@ export class ClaudeFileChangeWatcher {
     ]
   }
 
-  private rebuild(): void {
+  private rebuild(preservePending = false): void {
+    const pendingExistence = preservePending
+      ? new Map(
+          [...this.pendingExistence.entries()].map(([path, states]) => [
+            path,
+            [...states],
+          ]),
+        )
+      : undefined
     this.generation += 1
     this.clearResources()
+    if (!preservePending) this.pendingExistence.clear()
+    if (pendingExistence) {
+      for (const [path, states] of pendingExistence) {
+        if (states.length > 0) this.pendingExistence.set(path, states)
+      }
+    }
     const targets = this.targetPaths()
     const byDirectory = new Map<string, Set<string>>()
     for (const target of targets) {
@@ -175,31 +191,78 @@ export class ClaudeFileChangeWatcher {
         )
       }
     }
+    if (pendingExistence) {
+      const generation = this.generation
+      for (const path of pendingExistence.keys()) {
+        if (this.processing.has(path)) continue
+        const timer = setTimeout(() => {
+          this.pending.delete(path)
+          if (this.closed || generation !== this.generation) return
+          void this.processPending(path, generation)
+        }, this.debounceMs)
+        timer.unref?.()
+        this.pending.set(path, timer)
+      }
+    }
   }
 
   private schedule(path: string): void {
+    const observed = this.pathExists(path)
+    const states = this.pendingExistence.get(path) ?? []
+    const previousState = states.at(-1)
+    if (previousState === undefined || observed !== previousState) {
+      states.push(observed)
+    }
+    this.pendingExistence.set(path, states)
     const previous = this.pending.get(path)
     if (previous) clearTimeout(previous)
+    if (states.length === 0 || this.processing.has(path)) return
     const generation = this.generation
     const timer = setTimeout(() => {
       this.pending.delete(path)
       if (this.closed || generation !== this.generation) return
-      const controller = new AbortController()
-      const dispatch = this.dispatch(path, generation, controller.signal)
-      this.inFlight.set(dispatch, controller)
-      void dispatch.finally(() => this.inFlight.delete(dispatch))
+      void this.processPending(path, generation)
     }, this.debounceMs)
     timer.unref?.()
     this.pending.set(path, timer)
   }
 
+  private async processPending(
+    path: string,
+    generation: number,
+  ): Promise<void> {
+    if (
+      this.closed ||
+      generation !== this.generation ||
+      this.processing.has(path)
+    )
+      return
+    const states = this.pendingExistence.get(path)
+    const next = states?.shift()
+    if (next === undefined) return
+    if (states?.length === 0) this.pendingExistence.delete(path)
+    this.processing.add(path)
+    const controller = new AbortController()
+    const dispatch = this.dispatch(path, next, generation, controller.signal)
+    this.inFlight.set(dispatch, controller)
+    try {
+      await dispatch
+    } finally {
+      this.inFlight.delete(dispatch)
+      this.processing.delete(path)
+      if (!this.closed && this.pendingExistence.has(path)) {
+        await this.processPending(path, this.generation)
+      }
+    }
+  }
+
   private async dispatch(
     path: string,
+    exists: boolean,
     generation: number,
     signal: AbortSignal,
   ): Promise<void> {
     const existed = this.knownExistence.get(path) ?? false
-    const exists = this.pathExists(path)
     this.knownExistence.set(path, exists)
     if (!existed && !exists) return
     const event: ClaudeFileChangeEvent = !existed
