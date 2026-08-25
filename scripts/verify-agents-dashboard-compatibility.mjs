@@ -50,15 +50,19 @@ async function listenProvider() {
 process.env.DISABLE_AUTOUPDATER = '1'
 
 function environment() {
-  return {
+  const value = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
     DISABLE_AUTOUPDATER: '1',
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'openai',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',
     PRAXIS_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
   }
+  delete value.NO_COLOR
+  delete value.FORCE_COLOR
+  return value
 }
 
 function requiredOptions(output) {
