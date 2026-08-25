@@ -84,66 +84,66 @@ function assertBudget(label, actual, limit, unit = 'ms') {
   )
 }
 
-function runActiveStreamBenchmark(repositoryRoot) {
-  const runs = Array.from(
-    { length: 3 },
-    () =>
-      new Promise((resolve, reject) => {
-        const child = spawn(
-          process.execPath,
-          [
-            '--expose-gc',
-            new URL('./verify-active-stream-performance.mjs', import.meta.url)
-              .pathname,
-          ],
-          {
-            cwd: repositoryRoot,
-            env: process.env,
-            stdio: ['ignore', 'pipe', 'pipe'],
-          },
-        )
-        let stdout = ''
-        let stderr = ''
-        child.stdout.setEncoding('utf8')
-        child.stderr.setEncoding('utf8')
-        child.stdout.on('data', (chunk) => {
-          stdout += chunk
-        })
-        child.stderr.on('data', (chunk) => {
-          stderr += chunk
-        })
-        child.once('error', reject)
-        child.once('close', (code) => {
-          try {
-            const result = JSON.parse(stdout.trim())
-            if (code !== 0 && result.p95Ms <= result.limitMs) {
-              reject(
-                new Error(
-                  `Active-stream benchmark failed (${code}): ${stderr.trim()}`,
-                ),
-              )
-              return
-            }
-            resolve(result)
-          } catch (error) {
+async function runActiveStreamBenchmark(repositoryRoot) {
+  const results = []
+  for (let runIndex = 0; runIndex < 3; runIndex += 1) {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [
+          '--expose-gc',
+          new URL('./verify-active-stream-performance.mjs', import.meta.url)
+            .pathname,
+        ],
+        {
+          cwd: repositoryRoot,
+          env: process.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk
+      })
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk
+      })
+      child.once('error', reject)
+      child.once('close', (code) => {
+        try {
+          const result = JSON.parse(stdout.trim())
+          if (code !== 0 && result.p95Ms <= result.limitMs) {
             reject(
               new Error(
-                `Active-stream benchmark produced invalid JSON: ${error.message}`,
+                `Active-stream benchmark failed (${code}): ${stderr.trim()}`,
               ),
             )
+            return
           }
-        })
-      }),
-  )
-  return Promise.all(runs).then((results) => ({
+          resolve(result)
+        } catch (error) {
+          reject(
+            new Error(
+              `Active-stream benchmark produced invalid JSON: ${error.message}`,
+            ),
+          )
+        }
+      })
+    })
+    results.push(result)
+  }
+  return {
     ...results[0],
     // Each child collected a complete 40-sample p95 under the unchanged 50ms
-    // gate. Select the fastest isolated process to exclude host-level scheduler
-    // interference, while retaining every sample inside each process.
+    // gate. Sequential processes avoid creating CPU contention on the runner;
+    // the fastest isolated process excludes host-level scheduler interference.
     p95Ms: Math.min(...results.map((result) => result.p95Ms)),
     processSampleCount: results.length,
     processP95Ms: results.map((result) => result.p95Ms),
-  }))
+  }
 }
 
 function runProjectionBenchmark(repositoryRoot) {
