@@ -189,3 +189,4 @@ Agents and generic lists now consume a semantic TuiScreen payload while
 keyboard routing retains the raw menu state.
 Btw now consumes a semantic TuiScreen payload while interaction routing retains
 raw menu state.
+Theme and custom-theme panels now consume a semantic TuiScreen payload while keyboard and persistence routing remains controller-local.

@@ -90,6 +90,10 @@ import {
   type TuiModelSurfaceModel,
 } from './tui/model-effort-surface-model.js'
 import {
+  projectTuiThemeSurface,
+  type TuiThemeSurfaceModel,
+} from './tui/theme-surface-model.js'
+import {
   projectTuiBtwSurface,
   type TuiBtwEntry,
   type TuiBtwSurfaceModel,
@@ -1954,6 +1958,7 @@ export function InteractiveApp({
     | TuiRewindSurfaceModel
     | TuiModelSurfaceModel
     | TuiEffortSurfaceModel
+    | TuiThemeSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2202,6 +2207,49 @@ export function InteractiveApp({
       statusSettingSources,
     ],
   )
+  const themeMenu = menu?.kind === 'theme' ? menu : null
+  const themeSurface = useMemo<TuiThemeSurfaceModel | null>(
+    () =>
+      themeMenu === null
+        ? null
+        : projectTuiThemeSurface({
+            kind: 'theme',
+            currentTheme: themeSettings.theme,
+            customThemes,
+            selectedIndex: themeMenu.selectedIndex,
+            syntaxHighlightingDisabled:
+              themeSettings.syntaxHighlightingDisabled,
+          }),
+    [themeMenu, themeSettings, customThemes],
+  )
+  const customThemeCreateMenu =
+    menu?.kind === 'custom-theme-create' ? menu : null
+  const customThemeEditorMenu =
+    menu?.kind === 'custom-theme-editor' ? menu : null
+  const customThemeTokenMenu = menu?.kind === 'custom-theme-token' ? menu : null
+  const customThemeDeleteMenu =
+    menu?.kind === 'custom-theme-delete' ? menu : null
+  const customThemeSurface = useMemo<TuiThemeSurfaceModel | null>(() => {
+    if (customThemeCreateMenu)
+      return projectTuiThemeSurface({
+        kind: 'custom-theme-create',
+        base: customThemeCreateMenu.base,
+        name: input,
+      })
+    if (customThemeEditorMenu)
+      return projectTuiThemeSurface(customThemeEditorMenu)
+    if (customThemeTokenMenu)
+      return projectTuiThemeSurface({ ...customThemeTokenMenu, value: input })
+    if (customThemeDeleteMenu)
+      return projectTuiThemeSurface(customThemeDeleteMenu)
+    return null
+  }, [
+    customThemeCreateMenu,
+    customThemeEditorMenu,
+    customThemeTokenMenu,
+    customThemeDeleteMenu,
+    input,
+  ])
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -2233,8 +2281,16 @@ export function InteractiveApp({
                                 ? (modelSurface ?? undefined)
                                 : menu.kind === 'effort'
                                   ? (effortSurface ?? undefined)
-                                  : (permissionManagementSurface ??
-                                    legacySecondarySurface)
+                                  : menu.kind === 'theme' ||
+                                      menu.kind === 'custom-theme-create' ||
+                                      menu.kind === 'custom-theme-editor' ||
+                                      menu.kind === 'custom-theme-token' ||
+                                      menu.kind === 'custom-theme-delete'
+                                    ? (themeSurface ??
+                                      customThemeSurface ??
+                                      undefined)
+                                    : (permissionManagementSurface ??
+                                      legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8489,6 +8545,44 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'theme-panel' ? (
+                <ThemePicker
+                  model={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : selectedSecondarySurface.kind === 'custom-theme-create' ? (
+                <DialogFrame
+                  title="New custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>
+                    Name: {selectedSecondarySurface.name || 'my-theme'}
+                  </Text>
+                  <Text>
+                    based on {selectedSecondarySurface.base} · saved to ~/
+                    {settingsDirectory}
+                    /themes/theme.json
+                  </Text>
+                  <Text dimColor>Enter to create · Esc to cancel</Text>
+                </DialogFrame>
+              ) : selectedSecondarySurface.kind === 'custom-theme-editor' ||
+                selectedSecondarySurface.kind === 'custom-theme-token' ? (
+                <CustomThemeEditor
+                  model={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
+              ) : selectedSecondarySurface.kind === 'custom-theme-delete' ? (
+                <DialogFrame
+                  title="Delete custom theme"
+                  screenReader={axScreenReader}
+                >
+                  <Text>
+                    Delete {selectedSecondarySurface.theme.name} permanently?
+                  </Text>
+                  <Text dimColor>Enter to confirm · Esc to cancel</Text>
+                </DialogFrame>
               ) : menu.kind === 'sandbox' ||
                 menu.kind === 'agents' ||
                 menu.kind === 'config' ||
@@ -8498,58 +8592,7 @@ export function InteractiveApp({
                 menu.kind === 'rewind-confirm' ||
                 menu.kind === 'rewind-context' ||
                 menu.kind === 'model' ||
-                menu.kind === 'effort' ? null : menu.kind === 'theme' ? (
-                <ThemePicker
-                  currentTheme={themeSettings.theme}
-                  selectedIndex={menu.selectedIndex}
-                  customThemes={customThemes}
-                  syntaxHighlightingDisabled={
-                    themeSettings.syntaxHighlightingDisabled
-                  }
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'custom-theme-create' ? (
-                <DialogFrame
-                  title="New custom theme"
-                  screenReader={axScreenReader}
-                >
-                  <Text>Name: {input || 'my-theme'}</Text>
-                  <Text>
-                    based on {menu.base} · saved to ~/{settingsDirectory}
-                    /themes/theme.json
-                  </Text>
-                  <Text dimColor>Enter to create · Esc to cancel</Text>
-                </DialogFrame>
-              ) : menu.kind === 'custom-theme-editor' ? (
-                <CustomThemeEditor
-                  theme={menu.theme}
-                  width={width}
-                  screenReader={axScreenReader}
-                  value={menu.query}
-                  tokens={CUSTOM_THEME_TOKENS.filter((token) =>
-                    token.toLowerCase().includes(menu.query.toLowerCase()),
-                  )}
-                  selectedIndex={menu.selectedIndex}
-                  query={menu.query}
-                />
-              ) : menu.kind === 'custom-theme-token' ? (
-                <CustomThemeEditor
-                  theme={menu.theme}
-                  token={menu.token}
-                  width={width}
-                  screenReader={axScreenReader}
-                  value={input}
-                />
-              ) : menu.kind === 'custom-theme-delete' ? (
-                <DialogFrame
-                  title="Delete custom theme"
-                  screenReader={axScreenReader}
-                >
-                  <Text>Delete {menu.theme.name} permanently?</Text>
-                  <Text dimColor>Enter to confirm · Esc to cancel</Text>
-                </DialogFrame>
-              ) : menu.kind === 'export' ? (
+                menu.kind === 'effort' ? null : menu.kind === 'export' ? (
                 <SelectionMenu
                   title="Export conversation"
                   description="Select export method"
