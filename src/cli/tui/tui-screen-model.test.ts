@@ -30,6 +30,8 @@ import type { TuiConfigSurfaceModel } from './config-surface-model.js'
 import { projectTuiSandboxSurface } from './sandbox-surface-model.js'
 import type { TuiSandboxSnapshot } from './sandbox-settings.js'
 import type { TuiSandboxSurfaceModel } from './sandbox-surface-model.js'
+import { projectTuiThemeSurface } from './theme-surface-model.js'
+import type { TuiThemeSurfaceModel } from './theme-surface-model.js'
 import { projectTuiListSurface } from './list-surface-model.js'
 import type { TuiListSurfaceModel } from './list-surface-model.js'
 import { projectTuiBtwSurface } from './btw-surface-model.js'
@@ -63,6 +65,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiHooksSurfaceModel
     | TuiConfigSurfaceModel
     | TuiSandboxSurfaceModel
+    | TuiThemeSurfaceModel
     | TuiListSurfaceModel
     | TuiBtwSurfaceModel
     | TuiRewindSurfaceModel
@@ -243,6 +246,23 @@ describe('projectTuiScreen', () => {
     const surface = projectTuiMcpSurface({
       model: { cwd: '/workspace', servers: [] },
       state: { depth: 'list', serverIndex: 0, selectedIndex: 0 },
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the Theme semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiThemeSurface({
+      kind: 'theme',
+      currentTheme: 'dark',
+      customThemes: [],
+      selectedIndex: 1,
+      syntaxHighlightingDisabled: false,
     })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),

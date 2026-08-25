@@ -56,6 +56,7 @@ import {
   projectTuiEffortSurface,
   projectTuiModelSurface,
 } from './model-effort-surface-model.js'
+import { projectTuiThemeSurface } from './theme-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -1583,9 +1584,13 @@ describe('Claude-style TUI components', () => {
   it('renders the observed built-in theme choices and active profile', () => {
     const app = render(
       <ThemePicker
-        currentTheme="dark"
-        selectedIndex={1}
-        syntaxHighlightingDisabled={false}
+        model={projectTuiThemeSurface({
+          kind: 'theme',
+          currentTheme: 'dark',
+          customThemes: [],
+          selectedIndex: 1,
+          syntaxHighlightingDisabled: false,
+        })}
         width={100}
         screenReader={false}
       />,
@@ -1610,9 +1615,13 @@ describe('Claude-style TUI components', () => {
   it('renders a semantic, decoration-free theme picker for screen readers', () => {
     const app = render(
       <ThemePicker
-        currentTheme="light-ansi"
-        selectedIndex={6}
-        syntaxHighlightingDisabled
+        model={projectTuiThemeSurface({
+          kind: 'theme',
+          currentTheme: 'light-ansi',
+          customThemes: [],
+          selectedIndex: 6,
+          syntaxHighlightingDisabled: true,
+        })}
         width={100}
         screenReader
       />,
@@ -1758,16 +1767,17 @@ describe('Claude-style TUI components', () => {
   it('announces selected rows across legacy screen-reader dashboards', () => {
     const customTheme = render(
       <CustomThemeEditor
-        theme={{
-          name: 'Review theme',
-          slug: 'review-theme',
-          base: 'dark',
-          overrides: {},
-        }}
-        value=""
-        tokens={['text', 'warning']}
-        selectedIndex={0}
-        query=""
+        model={projectTuiThemeSurface({
+          kind: 'custom-theme-editor',
+          theme: {
+            name: 'Review theme',
+            slug: 'review-theme',
+            base: 'dark',
+            overrides: {},
+          },
+          selectedIndex: 1,
+          query: 'text',
+        })}
         width={80}
         screenReader
       />,
@@ -1834,15 +1844,17 @@ describe('Claude-style TUI components', () => {
         >
           <>
             <CustomThemeEditor
-              theme={{
-                name: 'Review theme',
-                slug: 'review-theme',
-                base: 'dark',
-                overrides: {},
-              }}
-              value=""
-              tokens={['text', 'warning']}
-              selectedIndex={0}
+              model={projectTuiThemeSurface({
+                kind: 'custom-theme-editor',
+                theme: {
+                  name: 'Review theme',
+                  slug: 'review-theme',
+                  base: 'dark',
+                  overrides: {},
+                },
+                selectedIndex: 1,
+                query: 'text',
+              })}
               width={80}
               screenReader={false}
             />

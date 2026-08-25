@@ -21,7 +21,7 @@ import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
 import type { TuiHooksSurfaceModel } from './hooks-surface-model.js'
 import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
-import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
+import type { TuiThemeSurfaceModel } from './theme-surface-model.js'
 import type { TuiCommandPaletteModel } from './command-palette-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
 import type { TuiBtwSurfaceModel } from './btw-surface-model.js'
@@ -1591,54 +1591,26 @@ export function DiffDashboard({
   )
 }
 
-const THEME_OPTIONS: readonly { theme: TuiTheme; label: string }[] = [
-  { theme: 'auto', label: 'Auto (match terminal)' },
-  { theme: 'dark', label: 'Dark mode' },
-  { theme: 'light', label: 'Light mode' },
-  { theme: 'dark-daltonized', label: 'Dark mode (colorblind-friendly)' },
-  { theme: 'light-daltonized', label: 'Light mode (colorblind-friendly)' },
-  { theme: 'dark-ansi', label: 'Dark mode (ANSI colors only)' },
-  { theme: 'light-ansi', label: 'Light mode (ANSI colors only)' },
-]
-
 export function ThemePicker({
-  currentTheme,
-  selectedIndex,
-  syntaxHighlightingDisabled,
-  customThemes = [],
-  allowCustomThemes = true,
+  model,
   width,
   screenReader,
 }: {
-  currentTheme: TuiTheme | `custom:${string}`
-  selectedIndex: number
-  syntaxHighlightingDisabled: boolean
-  customThemes?: readonly TuiCustomTheme[]
-  allowCustomThemes?: boolean
+  model: Extract<TuiThemeSurfaceModel, { kind: 'theme-panel' }>
   width: number
   screenReader: boolean
 }) {
   const theme = useTuiTheme()
-  const options = [
-    ...THEME_OPTIONS.map((option) => ({ ...option, customTheme: undefined })),
-    ...customThemes.map((theme) => ({
-      theme: `custom:${theme.slug}` as const,
-      label: `${theme.name} (custom)`,
-      customTheme: theme,
-    })),
-    ...(allowCustomThemes
-      ? [{ theme: '__new__' as const, label: 'New custom theme…' }]
-      : []),
-  ]
+  const { options, currentTheme, selectedIndex, syntaxHighlightingDisabled } =
+    model
   const selected = options[selectedIndex]
-  const selectedCustomTheme =
-    selected && 'customTheme' in selected ? selected.customTheme : undefined
+  const selectedCustomTheme = selected?.customTheme
   const previewTheme =
-    selected?.theme.startsWith('custom:') && selectedCustomTheme
+    selected?.id.startsWith('custom:') && selectedCustomTheme
       ? selectedCustomTheme.base
-      : selected?.theme === '__new__'
+      : selected?.id === '__new__'
         ? 'dark'
-        : (selected?.theme ??
+        : (selected?.id ??
           (currentTheme.startsWith('custom:') ? 'dark' : currentTheme))
   const preview = resolveTuiTheme(
     {
@@ -1664,19 +1636,19 @@ export function ThemePicker({
       <Text> </Text>
       {options.map((option, index) =>
         screenReader ? (
-          <Text key={option.theme}>
+          <Text key={option.id}>
             {index + 1}. {option.label}
-            {option.theme === currentTheme ? ' (current)' : ''}
+            {option.current ? ' (current)' : ''}
             {index === selectedIndex ? ' (focused)' : ''}
           </Text>
         ) : (
           <Text
-            key={option.theme}
+            key={option.id}
             {...(index === selectedIndex ? theme.text.selectedRow : {})}
           >
             {index === selectedIndex ? ' ❯ ' : '   '}
             {index + 1}. {option.label}
-            {option.theme === currentTheme ? ' ✔' : ''}
+            {option.current ? ' ✔' : ''}
           </Text>
         ),
       )}
@@ -1727,7 +1699,7 @@ export function ThemePicker({
       ) : null}
       <Text dimColor>
         {' '}
-        {selected?.theme === '__new__'
+        {selected?.id === '__new__'
           ? 'Enter to create a custom theme'
           : syntaxHighlightingDisabled
             ? 'Syntax highlighting disabled (ctrl+t to enable)'
@@ -1739,25 +1711,25 @@ export function ThemePicker({
 }
 
 export function CustomThemeEditor({
-  theme,
-  token,
-  value,
-  tokens = [],
-  selectedIndex = 0,
-  query = '',
+  model,
   width,
   screenReader,
 }: {
-  theme: TuiCustomTheme
-  token?: CustomThemeToken
-  value: string
-  tokens?: readonly CustomThemeToken[]
-  selectedIndex?: number
-  query?: string
+  model: Extract<
+    TuiThemeSurfaceModel,
+    { kind: 'custom-theme-editor' | 'custom-theme-token' }
+  >
   width: number
   screenReader: boolean
 }) {
   const semanticTheme = useTuiTheme()
+  const theme = model.theme
+  const token = model.kind === 'custom-theme-token' ? model.token : undefined
+  const value = model.kind === 'custom-theme-token' ? model.value : ''
+  const tokens = model.kind === 'custom-theme-editor' ? model.tokens : []
+  const selectedIndex =
+    model.kind === 'custom-theme-editor' ? model.selectedIndex : 0
+  const query = model.kind === 'custom-theme-editor' ? model.query : ''
   return (
     <Box flexDirection="column" width={Math.min(100, width)}>
       <Text {...semanticTheme.text.heading} bold>
