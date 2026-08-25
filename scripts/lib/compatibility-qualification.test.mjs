@@ -26,6 +26,8 @@ describe('compatibility qualification environment', () => {
     const environment = buildQualificationEnvironment(
       {
         PATH: '/usr/bin',
+        NO_COLOR: '1',
+        FORCE_COLOR: '1',
         ANTHROPIC_API_KEY: 'secret',
         ANTHROPIC_BASE_URL: 'https://host.example',
         ANTHROPIC_MODEL: 'host-model',
@@ -76,6 +78,8 @@ describe('compatibility qualification environment', () => {
       'CLAUDE_CODE_SUBAGENT_MODEL',
       'ANTHROPIC_BEDROCK_BASE_URL',
       'AWS_REGION',
+      'NO_COLOR',
+      'FORCE_COLOR',
     ]) {
       if (key !== 'CLAUDE_CONFIG_DIR') expect(environment[key]).toBeUndefined()
     }

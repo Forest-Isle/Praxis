@@ -116,6 +116,8 @@ export function buildQualificationEnvironment(
       delete environment[key]
     }
   }
+  delete environment.NO_COLOR
+  delete environment.FORCE_COLOR
 
   environment.PRAXIS_PROVIDER = 'openai'
   environment.PRAXIS_DATA_PLANE = 'claude'

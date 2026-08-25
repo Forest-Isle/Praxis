@@ -72,6 +72,7 @@ const requiredEnvironment = new Map([
     'scripts/verify-background-agent-compatibility.mjs',
     ['PRAXIS_CLAUDE_2_1_237'],
   ],
+  ['scripts/verify-plugin-maintenance.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-plugin-eval-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-tui-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_208']],
 ])
@@ -79,6 +80,7 @@ const claude237PrimaryEntrypoints = new Set([
   'scripts/verify-session-metadata-compatibility.mjs',
   'scripts/verify-subagent-compatibility.mjs',
   'scripts/verify-background-agent-compatibility.mjs',
+  'scripts/verify-plugin-maintenance.mjs',
 ])
 const optionalEnvironment = new Map()
 const retryableTransientGates = new Set([
