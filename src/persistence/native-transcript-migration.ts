@@ -136,6 +136,28 @@ function isManifest(value: unknown): value is Manifest {
   if (typeof value !== 'object' || value === null || Array.isArray(value))
     return false
   const source = value as Record<string, unknown>
+  const keys = [
+    'version',
+    'migrationId',
+    'sessionId',
+    'sourcePath',
+    'activeNativePath',
+    'retainedLegacyPath',
+    'stagePath',
+    'status',
+    'createdAt',
+    'updatedAt',
+    'sourceByteHash',
+  ]
+  if (
+    Object.keys(source).length !== keys.length ||
+    Object.keys(source).some((key) => !keys.includes(key))
+  )
+    return false
+  const validTimestamp = (timestamp: unknown): timestamp is string =>
+    typeof timestamp === 'string' &&
+    !Number.isNaN(Date.parse(timestamp)) &&
+    new Date(timestamp).toISOString() === timestamp
   return (
     source.version === 1 &&
     typeof source.migrationId === 'string' &&
@@ -149,8 +171,9 @@ function isManifest(value: unknown): value is Manifest {
     (source.status === 'prepared' ||
       source.status === 'published' ||
       source.status === 'rolled-back') &&
-    typeof source.createdAt === 'string' &&
-    typeof source.updatedAt === 'string' &&
+    validTimestamp(source.createdAt) &&
+    validTimestamp(source.updatedAt) &&
+    source.updatedAt >= source.createdAt &&
     typeof source.sourceByteHash === 'string' &&
     /^[0-9a-f]{64}$/u.test(source.sourceByteHash)
   )
