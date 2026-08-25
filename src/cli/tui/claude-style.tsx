@@ -18,6 +18,7 @@ import type { TuiFileEntry } from './file-picker.js'
 import type { TuiMentionPickerModel } from './mention-picker-model.js'
 import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
+import type { TuiHooksSurfaceModel } from './hooks-surface-model.js'
 import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiCommandPaletteModel } from './command-palette-model.js'
@@ -1930,22 +1931,15 @@ function selectedWindow(length: number, selectedIndex: number, size: number) {
 }
 
 export function HookDashboard({
-  configuration,
-  depth,
-  eventIndex,
-  matcherIndex,
-  hookIndex,
+  surface,
   width,
   screenReader,
 }: {
-  configuration: TuiHookConfiguration
-  depth: 'events' | 'matchers' | 'hooks' | 'detail'
-  eventIndex: number
-  matcherIndex: number
-  hookIndex: number
+  surface: TuiHooksSurfaceModel
   width: number
   screenReader: boolean
 }) {
+  const { configuration, depth, eventIndex, matcherIndex, hookIndex } = surface
   const theme = useTuiTheme()
   const event = configuration.events[eventIndex]
   const matcher = event?.matchers[matcherIndex]

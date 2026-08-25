@@ -111,6 +111,10 @@ import {
   projectTuiHelpSurface,
   type TuiHelpSurfaceModel,
 } from './tui/help-surface-model.js'
+import {
+  projectTuiHooksSurface,
+  type TuiHooksSurfaceModel,
+} from './tui/hooks-surface-model.js'
 import { loadGitDiff, type TuiDiffSnapshot } from './tui/git-diff.js'
 import {
   projectTuiDiffSurface,
@@ -1889,6 +1893,7 @@ export function InteractiveApp({
     | TuiTaskSurfaceModel
     | TuiDoctorSurfaceModel
     | TuiMemorySurfaceModel
+    | TuiHooksSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2016,6 +2021,20 @@ export function InteractiveApp({
           }),
     [memoryMenu, dataPlane],
   )
+  const hooksMenu = menu?.kind === 'hooks' ? menu : null
+  const hooksSurface = useMemo<TuiHooksSurfaceModel | null>(
+    () =>
+      hooksMenu === null
+        ? null
+        : projectTuiHooksSurface({
+            configuration: hooksMenu.configuration,
+            depth: hooksMenu.depth,
+            eventIndex: hooksMenu.eventIndex,
+            matcherIndex: hooksMenu.matcherIndex,
+            hookIndex: hooksMenu.hookIndex,
+          }),
+    [hooksMenu],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -2031,7 +2050,9 @@ export function InteractiveApp({
                 ? (doctorSurface ?? undefined)
                 : menu.kind === 'memory'
                   ? (memorySurface ?? undefined)
-                  : (permissionManagementSurface ?? legacySecondarySurface)
+                  : menu.kind === 'hooks'
+                    ? (hooksSurface ?? undefined)
+                    : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -8311,6 +8332,12 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'hooks-panel' ? (
+                <HookDashboard
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
@@ -8352,16 +8379,6 @@ export function InteractiveApp({
                     settingSources: statusSettingSources.split(', '),
                   }}
                   usage={menu.usage}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'hooks' ? (
-                <HookDashboard
-                  configuration={menu.configuration}
-                  depth={menu.depth}
-                  eventIndex={menu.eventIndex}
-                  matcherIndex={menu.matcherIndex}
-                  hookIndex={menu.hookIndex}
                   width={width}
                   screenReader={axScreenReader}
                 />

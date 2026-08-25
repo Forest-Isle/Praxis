@@ -23,6 +23,8 @@ import { projectTuiDoctorSurface } from './doctor-surface-model.js'
 import type { TuiDoctorSurfaceModel } from './doctor-surface-model.js'
 import { projectTuiMemorySurface } from './memory-surface-model.js'
 import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
+import { projectTuiHooksSurface } from './hooks-surface-model.js'
+import type { TuiHooksSurfaceModel } from './hooks-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -39,6 +41,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiTaskSurfaceModel
     | TuiDoctorSurfaceModel
     | TuiMemorySurfaceModel
+    | TuiHooksSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -195,6 +198,24 @@ describe('projectTuiScreen', () => {
       selectedIndex: 0,
       openedIndex: null,
       dataPlane: 'native',
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the hooks semantic surface identity through secondary payloads', () => {
+    const configuration = { events: [], hookCount: 0 }
+    const surface = projectTuiHooksSurface({
+      configuration,
+      depth: 'events',
+      eventIndex: 0,
+      matcherIndex: 0,
+      hookIndex: 0,
     })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),

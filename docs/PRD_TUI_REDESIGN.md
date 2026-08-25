@@ -141,6 +141,9 @@ around a minimal, low-noise reading model:
 
 The Session Picker now consumes a pure semantic model with stable choice
 identity across visual, screen-reader, and keyboard paths.
+The Hooks panel follows the same boundary: raw menu navigation remains local
+to the interactive controller while a typed semantic surface reaches the
+renderer.
 
 The Command Palette now consumes a pure semantic model with stable command IDs
 across visual, screen-reader, and keyboard paths.
