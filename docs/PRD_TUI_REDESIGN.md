@@ -171,3 +171,5 @@ MCP Panel now consumes a semantic TuiScreen payload while controller/runtime
 effects remain outside presentation.
 Tasks now consume a semantic TuiScreen payload while keyboard and lifecycle routing retain the raw task state.
 Doctor now consumes a semantic TuiScreen payload while asynchronous lifecycle routing retains the raw doctor state.
+Memory now consumes a semantic TuiScreen payload while memory loading, editing,
+folder-opening, and keyboard routing retain the raw menu state.

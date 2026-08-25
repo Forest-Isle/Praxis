@@ -18,7 +18,7 @@ import type { TuiFileEntry } from './file-picker.js'
 import type { TuiMentionPickerModel } from './mention-picker-model.js'
 import type { TuiDiffSurfaceModel } from './diff-surface-model.js'
 import { TUI_HOOK_MENU, type TuiHookConfiguration } from './hook-settings.js'
-import type { TuiMemoryFileEntry } from './memory-files.js'
+import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
 import type { CustomThemeToken, TuiCustomTheme } from './custom-themes.js'
 import type { TuiCommandPaletteModel } from './command-palette-model.js'
 import type { TuiSessionPickerModel } from './session-picker-model.js'
@@ -1851,24 +1851,22 @@ export function ListDashboard({
 }
 
 export function MemoryDashboard({
-  autoMemoryEnabled,
-  entries,
-  selectedIndex,
-  openedIndex,
-  loading = false,
+  surface,
   width,
   screenReader,
-  dataPlane = 'claude',
 }: {
-  autoMemoryEnabled: boolean
-  entries: readonly TuiMemoryFileEntry[]
-  selectedIndex: number
-  openedIndex: number | null
-  loading?: boolean
+  surface: TuiMemorySurfaceModel
   width: number
   screenReader: boolean
-  dataPlane?: DataPlane
 }) {
+  const {
+    autoMemoryEnabled,
+    entries,
+    selectedIndex,
+    openedIndex,
+    loading,
+    dataPlane,
+  } = surface
   const theme = useTuiTheme()
   const panelWidth = Math.min(100, width)
   return (

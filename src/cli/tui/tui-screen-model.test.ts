@@ -21,6 +21,8 @@ import { projectTuiTaskSurface } from './task-surface-model.js'
 import type { TuiTaskSurfaceModel } from './task-surface-model.js'
 import { projectTuiDoctorSurface } from './doctor-surface-model.js'
 import type { TuiDoctorSurfaceModel } from './doctor-surface-model.js'
+import { projectTuiMemorySurface } from './memory-surface-model.js'
+import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -36,6 +38,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiMcpSurfaceModel
     | TuiTaskSurfaceModel
     | TuiDoctorSurfaceModel
+    | TuiMemorySurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -175,6 +178,23 @@ describe('projectTuiScreen', () => {
       loading: true,
       report: null,
       error: null,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the memory semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiMemorySurface({
+      autoMemoryEnabled: false,
+      entries: [],
+      selectedIndex: 0,
+      openedIndex: null,
+      dataPlane: 'native',
     })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),
