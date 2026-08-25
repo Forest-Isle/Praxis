@@ -32,6 +32,8 @@ import type { TuiSandboxSnapshot } from './sandbox-settings.js'
 import type { TuiSandboxSurfaceModel } from './sandbox-surface-model.js'
 import { projectTuiListSurface } from './list-surface-model.js'
 import type { TuiListSurfaceModel } from './list-surface-model.js'
+import { projectTuiBtwSurface } from './btw-surface-model.js'
+import type { TuiBtwSurfaceModel } from './btw-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -52,6 +54,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiConfigSurfaceModel
     | TuiSandboxSurfaceModel
     | TuiListSurfaceModel
+    | TuiBtwSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -108,6 +111,24 @@ describe('projectTuiScreen', () => {
       rows: [],
       emptyText: 'No tasks',
       selectedIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the Btw semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiBtwSurface({
+      entries: [
+        { id: 1, question: 'Why?', answer: 'Because.', status: 'complete' },
+      ],
+      selectedIndex: 0,
+      scrollOffset: 0,
+      copied: false,
     })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),

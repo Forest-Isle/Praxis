@@ -183,3 +183,5 @@ Sandbox now consumes a semantic TuiScreen payload while settings and lifecycle
 routing retain the raw menu state.
 Agents and generic lists now consume a semantic TuiScreen payload while
 keyboard routing retains the raw menu state.
+Btw now consumes a semantic TuiScreen payload while interaction routing retains
+raw menu state.

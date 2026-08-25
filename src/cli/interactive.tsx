@@ -80,9 +80,13 @@ import {
   Transcript,
   WelcomePanel,
   type TranscriptItem,
-  type TuiBtwEntry,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
+import {
+  projectTuiBtwSurface,
+  type TuiBtwEntry,
+  type TuiBtwSurfaceModel,
+} from './tui/btw-surface-model.js'
 import {
   loadTuiMemoryFiles,
   openTuiMemoryFolder,
@@ -1909,6 +1913,7 @@ export function InteractiveApp({
     | TuiConfigSurfaceModel
     | TuiSandboxSurfaceModel
     | TuiListSurfaceModel
+    | TuiBtwSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2068,6 +2073,19 @@ export function InteractiveApp({
     () => (listMenu === null ? null : projectTuiListSurface(listMenu)),
     [listMenu],
   )
+  const btwMenu = menu?.kind === 'btw' ? menu : null
+  const btwSurface = useMemo<TuiBtwSurfaceModel | null>(
+    () =>
+      btwMenu === null
+        ? null
+        : projectTuiBtwSurface({
+            entries: btwHistory,
+            selectedIndex: btwMenu.selectedIndex,
+            scrollOffset: btwMenu.scrollOffset,
+            copied: btwCopied,
+          }),
+    [btwMenu, btwHistory, btwCopied],
+  )
   const statusAuthSource = process.env.PRAXIS_API_KEY
     ? 'PRAXIS_API_KEY'
     : process.env.ANTHROPIC_API_KEY
@@ -2150,8 +2168,10 @@ export function InteractiveApp({
                         ? (sandboxSurface ?? undefined)
                         : menu.kind === 'agents' || menu.kind === 'list'
                           ? (listSurface ?? undefined)
-                          : (permissionManagementSurface ??
-                            legacySecondarySurface)
+                          : menu.kind === 'btw'
+                            ? (btwSurface ?? undefined)
+                            : (permissionManagementSurface ??
+                              legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -2214,6 +2234,7 @@ export function InteractiveApp({
       questionDecisionSurface,
       elicitation,
       secondarySurface,
+      btwSurface,
       commandPaletteVisible,
       commandPaletteModel,
       filePickerVisible,
@@ -8234,15 +8255,6 @@ export function InteractiveApp({
                   {compactProgress}%
                 </Text>
               </Box>
-            ) : menu?.kind === 'btw' ? (
-              <BtwPanel
-                entries={btwHistory}
-                selectedIndex={menu.selectedIndex}
-                scrollOffset={menu.scrollOffset}
-                copied={btwCopied}
-                width={width}
-                screenReader={axScreenReader}
-              />
             ) : menu?.kind === 'rewind' ? (
               <Box flexDirection="column">
                 <Text bold> Rewind</Text>
@@ -8433,10 +8445,17 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'btw-panel' ? (
+                <BtwPanel
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ||
                 menu.kind === 'agents' ||
                 menu.kind === 'config' ||
-                menu.kind === 'list' ? null : menu.kind === 'model' ? (
+                menu.kind === 'list' ||
+                menu.kind === 'btw' ? null : menu.kind === 'model' ? (
                 <ModelMenu
                   options={modelOptions}
                   effort={runtimePreferences.effort}

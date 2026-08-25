@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { TuiThemeProvider } from './theme.js'
 import {
   ACTIVE_STREAM_MAX_LINES,
+  BtwPanel,
   CommandPalette,
   Composer,
   CustomThemeEditor,
@@ -48,6 +49,7 @@ import {
 } from './transcript-viewport.js'
 import { projectTuiHelpSurface } from './help-surface-model.js'
 import { projectTuiListSurface } from './list-surface-model.js'
+import { projectTuiBtwSurface } from './btw-surface-model.js'
 
 afterEach(() => cleanup())
 
@@ -101,6 +103,34 @@ function renderNormal(element: ReactElement) {
 }
 
 describe('Claude-style TUI components', () => {
+  it('renders Btw answers, errors, history, and copy state from its surface', () => {
+    const app = renderNormal(
+      <BtwPanel
+        surface={projectTuiBtwSurface({
+          entries: [
+            { id: 1, question: 'first?', answer: 'answer', status: 'complete' },
+            {
+              id: 2,
+              question: 'second?',
+              answer: '',
+              status: 'error',
+              error: 'Side question failed',
+            },
+          ],
+          selectedIndex: 0,
+          scrollOffset: 0,
+          copied: true,
+        })}
+        width={80}
+        screenReader={false}
+      />,
+    )
+    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).toContain('/btw second?')
+    expect(app.lastFrame()).toContain('answer')
+    expect(app.lastFrame()).toContain('Copied to clipboard')
+  })
+
   it('renders the observed memory file dialog and screen-reader branch', () => {
     const entries = [
       {
