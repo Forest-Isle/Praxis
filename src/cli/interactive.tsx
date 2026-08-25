@@ -88,6 +88,12 @@ import {
   type TuiBtwSurfaceModel,
 } from './tui/btw-surface-model.js'
 import {
+  projectTuiRewindSurface,
+  rewindActions,
+  type TuiRewindAction,
+  type TuiRewindSurfaceModel,
+} from './tui/rewind-surface-model.js'
+import {
   loadTuiMemoryFiles,
   openTuiMemoryFolder,
   type TuiMemoryFileEntry,
@@ -901,52 +907,6 @@ type RuntimePreferences = {
   effort: (typeof EFFORT_OPTIONS)[number]
   permissionMode: ClaudePermissionMode
   additionalDirectories: readonly string[]
-}
-
-type RewindAction =
-  | 'code-and-conversation'
-  | 'conversation'
-  | 'code'
-  | 'summarize-from'
-  | 'summarize-to'
-  | 'cancel'
-
-function rewindActions(point: RewindPoint): readonly {
-  action: RewindAction
-  label: string
-}[] {
-  const shared = [
-    { action: 'summarize-from' as const, label: 'Summarize from here' },
-    { action: 'summarize-to' as const, label: 'Summarize up to here' },
-    { action: 'cancel' as const, label: 'Never mind' },
-  ]
-  return point.fileRestoreAvailable && point.fileChanges.length > 0
-    ? [
-        {
-          action: 'code-and-conversation',
-          label: 'Restore code and conversation',
-        },
-        { action: 'conversation', label: 'Restore conversation' },
-        { action: 'code', label: 'Restore code' },
-        ...shared,
-      ]
-    : [{ action: 'conversation', label: 'Restore conversation' }, ...shared]
-}
-
-function rewindPointWindow(
-  points: readonly RewindPoint[],
-  selectedIndex: number,
-  size = 6,
-): { start: number; end: number } {
-  if (points.length <= size) return { start: 0, end: points.length }
-  if (selectedIndex >= points.length) {
-    return { start: points.length - size, end: points.length }
-  }
-  const start = Math.max(
-    0,
-    Math.min(points.length - size, selectedIndex - Math.floor(size / 2)),
-  )
-  return { start, end: start + size }
 }
 
 function permissionMode(value: string | undefined): ClaudePermissionMode {
@@ -1914,6 +1874,7 @@ export function InteractiveApp({
     | TuiSandboxSurfaceModel
     | TuiListSurfaceModel
     | TuiBtwSurfaceModel
+    | TuiRewindSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2086,6 +2047,23 @@ export function InteractiveApp({
           }),
     [btwMenu, btwHistory, btwCopied],
   )
+  const rewindMenu =
+    menu?.kind === 'rewind' ||
+    menu?.kind === 'rewind-confirm' ||
+    menu?.kind === 'rewind-context'
+      ? menu
+      : null
+  const rewindSurface = useMemo<TuiRewindSurfaceModel | null>(
+    () =>
+      rewindMenu === null
+        ? null
+        : projectTuiRewindSurface(
+            rewindMenu.kind === 'rewind-context'
+              ? { ...rewindMenu, context: input }
+              : rewindMenu,
+          ),
+    [rewindMenu, input],
+  )
   const statusAuthSource = process.env.PRAXIS_API_KEY
     ? 'PRAXIS_API_KEY'
     : process.env.ANTHROPIC_API_KEY
@@ -2170,8 +2148,10 @@ export function InteractiveApp({
                           ? (listSurface ?? undefined)
                           : menu.kind === 'btw'
                             ? (btwSurface ?? undefined)
-                            : (permissionManagementSurface ??
-                              legacySecondarySurface)
+                            : rewindMenu !== null
+                              ? (rewindSurface ?? undefined)
+                              : (permissionManagementSurface ??
+                                legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -2235,6 +2215,7 @@ export function InteractiveApp({
       elicitation,
       secondarySurface,
       btwSurface,
+      rewindSurface,
       commandPaletteVisible,
       commandPaletteModel,
       filePickerVisible,
@@ -4432,7 +4413,7 @@ export function InteractiveApp({
 
   const applyRewind = (
     point: RewindPoint,
-    action: RewindAction,
+    action: TuiRewindAction,
     summarizationContext?: string,
   ) => {
     if (action === 'cancel') {
@@ -8255,123 +8236,133 @@ export function InteractiveApp({
                   {compactProgress}%
                 </Text>
               </Box>
-            ) : menu?.kind === 'rewind' ? (
-              <Box flexDirection="column">
-                <Text bold> Rewind</Text>
-                <Text> </Text>
-                <Text>
-                  {' '}
-                  Restore the code and/or conversation to the point before…
-                </Text>
-                <Text> </Text>
-                {(() => {
-                  const window = rewindPointWindow(
-                    menu.points,
-                    menu.selectedIndex,
-                  )
-                  return (
-                    <>
-                      {window.start > 0 ? (
-                        <Text dimColor> ↑ {window.start} more above</Text>
-                      ) : null}
-                      {menu.points
-                        .slice(window.start, window.end)
-                        .map((point, offset) => {
-                          const index = window.start + offset
-                          return (
-                            <Box
-                              key={point.messageId}
-                              flexDirection="column"
-                              marginBottom={1}
-                            >
-                              <DecisionOption
-                                selected={menu.selectedIndex === index}
-                                screenReader={axScreenReader}
-                                selectedPrefix=" ❯ "
-                                unselectedPrefix="   "
-                              >
-                                {point.prompt
-                                  .replace(/\s+/gu, ' ')
-                                  .slice(0, 72)}
-                              </DecisionOption>
-                              <Text dimColor>
-                                {'     '}
-                                {point.fileChanges.length > 0
-                                  ? point.fileChanges
-                                      .map((path) =>
-                                        path.startsWith(`${runtimeCwd}/`)
-                                          ? path.slice(runtimeCwd.length + 1)
-                                          : path,
-                                      )
-                                      .join(', ')
-                                  : point.fileRestoreAvailable
-                                    ? 'No code changes'
-                                    : '⚠ No code restore'}
-                              </Text>
-                            </Box>
-                          )
-                        })}
-                      {window.end < menu.points.length ? (
-                        <Text dimColor>
-                          {' '}
-                          ↓ {menu.points.length - window.end} more below
-                        </Text>
-                      ) : null}
-                    </>
-                  )
-                })()}
-                <DecisionOption
-                  selected={menu.selectedIndex === menu.points.length}
-                  screenReader={axScreenReader}
-                  selectedPrefix=" ❯ "
-                  unselectedPrefix="   "
-                >
-                  (current)
-                </DecisionOption>
-                <Text> </Text>
-                <Text dimColor> Enter to continue · Esc to cancel</Text>
-              </Box>
-            ) : menu?.kind === 'rewind-confirm' ? (
-              <DialogFrame
-                title="Confirm restore point"
-                screenReader={axScreenReader}
-              >
-                <Text>│ {menu.point.prompt}</Text>
-                <Text> </Text>
-                <Text>The conversation will be forked.</Text>
-                <Text>
-                  The code will{' '}
-                  {menu.point.fileChanges.length > 0
-                    ? `restore ${menu.point.fileChanges.join(', ')}.`
-                    : 'be unchanged.'}
-                </Text>
-                <Text> </Text>
-                {rewindActions(menu.point).map((option, index) => (
+            ) : selectedSecondarySurface?.kind === 'rewind-panel' ? (
+              selectedSecondarySurface.view === 'points' ? (
+                <Box flexDirection="column">
+                  <Text bold> Rewind</Text>
+                  <Text> </Text>
+                  <Text>
+                    {' '}
+                    Restore the code and/or conversation to the point before…
+                  </Text>
+                  <Text> </Text>
+                  {selectedSecondarySurface.window.start > 0 ? (
+                    <Text dimColor>
+                      {' '}
+                      ↑ {selectedSecondarySurface.window.start} more above
+                    </Text>
+                  ) : null}
+                  {selectedSecondarySurface.points
+                    .slice(
+                      selectedSecondarySurface.window.start,
+                      selectedSecondarySurface.window.end,
+                    )
+                    .map((point, offset) => {
+                      const index =
+                        selectedSecondarySurface.window.start + offset
+                      return (
+                        <Box
+                          key={point.messageId}
+                          flexDirection="column"
+                          marginBottom={1}
+                        >
+                          <DecisionOption
+                            selected={
+                              selectedSecondarySurface.selectedIndex === index
+                            }
+                            screenReader={axScreenReader}
+                            selectedPrefix=" ❯ "
+                            unselectedPrefix="   "
+                          >
+                            {point.prompt.replace(/\s+/gu, ' ').slice(0, 72)}
+                          </DecisionOption>
+                          <Text dimColor>
+                            {'     '}
+                            {point.fileChanges.length > 0
+                              ? point.fileChanges
+                                  .map((path) =>
+                                    path.startsWith(`${runtimeCwd}/`)
+                                      ? path.slice(runtimeCwd.length + 1)
+                                      : path,
+                                  )
+                                  .join(', ')
+                              : point.fileRestoreAvailable
+                                ? 'No code changes'
+                                : '⚠ No code restore'}
+                          </Text>
+                        </Box>
+                      )
+                    })}
+                  {selectedSecondarySurface.window.end <
+                  selectedSecondarySurface.points.length ? (
+                    <Text dimColor>
+                      {' '}
+                      ↓{' '}
+                      {selectedSecondarySurface.points.length -
+                        selectedSecondarySurface.window.end}{' '}
+                      more below
+                    </Text>
+                  ) : null}
                   <DecisionOption
-                    key={option.action}
-                    selected={menu.selectedIndex === index}
+                    selected={
+                      selectedSecondarySurface.selectedIndex ===
+                      selectedSecondarySurface.points.length
+                    }
                     screenReader={axScreenReader}
+                    selectedPrefix=" ❯ "
+                    unselectedPrefix="   "
                   >
-                    {index + 1}. {option.label}
+                    (current)
                   </DecisionOption>
-                ))}
-                <Text> </Text>
-                <RewindWarning />
-              </DialogFrame>
-            ) : menu?.kind === 'rewind-context' ? (
-              <DialogFrame
-                title={`Summarize ${menu.direction === 'from' ? 'from' : 'up to'} here`}
-                screenReader={axScreenReader}
-              >
-                <Text>
-                  {menu.direction === 'from'
-                    ? 'Messages after this point will be summarized.'
-                    : 'Messages up to this point will be summarized.'}
-                </Text>
-                <Text> </Text>
-                <Text>add context (optional): {input}</Text>
-                <Text dimColor>Enter to summarize · Esc to go back</Text>
-              </DialogFrame>
+                  <Text> </Text>
+                  <Text dimColor> Enter to continue · Esc to cancel</Text>
+                </Box>
+              ) : selectedSecondarySurface.view === 'confirm' ? (
+                <DialogFrame
+                  title="Confirm restore point"
+                  screenReader={axScreenReader}
+                >
+                  <Text>│ {selectedSecondarySurface.point.prompt}</Text>
+                  <Text> </Text>
+                  <Text>The conversation will be forked.</Text>
+                  <Text>
+                    The code will{' '}
+                    {selectedSecondarySurface.point.fileChanges.length > 0
+                      ? `restore ${selectedSecondarySurface.point.fileChanges.join(', ')}.`
+                      : 'be unchanged.'}
+                  </Text>
+                  <Text> </Text>
+                  {selectedSecondarySurface.actions.map((option, index) => (
+                    <DecisionOption
+                      key={option.action}
+                      selected={
+                        selectedSecondarySurface.selectedIndex === index
+                      }
+                      screenReader={axScreenReader}
+                    >
+                      {index + 1}. {option.label}
+                    </DecisionOption>
+                  ))}
+                  <Text> </Text>
+                  <RewindWarning />
+                </DialogFrame>
+              ) : (
+                <DialogFrame
+                  title={`Summarize ${selectedSecondarySurface.direction === 'from' ? 'from' : 'up to'} here`}
+                  screenReader={axScreenReader}
+                >
+                  <Text>
+                    {selectedSecondarySurface.direction === 'from'
+                      ? 'Messages after this point will be summarized.'
+                      : 'Messages up to this point will be summarized.'}
+                  </Text>
+                  <Text> </Text>
+                  <Text>
+                    add context (optional): {selectedSecondarySurface.context}
+                  </Text>
+                  <Text dimColor>Enter to summarize · Esc to go back</Text>
+                </DialogFrame>
+              )
             ) : selectedSecondarySurface !== null && menu !== null ? (
               selectedSecondarySurface.kind === 'permission-dashboard' ||
               selectedSecondarySurface.kind === 'permission-rule-input' ||
@@ -8455,7 +8446,11 @@ export function InteractiveApp({
                 menu.kind === 'agents' ||
                 menu.kind === 'config' ||
                 menu.kind === 'list' ||
-                menu.kind === 'btw' ? null : menu.kind === 'model' ? (
+                menu.kind === 'btw' ||
+                menu.kind === 'rewind' ||
+                menu.kind === 'rewind-confirm' ||
+                menu.kind === 'rewind-context' ? null : menu.kind ===
+                'model' ? (
                 <ModelMenu
                   options={modelOptions}
                   effort={runtimePreferences.effort}
