@@ -85,6 +85,54 @@ function assertBudget(label, actual, limit, unit = 'ms') {
   )
 }
 
+function runActiveStreamBenchmark(repositoryRoot) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        '--expose-gc',
+        new URL('./verify-active-stream-performance.mjs', import.meta.url)
+          .pathname,
+      ],
+      {
+        cwd: repositoryRoot,
+        env: process.env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk
+    })
+    child.once('error', reject)
+    child.once('close', (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            `Active-stream benchmark failed (${code}): ${stderr.trim() || stdout.trim()}`,
+          ),
+        )
+        return
+      }
+      try {
+        resolve(JSON.parse(stdout.trim()))
+      } catch (error) {
+        reject(
+          new Error(
+            `Active-stream benchmark produced invalid JSON: ${error.message}`,
+          ),
+        )
+      }
+    })
+  })
+}
+
 function runCli(repositoryRoot, expectedVersion) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['dist/cli.js', '--version'], {
@@ -775,44 +823,11 @@ try {
     tuiOversizedScrollP95Ms,
   )
 
-  const streamHistory = projectionFixtures[2]
-  const streamView = projectTuiView({
-    ...retainedBase,
-    initialHistory: streamHistory,
-    history: streamHistory,
-    fixedViewport: true,
-    rows: 36,
-  })
-  const streamApp = renderInk(
-    createElement(
-      TuiThemeProvider,
-      { settings: { theme: 'dark', syntaxHighlightingDisabled: true } },
-      createElement(Transcript, {
-        entries: streamView.transcriptEntries,
-        activeText: '',
-        screenReader: false,
-      }),
-    ),
-  )
-  let streamMarker = 0
-  const tuiActiveStreamDurations = await samples(retainedAppendSamples, () => {
-    const marker = streamMarker++
-    streamApp.rerender(
-      createElement(
-        TuiThemeProvider,
-        { settings: { theme: 'dark', syntaxHighlightingDisabled: true } },
-        createElement(Transcript, {
-          entries: streamView.transcriptEntries,
-          activeText: `active stream marker ${marker}`,
-          screenReader: false,
-        }),
-      ),
-    )
-    if (!streamApp.lastFrame()?.includes(`active stream marker ${marker}`))
-      throw new Error('Active stream rerender marker was incomplete')
-  })
-  streamApp.unmount()
-  const tuiActiveStreamRerenderP95Ms = percentile(tuiActiveStreamDurations, 95)
+  // Keep the active-stream renderer in a fresh process. This prevents the
+  // preceding heap-heavy probes from perturbing Node's JIT/GC state while
+  // retaining the same 50ms p95 gate and sample collection.
+  const activeStreamResult = await runActiveStreamBenchmark(process.cwd())
+  const tuiActiveStreamRerenderP95Ms = activeStreamResult.p95Ms
   assertBudget(
     'Unchanged-history active-stream rerender p95',
     tuiActiveStreamRerenderP95Ms,
