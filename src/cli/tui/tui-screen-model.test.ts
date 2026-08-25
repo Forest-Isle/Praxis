@@ -25,6 +25,8 @@ import { projectTuiMemorySurface } from './memory-surface-model.js'
 import type { TuiMemorySurfaceModel } from './memory-surface-model.js'
 import { projectTuiHooksSurface } from './hooks-surface-model.js'
 import type { TuiHooksSurfaceModel } from './hooks-surface-model.js'
+import { projectTuiConfigSurface } from './config-surface-model.js'
+import type { TuiConfigSurfaceModel } from './config-surface-model.js'
 
 type Surfaces = TuiScreenSurfaceModels & {
   readonly sessionPicker: { readonly kind: 'picker' } | TuiSessionPickerModel
@@ -42,6 +44,7 @@ type Surfaces = TuiScreenSurfaceModels & {
     | TuiDoctorSurfaceModel
     | TuiMemorySurfaceModel
     | TuiHooksSurfaceModel
+    | TuiConfigSurfaceModel
   readonly overlay:
     | { readonly kind: 'overlay'; readonly id: number }
     | TuiCommandPaletteModel
@@ -216,6 +219,20 @@ describe('projectTuiScreen', () => {
       eventIndex: 0,
       matcherIndex: 0,
       hookIndex: 0,
+    })
+    const screen = projectTuiScreen<Surfaces>(
+      makeInput({ surfaces: { secondary: surface, overlays: [] } }),
+    )
+    const foreground = conversation(screen).foreground
+    expect(foreground.kind).toBe('secondary')
+    if (foreground.kind === 'secondary')
+      expect(foreground.surface).toBe(surface)
+  })
+
+  it('preserves the config semantic surface identity through secondary payloads', () => {
+    const surface = projectTuiConfigSurface({
+      tab: 'config',
+      snapshot: { settings: {}, state: {} },
     })
     const screen = projectTuiScreen<Surfaces>(
       makeInput({ surfaces: { secondary: surface, overlays: [] } }),

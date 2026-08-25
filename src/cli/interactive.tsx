@@ -291,6 +291,10 @@ import {
 } from './tui/decision-surface-model.js'
 import { DecisionSurface } from './tui/decision-surface.js'
 import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import {
+  projectTuiConfigSurface,
+  type TuiConfigSurfaceModel,
+} from './tui/config-surface-model.js'
 import { DoctorDashboard } from './tui/doctor-dashboard.js'
 import {
   projectTuiDoctorSurface,
@@ -1894,6 +1898,7 @@ export function InteractiveApp({
     | TuiDoctorSurfaceModel
     | TuiMemorySurfaceModel
     | TuiHooksSurfaceModel
+    | TuiConfigSurfaceModel
     | { readonly kind: 'legacy-secondary' }
   const legacySecondarySurface = useMemo(
     () => ({ kind: 'legacy-secondary' as const }),
@@ -2035,6 +2040,65 @@ export function InteractiveApp({
           }),
     [hooksMenu],
   )
+  const statusAuthSource = process.env.PRAXIS_API_KEY
+    ? 'PRAXIS_API_KEY'
+    : process.env.ANTHROPIC_API_KEY
+      ? 'ANTHROPIC_API_KEY'
+      : undefined
+  const statusBaseUrl = process.env.PRAXIS_BASE_URL
+  const statusProxy =
+    process.env.HTTPS_PROXY ??
+    process.env.https_proxy ??
+    process.env.ALL_PROXY ??
+    process.env.HTTP_PROXY
+  const statusSettingSources = (() => {
+    const projectSettings =
+      existsSync(
+        join(
+          runtimeCwd,
+          dataPlane === 'native' ? '.praxis' : '.claude',
+          'settings.json',
+        ),
+      ) || existsSync(join(runtimeCwd, 'settings.json'))
+    return projectSettings ? 'User settings, Project settings' : 'User settings'
+  })()
+  const configMenu = menu?.kind === 'config' ? menu : null
+  const configSurface = useMemo<TuiConfigSurfaceModel | null>(
+    () =>
+      configMenu === null
+        ? null
+        : projectTuiConfigSurface({
+            tab: configMenu.tab,
+            snapshot: configMenu.snapshot,
+            query: configMenu.query,
+            selectedIndex: configMenu.selectedIndex,
+            searchFocused: configMenu.searchFocused,
+            status: {
+              version: runtimeDisplay.version,
+              ...(sessionName ? { sessionName } : {}),
+              sessionId: sessionId ?? 'new',
+              cwd: runtimeCwd,
+              ...(statusAuthSource ? { authSource: statusAuthSource } : {}),
+              ...(statusBaseUrl ? { baseUrl: statusBaseUrl } : {}),
+              ...(statusProxy ? { proxy: statusProxy } : {}),
+              model: runtimeDisplay.model ?? 'default',
+              settingSources: statusSettingSources.split(', '),
+            },
+            usage: configMenu.usage,
+          }),
+    [
+      configMenu,
+      runtimeDisplay.version,
+      runtimeDisplay.model,
+      sessionName,
+      sessionId,
+      runtimeCwd,
+      statusAuthSource,
+      statusBaseUrl,
+      statusProxy,
+      statusSettingSources,
+    ],
+  )
   const secondarySurface: InteractiveSecondarySurface | undefined =
     menu === null
       ? undefined
@@ -2052,7 +2116,9 @@ export function InteractiveApp({
                   ? (memorySurface ?? undefined)
                   : menu.kind === 'hooks'
                     ? (hooksSurface ?? undefined)
-                    : (permissionManagementSurface ?? legacySecondarySurface)
+                    : menu.kind === 'config'
+                      ? (configSurface ?? undefined)
+                      : (permissionManagementSurface ?? legacySecondarySurface)
   type InteractiveTuiScreenSurfaces = {
     readonly sessionPicker: TuiSessionPickerModel
     readonly priority:
@@ -2189,28 +2255,6 @@ export function InteractiveApp({
   const transcriptPageRows = conversationScreen?.transcript.pageRows ?? 2
   const maxTranscriptScrollOffset =
     conversationScreen?.transcript.maxScrollOffset ?? 0
-  const statusAuthSource = process.env.PRAXIS_API_KEY
-    ? 'PRAXIS_API_KEY'
-    : process.env.ANTHROPIC_API_KEY
-      ? 'ANTHROPIC_API_KEY'
-      : undefined
-  const statusBaseUrl = process.env.PRAXIS_BASE_URL
-  const statusProxy =
-    process.env.HTTPS_PROXY ??
-    process.env.https_proxy ??
-    process.env.ALL_PROXY ??
-    process.env.HTTP_PROXY
-  const statusSettingSources = (() => {
-    const projectSettings =
-      existsSync(
-        join(
-          runtimeCwd,
-          dataPlane === 'native' ? '.praxis' : '.claude',
-          'settings.json',
-        ),
-      ) || existsSync(join(runtimeCwd, 'settings.json'))
-    return projectSettings ? 'User settings, Project settings' : 'User settings'
-  })()
   const permissionOptions = useMemo(
     () => [
       ...PERMISSION_OPTIONS,
@@ -8338,6 +8382,12 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
+              ) : selectedSecondarySurface.kind === 'config-panel' ? (
+                <ConfigDashboard
+                  surface={selectedSecondarySurface}
+                  width={width}
+                  screenReader={axScreenReader}
+                />
               ) : menu.kind === 'sandbox' ? (
                 <SandboxDashboard
                   snapshot={menu.snapshot}
@@ -8358,31 +8408,7 @@ export function InteractiveApp({
                   width={width}
                   screenReader={axScreenReader}
                 />
-              ) : menu.kind === 'config' ? (
-                <ConfigDashboard
-                  tab={menu.tab}
-                  snapshot={menu.snapshot}
-                  query={menu.query}
-                  selectedIndex={menu.selectedIndex}
-                  searchFocused={menu.searchFocused}
-                  status={{
-                    version: runtimeDisplay.version,
-                    ...(sessionName ? { sessionName } : {}),
-                    sessionId: sessionId ?? 'new',
-                    cwd: runtimeCwd,
-                    ...(statusAuthSource
-                      ? { authSource: statusAuthSource }
-                      : {}),
-                    ...(statusBaseUrl ? { baseUrl: statusBaseUrl } : {}),
-                    ...(statusProxy ? { proxy: statusProxy } : {}),
-                    model: runtimeDisplay.model ?? 'default',
-                    settingSources: statusSettingSources.split(', '),
-                  }}
-                  usage={menu.usage}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : menu.kind === 'list' ? (
+              ) : menu.kind === 'config' ? null : menu.kind === 'list' ? (
                 <ListDashboard
                   title={menu.title}
                   rows={menu.rows}
