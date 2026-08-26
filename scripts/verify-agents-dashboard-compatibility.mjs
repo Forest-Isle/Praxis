@@ -371,7 +371,7 @@ try {
   const dashboardOutput = await runPraxisPty()
   assert.match(
     dashboardOutput,
-    new RegExp(String.raw`\u001B\[95m(?:\u001B\[[0-9;]*m)*Praxis agents`, 'u'),
+    new RegExp(String.raw`\u001B\[91m(?:\u001B\[[0-9;]*m)*Praxis agents`, 'u'),
     'installed agents dashboard did not apply its persisted accent theme',
   )
   assert.match(

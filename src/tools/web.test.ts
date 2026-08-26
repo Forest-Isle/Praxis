@@ -92,10 +92,10 @@ describe('WebToolRegistry', () => {
       additionalProperties: false,
     })
     expect(definitions[1]?.description).toContain(
-      'Includes a self-cleaning 15-minute cache',
+      'Includes a self-cleaning cache (entries expire after 15 minutes)',
     )
     expect(definitions[1]?.description).not.toContain(
-      'Includes a self-cleaning cache (entries expire after 15 minutes)',
+      'Includes a self-cleaning 15-minute cache',
     )
     expect(definitions[2]?.inputSchema).toEqual({
       $schema: 'https://json-schema.org/draft/2020-12/schema',

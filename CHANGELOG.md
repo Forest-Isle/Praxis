@@ -7,6 +7,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Changed
 
+* align the WebFetch compatibility description with Claude 2.1.208 and keep
+  the agents dashboard light-ANSI accent assertion aligned with the persisted
+  theme palette
 * make native transcript migration recoverable across every publication
   checkpoint, including a crash before the first rename, with deterministic
   fault-injection coverage
