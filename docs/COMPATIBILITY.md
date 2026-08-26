@@ -194,6 +194,9 @@ the leading stable-system-message count for capability-aware adapters.
 `<system-reminder>` prefix on the first provider-visible user message, including
 the first historical user message after resume. One live session or subagent
 reuses byte-identical snapshot sections across ordinary turns/model rounds.
+The dynamic system-prompt gate is pinned to Claude Code 2.1.208; newer releases
+are observation-only drift lanes and cannot replace pinned qualification
+baselines.
 Compact/resource reload, MCP tool-pool change, cwd/worktree transition, and a
 new restore/fork lifecycle refresh only their dependent inputs. The context
 participates in budgeting and compaction, reaches prompt suggestions, and is

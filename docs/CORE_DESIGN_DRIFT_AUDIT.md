@@ -217,10 +217,11 @@ contract above.
 
 ## Excluded surfaces
 
-Teams/swarms, remote agents, IDE/desktop/mobile/hosted surfaces, accounts,
-organizations, RBAC, billing, subscription authentication, remote control,
-telemetry control planes, and implicit native dependence on `.claude` are
-outside the Praxis product boundary.
+Local, capability-gated Teams and Swarms are supported in the native data
+plane. Remote agents, remote Team/Swarm control, IDE/desktop/mobile/hosted
+surfaces, accounts, organizations, RBAC, billing, subscription
+authentication, remote control, telemetry control planes, and implicit native
+dependence on `.claude` remain outside the Praxis product boundary.
 
 ## Qualification status
 
@@ -251,8 +252,8 @@ The historical qualification repair in
 [#381](https://github.com/Forest-Isle/Praxis/issues/381) ran all seven formerly
 environment-skipped lanes directly with exact 2.1.208, 2.1.233, and 2.1.237
 binaries; TUI, plugin-eval, session, resume-at, fork, sidechain, and compaction
-all passed. The aggregate local suite still stops at its first credentialed
-live-model gate when the upstream account returns HTTP 402 `Insufficient
-Balance`. That external result proves neither a product failure nor a full
-live-model pass. Provider-free black-box gates and all fixtures remain required
-and run independently of subscription balance.
+all passed. The latest local aggregate run uses exact 2.1.208/2.1.237
+binaries and stops at its first credentialed live-model gate with HTTP 401
+`Invalid bearer token`. That external result proves neither a product failure
+nor a full live-model pass. Provider-free black-box gates and all fixtures
+remain required and run independently of provider credentials.

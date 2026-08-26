@@ -725,13 +725,22 @@ export class LocalToolRegistry implements ToolRegistry {
     context?: ToolExecutionContext,
   ): void {
     const cwd = this.currentCwd(context)
+    const protectedWrite = context?.preToolUseAllowed
+      ? (filePath: string) => {
+          const reason = this.protectedWriteReason(filePath)
+          const fileName = basename(filePath).toLowerCase()
+          return fileName === '.env' || fileName.startsWith('.env.')
+            ? undefined
+            : reason
+        }
+      : this.protectedWriteReason
     const result = validateBashPathSafety(command, {
       cwd,
       homeDirectory: this.homeDirectory,
       readRoots: [cwd],
       writeRoots: [cwd],
       permissionMode: 'bypassPermissions',
-      protectedWrite: this.protectedWriteReason,
+      protectedWrite,
     })
     if (!result.safe && result.behavior === 'deny') {
       throw new Error(result.reason)

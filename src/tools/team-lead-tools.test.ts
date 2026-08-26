@@ -6,7 +6,11 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ToolRegistry } from '../core/runtime.js'
 import { TeamLeadOperations } from '../application/team-lead-operations.js'
 import { LocalTeamManager } from '../application/team-manager.js'
-import { TeamLeadToolRegistry } from './team-lead-tools.js'
+import {
+  CLAUDE_TEAM_TOOL_NAMES,
+  TeamLeadToolRegistry,
+} from './team-lead-tools.js'
+import { ClaudeTeamCompatibilityAdapter } from '../compatibility/claude/team.js'
 
 const base: ToolRegistry = {
   definitions: () => [
@@ -42,12 +46,56 @@ function registry(
       operations as never,
       'lead-a',
       enabled,
+      enabled.some((name) => CLAUDE_TEAM_TOOL_NAMES.includes(name as never))
+        ? new ClaudeTeamCompatibilityAdapter()
+        : undefined,
     ),
     operations,
   }
 }
 
 describe('TeamLeadToolRegistry', () => {
+  it('exposes Claude Team tools only through explicit compatibility discovery', async () => {
+    const f = registry([...CLAUDE_TEAM_TOOL_NAMES])
+    f.operations.send.mockImplementation(
+      async () => ({ teamId: 'team-a', recipients: ['worker'] }) as never,
+    )
+    expect(f.registry.definitions().map(({ name }) => name)).toEqual(
+      expect.arrayContaining([...CLAUDE_TEAM_TOOL_NAMES]),
+    )
+    expect(f.registry.claudeToolNames()).toEqual(CLAUDE_TEAM_TOOL_NAMES)
+    expect(f.registry.claudeDefinitions().map(({ name }) => name)).toEqual(
+      CLAUDE_TEAM_TOOL_NAMES,
+    )
+
+    const send = {
+      id: 'claude-send',
+      name: 'ClaudeSendMessage',
+      input: { team_name: 'team-a', to: 'worker', message: 'hello' },
+    }
+    await expect(f.registry.prepare(send, { cwd: '.' })).resolves.toEqual(send)
+    await expect(f.registry.execute(send, { cwd: '.' })).resolves.toMatchObject(
+      {
+        nativeToolUseResult: {
+          claude: { team_name: 'team-a', success: true },
+        },
+      },
+    )
+    await expect(
+      f.registry.execute(
+        { id: 'unsupported', name: 'ClaudeTask', input: {} },
+        { cwd: '.' },
+      ),
+    ).rejects.toThrow(/Unsupported Claude Team tool/u)
+    const disabled = registry([])
+    expect(disabled.registry.definitions().map(({ name }) => name)).not.toEqual(
+      expect.arrayContaining([...CLAUDE_TEAM_TOOL_NAMES]),
+    )
+    await expect(disabled.registry.execute(send, { cwd: '.' })).rejects.toThrow(
+      /unavailable/u,
+    )
+  })
+
   it('validates and routes the gated typed TeamSend tool', async () => {
     const f = registry(['TeamSend'])
     await f.registry.execute(
@@ -200,7 +248,6 @@ describe('TeamLeadToolRegistry', () => {
     expect(prepared.name).toBe('Read')
     f.operations.activeLeadPolicy.mockReturnValue('coordinator')
     expect(f.registry.definitions().map(({ name }) => name)).toEqual([
-      'Agent',
       'TaskCreate',
       'AskUserQuestion',
       'SendMessage',
@@ -225,11 +272,8 @@ describe('TeamLeadToolRegistry', () => {
     ).rejects.toThrow(/Coordinator/u)
     await expect(
       f.registry.execute({ id: 'a', name: 'Agent', input: {} }, { cwd: '.' }),
-    ).resolves.toMatchObject({ content: 'Agent' })
-    expect(baseExecute).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Agent' }),
-      expect.anything(),
-    )
+    ).rejects.toThrow(/Coordinator/u)
+    expect(baseExecute).not.toHaveBeenCalled()
     await expect(
       f.registry.execute(
         { id: 't', name: 'TeamList', input: {} },

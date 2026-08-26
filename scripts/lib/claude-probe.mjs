@@ -72,6 +72,23 @@ export async function detectClaudeVersion(
 
 export async function runClaudeJson(args, cwd, configRoot, extraEnv = {}) {
   const executable = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
+  const compatibilityModel = String(
+    process.env.PRAXIS_COMPAT_CLAUDE_MODEL ?? '',
+  ).trim()
+  const providerEnvironment = { ...extraEnv }
+  if (compatibilityModel && !extraEnv.ANTHROPIC_BASE_URL) {
+    for (const key of MODEL_ENV) {
+      const explicitValue = extraEnv[key]
+      if (
+        typeof explicitValue === 'string' &&
+        explicitValue.trim().length > 0
+      ) {
+        continue
+      }
+      providerEnvironment[key] = compatibilityModel
+    }
+  }
+  delete providerEnvironment.PRAXIS_COMPAT_CLAUDE_MODEL
   const authenticationProvided = [
     process.env.CLAUDE_CODE_OAUTH_TOKEN,
     process.env.ANTHROPIC_API_KEY,
@@ -83,18 +100,23 @@ export async function runClaudeJson(args, cwd, configRoot, extraEnv = {}) {
   if (!authenticationProvided) {
     await seedClaudeConfig(configRoot)
   }
-  const restoreSettings = await overlayProviderSettings(configRoot, extraEnv)
+  const restoreSettings = await overlayProviderSettings(
+    configRoot,
+    providerEnvironment,
+  )
   try {
     const stdout = await new Promise((resolve, reject) => {
+      const childEnvironment = {
+        ...process.env,
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '1',
+        ...providerEnvironment,
+        CLAUDE_CONFIG_DIR: configRoot,
+      }
+      delete childEnvironment.PRAXIS_COMPAT_CLAUDE_MODEL
       const child = spawn(executable, args, {
         cwd,
-        env: {
-          ...process.env,
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-          CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT: '1',
-          ...extraEnv,
-          CLAUDE_CONFIG_DIR: configRoot,
-        },
+        env: childEnvironment,
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       let output = ''

@@ -145,4 +145,19 @@ describe('Claude compatibility auth seeding', () => {
       fixture: 2,
     })
   })
+
+  it('creates empty compatibility auth files when the host has no Claude config', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-claude-seed-empty-'))
+    roots.push(root)
+    const config = join(root, 'config')
+
+    await seedClaudeConfig(config, join(root, 'missing-home'))
+
+    await expect(readFile(join(config, '.claude.json'), 'utf8')).resolves.toBe(
+      '{}\n',
+    )
+    await expect(readFile(join(config, 'settings.json'), 'utf8')).resolves.toBe(
+      '{}\n',
+    )
+  })
 })

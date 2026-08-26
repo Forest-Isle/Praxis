@@ -212,7 +212,12 @@ export class ClaudeHookToolCoordinator
     try {
       let result: ToolExecutionResult
       try {
-        result = await this.options.tools.execute(call, context)
+        result = await this.options.tools.execute(call, {
+          ...context,
+          ...(prepared?.permissionDecision?.behavior === 'allow'
+            ? { preToolUseAllowed: true }
+            : {}),
+        })
       } catch (error) {
         result = {
           content: error instanceof Error ? error.message : String(error),

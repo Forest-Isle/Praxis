@@ -25,6 +25,7 @@ import type {
   TeamLeadOperations,
   TeamCreateRequest,
 } from './application/team-lead-operations.js'
+import type { TeamSnapshot } from './core/team-ownership.js'
 import {
   ProjectMemoryAgentExtractor,
   ProjectMemoryExtractionController,
@@ -112,6 +113,7 @@ import {
   PRAXIS_TEAM_TOOLS,
   resolveClaudeToolCapabilities,
 } from './tools/claude-capabilities.js'
+import type { ClaudeTeamCompatibilityPort } from './tools/team-lead-tools.js'
 import {
   applyRuntimeSettingDefaults,
   loadRuntimeSettings,
@@ -399,6 +401,7 @@ Usage:
   praxis doctor [--json]
   praxis import [options] [source]
   praxis migrate from-claude
+  praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
   praxis project purge [options] [path]
@@ -1021,6 +1024,9 @@ Commands:
   list [--json]
   accept <team-id> <task-id> --lead-session-id <id> [--generation <n>] [--decision accepted|rejected] [--json]
   stop <team-id> --lead-session-id <id> [--drain-ms <ms>] [--json]
+  status <team-id> [--json]
+  logs <team-id> [--json]
+  attach <team-id> [--json]
 `
 
 export { parseContextEnvironment, parseProviderEnvironment }
@@ -2066,6 +2072,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ] as const
     const workflowToolNames = ['Workflow'] as const
     const teamToolNames = PRAXIS_TEAM_TOOLS
+    const claudeTeamCompatibilityEnabled =
+      dataPlane === 'claude' &&
+      /^(?:1|true|yes|on)$/iu.test(
+        (runtimeEnvironment.PRAXIS_CLAUDE_TEAM_COMPAT ?? '').trim(),
+      )
+    const claudeTeamCompatibilityToolNames = [
+      'ClaudeTeamCreate',
+      'ClaudeTeamDelete',
+      'ClaudeSendMessage',
+    ] as const
     const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
     const interactiveToolNames = [
       'AskUserQuestion',
@@ -2112,15 +2128,27 @@ const createDefaultService: CliDependencies['createService'] = async ({
       simpleMode,
       env: runtimeEnvironment,
     }).has('TeamCreate')
-    const selectedTeamTools = teamToolNames.filter(
-      (name) =>
-        teamEnabled &&
-        !simpleMode &&
-        (cli.tools === undefined ||
-          cli.tools.includes('default') ||
-          cli.tools.includes(name)) &&
-        !cli.disallowedTools.includes(name),
-    )
+    const selectedTeamTools = [
+      ...teamToolNames.filter(
+        (name) =>
+          teamEnabled &&
+          !simpleMode &&
+          (cli.tools === undefined ||
+            cli.tools.includes('default') ||
+            cli.tools.includes(name)) &&
+          !cli.disallowedTools.includes(name),
+      ),
+      ...(claudeTeamCompatibilityEnabled &&
+      (cli.tools === undefined || cli.tools.includes('default')
+        ? true
+        : claudeTeamCompatibilityToolNames.some((name) =>
+            cli.tools?.includes(name),
+          ))
+        ? claudeTeamCompatibilityToolNames.filter(
+            (name) => !cli.disallowedTools.includes(name),
+          )
+        : []),
+    ]
     const selectedWorktreeTools = worktreeToolNames.filter(
       (name) =>
         !simpleMode &&
@@ -2268,14 +2296,22 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(simpleMode ? { bare: true } : {}),
     })
-    const teamModules = teamEnabled
+    const teamRuntimeEnabled = teamEnabled || claudeTeamCompatibilityEnabled
+    const teamModules = teamRuntimeEnabled
       ? await Promise.all([
           import('./application/team-capability.js'),
           import('./application/team-agent-runtime.js'),
+          import('./application/team-lead-decision-surface.js'),
           import('./application/team-lead-operations.js'),
           import('./tools/team-lead-tools.js'),
         ])
       : undefined
+    const teamDecisionSurface =
+      teamModules && permissionApprover
+        ? new teamModules[2].SerializedTeamLeadDecisionSurface(
+            permissionApprover,
+          )
+        : undefined
     const teamCapability = teamModules
       ? new teamModules[0].LocalTeamCapability({
           nativeRoot: resolveDataPlaneRoot({
@@ -2295,10 +2331,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
               configRoot,
               claudeVersion,
               provider: hostedToolProvider,
-              ...(extensions ? { extensions } : {}),
-              ...(permissionApprover
-                ? { approveTool: permissionApprover }
+              ...(teamDecisionSurface
+                ? { decisionSurface: teamDecisionSurface }
                 : {}),
+              ...(extensions ? { extensions } : {}),
               ...(hooks ? { hooks } : {}),
               ...(contextAssembler ? { contextAssembler } : {}),
               ...(providerForModel ? { providerForModel } : {}),
@@ -2309,7 +2345,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : undefined
     const teamLeadOperations =
       teamCapability && teamModules
-        ? new teamModules[2].TeamLeadOperations(teamCapability)
+        ? new teamModules[3].TeamLeadOperations(teamCapability)
+        : undefined
+    const claudeTeamCompatibilityPort: ClaudeTeamCompatibilityPort | undefined =
+      claudeTeamCompatibilityEnabled
+        ? new (
+            await import('./compatibility/claude/team.js')
+          ).ClaudeTeamCompatibilityAdapter()
         : undefined
     const teamLeadToolRegistryFactory = teamModules
       ? (
@@ -2317,12 +2359,14 @@ const createDefaultService: CliDependencies['createService'] = async ({
           operations: TeamLeadOperations,
           sessionId: string,
           names: readonly string[],
+          compatibilityPort?: ClaudeTeamCompatibilityPort,
         ) =>
-          new teamModules[3].TeamLeadToolRegistry(
+          new teamModules[4].TeamLeadToolRegistry(
             base,
             operations,
             sessionId,
             names,
+            compatibilityPort,
           )
       : undefined
     const service = new ClaudeSessionService({
@@ -2410,6 +2454,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
             teamLeadOperations,
             ...(teamLeadToolRegistryFactory
               ? { teamLeadToolRegistryFactory }
+              : {}),
+            ...(claudeTeamCompatibilityPort
+              ? { teamLeadCompatibilityPort: claudeTeamCompatibilityPort }
               : {}),
           }
         : {}),
@@ -5546,12 +5593,24 @@ type TeamCliCommand =
       drainMs?: number
       json: boolean
     }
+  | { command: 'status' | 'logs' | 'attach'; teamId: string; json: boolean }
 
 function parseTeamCommand(args: readonly string[]): TeamCliCommand {
   if (args[0] !== 'team') throw new Error('Invalid Team command')
   const command = args[1]
   if (!command || command === 'help') throw new Error(TEAM_HELP.trim())
-  if (!['create', 'resume', 'list', 'accept', 'stop'].includes(command))
+  if (
+    ![
+      'create',
+      'resume',
+      'list',
+      'accept',
+      'stop',
+      'status',
+      'logs',
+      'attach',
+    ].includes(command)
+  )
     throw new Error(`Unsupported Team command: ${command}`)
   const operands: string[] = []
   let json = false
@@ -5651,6 +5710,11 @@ function parseTeamCommand(args: readonly string[]): TeamCliCommand {
       json,
     }
   }
+  if (command === 'status' || command === 'logs' || command === 'attach') {
+    rejectOptions([])
+    if (operands.length !== 1) throw new Error(`${command} requires a team ID`)
+    return { command, teamId: operands[0] as string, json }
+  }
   rejectOptions(['--lead-session-id', '--drain-ms'])
   if (operands.length !== 1) throw new Error('stop requires a team ID')
   return {
@@ -5685,7 +5749,9 @@ async function executeTeamCommand(
   }
   const service = await dependencies.createService({
     eventSink: () => undefined,
-    requireProvider: parsed.command !== 'list',
+    requireProvider: !['list', 'status', 'logs', 'attach'].includes(
+      parsed.command,
+    ),
     exposeToolRegistry: true,
     controls: nativeControls,
     configRoot: resolveDataPlaneRoot({ dataPlane: 'native' }),
@@ -5695,6 +5761,45 @@ async function executeTeamCommand(
   try {
     const operations = service.teamLeadOperations
     if (!operations) throw new Error('Team lead operations are unavailable')
+    if (
+      parsed.command === 'status' ||
+      parsed.command === 'logs' ||
+      parsed.command === 'attach'
+    ) {
+      const {
+        projectTeamDashboard,
+        readTeamMailboxAudit,
+        readTeamWorktreeEvidence,
+        renderTeamAudit,
+        renderTeamSummary,
+      } = await import('./application/team-observability.js')
+      const snapshot = (await operations.list()).find(
+        (team) => team.teamId === parsed.teamId,
+      )
+      if (!snapshot) throw new Error(`Missing Team: ${parsed.teamId}`)
+      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
+      const [mailbox, worktrees] = await Promise.all([
+        readTeamMailboxAudit({ nativeRoot, snapshot }),
+        readTeamWorktreeEvidence({ nativeRoot, snapshot }),
+      ])
+      const dashboard = projectTeamDashboard(snapshot, { mailbox, worktrees })
+      if (parsed.command === 'logs') {
+        if (parsed.json) writeJson(io, dashboard)
+        else
+          io.stdout(
+            `${renderTeamAudit(dashboard)}${dashboard.events.length ? '\n' : ''}`,
+          )
+      } else if (parsed.command === 'attach') {
+        if (parsed.json)
+          writeJson(io, { ...dashboard, transport: 'durable-local' })
+        else
+          io.stdout(
+            `${renderTeamSummary(dashboard)}\ntransport: durable-local\n`,
+          )
+      } else if (parsed.json) writeJson(io, dashboard)
+      else io.stdout(`${renderTeamSummary(dashboard)}\n`)
+      return 0
+    }
     if (parsed.command === 'list') {
       const teams = await operations.list()
       if (parsed.json) writeJson(io, { teams })
@@ -5704,7 +5809,7 @@ async function executeTeamCommand(
         )
       return 0
     }
-    let snapshot
+    let snapshot: TeamSnapshot | undefined
     if (parsed.command === 'create') {
       const raw = await readFile(parsed.manifest, 'utf8')
       const value: unknown = JSON.parse(raw)
@@ -5729,7 +5834,7 @@ async function executeTeamCommand(
         parsed.leadSessionId,
       )
       snapshot = await operations.detach(parsed.teamId, parsed.leadSessionId)
-    } else {
+    } else if (parsed.command === 'stop') {
       snapshot = await operations.stop(
         {
           teamId: parsed.teamId,
@@ -5738,6 +5843,7 @@ async function executeTeamCommand(
         parsed.leadSessionId,
       )
     }
+    if (!snapshot) throw new Error('Team command did not produce a snapshot')
     if (parsed.json) writeJson(io, { team: snapshot })
     else io.stdout(`${snapshot.teamId}\n`)
     return 0
@@ -5950,7 +6056,18 @@ async function execute(
     return 0
   }
 
-  const invocation = parseCliInvocation(argv)
+  const nativeMigrationCommand =
+    argv[0] === 'migrate' && argv[1] === 'native-transcript'
+  const invocation = parseCliInvocation(
+    nativeMigrationCommand
+      ? argv.filter(
+          (value) =>
+            value !== '--all' &&
+            value !== '--dry-run' &&
+            value !== '--rollback',
+        )
+      : argv,
+  )
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
   const command = args[0]
@@ -6193,6 +6310,86 @@ async function execute(
     )
   }
   if (command === 'migrate') {
+    if (args[1] === 'native-transcript') {
+      const {
+        discoverNativeTranscriptSessions,
+        migrateNativeTranscript,
+        rollbackNativeTranscript,
+      } = await import('./persistence/native-transcript-migration.js')
+      const { createClaudeTranscriptCodec } =
+        await import('./compatibility/claude/transcript-codec.js')
+      const legacyCodec = createClaudeTranscriptCodec({
+        version: '2.1.0',
+        cwd: process.cwd(),
+        entrypoint: 'praxis-migration',
+      })
+      const legacyDecoder = (source: string) =>
+        legacyCodec.decodeDocument(source)
+      const values = argv.slice(2)
+      const all = values.includes('--all')
+      const dryRun = values.includes('--dry-run')
+      const rollback = values.includes('--rollback')
+      const json = values.includes('--json') || invocation.legacyJson
+      if (dryRun && rollback)
+        throw new Error('--dry-run and --rollback are mutually exclusive')
+      const sessionId = values.find((value) => !value.startsWith('--'))
+      if (!all && !sessionId)
+        throw new Error(
+          'Usage: praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]',
+        )
+      if (all && sessionId)
+        throw new Error('Specify either a session ID or --all')
+      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
+      const sessions = all
+        ? await discoverNativeTranscriptSessions(nativeRoot)
+        : [
+            {
+              sessionId: sessionId as string,
+              path: resolveDataPlanePaths({
+                dataPlane: 'native',
+                cwd: process.cwd(),
+                sessionId: sessionId as string,
+              }).sessionFile,
+            },
+          ]
+      const migrations = []
+      for (const { sessionId: id, path } of sessions) {
+        try {
+          migrations.push(
+            await (rollback
+              ? rollbackNativeTranscript({ sourcePath: path, sessionId: id })
+              : migrateNativeTranscript({
+                  sourcePath: path,
+                  sessionId: id,
+                  legacyDecoder,
+                  dryRun,
+                })),
+          )
+        } catch (error) {
+          migrations.push({
+            sessionId: id,
+            sourcePath: path,
+            status: 'blocked',
+            eventCount: 0,
+            validPrefixByteLength: 0,
+            issue: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      if (json)
+        writeJson(
+          io,
+          all ? { atomicity: 'per-session', migrations } : { migrations },
+        )
+      else
+        for (const migration of migrations)
+          io.stdout(
+            `${migration.sessionId}: ${migration.status} (${migration.sourcePath})\n`,
+          )
+      return migrations.some((migration) => migration.status === 'blocked')
+        ? 1
+        : 0
+    }
     if (args[1] !== 'from-claude' || args[2] !== undefined) {
       throw new Error('Usage: praxis migrate from-claude')
     }

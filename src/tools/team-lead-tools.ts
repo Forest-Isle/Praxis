@@ -25,9 +25,43 @@ const names = [
 ] as const
 type TeamName = (typeof names)[number]
 
+/** Claude's compatibility names are opt-in and never part of native definitions. */
+export const CLAUDE_TEAM_TOOL_NAMES = [
+  'ClaudeTeamCreate',
+  'ClaudeTeamDelete',
+  'ClaudeSendMessage',
+] as const
+type ClaudeTeamToolName = (typeof CLAUDE_TEAM_TOOL_NAMES)[number]
+export interface ClaudeTeamCompatibilityPort {
+  decodeCreate(input: unknown): unknown
+  decodeDelete(input: unknown): unknown
+  decodeSendMessage(input: unknown): unknown
+  executeCreate(
+    input: unknown,
+    operations: TeamLeadOperations,
+    leadSessionId: string,
+  ): Promise<Record<string, unknown>>
+  executeDelete(
+    input: unknown,
+    operations: TeamLeadOperations,
+    leadSessionId: string,
+  ): Promise<Record<string, unknown>>
+  executeSend(
+    input: unknown,
+    operations: TeamLeadOperations,
+    leadSessionId: string,
+    operationId: string,
+  ): Promise<Record<string, unknown>>
+}
+const unsupportedClaudeTeamToolNames = new Set([
+  'ClaudeTask',
+  'ClaudeNotification',
+  'ClaudeContext',
+  'ClaudeSessionResume',
+])
+
 /** Tools a Coordinator Lead may use; all other base/MCP tools are denied. */
 export const COORDINATOR_LEAD_ALLOWLIST = Object.freeze([
-  'Agent',
   'TaskOutput',
   'TaskStop',
   'TaskCreate',
@@ -278,6 +312,60 @@ const definitions: readonly ModelToolDefinition[] = [
   },
 ]
 
+const claudeDefinitions: readonly ModelToolDefinition[] = [
+  {
+    name: 'ClaudeTeamCreate',
+    description: 'Create a Claude-compatible local Team.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['team_name'],
+      properties: {
+        team_name: { type: 'string' },
+        description: { type: 'string' },
+        agent_type: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'ClaudeTeamDelete',
+    description: 'Delete a Claude-compatible local Team.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      oneOf: [{ required: ['team_name'] }, { required: ['team_id'] }],
+      properties: {
+        team_name: { type: 'string' },
+        team_id: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'ClaudeSendMessage',
+    description: 'Send a Claude-compatible Team message.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['team_name', 'to', 'message'],
+      properties: {
+        team_name: { type: 'string' },
+        to: { anyOf: [{ type: 'string' }, { const: '*' }] },
+        summary: { type: 'string' },
+        message: {
+          oneOf: [
+            { type: 'string', minLength: 1 },
+            { type: 'object', additionalProperties: false },
+          ],
+        },
+      },
+    },
+  },
+]
+
+function isClaudeTeamToolName(name: string): name is ClaudeTeamToolName {
+  return CLAUDE_TEAM_TOOL_NAMES.includes(name as ClaudeTeamToolName)
+}
+
 function objectInput(
   input: Record<string, unknown>,
   allowed: readonly string[],
@@ -441,10 +529,13 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     private readonly operations: TeamLeadOperations,
     private readonly sessionId: string,
     toolNames: readonly string[],
+    private readonly claudeTeam?: ClaudeTeamCompatibilityPort,
   ) {
     this.enabled = new Set(
-      toolNames.filter((name): name is TeamName =>
-        names.includes(name as TeamName),
+      toolNames.filter(
+        (name): name is TeamName | ClaudeTeamToolName =>
+          names.includes(name as TeamName) ||
+          CLAUDE_TEAM_TOOL_NAMES.includes(name as ClaudeTeamToolName),
       ),
     )
   }
@@ -457,9 +548,30 @@ export class TeamLeadToolRegistry implements ToolRegistry {
         (definition) =>
           this.enabled.has(definition.name) && this.isAllowed(definition.name),
       ),
+      ...claudeDefinitions.filter(
+        (definition) =>
+          this.claudeTeam !== undefined &&
+          this.enabled.has(definition.name) &&
+          this.isAllowed(definition.name),
+      ),
     ]
   }
+  /** Explicit compatibility discovery; native definitions remain unchanged. */
+  claudeDefinitions(): readonly ModelToolDefinition[] {
+    return claudeDefinitions
+  }
+  claudeToolNames(): readonly string[] {
+    return CLAUDE_TEAM_TOOL_NAMES
+  }
   schedulingPolicy(call: ModelToolCall) {
+    if (isClaudeTeamToolName(call.name)) {
+      if (!this.claudeTeam) throw new Error(`Tool ${call.name} is unavailable`)
+      if (!this.enabled.has(call.name))
+        throw new Error(`Tool ${call.name} is unavailable`)
+      return { concurrency: 'exclusive' as const, cancelOnInterrupt: true }
+    }
+    if (unsupportedClaudeTeamToolNames.has(call.name))
+      throw new Error(`Unsupported Claude Team tool: ${call.name}`)
     this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName)) {
       if (!this.enabled.has(call.name))
@@ -477,6 +589,19 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
     this.assertLeadPolicyAllows(call.name)
+    if (isClaudeTeamToolName(call.name)) {
+      const claudeTeam = this.claudeTeam
+      if (!claudeTeam) throw new Error(`Tool ${call.name} is unavailable`)
+      if (!this.enabled.has(call.name))
+        throw new Error(`Tool ${call.name} is unavailable`)
+      if (call.name === 'ClaudeTeamCreate') claudeTeam.decodeCreate(call.input)
+      else if (call.name === 'ClaudeTeamDelete')
+        claudeTeam.decodeDelete(call.input)
+      else claudeTeam.decodeSendMessage(call.input)
+      return call
+    }
+    if (unsupportedClaudeTeamToolNames.has(call.name))
+      throw new Error(`Unsupported Claude Team tool: ${call.name}`)
     if (names.includes(call.name as TeamName) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)
     if (!this.enabled.has(call.name)) return this.base.prepare(call, context)
@@ -486,6 +611,38 @@ export class TeamLeadToolRegistry implements ToolRegistry {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
+    if (unsupportedClaudeTeamToolNames.has(call.name))
+      throw new Error(`Unsupported Claude Team tool: ${call.name}`)
+    if (isClaudeTeamToolName(call.name) && !this.enabled.has(call.name))
+      throw new Error(`Tool ${call.name} is unavailable`)
+    if (isClaudeTeamToolName(call.name)) {
+      const claudeTeam = this.claudeTeam
+      if (!claudeTeam) throw new Error(`Tool ${call.name} is unavailable`)
+      if (call.name === 'ClaudeTeamCreate')
+        return this.result({
+          claude: await claudeTeam.executeCreate(
+            call.input,
+            this.operations,
+            this.sessionId,
+          ),
+        })
+      if (call.name === 'ClaudeTeamDelete')
+        return this.result({
+          claude: await claudeTeam.executeDelete(
+            call.input,
+            this.operations,
+            this.sessionId,
+          ),
+        })
+      return this.result({
+        claude: await claudeTeam.executeSend(
+          call.input,
+          this.operations,
+          this.sessionId,
+          call.id,
+        ),
+      })
+    }
     this.assertLeadPolicyAllows(call.name)
     if (names.includes(call.name as TeamName) && !this.enabled.has(call.name))
       throw new Error(`Tool ${call.name} is unavailable`)

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import {
+  applyCompatibilityEndpointModelOverrides,
   buildQualificationEnvironment,
   canonicalizePrerequisiteBinaries,
   classifyGateError,
@@ -34,6 +35,10 @@ let compatibilityEnvironment = buildQualificationEnvironment(process.env, {
   realClaudeBinary,
   referenceBinary: realClaudeBinary,
 })
+compatibilityEnvironment = applyCompatibilityEndpointModelOverrides(
+  compatibilityEnvironment,
+  process.env,
+)
 const packageDocument = JSON.parse(
   await readFile(join(projectRoot, 'package.json'), 'utf8'),
 )
@@ -58,8 +63,25 @@ const requiredEnvironment = new Map([
     'scripts/verify-cross-version-compaction-compatibility.mjs',
     ['PRAXIS_CLAUDE_BINARY', 'PRAXIS_CLAUDE_CROSS_VERSION_BINARY'],
   ],
+  [
+    'scripts/verify-session-metadata-compatibility.mjs',
+    ['PRAXIS_CLAUDE_2_1_237'],
+  ],
+  ['scripts/verify-subagent-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_237']],
+  [
+    'scripts/verify-background-agent-compatibility.mjs',
+    ['PRAXIS_CLAUDE_2_1_237'],
+  ],
+  ['scripts/verify-plugin-maintenance.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-plugin-eval-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_237']],
   ['scripts/verify-tui-compatibility.mjs', ['PRAXIS_CLAUDE_2_1_208']],
+])
+const claude237PrimaryEntrypoints = new Set([
+  'scripts/verify-session-metadata-compatibility.mjs',
+  'scripts/verify-subagent-compatibility.mjs',
+  'scripts/verify-background-agent-compatibility.mjs',
+  'scripts/verify-plugin-maintenance.mjs',
+  'scripts/verify-mcp-oauth-serve.mjs',
 ])
 const optionalEnvironment = new Map()
 const retryableTransientGates = new Set([
@@ -92,6 +114,12 @@ const entrypoints = discoverCompatibilityEntrypoints(packageDocument.scripts)
 
 const canonicalized = canonicalizePrerequisiteBinaries(compatibilityEnvironment)
 compatibilityEnvironment = canonicalized.environment
+if (!compatibilityEnvironment.PRAXIS_CLAUDE_2_1_237) {
+  console.error(
+    '[qualification blocked] Claude 2.1.237 binary is missing or invalid; set PRAXIS_CLAUDE_2_1_237 to the pinned executable',
+  )
+  process.exit(2)
+}
 const missingEntrypoints = findMissingPrerequisites(
   entrypoints,
   requiredEnvironment,
@@ -126,9 +154,17 @@ function run({ name, file }, index) {
   return new Promise((resolve, reject) => {
     const label = `${index + 1}/${entrypoints.length} ${name}: ${file}`
     console.log(`\n[compatibility ${label}]`)
+    const childEnvironment = claude237PrimaryEntrypoints.has(file)
+      ? {
+          ...compatibilityEnvironment,
+          PRAXIS_CLAUDE_BINARY: compatibilityEnvironment.PRAXIS_CLAUDE_2_1_237,
+          PRAXIS_REAL_CLAUDE_BINARY:
+            compatibilityEnvironment.PRAXIS_CLAUDE_2_1_237,
+        }
+      : compatibilityEnvironment
     const child = spawn(process.execPath, [file], {
       cwd: projectRoot,
-      env: compatibilityEnvironment,
+      env: childEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     let diagnostics = ''

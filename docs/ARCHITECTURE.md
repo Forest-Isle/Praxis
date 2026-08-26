@@ -47,10 +47,12 @@ src/
 - Native modules depend on core, platform, and shared seams, never on the
   Claude compatibility adapter. Claude compatibility modules implement the
   same seams without becoming dependencies of native modules.
-- `npm run check:boundaries` rejects reverse source imports, and
-  `npm run build:native` emits the current core/provider/native slice without
-  Claude compatibility sources. This profile is the incremental foundation
-  for the final installed-native deletion proof; it is not yet that proof.
+- `npm run check:boundaries` rejects reverse source imports. `npm run
+build:native` emits the implemented core/provider/native transcript and
+  session profile without Claude compatibility sources, while
+  `npm run test:native:deletion` is an executable emitted-output deletion gate.
+  This profile and gate are implemented; the full native package is not yet
+  qualified.
 - The CLI observes runtime events; it does not own agent state.
 - Claude Code-compatible JSONL transcripts remain authoritative and
   append-only.
@@ -353,6 +355,20 @@ or semantically reduced fork is never published. Sidechain records and orphaned
 main chain.
 
 Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
+
+## Local Team observability and qualification
+
+Team and Swarm are explicit, local-only capabilities. The native CLI provides
+`team status`, `team logs`, and durable-local `team attach` projections in text
+or JSON; tmux is optional presentation and never lifecycle authority. The CLI
+keeps Team observability modules behind the explicit Team gate, so a disabled
+Team does not load mailbox, ownership, or dashboard modules during startup.
+The removable Claude Team adapter is fail-closed on unknown fields and covers
+fixture-verified lead-only create (empty native roster/task list), delete/send,
+shutdown, and plan-response shapes. Native task persistence, notification
+projection, context assembly, and Team resume/inbox seams are implemented
+behind the same local lead boundary. Their Claude-facing zero-skip black-box
+qualification remains separate and is not implied by adapter fixtures.
 
 ## Clean-room rule
 

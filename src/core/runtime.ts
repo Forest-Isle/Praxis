@@ -322,6 +322,8 @@ export interface ToolExecutionContext {
   permissionUpdates?: readonly PermissionUpdate[]
   permissionPhase?: 'request' | 'execute'
   permissionApproved?: boolean
+  /** Internal marker for an explicit PreToolUse allow decision. */
+  preToolUseAllowed?: boolean
 }
 
 export interface ToolSchedulingPolicy {

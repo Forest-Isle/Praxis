@@ -50,15 +50,19 @@ async function listenProvider() {
 process.env.DISABLE_AUTOUPDATER = '1'
 
 function environment() {
-  return {
+  const value = {
     ...process.env,
     CLAUDE_CONFIG_DIR: configRoot,
     DISABLE_AUTOUPDATER: '1',
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'openai',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_MODEL: 'fixture-model',
     PRAXIS_BASE_URL: `http://127.0.0.1:${providerPort}/v1`,
   }
+  delete value.NO_COLOR
+  delete value.FORCE_COLOR
+  return value
 }
 
 function requiredOptions(output) {
@@ -367,7 +371,7 @@ try {
   const dashboardOutput = await runPraxisPty()
   assert.match(
     dashboardOutput,
-    new RegExp(String.raw`\u001B\[95m(?:\u001B\[[0-9;]*m)*Praxis agents`, 'u'),
+    new RegExp(String.raw`\u001B\[91m(?:\u001B\[[0-9;]*m)*Praxis agents`, 'u'),
     'installed agents dashboard did not apply its persisted accent theme',
   )
   assert.match(

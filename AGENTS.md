@@ -19,6 +19,48 @@
   Claude config root for private operational state.
 - Require focused tests for every runtime behavior change.
 
+## Verified compatibility pitfalls
+
+These are recurring failure modes observed while running the Claude/DeepSeek
+compatibility lanes. Apply them before classifying a gate failure:
+
+- Pin the oracle binary per lane. Claude Code `2.1.208` is the CLI/TUI/shared
+  compatibility baseline and `2.1.237` is the core-design baseline. The
+  ambient `claude` command may be newer (for example `2.1.238`), and current
+  npm `latest` is not a valid substitute. Gates must validate the executable
+  version before creating fixtures. If a pinned executable is unavailable,
+  install the exact npm version under a temporary `/tmp` prefix and set
+  `PRAXIS_CLAUDE_BINARY` explicitly.
+- Keep provider and oracle variables separate. Shell-level
+  `ANTHROPIC_MODEL`/`ANTHROPIC_DEFAULT_*_MODEL` values can leak into Claude
+  fixture probes and select a model-dependent prompt branch or produce
+  `unrecognized_model`. For a pure Claude baseline, unset model overrides; for
+  a provider lane, set the model explicitly and report that it is a separate
+  variable from the Claude version.
+- Use the correct DeepSeek Anthropic endpoint and credential mapping:
+  `ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic` and
+  `ANTHROPIC_AUTH_TOKEN=$DEEPSEEK_API_KEY`. The OpenAI-compatible `/v1`
+  endpoint is not interchangeable for Claude Code probes.
+- Match the data plane to path assertions. Native runs default to Praxis
+  storage; any probe that writes with `CLAUDE_CONFIG_DIR` and later resolves
+  Claude session paths must set `PRAXIS_DATA_PLANE=claude` explicitly.
+  Otherwise successful runs can be followed by false `ENOENT` transcript
+  failures.
+- Separate lifecycle evidence from model prose. For hook failures, inspect
+  hook events, transcript contents, and follow-up user messages before
+  changing production code. A model not repeating an exact marker does not
+  prove that PermissionDenied, retry, persistence, or resume wiring is broken.
+- Same endpoint does not mean same request. Claude Code and Praxis can differ
+  in model-id capability branching, system-prompt placement, tool schemas,
+  continuation messages, and cache headers. Compare captured provider request
+  structure before assigning a failure to the model.
+- Build before running scripts that import `dist/**`; after source changes use
+  `npm run build` (or the package script that includes it) before interpreting
+  compatibility output.
+- Keep diagnostic instrumentation temporary and tagged, remove it before
+  acceptance, and never stage user-owned `.claude/`, `docs/research/`, or other
+  untracked local data.
+
 ## Mandatory PR Workflow
 
 Every change intended for Praxis must follow this workflow, including changes

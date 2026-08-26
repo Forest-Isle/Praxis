@@ -30,6 +30,9 @@ Praxis 中相似的界面不能替代对应的 Claude 命令或运行时契约�
 Praxis 不使用 Claude 订阅认证。Claude Code 互操作性涵盖本地会话、配置、权限、记忆、
 技能、钩子、Agent、插件和 MCP 数据。
 
+Claude Team 兼容模式必须显式启用并遵循 fail-closed 语义：支持的删除/发送线协议会路由到原生 Team 操作，
+无法无损表示或尚未支持的 Team 面会被拒绝，不会静默简化。
+
 ## 安装
 
 ```sh
@@ -95,6 +98,7 @@ praxis doctor
   并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。Team 仍是实验性功能，必须显式设置
   `PRAXIS_ENABLE_TEAMS=true` 才会启用；未启用时不会加载、发现或暴露 Team 代码。新 Team 默认使用 Hybrid Lead、sequential 执行和 Lead 持有提交权限，也可选 Coordinator 与 Swarm 策略。
   Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
+  原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前覆盖已有 fixture 证据的 delete/send；create 仅执行解码，无法表达原生 roster/task 声明时会拒绝；shutdown 和 plan-response 仍有 fixture 证据，task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
 - **Claude 兼容生态** — 支持递归 `@` 导入的共享指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件和 transcript 数据。
 - **提供商无关的模型** — 原生 Anthropic Messages 和 OpenAI 兼容的流式适配器，支持明确的能力检查和计量控制。
 
@@ -170,8 +174,9 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` 会编译当前由 Praxis 拥有的核心、提供商适配器和不含 Claude 兼容适配器的原生数据平面切片。
+`npm run build:native` 会编译当前已实现的 Praxis 核心、提供商适配器、原生 transcript/session 与不含 Claude 兼容适配器的数据平面切片；`npm run test:native:deletion` 会执行产物删除门禁。这些是已实现的 profile 检查，并不表示完整原生包已经 qualified。原生 transcript 迁移仍必须显式执行且可恢复。构建后 CLI smoke gate `npm run verify:native-migration-cli` 会验证全会话 dry-run、发布、文本/JSON 幂等性、回滚及 Claude 数据平面排除；隔离的 active-stream 回归证明可通过 `npm run test:performance:active-stream` 执行，产品 p95 预算仍为 50 ms。
 `npm run check` 还会强制执行对应的源代码依赖方向。
+`npm run test:core-completion` 会运行 #402 的 56 条 user story 审计，并分别报告 implemented、qualified、blocked、deferred 和 out-of-scope；缺少 live 前置条件不会被当作通过。
 
 贡献使用 Conventional Commit pull request 标题和受保护的 squash-merge 工作流。
 修改兼容性、持久化、发布或安全行为前，请阅读

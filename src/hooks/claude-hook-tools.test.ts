@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type {
   ModelToolCall,
   PermissionResolver,
+  ToolExecutionContext,
   ToolRegistry,
 } from '../core/runtime.js'
 import { ClaudeHookToolCoordinator } from './claude-hook-tools.js'
@@ -87,10 +88,14 @@ function fixture(
 
 describe('ClaudeHookToolCoordinator', () => {
   it('applies updated input and permission before execution, then adds post context', async () => {
+    let executionContext: ToolExecutionContext | undefined
     const tools: ToolRegistry = {
       definitions: () => [],
       prepare: vi.fn(async (value) => value),
-      execute: vi.fn(async () => ({ content: 'RESULT', isError: false })),
+      execute: vi.fn(async (_call, context) => {
+        executionContext = context
+        return { content: 'RESULT', isError: false }
+      }),
     }
     const executeCommand = vi
       .fn<ClaudeHookCommandExecutor>()
@@ -131,6 +136,7 @@ describe('ClaudeHookToolCoordinator', () => {
     await expect(
       coordinator.execute(prepared, { cwd: '/workspace' }),
     ).resolves.toEqual({ content: 'RESULT', isError: false })
+    expect(executionContext?.preToolUseAllowed).toBe(true)
     expect(outcomes).toHaveBeenCalledTimes(2)
   })
 

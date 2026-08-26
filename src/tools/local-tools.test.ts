@@ -1539,6 +1539,30 @@ describe('LocalToolRegistry', () => {
     await expect(readFile(credentials, 'utf8')).resolves.toBe(
       'existing-credential\n',
     )
+
+    const envPath = join(cwd, '.env')
+    const envWrite = await registry.prepare(
+      {
+        id: 'protected-env',
+        name: 'Bash',
+        input: { command: `printf 'hook-secret' > ${envPath}` },
+      },
+      context,
+    )
+    await expect(registry.execute(envWrite, context)).rejects.toThrow(
+      'Refusing to write protected path',
+    )
+    await expect(
+      registry.execute(envWrite, { ...context, preToolUseAllowed: true }),
+    ).resolves.toMatchObject({ isError: false })
+    await expect(readFile(envPath, 'utf8')).resolves.toBe('hook-secret')
+
+    await expect(
+      registry.execute(redirect, { ...context, preToolUseAllowed: true }),
+    ).rejects.toThrow('Refusing to write protected path')
+    await expect(
+      registry.execute(removal, { ...context, preToolUseAllowed: true }),
+    ).rejects.toThrow('Refusing to write protected path')
   })
 
   it('still allows ordinary workspace writes with configured protected roots', async () => {

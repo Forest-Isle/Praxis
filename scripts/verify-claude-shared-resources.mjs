@@ -4,6 +4,7 @@ import { join } from 'node:path'
 
 import { sanitizeClaudeProjectPath } from '../dist/compatibility/claude/paths.js'
 import { ClaudeContextAssembler } from '../dist/compatibility/claude/context.js'
+import { projectContextSnapshot } from '../dist/core/context.js'
 import {
   loadClaudeContextResources,
   loadClaudeSharedResources,
@@ -337,9 +338,10 @@ process.stdin.on('data', chunk => {
     configRoot,
     cwd,
   })
-  const { systemMessages } = await new ClaudeContextAssembler({
+  const assembled = await new ClaudeContextAssembler({
     loadResources: async () => contextResources,
   }).assemble()
+  const { systemMessages } = projectContextSnapshot(assembled)
   if (systemMessages.length === 0) {
     throw new Error('Praxis did not assemble shared system context')
   }

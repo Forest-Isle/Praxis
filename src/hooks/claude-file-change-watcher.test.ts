@@ -58,6 +58,59 @@ describe('ClaudeFileChangeWatcher', () => {
     expect(closed.length).toBeGreaterThan(0)
   })
 
+  it('preserves distinct existence transitions observed during one debounce burst', async () => {
+    vi.useFakeTimers()
+    const existing = new Set<string>()
+    const listeners = new Map<string, (filename: string | null) => void>()
+    const events: { path: string; event: ClaudeFileChangeEvent }[] = []
+    const watcher = new ClaudeFileChangeWatcher({
+      cwd: '/workspace',
+      staticPaths: ['/workspace/.env'],
+      debounceMs: 10,
+      pathExists: (path) => existing.has(path),
+      watchDirectory: (directory, listener) => {
+        listeners.set(directory, listener)
+        return {
+          close: () => undefined,
+          on() {
+            return this
+          },
+        }
+      },
+      onFileChanged: async (path, event) => {
+        events.push({ path, event })
+        return path === '/workspace/.env'
+          ? ['/workspace/dynamic.env']
+          : undefined
+      },
+      warn: vi.fn(),
+    })
+
+    existing.add('/workspace/.env')
+    listeners.get('/workspace')?.('.env')
+    existing.delete('/workspace/.env')
+    listeners.get('/workspace')?.('.env')
+    existing.add('/workspace/.env')
+    listeners.get('/workspace')?.('.env')
+    await vi.advanceTimersByTimeAsync(10)
+    await vi.runAllTimersAsync()
+
+    expect(events).toEqual([
+      { path: '/workspace/.env', event: 'add' },
+      { path: '/workspace/.env', event: 'unlink' },
+      { path: '/workspace/.env', event: 'add' },
+    ])
+
+    existing.add('/workspace/dynamic.env')
+    listeners.get('/workspace')?.('dynamic.env')
+    await vi.advanceTimersByTimeAsync(10)
+    expect(events.at(-1)).toEqual({
+      path: '/workspace/dynamic.env',
+      event: 'add',
+    })
+    await watcher.close()
+  })
+
   it('rejects relative dynamic paths and surfaces watcher failures', async () => {
     const warnings: string[] = []
     let errorListener: ((error: Error) => void) | undefined

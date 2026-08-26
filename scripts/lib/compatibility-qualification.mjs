@@ -17,6 +17,13 @@ const PROVIDER_ENV_PREFIXES = [
   'VERTEX_',
 ]
 
+const MODEL_ENV = [
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+]
+
 const AUTHENTICATION_PATTERNS = [
   /authentication_error/iu,
   /not logged in/iu,
@@ -38,6 +45,10 @@ const BALANCE_PATTERNS = [
 ]
 
 export const compatibilityScriptExclusions = new Set([
+  // Native/core qualification gates are not Claude compatibility lanes.
+  'test:native:deletion',
+  'test:core-completion',
+  'test:performance:active-stream',
   'test:compat:all',
   'test:docs',
   'test:package',
@@ -105,6 +116,8 @@ export function buildQualificationEnvironment(
       delete environment[key]
     }
   }
+  delete environment.NO_COLOR
+  delete environment.FORCE_COLOR
 
   environment.PRAXIS_PROVIDER = 'openai'
   environment.PRAXIS_DATA_PLANE = 'claude'
@@ -119,6 +132,22 @@ export function buildQualificationEnvironment(
     .filter(Boolean)
     .join(delimiter)
   return environment
+}
+
+export function applyCompatibilityEndpointModelOverrides(
+  environment,
+  hostEnvironment,
+) {
+  const result = { ...environment }
+  const endpoint = String(
+    hostEnvironment?.PRAXIS_COMPAT_ANTHROPIC_BASE_URL ?? '',
+  ).trim()
+  const model = String(hostEnvironment?.PRAXIS_COMPAT_CLAUDE_MODEL ?? '').trim()
+  if (endpoint) result.ANTHROPIC_BASE_URL = endpoint
+  for (const key of MODEL_ENV) delete result[key]
+  delete result.PRAXIS_COMPAT_CLAUDE_MODEL
+  if (model) result.PRAXIS_COMPAT_CLAUDE_MODEL = model
+  return result
 }
 
 function executablePaths(value, pathValue = process.env.PATH) {
