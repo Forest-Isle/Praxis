@@ -294,6 +294,7 @@ try {
   const praxisEnvironment = {
     ...process.env,
     CLAUDE_CONFIG_DIR: praxisConfigRoot,
+    PRAXIS_DATA_PLANE: 'claude',
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_BASE_URL: `${origin}/v1`,
     PRAXIS_API_KEY: 'fixture-key',
