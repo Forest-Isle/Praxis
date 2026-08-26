@@ -24,6 +24,10 @@ Evidence levels:
 - **Live**: exercised against installed Claude Code 2.1.208 and Praxis.
 - **Fixture**: isolated unit/integration or installed-package contract test.
 
+The 2.1.208 executable is the pinned CLI/TUI/shared compatibility
+qualification baseline. Newer Claude releases are observation-only drift
+lanes and cannot replace a pinned baseline qualification run.
+
 Dispositions, per the accepted developer-core command inventory:
 
 - **Required**: known missing developer-core work and a completion blocker;

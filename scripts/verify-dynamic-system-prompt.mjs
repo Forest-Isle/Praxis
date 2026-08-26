@@ -15,6 +15,7 @@ import { join } from 'node:path'
 import { resolveClaudePaths } from '../dist/compatibility/claude/paths.js'
 import { detectClaudeVersion, execFileAsync } from './lib/claude-probe.mjs'
 
+const EXPECTED_CLAUDE_VERSION = '2.1.208'
 const root = await mkdtemp(join(tmpdir(), 'praxis-dynamic-system-compat-'))
 const cwd = join(root, 'work')
 const claudeConfigRoot = join(root, 'claude-config')
@@ -239,6 +240,12 @@ try {
   const version = await detectClaudeVersion(
     'dynamic system prompt compatibility',
   )
+  if (version !== EXPECTED_CLAUDE_VERSION) {
+    const executable = process.env.PRAXIS_CLAUDE_BINARY ?? 'claude'
+    throw new Error(
+      `Dynamic system prompt compatibility requires Claude Code ${EXPECTED_CLAUDE_VERSION}; received ${version} from PRAXIS_CLAUDE_BINARY=${executable}`,
+    )
+  }
   await Promise.all([
     mkdir(cwd, { recursive: true }),
     mkdir(claudeConfigRoot, { recursive: true }),
