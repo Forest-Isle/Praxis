@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.38.0](https://github.com/Forest-Isle/Praxis/compare/v0.37.0...v0.38.0) (2026-08-26)
+
+
+### Features
+
+* complete core design closure and compatibility qualification ([#467](https://github.com/Forest-Isle/Praxis/issues/467)) ([98b6ab1](https://github.com/Forest-Isle/Praxis/commit/98b6ab17cb15baa12d678d579fff0e5d60c6d9d9))
+
 ## [Unreleased]
 
 ### Changed
