@@ -5,11 +5,11 @@ import {
   AnsiFullscreenRenderer,
   type AnsiFrame,
 } from './ansi-frame-renderer.js'
-import type { TuiRow, TuiRowSegment, TuiTextRole } from './tui-row-ir.js'
+import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
 import type { TuiScreenModel } from './tui-screen-model.js'
 
 export interface TuiAnsiSurfaceProps {
-  screen: TuiScreenModel<any>
+  screen: TuiScreenModel
   width: number
   rows: number | undefined
   input: string
@@ -21,10 +21,23 @@ export interface TuiAnsiSurfaceProps {
 
 // Keep line breaks long enough for active stream projection to split them;
 // every emitted row is still guaranteed to contain no line breaks.
-const CONTROL = /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f\u001b]/gu
+function isUnsafeControl(character: string): boolean {
+  const codePoint = character.codePointAt(0) ?? 0
+  return (
+    (codePoint >= 0 && codePoint <= 9) ||
+    codePoint === 11 ||
+    codePoint === 12 ||
+    (codePoint >= 14 && codePoint <= 31) ||
+    codePoint === 127
+  )
+}
 
 function safeText(value: unknown): string {
-  return typeof value === 'string' ? value.replace(CONTROL, '') : ''
+  return typeof value === 'string'
+    ? Array.from(value)
+        .filter((character) => !isUnsafeControl(character))
+        .join('')
+    : ''
 }
 
 function row(key: string, text: string, role: TuiTextRole = 'body'): TuiRow {
@@ -67,7 +80,7 @@ function summarize(value: unknown, depth = 0): string[] {
   return result.slice(0, 8)
 }
 
-function surfaceRows(screen: TuiScreenModel<any>): TuiRow[] {
+function surfaceRows(screen: TuiScreenModel): TuiRow[] {
   const body = screen.body
   if (body.kind === 'session-picker') {
     return [
@@ -94,7 +107,7 @@ function surfaceRows(screen: TuiScreenModel<any>): TuiRow[] {
 }
 
 /** ANSI mode is intentionally limited to the plain conversation surface. */
-export function supportsAnsiSurface(screen: TuiScreenModel<any>): boolean {
+export function supportsAnsiSurface(screen: TuiScreenModel): boolean {
   if (screen.body.kind !== 'conversation') return false
   return (
     screen.body.foreground.kind === 'compose' &&
@@ -151,7 +164,8 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
     })
   }
   useEffect(() => {
-    const renderer = rendererRef.current!
+    const renderer = rendererRef.current
+    if (renderer === null) return
     try {
       renderer.mount()
     } catch (error) {
@@ -168,8 +182,10 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
   }, [])
   useEffect(() => {
     if (failedRef.current) return
+    const renderer = rendererRef.current
+    if (renderer === null) return
     try {
-      rendererRef.current!.draw(projectAnsiSurfaceFrame(props))
+      renderer.draw(projectAnsiSurfaceFrame(props))
     } catch (error) {
       failedRef.current = true
       props.onError(error)

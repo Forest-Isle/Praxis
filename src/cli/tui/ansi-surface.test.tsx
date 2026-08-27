@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { projectAnsiSurfaceFrame, supportsAnsiSurface } from './ansi-surface.js'
+import type { TuiScreenModel } from './tui-screen-model.js'
 
 function screen(overrides: Record<string, unknown> = {}) {
   return {
@@ -26,7 +27,7 @@ function screen(overrides: Record<string, unknown> = {}) {
       foreground: { kind: 'compose', overlays: [] },
       ...overrides,
     },
-  } as any
+  } as unknown as TuiScreenModel
 }
 
 describe('projectAnsiSurfaceFrame', () => {
