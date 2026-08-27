@@ -27,6 +27,8 @@ this file from merged Conventional Commit pull requests.
   atomic streaming text/thinking frame publication
 * add a shared semantic transcript Row IR with stable source-derived keys and
   renderer-neutral role segments
+* add an independent ANSI fullscreen frame renderer with alternate-screen
+  lifecycle, synchronized output, and dirty-row diffing
 
 ### Changed
 
