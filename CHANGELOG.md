@@ -25,6 +25,8 @@ this file from merged Conventional Commit pull requests.
   and screen-reader/no-color fallbacks
 * add a framework-free TUI runtime kernel with pure reducer transitions and
   atomic streaming text/thinking frame publication
+* add a shared semantic transcript Row IR with stable source-derived keys and
+  renderer-neutral role segments
 
 ### Changed
 

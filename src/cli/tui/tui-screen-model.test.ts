@@ -674,6 +674,13 @@ describe('projectTuiScreen', () => {
     const newEntries = conversation(appended).transcript.entries
     expect(newEntries[0]).toBe(oldEntries[0])
     expect(newEntries[1]).toBe(oldEntries[1])
+    const oldRows = conversation(initialScreen).transcript.rows
+    const newRows = conversation(appended).transcript.rows
+    expect(oldRows.map((row) => row.key)).toEqual(['item-0:0', 'item-1:0'])
+    expect(newRows.slice(0, 2).map((row) => row.source)).toEqual([
+      'item-0',
+      'item-1',
+    ])
   })
 
   it('retains identity when returning from a session picker', () => {

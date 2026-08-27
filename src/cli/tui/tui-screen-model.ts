@@ -11,6 +11,7 @@ import {
   type TuiHistoryChange,
 } from './transcript-window-model.js'
 import type { TuiPresentationEnvironment } from './presentation-environment.js'
+import { projectTuiRows, type TuiRow } from './tui-row-ir.js'
 
 export { appendTuiHistory, createTuiHistoryChange }
 export type { TuiHistoryChange }
@@ -239,6 +240,7 @@ export interface TuiScreenInput<
 
 export interface TuiTranscriptScreenModel {
   readonly entries: readonly TranscriptPresentationEntry[]
+  readonly rows: readonly TuiRow[]
   readonly pageRows: number
   readonly maxScrollOffset: number
   readonly scrollOffset: number
@@ -322,6 +324,11 @@ export function projectTuiScreen<Surfaces extends TuiScreenSurfaceModels>(
   )
   const transcript: TuiTranscriptScreenModel = {
     entries: view.transcriptEntries,
+    rows: projectTuiRows({
+      entries: view.transcriptEntries,
+      width: input.presentation.viewport.columns,
+      mode: readingMode,
+    }),
     pageRows: view.transcriptPageRows,
     maxScrollOffset: view.maxTranscriptScrollOffset,
     scrollOffset,
