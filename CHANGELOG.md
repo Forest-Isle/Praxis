@@ -31,6 +31,8 @@ this file from merged Conventional Commit pull requests.
   lifecycle, synchronized output, and dirty-row diffing
 * wire ANSI rendering into interactive TTY sessions with automatic Ink
   fallback while preserving screen-reader and non-TTY paths
+* centralize TUI overlay and dialog precedence in a pure FocusStack projection
+  without changing existing keybindings or cancellation targets
 
 ### Changed
 

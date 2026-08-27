@@ -219,10 +219,13 @@ import {
 import {
   routeTuiInteraction,
   type TuiInteractionEffect,
-  type TuiInteractionLayer,
   type TuiInteractionSnapshot,
   type TuiScrollIntent,
 } from './tui/tui-interaction-router.js'
+import {
+  currentTuiInteractionLayer,
+  projectTuiFocusStack,
+} from './tui/tui-focus-stack.js'
 import {
   applyMentionReference,
   fileReferenceAtCursor,
@@ -5173,32 +5176,25 @@ export function InteractiveApp({
     if (hasPendingPrefix) {
       keySequenceRef.current = { chord: inputChord, at: Date.now() }
     }
-    const layer: TuiInteractionLayer = hasPendingPrefix
-      ? { kind: 'pending-prefix' }
-      : permission
-        ? { kind: 'cancelable', target: 'permission' }
-        : planApproval
-          ? { kind: 'cancelable', target: 'plan-approval' }
-          : question
-            ? { kind: 'cancelable', target: 'question' }
-            : elicitation
-              ? {
-                  kind: 'cancelable',
-                  target: elicitationUrlWaiting
-                    ? 'elicitation-url-waiting'
-                    : elicitationForm?.expandedField
-                      ? 'elicitation-options'
-                      : 'elicitation',
-                }
-              : selectingSession
-                ? { kind: 'delegated', target: 'session-picker' }
-                : menuRef.current
-                  ? { kind: 'delegated', target: 'menu' }
-                  : filePickerVisible
-                    ? { kind: 'cancelable', target: 'file-picker' }
-                    : commandPaletteVisible
-                      ? { kind: 'cancelable', target: 'command-palette' }
-                      : { kind: 'none' }
+    const layer = currentTuiInteractionLayer(
+      projectTuiFocusStack({
+        pendingPrefix: hasPendingPrefix,
+        permission: Boolean(permission),
+        planApproval: Boolean(planApproval),
+        question: Boolean(question),
+        elicitation: elicitation
+          ? elicitationUrlWaiting
+            ? 'url-waiting'
+            : elicitationForm?.expandedField
+              ? 'expanded-options'
+              : 'plain'
+          : false,
+        selectingSession: Boolean(selectingSession),
+        menu: Boolean(menuRef.current),
+        filePicker: filePickerVisible,
+        commandPalette: commandPaletteVisible,
+      }),
+    )
     const callerIntent =
       !busy && value === '?' && inputRef.current.length === 0
         ? 'toggle-shortcuts'
