@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import { resolveNativePaths } from '../native/paths.js'
 import type { ModelProvider } from '../core/runtime.js'
 import { ModelPricingRegistry, usageCostUsd } from '../core/usage.js'
 import { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
@@ -27,7 +27,7 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService cost lifecycle', () => {
-  it('restores and saves the native .claude.json project slot while keeping the transcript memory-only', async () => {
+  it('restores and saves the native state project slot with a persisted transcript', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-cost-lifecycle-'))
     roots.push(root)
     const configRoot = join(root, 'config')
@@ -73,7 +73,7 @@ describe('ClaudeSessionService cost lifecycle', () => {
       claudeVersion: '2.1.208',
       provider,
       pricing,
-      sessionPersistence: false,
+      sessionPersistence: true,
       costStateStore: store,
     })
 
@@ -138,12 +138,14 @@ describe('ClaudeSessionService cost lifecycle', () => {
       },
     })
 
-    const { sessionFile } = resolveClaudePaths({
+    const { sessionFile } = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId,
     })
-    await expect(stat(sessionFile)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(sessionFile)).resolves.toMatchObject({
+      isFile: expect.any(Function),
+    })
 
     const reopened = new ClaudeCostStateStore({ statePath, projectIdentity })
     const restored = await reopened.load(sessionId)

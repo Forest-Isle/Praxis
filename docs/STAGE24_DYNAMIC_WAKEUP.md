@@ -3,19 +3,19 @@
 ## Goal
 
 Complete the single-process `ScheduleWakeup` lifecycle for Praxis interactive
-sessions while preserving Claude Code 2.1.208 headless behavior and existing
-Cron persistence compatibility.
+sessions while preserving the native headless behavior and existing Cron
+persistence contract.
 
 ## Solution and rationale
 
 Dynamic wakeups are session-only one-shot prompts owned by the interactive
 service. They reuse the scheduled prompt manager's idle delivery queue, but are
-never written to `.claude/scheduled_tasks.json`. A new call replaces the prior
+never written to the native durable task store. A new call replaces the prior
 pending dynamic wakeup. Durable and recurring work continues to use
 `CronCreate`.
 
 The interactive CLI enables the Praxis runtime. Print, background, and other
-headless invocations keep the observed Claude inactive result. The four
+headless invocations keep the native inactive result. The four
 scheduling lifecycle tools are default-allow built-ins so they reach the
 scheduler without an unrelated permission denial. Explicit deny rules still win.
 
@@ -64,14 +64,11 @@ model ScheduleWakeup
 - Tool tests cover exact active/inactive/stop text and native result shapes.
 - CLI tests cover option-only TTY forwarding.
 - Permission tests cover default scheduling allow with explicit deny precedence.
-- `test:scheduled-compat` covers exact live Claude descriptions/schema, native
-  Cron state, bidirectional resume, inactive gate, and built active contract.
+- Native manager, tool, CLI, and permission fixtures cover exact descriptions,
+  schema, Cron state, resume, inactive behavior, and the built active contract.
 
-## Compatibility evidence
+## Native evidence
 
-Claude Code 2.1.208's installed SDK declaration supplies the exact input/output
-shape. Its executable implementation supplies clamp, minute alignment,
-replacement, maximum-age, active/inactive/stop projection, and native fields.
-The isolated API-auth black-box fixture verifies exact descriptions/schema and
-inactive behavior; the built Praxis registry gate verifies the executable-derived
-active contract.
+The deterministic Praxis fixtures verify input/output shape, clamp, minute
+alignment, replacement, maximum-age, active/inactive/stop projection, and
+native fields. The built Praxis registry gate verifies the active contract.

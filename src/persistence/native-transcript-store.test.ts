@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { TranscriptEvent } from '../core/transcript-event.js'
+import { InMemoryTranscriptStore } from './in-memory-transcript-store.js'
 import {
   NativeTranscriptStore,
   type NativeTranscriptTail,
@@ -308,5 +309,30 @@ describe('NativeTranscriptStore', () => {
     })
     release()
     await owner
+  })
+})
+
+describe('InMemoryTranscriptStore', () => {
+  it('exposes the same non-authoritative entry projection as the native store', async () => {
+    const store = new InMemoryTranscriptStore()
+    const result = await store.withLease(async (lease) => {
+      const initial = await lease.load()
+      await expect(lease.reserve()).resolves.toEqual({ status: 'reserved' })
+      await expect(
+        lease.append(initial.tail, message('one', null)),
+      ).resolves.toEqual(expect.objectContaining({ status: 'appended' }))
+      const loaded = await lease.load()
+      expect(loaded.records.map((record) => record.event.id)).toEqual(['one'])
+      expect(loaded.entries).toEqual([
+        expect.objectContaining({
+          type: 'user',
+          uuid: 'one',
+          parentUuid: null,
+          message: { role: 'user', content: 'one' },
+        }),
+      ])
+      expect(Object.keys(loaded)).toEqual(['records', 'tail'])
+    })
+    expect(result.status).toBe('completed')
   })
 })

@@ -15,12 +15,11 @@ import {
   type WorkflowSource,
 } from '../application/workflow-manager.js'
 import type { ClaudeSubagentExecutor } from '../application/subagent-service.js'
-import type { DataPlane } from '../persistence/data-plane.js'
 
 const MAX_SCRIPT_BYTES = 524_288
 
-function workflowDefinition(dataPlane: DataPlane): ModelToolDefinition {
-  const projectDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
+function workflowDefinition(): ModelToolDefinition {
+  const projectDirectory = '.praxis'
   return {
     name: 'Workflow',
     description: `Run an explicitly requested, sandboxed JavaScript workflow in the background. Use only when the user asks for a workflow or named saved workflow; for ordinary delegation use Agent.
@@ -102,7 +101,6 @@ export interface ClaudeWorkflowToolRegistryOptions {
   defaultModel: string
   tokenBudget?: number | null
   enabled: boolean
-  dataPlane?: DataPlane
 }
 
 function optionalString(
@@ -127,7 +125,7 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     if (!this.options.enabled || base.some(({ name }) => name === 'Workflow')) {
       return base
     }
-    return [...base, workflowDefinition(this.options.dataPlane ?? 'claude')]
+    return [...base, workflowDefinition()]
   }
 
   schedulingPolicy(call: ModelToolCall) {
@@ -293,8 +291,7 @@ export class ClaudeWorkflowToolRegistry implements ToolRegistry {
     }
     if (input.script) return this.source(input.script)
     const name = String(input.name)
-    const projectDirectory =
-      this.options.dataPlane === 'native' ? '.praxis' : '.claude'
+    const projectDirectory = '.praxis'
     for (const path of [
       resolve(
         this.options.cwdProvider?.() ?? this.options.cwd,

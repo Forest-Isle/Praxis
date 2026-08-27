@@ -5,10 +5,14 @@ import {
   isTerminalLifecycleState,
   type LifecycleState,
 } from '../core/agent-orchestration.js'
-import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
 
 const MAX_TIMEOUT_MS = 600_000
 const DEFAULT_CLOSE_DRAIN_MS = 5_000
+const NATIVE_AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/u
+
+function isNativeAgentId(agentId: string): boolean {
+  return NATIVE_AGENT_ID_PATTERN.test(agentId)
+}
 
 export interface BackgroundAgentRunResult {
   text: string
@@ -141,7 +145,7 @@ export interface BackgroundAgentSnapshot {
 }
 
 function assertAgentId(agentId: string): void {
-  if (!isClaudeAgentId(agentId)) {
+  if (!isNativeAgentId(agentId)) {
     throw new Error(`Invalid background agent ID: ${agentId}`)
   }
 }
@@ -956,7 +960,7 @@ export class BackgroundAgentManager {
   }
 
   private resolveOptional(identifier: string): string | undefined {
-    if (isClaudeAgentId(identifier)) return identifier
+    if (isNativeAgentId(identifier)) return identifier
     return this.names.get(identifier)
   }
 
@@ -1008,7 +1012,7 @@ export class BackgroundAgentManager {
   private resolveRequired(identifier: string): string {
     const resolved = this.resolveOptional(identifier)
     if (
-      !isClaudeAgentId(identifier) &&
+      !isNativeAgentId(identifier) &&
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(identifier)
     ) {
       assertAgentId(identifier)

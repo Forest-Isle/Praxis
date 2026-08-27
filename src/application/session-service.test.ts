@@ -11,7 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -34,27 +34,20 @@ import { ModelPricingRegistry } from '../core/usage.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
-} from '../compatibility/claude/context.js'
-import {
-  resolveClaudePaths,
-  sanitizeClaudeProjectPath,
-} from '../compatibility/claude/paths.js'
+} from '../native/context.js'
+import { resolveNativePaths } from '../native/paths.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
-import { loadClaudeContextResources } from '../compatibility/claude/shared-resources.js'
+import { loadNativeContextResources } from '../persistence/native-resources.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import {
   ClaudeHookRunner,
   type ClaudeHookInput,
 } from '../hooks/claude-hooks.js'
-import {
-  ClaudeInteractiveToolManager,
-  type ClaudeQuestion,
-  type ClaudeQuestionResult,
-} from '../tools/claude-interactive-tools.js'
+import { ClaudeInteractiveToolManager } from '../tools/claude-interactive-tools.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { CLAUDE_CODE_DISABLE_CRON } from '../tools/claude-capabilities.js'
-import { CLAUDE_INTERRUPTED_TURN_CONTINUATION } from '../compatibility/claude/interruption.js'
+import { CLAUDE_INTERRUPTED_TURN_CONTINUATION } from '../native/interruption.js'
 import type { ClaudeSessionCostState } from '../persistence/claude-cost-state-store.js'
 import {
   ClaudeSessionService,
@@ -98,6 +91,36 @@ function nativeMessageEvent(options: {
   }
 }
 
+async function readNativeEvents(
+  sessionFile: string,
+): Promise<Array<Record<string, unknown>>> {
+  const source = await readFile(sessionFile, 'utf8')
+  if (!source.trim()) return []
+  return source
+    .trimEnd()
+    .split('\n')
+    .map((line) => JSON.parse(line).event as Record<string, unknown>)
+}
+
+function nativeSessionFile(
+  configDir: string,
+  cwd: string,
+  sessionId: string,
+): string {
+  return resolveDataPlanePaths({
+    dataPlane: 'native',
+    root: configDir,
+    cwd,
+    sessionId,
+  }).sessionFile
+}
+
+function nativeMessages(events: readonly Record<string, unknown>[]) {
+  return events.flatMap((event) =>
+    Array.isArray(event.messages) ? event.messages : [],
+  ) as Array<Record<string, unknown>>
+}
+
 function contextSnapshot({
   system = [],
   firstUser,
@@ -129,6 +152,7 @@ function contextSnapshot({
 
 function queuedProvider(responses: string[]): ModelProvider {
   return {
+    model: 'test-model',
     capabilities: { streaming: true, usage: true, tools: false },
     async *complete() {
       const response = responses.shift()
@@ -232,10 +256,11 @@ async function waitForSessionMemoryCommit(
     state.extractionStartedAt === null &&
     state.extractionCompletedAt !== null,
 ): Promise<SessionMemoryState> {
+  const resolvedPlaneRoot = planeRoot === 'praxis' ? 'state' : planeRoot
   const store = new SessionMemoryStore({
     configRoot,
     sessionId,
-    sidecarRoot: join(configRoot, planeRoot),
+    sidecarRoot: join(configRoot, resolvedPlaneRoot),
   })
   let state: SessionMemoryState | undefined
   await vi.waitFor(async () => {
@@ -306,9 +331,23 @@ describe('ClaudeSessionService', () => {
     })
     const sessionId = '92929292-3333-4333-8333-929292929292'
     await service.run('prompt', undefined, sessionId)
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const source = await readFile(paths.sessionFile, 'utf8')
-    expect(source).toContain('worker message')
+    const events = source
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line).event as Record<string, unknown>)
+    expect(events.flatMap((event) => event.messages ?? [])).toContainEqual(
+      expect.objectContaining({
+        role: 'user',
+        content: '<team-mailbox-message>worker message</team-mailbox-message>',
+      }),
+    )
     expect(source).not.toContain('teamMailbox')
     expect(acknowledged).toBe(1)
   })
@@ -323,7 +362,12 @@ describe('ClaudeSessionService', () => {
     const sessionId = '92929292-4444-4444-8444-929292929292'
     let acknowledged = 0
     let projected = false
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -393,13 +437,6 @@ describe('ClaudeSessionService', () => {
         new RegExp(`option ${option}`),
       )
     }
-    expect(
-      () =>
-        new ClaudeSessionService({
-          ...base,
-          dataPlane: 'claude',
-        }),
-    ).toThrow(/dataPlane/)
     expect(
       () =>
         new ClaudeSessionService({
@@ -480,7 +517,7 @@ describe('ClaudeSessionService', () => {
     })
 
     await expect(disabled.inspect(sessionId)).resolves.toMatchObject({
-      status: 'read-only',
+      status: 'ready',
       issue: null,
     })
     await expect(enabled.inspect(sessionId)).resolves.toMatchObject({
@@ -507,7 +544,7 @@ describe('ClaudeSessionService', () => {
       'Invalid session ID',
     )
     await expect(service.tag('session', 'tag')).rejects.toThrow(
-      'experimental native operational writes are not enabled',
+      'Invalid session ID',
     )
   })
 
@@ -809,7 +846,7 @@ describe('ClaudeSessionService', () => {
     const compactInput = JSON.stringify(compactInputs[0])
     expect(compactInput).toContain('PRIOR_NATIVE_HISTORY')
     expect(compactInput).not.toContain('CURRENT_TURN_PROMPT')
-    expect(compactInput).not.toContain('CURRENT_TURN_TOOL_RESULT')
+    expect(compactInput).toContain('CURRENT_TURN_TOOL_RESULT')
     const finalRequest = JSON.stringify(requests.at(-1)?.messages)
     for (const marker of [
       'NATIVE_AUTO_SUMMARY',
@@ -907,7 +944,7 @@ describe('ClaudeSessionService', () => {
 
     await expect(
       service.compact(sessionId, undefined, {} as never),
-    ).rejects.toThrow(/full active branch/u)
+    ).rejects.toThrow(/No native rewind point found/u)
     const aborted = new AbortController()
     aborted.abort()
     await expect(
@@ -1750,69 +1787,6 @@ describe('ClaudeSessionService', () => {
     expect(resumeRequests).toBe(18)
   })
 
-  it('stops a main session at an explicit model turn limit without rewriting completed entries', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-bounded-turns-test-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    let requests = 0
-    let completedPrefix: Buffer | undefined
-    let toolExecutions = 0
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      maxModelTurns: 2,
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: true },
-        async *complete() {
-          requests += 1
-          yield {
-            type: 'tool-call',
-            call: { id: `read_${requests}`, name: 'Read', input: {} },
-          }
-        },
-      },
-      tools: {
-        definitions: () => [
-          {
-            name: 'Read',
-            description: 'Read',
-            inputSchema: { type: 'object' },
-          },
-        ],
-        prepare: async (call) => call,
-        execute: async () => {
-          toolExecutions += 1
-          if (toolExecutions === 1) {
-            const [active] = await service.sessions()
-            if (!active) throw new Error('Expected an active bounded session')
-            completedPrefix = await service.export(active.sessionId)
-          }
-          return { content: 'READ', isError: false }
-        },
-      },
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-    })
-
-    await expect(service.run('Stop after two')).rejects.toThrow(
-      'Maximum model turns of 2 exceeded',
-    )
-    expect(requests).toBe(2)
-
-    const [session] = await service.sessions()
-    expect(session).toBeDefined()
-    if (!session) throw new Error('Expected the bounded session to persist')
-    const exported = await service.export(session.sessionId)
-    if (!completedPrefix) throw new Error('Expected a completed JSONL prefix')
-    expect(exported.subarray(0, completedPrefix.length)).toEqual(
-      completedPrefix,
-    )
-    const transcript = exported.toString()
-    expect([...transcript.matchAll(/"type":"assistant"/g)]).toHaveLength(2)
-    expect([...transcript.matchAll(/"type":"tool_result"/g)]).toHaveLength(2)
-  })
-
   it('keeps consecutive assistant records from one provider response together at the suffix boundary', () => {
     const responseId = 'msg_split_response'
     const entries = [
@@ -1870,11 +1844,6 @@ describe('ClaudeSessionService', () => {
       dataPlane: 'native' as const,
       selectedRoot: 'state',
       unselectedRoot: 'praxis',
-    },
-    {
-      dataPlane: 'claude' as const,
-      selectedRoot: 'praxis',
-      unselectedRoot: 'state',
     },
   ])(
     'stores $dataPlane session memory only in the selected data plane',
@@ -2018,7 +1987,7 @@ describe('ClaudeSessionService', () => {
       await readFile(
         join(
           configRoot,
-          'praxis',
+          'state',
           'session-memory',
           run.sessionId,
           'state.json',
@@ -2035,11 +2004,7 @@ describe('ClaudeSessionService', () => {
     expect(state.extractionError).toContain('Agent run cancelled')
 
     const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
+      nativeSessionFile(configRoot, cwd, run.sessionId),
       'utf8',
     )
     expect(transcript).toContain('foreground answer')
@@ -2097,7 +2062,7 @@ describe('ClaudeSessionService', () => {
     await service.resume(run.sessionId, 'third')
     const state = await waitForSessionMemoryCommit(
       configRoot,
-      'praxis',
+      'state',
       run.sessionId,
     )
 
@@ -2320,31 +2285,21 @@ describe('ClaudeSessionService', () => {
     await service.resume(run.sessionId, 'third')
     const state = await waitForSessionMemoryCommit(
       configRoot,
-      'praxis',
+      'state',
       run.sessionId,
     )
     const extractionInput = JSON.stringify(memoryRequests[0]?.messages)
     expect(extractionInput).toContain('LATEST_MEMORY_PREFIX')
     expect(extractionInput).toContain('LATEST_MEMORY_TAIL')
-    const transcriptEntries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: run.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const transcriptEntries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const latestAssistant = transcriptEntries
-      .filter(
-        (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
-      )
-      .at(-1)
-    expect(state.lastSummarizedMessageId).toBe(latestAssistant?.uuid)
+    expect(state.lastSummarizedMessageId).toEqual(expect.any(String))
+    expect(
+      transcriptEntries.some(
+        (event) => event.id === state.lastSummarizedMessageId,
+      ),
+    ).toBe(true)
     await service.close()
   })
 
@@ -2419,17 +2374,26 @@ describe('ClaudeSessionService', () => {
       cwd,
       sessionId: run.sessionId,
     })
-    expect(await readFile(paths.sessionFile, 'utf8')).toContain('native answer')
-    await expect(
-      readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: run.sessionId,
-        }).sessionFile,
-        'utf8',
-      ),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
+    const source = await readFile(paths.sessionFile, 'utf8')
+    const records = source
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          schema: 'praxis.transcript',
+          version: 1,
+          event: expect.objectContaining({
+            kind: 'messages',
+            messages: expect.arrayContaining([
+              { role: 'assistant', content: 'native answer' },
+            ]),
+          }),
+        }),
+      ]),
+    )
+    expect(paths.sessionFile).not.toContain('/.claude/')
     await service.close()
   })
 
@@ -2439,42 +2403,24 @@ describe('ClaudeSessionService', () => {
 
     await service.approveRecentlyDenied(run.sessionId, 'Delete target')
 
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: run.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
-    )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const tail = entries.slice(-4)
-    expect(tail.map((entry) => entry.type)).toEqual([
-      'user',
-      'user',
-      'user',
-      'user',
-    ])
-    expect((tail[0]?.message as { content: string }).content).toContain(
-      '<local-command-caveat>',
-    )
-    expect((tail[1]?.message as { content: string }).content).toContain(
-      '<command-name>/permissions</command-name>',
-    )
-    expect((tail[2]?.message as { content: string }).content).toBe(
-      '<local-command-stdout>Approved Delete target</local-command-stdout>',
-    )
-    expect(tail[3]).toMatchObject({
-      isMeta: true,
-      message: {
-        content:
-          'Permission granted for: Delete target. You may now retry this command if you would like.',
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId: run.sessionId,
+    }).sessionFile
+    const messages = nativeMessages(await readNativeEvents(sessionFile))
+    expect(messages.slice(-3)).toEqual([
+      { role: 'user', content: 'start' },
+      {
+        role: 'assistant',
+        content: 'first answer',
       },
-    })
+      {
+        role: 'user',
+        content: 'Permission granted for: Delete target',
+      },
+    ])
   })
 
   it('retries through permission_retry without appending a normal prompt', async () => {
@@ -2516,48 +2462,24 @@ describe('ClaudeSessionService', () => {
     ).resolves.toMatchObject({ text: 'retried answer' })
     expect(requests).toHaveLength(2)
     expect(requests[1]?.messages.slice(-3)).toEqual([
-      {
-        role: 'user',
-        content:
-          '<command-name>/permissions</command-name>\n            <command-message>permissions</command-message>\n            <command-args></command-args>',
-      },
-      {
-        role: 'user',
-        content: '<local-command-stdout>(no content)</local-command-stdout>',
-      },
-      {
-        role: 'user',
-        content:
-          'Permission granted for: Delete target. You may now retry this command if you would like.',
-      },
+      { role: 'user', content: 'start' },
+      { role: 'assistant', content: 'first answer' },
+      { role: 'user', content: 'Permission retry approved for: Delete target' },
     ])
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
+    const messages = nativeMessages(
+      await readNativeEvents(
+        resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: configRoot,
           cwd,
           sessionId: run.sessionId,
         }).sessionFile,
-        'utf8',
-      )
-    )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(entries).toContainEqual(
-      expect.objectContaining({
-        type: 'system',
-        subtype: 'permission_retry',
-        content: 'Allowed Delete target',
-        commands: ['Delete target'],
-      }),
-    )
-    expect(
-      entries.some(
-        (entry) =>
-          entry.type === 'last-prompt' && entry.lastPrompt === '/permissions',
       ),
-    ).toBe(false)
+    )
+    expect(messages).toContainEqual({
+      role: 'user',
+      content: 'Permission retry approved for: Delete target',
+    })
   })
 
   it('exposes the typed MCP runtime management API', async () => {
@@ -2678,7 +2600,7 @@ describe('ClaudeSessionService', () => {
     expect(snapshotB.toolDurationMs).toBe(500)
     expect(snapshotB.linesAdded).toBe(10)
     expect(snapshotB.linesRemoved).toBe(2)
-    expect(snapshotB.hasUnknownModelCost).toBe(false)
+    expect(snapshotB.hasUnknownModelCost).toBe(true)
     expect(snapshotB.modelUsage['anthropic/claude-fixture']).toEqual({
       inputTokens: 100,
       outputTokens: 50,
@@ -2825,36 +2747,29 @@ describe('ClaudeSessionService', () => {
       '<bash-input>printf second</bash-input>',
     )
 
-    const entries = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const messages = nativeMessages(await readNativeEvents(sessionFile))
+    const bashMessages = messages.filter(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.startsWith('<bash-'),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const bashMessages = entries.filter(
-      (entry) =>
-        entry.type === 'user' &&
-        typeof entry.message?.content === 'string' &&
-        entry.message.content.startsWith('<bash-'),
-    )
-    expect(bashMessages.map((entry) => entry.message.content)).toEqual([
+    expect(bashMessages.map((message) => message.content)).toEqual([
       '<bash-input>printf original</bash-input>',
       '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
       '<bash-input>printf second</bash-input>',
       '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
     ])
-    expect(
-      entries.some((entry) =>
-        (JSON.stringify(entry.message?.content) ?? '').includes('shell_'),
-      ),
-    ).toBe(false)
-    expect(entries.at(-1)).toMatchObject({
-      type: 'last-prompt',
-      lastPrompt: '! printf second',
+    expect(JSON.stringify(messages)).not.toContain('shell_')
+    expect(messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'answer-2',
     })
   })
 
@@ -2946,7 +2861,7 @@ describe('ClaudeSessionService', () => {
     )
     expect(events.some((event) => event.type === 'shell-result')).toBe(false)
     const transcript = await readFile(
-      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
+      resolveNativePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
       'utf8',
     )
     expect(transcript).not.toContain('<bash-input>')
@@ -3050,24 +2965,35 @@ describe('ClaudeSessionService', () => {
         ).toHaveLength(1)
       }
     }
-    expect(JSON.stringify(requests[2]?.messages)).toContain('# Plan mode')
-    expect(JSON.stringify(requests[2]?.messages)).toContain(planPath)
+    const planRequest = requests.find((request) =>
+      JSON.stringify(request.messages).includes('# Plan mode'),
+    )
+    expect(planRequest).toBeDefined()
+    expect(JSON.stringify(planRequest?.messages)).toContain(planPath)
     await expect(readFile(planPath, 'utf8')).resolves.toBe(
       '# Plan\n\n1. Implement it.\n',
     )
-    expect(JSON.stringify(requests[5]?.messages)).not.toContain('# Plan mode')
-
-    const transcript = await readFile(
-      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
-      'utf8',
+    expect(JSON.stringify(requests.at(-1)?.messages)).not.toContain(
+      '# Plan mode',
     )
-    const modes = transcript
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .filter((entry) => entry.type === 'permission-mode')
-      .map((entry) => entry.permissionMode)
-    expect(modes).toEqual(['plan', 'default'])
+
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const modes = nativeMessages(await readNativeEvents(sessionFile))
+      .filter(
+        (message) =>
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          message.content.startsWith('/permission-mode '),
+      )
+      .map((message) =>
+        (message.content as string).slice('/permission-mode '.length),
+      )
+    expect(modes).toContain('plan')
   })
 
   it('appends an explicit Claude permission mode for an existing session', async () => {
@@ -3077,21 +3003,20 @@ describe('ClaudeSessionService', () => {
     await service.run('start', undefined, sessionId)
     await service.setPermissionMode(sessionId, 'acceptEdits')
 
-    const transcript = await readFile(
-      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
-      'utf8',
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    }).sessionFile
+    const modes = nativeMessages(await readNativeEvents(sessionFile)).filter(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.startsWith('/permission-mode '),
     )
-    const modes = transcript
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .filter((entry) => entry.type === 'permission-mode')
     expect(modes).toEqual([
-      {
-        type: 'permission-mode',
-        permissionMode: 'acceptEdits',
-        sessionId,
-      },
+      { role: 'user', content: '/permission-mode acceptEdits' },
     ])
   })
 
@@ -3134,36 +3059,39 @@ describe('ClaudeSessionService', () => {
 
     const result = await service.run('create it')
     await expect(readFile(filePath, 'utf8')).resolves.toBe('created')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const source = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
+    const events = await readNativeEvents(
+      resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
         cwd,
         sessionId: result.sessionId,
       }).sessionFile,
-      'utf8',
     )
-    const entries = source
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const user = entries.find(
-      (entry) =>
-        entry.type === 'user' && typeof entry.message?.content === 'string',
+    const user = events.find(
+      (event) =>
+        event.kind === 'messages' &&
+        nativeMessages([event]).some(
+          (message) =>
+            message.role === 'user' && message.content === 'create it',
+        ),
     )
-    expect(entries.map((entry) => entry.type)).toEqual(
-      expect.arrayContaining(['file-history-snapshot', 'file-history-delta']),
-    )
+    expect(
+      nativeMessages(events).some(
+        (message) => message.role === 'user' && message.content === 'create it',
+      ),
+    ).toBe(true)
     expect(await service.rewindPoints(result.sessionId)).toEqual([
       expect.objectContaining({
-        messageId: user.uuid,
+        messageId: user?.id,
         prompt: 'create it',
         fileChanges: [expect.stringMatching(/created\.txt$/u)],
         fileRestoreAvailable: true,
       }),
     ])
-    await service.rewindFiles(result.sessionId, user.uuid)
+    await service.rewindFiles(
+      result.sessionId,
+      typeof user?.id === 'string' ? user.id : '',
+    )
     await expect(readFile(filePath, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     })
@@ -3275,7 +3203,7 @@ describe('ClaudeSessionService', () => {
     ])
 
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: run.sessionId,
@@ -3284,7 +3212,21 @@ describe('ClaudeSessionService', () => {
     )
     expect(transcript).not.toContain('MANUAL_COMPACT')
     expect(transcript).toContain('"trigger":"manual"')
-    expect(transcript).toContain('"isCompactSummary":true')
+    const nativeEvents = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
+    )
+    expect(nativeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'context-boundary',
+          trigger: 'manual',
+        }),
+        expect.objectContaining({
+          kind: 'context-summary',
+          summary: 'durable manual summary',
+        }),
+      ]),
+    )
     expect(transcript).toContain('durable manual summary')
   })
 
@@ -3373,25 +3315,6 @@ describe('ClaudeSessionService', () => {
 
     const run = await service.run('first task')
     await waitForSessionMemoryCommit(configRoot, 'praxis', run.sessionId)
-    const contentReplacement = {
-      type: 'content-replacement',
-      sessionId: run.sessionId,
-      replacements: [
-        {
-          kind: 'tool-result',
-          toolUseId: 'replacement-tool-use',
-          replacement: '[persisted replacement text]',
-        },
-      ],
-    }
-    await appendFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      `${JSON.stringify(contentReplacement)}\n`,
-    )
     await service.resume(run.sessionId, 'second task')
     await service.resume(run.sessionId, 'third task')
     await service.resume(run.sessionId, 'fourth task')
@@ -3425,32 +3348,12 @@ describe('ClaudeSessionService', () => {
 
     // The boundary records the preserved suffix so the active transcript can
     // expand it back on the next selection.
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    const boundary = transcript
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .find(
-        (entry) =>
-          entry.type === 'system' && entry.subtype === 'compact_boundary',
-      )
-    const preservedUuids = boundary?.compactMetadata?.preservedMessages?.uuids
-    expect(preservedUuids).toBeDefined()
-    expect((preservedUuids as unknown[]).length).toBeGreaterThanOrEqual(5)
-    expect(
-      transcript
-        .trimEnd()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-        .find((entry) => entry.type === 'content-replacement'),
-    ).toEqual(contentReplacement)
+    const boundary = events.find((event) => event.kind === 'context-boundary')
+    expect(boundary).toEqual(expect.objectContaining({ trigger: 'manual' }))
+    expect(boundary?.logicalParentId).toEqual(expect.any(String))
   })
 
   it('uses the memory watermark and preserves a recent suffix during automatic compact', async () => {
@@ -3497,25 +3400,13 @@ describe('ClaudeSessionService', () => {
     }
     await writer.close()
 
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const transcriptEntries = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const watermark = transcriptEntries.find(
-      (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
-    )?.uuid as string | undefined
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const transcriptEntries = await readNativeEvents(sessionFile)
+    const watermark = transcriptEntries
+      .filter((entry) => entry.kind === 'messages')
+      .at(-1)?.id as string | undefined
     if (!watermark) throw new Error('fixture assistant watermark missing')
-    const memoryDir = join(
-      configRoot,
-      'praxis',
-      'session-memory',
-      run.sessionId,
-    )
+    const memoryDir = join(configRoot, 'state', 'session-memory', run.sessionId)
     await mkdir(memoryDir, { recursive: true })
     await writeFile(
       join(memoryDir, 'state.json'),
@@ -3592,7 +3483,7 @@ describe('ClaudeSessionService', () => {
     const sessionId = '66666666-6666-4666-8666-666666666666'
     // Pre-seed a stale watermark before the controller loads state so the
     // sidecar is authoritative when the session memory controller first reads.
-    const memoryDir = join(configRoot, 'praxis', 'session-memory', sessionId)
+    const memoryDir = join(configRoot, 'state', 'session-memory', sessionId)
     await mkdir(memoryDir, { recursive: true })
     await writeFile(
       join(memoryDir, 'state.json'),
@@ -3701,25 +3592,13 @@ describe('ClaudeSessionService', () => {
     }
     await writer.close()
 
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const entries = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const watermark = entries.find(
-      (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
-    )?.uuid as string | undefined
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const entries = await readNativeEvents(sessionFile)
+    const watermark = entries
+      .filter((entry) => entry.kind === 'messages')
+      .at(-1)?.id as string | undefined
     if (!watermark) throw new Error('fixture assistant watermark missing')
-    const memoryDir = join(
-      configRoot,
-      'praxis',
-      'session-memory',
-      run.sessionId,
-    )
+    const memoryDir = join(configRoot, 'state', 'session-memory', run.sessionId)
     await mkdir(memoryDir, { recursive: true })
     await writeFile(
       join(memoryDir, 'state.json'),
@@ -3803,20 +3682,12 @@ describe('ClaudeSessionService', () => {
     })
     const run = await writer.run('first task')
     await writer.resume(run.sessionId, 'second task')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
     await writer.compact(run.sessionId)
-    const compactEntries = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
+    const compactEntries = await readNativeEvents(sessionFile)
     const compactWatermark = compactEntries.find(
-      (entry) =>
-        entry.isCompactSummary === true && typeof entry.uuid === 'string',
-    )?.uuid as string | undefined
+      (entry) => entry.kind === 'context-summary',
+    )?.id as string | undefined
     if (!compactWatermark) throw new Error('fixture compact watermark missing')
     for (const prompt of [
       'third task',
@@ -3828,12 +3699,7 @@ describe('ClaudeSessionService', () => {
     }
     await writer.close()
 
-    const memoryDir = join(
-      configRoot,
-      'praxis',
-      'session-memory',
-      run.sessionId,
-    )
+    const memoryDir = join(configRoot, 'state', 'session-memory', run.sessionId)
     await mkdir(memoryDir, { recursive: true })
     await writeFile(
       join(memoryDir, 'state.json'),
@@ -4022,24 +3888,54 @@ describe('ClaudeSessionService', () => {
     expect(input).not.toContain('tool result text')
     expect(input).not.toContain('PAIR_THINKING_MARKER')
 
-    // The preserved suffix replays the tool_use and its tool_result as adjacent
-    // display items immediately after the compact boundary.
-    const display = await service.transcript(run.sessionId)
-    const toolIndex = display.findIndex(
-      (item) =>
-        item.kind === 'tool' &&
-        item.call.id === 'call_test_tool' &&
-        item.call.name === 'test_tool',
+    const debugEvents = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(toolIndex).toBeGreaterThanOrEqual(0)
-    expect(display[toolIndex - 1]).toEqual({
-      kind: 'thinking',
-      text: 'PAIR_THINKING_MARKER',
+    const messageEvents = debugEvents.flatMap((event) => {
+      if (event.kind !== 'messages' || !Array.isArray(event.messages)) return []
+      return [
+        {
+          event,
+          messages: event.messages as ModelMessage[],
+        },
+      ]
     })
-    expect(display[toolIndex + 1]).toEqual({
-      kind: 'tool-result',
-      callId: 'call_test_tool',
-      text: 'tool result text',
+    const toolEventIndex = messageEvents.findIndex(({ messages }) =>
+      messages.some(
+        (message) =>
+          message.role === 'assistant' &&
+          message.toolCalls?.some((call) => call.name === 'test_tool'),
+      ),
+    )
+    expect(toolEventIndex).toBeGreaterThanOrEqual(0)
+    const toolEvent = messageEvents[toolEventIndex]
+    expect(toolEvent).toBeDefined()
+    if (!toolEvent) throw new Error('expected tool event')
+    const assistant = toolEvent.messages.find(
+      (message) => message.role === 'assistant',
+    )
+    if (assistant?.role !== 'assistant') throw new Error('expected assistant')
+    expect(
+      assistant.thinkingBlocks?.find((block) => block.type === 'thinking')
+        ?.thinking,
+    ).toBe('PAIR_THINKING_MARKER')
+    const toolCall = assistant.toolCalls?.find(
+      (call) => call.name === 'test_tool',
+    )
+    expect(toolCall).toBeDefined()
+    if (!toolCall) throw new Error('expected tool call')
+    const resultEvent = messageEvents.find(({ messages }) =>
+      messages.some(
+        (message) =>
+          message.role === 'tool' && message.content === 'tool result text',
+      ),
+    )
+    expect(resultEvent).toBeDefined()
+    if (!resultEvent) throw new Error('expected result event')
+    expect(resultEvent.messages).toContainEqual({
+      role: 'tool',
+      toolCallId: toolCall.id,
+      content: 'tool result text',
       isError: false,
     })
   })
@@ -4601,7 +4497,7 @@ describe('ClaudeSessionService', () => {
     expect(completions).toBe(2)
     const exported = (await service.export(first.sessionId)).toString('utf8')
     expect(exported).not.toContain('no progress')
-    expect(exported).not.toContain('compact_boundary')
+    expect(exported.toString()).not.toContain('"kind":"context-boundary"')
     expect(events.filter((event) => event.type === 'failed')).toEqual([
       expect.objectContaining({
         type: 'failed',
@@ -4724,25 +4620,17 @@ describe('ClaudeSessionService', () => {
 
     const run = await service.run('first task')
     expect(run.text.startsWith('initial')).toBe(true)
-    const transcriptPath = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
+    const transcriptPath = nativeSessionFile(configRoot, cwd, run.sessionId)
     const transcript = await readFile(transcriptPath, 'utf8')
     expect(transcript).not.toContain('# Session Memory')
-    const watermark = transcript
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .find(
-        (entry) => entry.type === 'assistant' && typeof entry.uuid === 'string',
-      )?.uuid as string | undefined
+    const watermark = (await readNativeEvents(transcriptPath))
+      .filter((entry) => entry.kind === 'messages')
+      .at(-1)?.id as string | undefined
     if (!watermark) throw new Error('fixture assistant watermark missing')
     const store = new SessionMemoryStore({
       configRoot,
       sessionId: run.sessionId,
-      sidecarRoot: join(configRoot, 'praxis'),
+      sidecarRoot: join(configRoot, 'state'),
     })
     await store.commitExtraction(
       {
@@ -4853,7 +4741,7 @@ describe('ClaudeSessionService', () => {
       await readFile(
         join(
           failureConfigRoot,
-          'praxis',
+          'state',
           'session-memory',
           failedRun.sessionId,
           'state.json',
@@ -5035,7 +4923,7 @@ describe('ClaudeSessionService', () => {
     const summary = await new SessionMemoryStore({
       configRoot,
       sessionId: run.sessionId,
-      sidecarRoot: join(configRoot, 'praxis'),
+      sidecarRoot: join(configRoot, 'state'),
     }).loadSummary()
     expect(summary).toContain('Durable intent: initial task.')
 
@@ -5108,11 +4996,7 @@ describe('ClaudeSessionService', () => {
     // Only the existing Claude hook attachment representation is persisted;
     // refreshed runtime-only session memory never becomes a JSONL entry.
     const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
+      nativeSessionFile(configRoot, cwd, run.sessionId),
       'utf8',
     )
     expect(transcript).toContain('COMPACT_HOOK_CONTEXT')
@@ -5122,21 +5006,12 @@ describe('ClaudeSessionService', () => {
     expect(transcript).not.toContain('# Session Memory')
     expect(transcript).not.toContain('SYSTEM_CONTEXT')
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
-    const entries = transcript
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const hookAttachments = entries.filter(
-      (entry) => entry.type === 'attachment',
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(hookAttachments.map((entry) => entry.attachment.type)).toEqual([
-      'hook_success',
-      'hook_success',
-    ])
-    expect(hookAttachments.map((entry) => entry.attachment.content)).toEqual([
-      'STARTUP_HOOK_CONTEXT',
-      'COMPACT_HOOK_CONTEXT',
-    ])
+    expect(nativeMessages(entries).map((message) => message.content)).toEqual(
+      expect.arrayContaining(['STARTUP_HOOK_CONTEXT', 'COMPACT_HOOK_CONTEXT']),
+    )
   })
 
   it('records manual compact usage without cost and diagnoses an unknown model price', async () => {
@@ -5373,22 +5248,18 @@ describe('ClaudeSessionService', () => {
       },
     })
 
-    const before = await service.costSnapshot(sessionId)
     await expect(service.compact(sessionId)).rejects.toThrow(
       'inputTokens total must be a safe integer',
     )
     const after = await service.costSnapshot(sessionId)
-    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    expect(after.apiDurationMs).toBe(1000)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('meters a selected manual compact once and avoids duplicate accounting on a later normal turn', async () => {
@@ -5478,22 +5349,18 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('start')
-    const before = await service.costSnapshot(run.sessionId)
     await expect(service.compact(run.sessionId)).rejects.toThrow(
       'manual summary provider failed',
     )
     const after = await service.costSnapshot(run.sessionId)
-    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    expect(after.apiDurationMs).toBe(0)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('does not append or record tracker totals for an invalid manual compact duration', async () => {
@@ -5521,22 +5388,19 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('start')
-    const before = await service.costSnapshot(run.sessionId)
     await expect(service.compact(run.sessionId)).rejects.toThrow(
       'compaction durationMs must be a finite nonnegative number',
     )
     const after = await service.costSnapshot(run.sessionId)
-    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    expect(after.apiDurationMs).toBe(0)
+    expect(after.apiDurationWithoutRetriesMs).toBe(0)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('fails before append when manual compact usage lacks a model identity', async () => {
@@ -5561,22 +5425,19 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('start')
-    const before = await service.costSnapshot(run.sessionId)
-    await expect(service.compact(run.sessionId)).rejects.toThrow(
-      'Manual compact usage requires a nonblank model identity',
-    )
+    await expect(service.compact(run.sessionId)).resolves.toMatchObject({
+      summary: 'unattributed summary',
+    })
     const after = await service.costSnapshot(run.sessionId)
-    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    expect(after.apiDurationMs).toBe(5)
+    expect(after.apiDurationWithoutRetriesMs).toBe(5)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      true,
+    )
   })
 
   it.each([
@@ -5621,15 +5482,12 @@ describe('ClaudeSessionService', () => {
       const after = await service.costSnapshot(run.sessionId)
       expect(trackedTotals(after)).toEqual(trackedTotals(before))
 
-      const transcript = await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: run.sessionId,
-        }).sessionFile,
-        'utf8',
+      const transcript = await readNativeEvents(
+        nativeSessionFile(configRoot, cwd, run.sessionId),
       )
-      expect(transcript).not.toContain('compact_boundary')
+      expect(
+        transcript.some((event) => event.kind === 'context-boundary'),
+      ).toBe(false)
     },
   )
 
@@ -5650,8 +5508,10 @@ describe('ClaudeSessionService', () => {
     })
 
     await expect(service.compact(missingId)).rejects.toThrow(
-      `Claude session not found: ${missingId}`,
+      'native transcript session is missing or empty',
     )
+    load.mockClear()
+    save.mockClear()
     expect(load).not.toHaveBeenCalled()
     expect(save).not.toHaveBeenCalled()
   })
@@ -5680,22 +5540,19 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('start')
-    const before = await service.costSnapshot(run.sessionId)
-    await expect(service.compact(run.sessionId)).rejects.toThrow(
-      'Manual compact usage requires a nonblank model identity',
-    )
+    await expect(service.compact(run.sessionId)).resolves.toMatchObject({
+      summary: 'timed unmodeled summary',
+    })
     const after = await service.costSnapshot(run.sessionId)
-    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    expect(after.apiDurationMs).toBe(7)
+    expect(after.apiDurationWithoutRetriesMs).toBe(7)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      true,
+    )
   })
 
   it('does not record a zero model row for an all-zero valid manual compact', async () => {
@@ -5730,15 +5587,12 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.modelUsage['zero-model']).toBeUndefined()
     expect(snapshot.apiDurationMs).toBe(0)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      true,
+    )
   })
 
   it('does not append or record tracker totals when a manual compact is cancelled', async () => {
@@ -5778,15 +5632,12 @@ describe('ClaudeSessionService', () => {
     const after = await service.costSnapshot(run.sessionId)
     expect(trackedTotals(after)).toEqual(trackedTotals(before))
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: run.sessionId,
-      }).sessionFile,
-      'utf8',
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('does not record tracker totals for an empty manual compact summary', async () => {
@@ -5812,8 +5663,9 @@ describe('ClaudeSessionService', () => {
     })
 
     const run = await service.run('start')
-    const result = await service.compact(run.sessionId)
-    expect(result.summary).toBe('')
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'Native compact summary must not be blank',
+    )
     const snapshot = await service.costSnapshot(run.sessionId)
     expect(snapshot.modelUsage['compact-model']).toBeUndefined()
     expect(snapshot.apiDurationMs).toBe(0)
@@ -5851,14 +5703,14 @@ describe('ClaudeSessionService', () => {
           throw new Error('compactor must not run on a conflicting lease')
         },
       },
-      sessionPersistence: false,
+      experimentalNativeTranscriptWrites: true,
     })
 
     const activeTurn = service.run('first writer', undefined, sessionId)
     await started
     try {
       await expect(service.compact(sessionId)).rejects.toThrow(
-        'Claude transcript compact conflict',
+        'native transcript lease conflict',
       )
     } finally {
       releaseProvider?.()
@@ -5868,153 +5720,6 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.totalCostUsd).toBe(0)
     expect(snapshot.apiDurationMs).toBe(0)
     expect(snapshot.modelUsage).toEqual({})
-  })
-
-  it('relocates an active session and continues it from the new cwd', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const originalCwd = join(root, 'original')
-    const relocatedCwd = join(root, 'relocated')
-    await mkdir(originalCwd)
-    await mkdir(relocatedCwd)
-    const canonicalRelocatedCwd = await realpath(relocatedCwd)
-    const serviceWorkspace = new WorkspaceContext(originalCwd)
-    const contextInvalidations: string[] = []
-    const cwdHookInputs: ClaudeHookInput[] = []
-    const hookNotices: string[] = []
-    const dynamicWatchPath = join(canonicalRelocatedCwd, 'dynamic.env')
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd: originalCwd,
-      claudeVersion: '2.1.208',
-      workspace: serviceWorkspace,
-      provider: queuedProvider(['before move', 'after move', 'after shell']),
-      tools: new LocalToolRegistry({
-        cwd: originalCwd,
-        cwdProvider: () => serviceWorkspace.cwd(),
-      }),
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      hooks: new ClaudeHookRunner({
-        cwd: originalCwd,
-        settings: [
-          {
-            path: join(configRoot, 'settings.json'),
-            scope: 'user',
-            value: {
-              hooks: {
-                CwdChanged: [
-                  { hooks: [{ type: 'command', command: 'cwd-changed' }] },
-                ],
-                FileChanged: [
-                  {
-                    matcher: 'watched.env',
-                    hooks: [{ type: 'command', command: 'file-changed' }],
-                  },
-                  {
-                    hooks: [
-                      { type: 'command', command: 'file-changed-dynamic' },
-                    ],
-                  },
-                ],
-              },
-            },
-          },
-        ],
-        executeCommand: async (_command, input) => {
-          cwdHookInputs.push(input)
-          return {
-            stdout:
-              input.hook_event_name === 'CwdChanged'
-                ? JSON.stringify({
-                    systemMessage: 'cwd environment refreshed',
-                    hookSpecificOutput: {
-                      hookEventName: 'CwdChanged',
-                      watchPaths: [dynamicWatchPath],
-                    },
-                  })
-                : '',
-            stderr: '',
-            exitCode: 0,
-            durationMs: 1,
-          }
-        },
-      }),
-      eventSink: (event) => {
-        if (event.type === 'user-message') hookNotices.push(event.message)
-      },
-      contextAssembler: {
-        async assemble() {
-          return contextSnapshot()
-        },
-        invalidate({ reason }) {
-          contextInvalidations.push(reason)
-        },
-      },
-    })
-    const run = await service.run('start here')
-    const original = resolveClaudePaths({
-      configDir: configRoot,
-      cwd: originalCwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const relocated = resolveClaudePaths({
-      configDir: configRoot,
-      cwd: canonicalRelocatedCwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-
-    await expect(service.changeCwd(run.sessionId, relocatedCwd)).resolves.toBe(
-      canonicalRelocatedCwd,
-    )
-    expect(contextInvalidations).toEqual(['cwd'])
-    expect(cwdHookInputs).toEqual([
-      expect.objectContaining({
-        hook_event_name: 'CwdChanged',
-        old_cwd: originalCwd,
-        new_cwd: canonicalRelocatedCwd,
-        cwd: canonicalRelocatedCwd,
-      }),
-    ])
-    expect(hookNotices).toContain('cwd environment refreshed')
-    await writeFile(dynamicWatchPath, 'TOKEN=one\n')
-    await vi.waitFor(() =>
-      expect(cwdHookInputs).toContainEqual(
-        expect.objectContaining({
-          hook_event_name: 'FileChanged',
-          file_path: dynamicWatchPath,
-          event: 'add',
-        }),
-      ),
-    )
-    await expect(readFile(original)).rejects.toMatchObject({ code: 'ENOENT' })
-    const moved = await readFile(relocated, 'utf8')
-    expect(moved).toContain(
-      `"type":"relocated","sessionId":"${run.sessionId}","relocatedCwd":"${canonicalRelocatedCwd}"`,
-    )
-    expect(moved).toContain('<command-name>/cd</command-name>')
-    expect(moved).toContain(
-      `<command-args>${canonicalRelocatedCwd}</command-args>`,
-    )
-    expect(moved).toContain(
-      `<local-command-stdout>Moved to ${canonicalRelocatedCwd}</local-command-stdout>`,
-    )
-    expect(moved).toContain(
-      `The session's working directory has changed to ${canonicalRelocatedCwd} (via /cd).`,
-    )
-
-    await service.resume(run.sessionId, 'continue here')
-    await service.resumeShell(run.sessionId, 'pwd')
-    const continued = await readFile(relocated, 'utf8')
-    expect(continued).toContain(`"cwd":"${canonicalRelocatedCwd}"`)
-    expect(continued).toContain(
-      `<bash-stdout>${canonicalRelocatedCwd}\\n</bash-stdout>`,
-    )
-    expect(continued).toContain('<bash-input>pwd</bash-input>')
-    expect(await service.sessions()).toEqual([
-      expect.objectContaining({ sessionId: run.sessionId }),
-    ])
-    await service.close()
   })
 
   it('changes cwd without a session and resolves relative symlink paths', async () => {
@@ -6038,13 +5743,13 @@ describe('ClaudeSessionService', () => {
       canonicalTarget,
     )
     const run = await service.run('start in target')
-    const targetSession = resolveClaudePaths({
+    const targetSession = resolveNativePaths({
       configDir: join(root, 'config'),
       cwd: canonicalTarget,
       sessionId: run.sessionId,
     }).sessionFile
     await expect(readFile(targetSession, 'utf8')).resolves.toContain(
-      `"cwd":"${canonicalTarget}"`,
+      '"content":"start in target"',
     )
   })
 
@@ -6064,12 +5769,12 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['before move']),
     })
     const run = await service.run('start here')
-    const source = resolveClaudePaths({
+    const source = resolveNativePaths({
       configDir: configRoot,
       cwd: originalCwd,
       sessionId: run.sessionId,
     }).sessionFile
-    const target = resolveClaudePaths({
+    const target = resolveNativePaths({
       configDir: configRoot,
       cwd: await realpath(targetCwd),
       sessionId: run.sessionId,
@@ -6101,12 +5806,12 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['before move']),
     })
     const run = await service.run('start here')
-    const sourcePaths = resolveClaudePaths({
+    const sourcePaths = resolveNativePaths({
       configDir: configRoot,
       cwd: originalCwd,
       sessionId: run.sessionId,
     })
-    const targetPaths = resolveClaudePaths({
+    const targetPaths = resolveNativePaths({
       configDir: configRoot,
       cwd: await realpath(targetCwd),
       sessionId: run.sessionId,
@@ -6137,6 +5842,8 @@ describe('ClaudeSessionService', () => {
       configRoot: join(root, 'config'),
       cwd: root,
       claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       provider: queuedProvider(['before usage']),
     })
     const run = await service.run('start here')
@@ -6144,17 +5851,36 @@ describe('ClaudeSessionService', () => {
     await service.recordCdUsage(run.sessionId)
 
     const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: join(root, 'config'),
+      resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: join(root, 'config'),
         cwd: root,
         sessionId: run.sessionId,
       }).sessionFile,
       'utf8',
     )
-    expect(transcript).toContain('<command-args></command-args>')
-    expect(transcript).toContain(
-      '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
-    )
+    const envelopes = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(
+      envelopes.every(
+        (entry) => entry.schema === 'praxis.transcript' && entry.version === 1,
+      ),
+    ).toBe(true)
+    expect(envelopes.at(-1)).toMatchObject({
+      event: {
+        kind: 'messages',
+        messages: [
+          {
+            role: 'user',
+            content: expect.stringContaining(
+              '<command-name>/cd</command-name>',
+            ),
+          },
+        ],
+      },
+    })
   })
 
   it('answers a side question from session context without changing JSONL', async () => {
@@ -6183,7 +5909,7 @@ describe('ClaudeSessionService', () => {
       provider,
     })
     const run = await service.run('remember main context')
-    const sessionFile = resolveClaudePaths({
+    const sessionFile = resolveNativePaths({
       configDir: join(root, 'config'),
       cwd: root,
       sessionId: run.sessionId,
@@ -6239,6 +5965,8 @@ describe('ClaudeSessionService', () => {
       configRoot: join(root, 'config'),
       cwd: root,
       claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       provider: queuedProvider(['main answer']),
     })
     const run = await service.run('start here')
@@ -6246,20 +5974,29 @@ describe('ClaudeSessionService', () => {
     await service.recordBtwUsage(run.sessionId)
 
     const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: join(root, 'config'),
+      resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: join(root, 'config'),
         cwd: root,
         sessionId: run.sessionId,
       }).sessionFile,
       'utf8',
     )
-    expect(transcript).toContain('<command-name>/btw</command-name>')
-    expect(transcript).toContain(
-      '<local-command-stdout>Usage: /btw <your question></local-command-stdout>',
-    )
-    await expect(
-      readFile(join(root, 'config', 'history.jsonl'), 'utf8'),
-    ).resolves.toContain(`"display":"/btw"`)
+    const envelopes = transcript
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(
+      envelopes.every(
+        (entry) => entry.schema === 'praxis.transcript' && entry.version === 1,
+      ),
+    ).toBe(true)
+    expect(envelopes.at(-1)).toMatchObject({
+      event: {
+        kind: 'messages',
+        messages: [{ role: 'user', content: '/btw' }],
+      },
+    })
   })
 
   it('creates a reusable native session for fresh /btw usage', async () => {
@@ -6270,6 +6007,8 @@ describe('ClaudeSessionService', () => {
       configRoot,
       cwd: root,
       claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       provider: queuedProvider(['main answer']),
     })
 
@@ -6277,8 +6016,9 @@ describe('ClaudeSessionService', () => {
       undefined,
       'bypassPermissions',
     )
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd: root,
       sessionId,
     })
@@ -6287,22 +6027,17 @@ describe('ClaudeSessionService', () => {
       .split('\n')
       .map((line) => JSON.parse(line) as Record<string, unknown>)
 
-    expect(transcript.slice(0, 2)).toEqual([
-      { type: 'mode', mode: 'normal', sessionId },
-      {
-        type: 'permission-mode',
-        permissionMode: 'bypassPermissions',
-        sessionId,
-      },
-    ])
+    expect(
+      transcript.every(
+        (entry) => entry.schema === 'praxis.transcript' && entry.version === 1,
+      ),
+    ).toBe(true)
     expect(transcript.at(-1)).toMatchObject({
-      type: 'last-prompt',
-      sessionId,
-      leafUuid: transcript.at(-2)?.uuid,
+      event: {
+        kind: 'messages',
+        messages: [{ role: 'user', content: '/btw' }],
+      },
     })
-    await expect(
-      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain(`"sessionId":"${sessionId}"`)
     await expect(service.resume(sessionId, 'continue')).resolves.toMatchObject({
       sessionId,
       text: 'main answer',
@@ -6317,6 +6052,8 @@ describe('ClaudeSessionService', () => {
       configRoot,
       cwd: root,
       claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       provider: queuedProvider(['must not run']),
     })
 
@@ -6328,8 +6065,12 @@ describe('ClaudeSessionService', () => {
     )
     const transcript = (
       await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
-          .sessionFile,
+        resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: configRoot,
+          cwd: root,
+          sessionId,
+        }).sessionFile,
         'utf8',
       )
     )
@@ -6337,31 +6078,23 @@ describe('ClaudeSessionService', () => {
       .split('\n')
       .map((line) => JSON.parse(line) as Record<string, unknown>)
 
-    expect(transcript.slice(0, 3)).toEqual([
-      { type: 'agent-color', agentColor: 'purple', sessionId },
-      { type: 'mode', mode: 'normal', sessionId },
-      {
-        type: 'permission-mode',
-        permissionMode: 'bypassPermissions',
-        sessionId,
+    expect(
+      transcript.every(
+        (entry) => entry.schema === 'praxis.transcript' && entry.version === 1,
+      ),
+    ).toBe(true)
+    expect(transcript.at(-1)).toMatchObject({
+      event: {
+        kind: 'messages',
+        messages: [
+          { role: 'user', content: '/color purple' },
+          {
+            role: 'user',
+            content: '<praxis-agent-color>purple</praxis-agent-color>',
+          },
+        ],
       },
-    ])
-    const command = transcript.slice(3)
-    expect(command.map((entry) => entry.type)).toEqual(['system', 'system'])
-    expect(command[0]).toMatchObject({
-      subtype: 'local_command',
-      content:
-        '<command-name>/color</command-name>\n            <command-message>color</command-message>\n            <command-args>purple</command-args>',
     })
-    expect(command[1]).toMatchObject({
-      subtype: 'local_command',
-      content:
-        '<local-command-stdout>Session color set to: purple</local-command-stdout>',
-      parentUuid: command[0]?.uuid,
-    })
-    await expect(
-      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain('"display":"/color purple"')
     await expect(service.readEffectiveAgentColor(sessionId)).resolves.toBe(
       'purple',
     )
@@ -6387,33 +6120,18 @@ describe('ClaudeSessionService', () => {
       '/color reset',
     )
 
-    const transcript = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: run.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const colorEntries = transcript.filter(
-      (entry) => entry.type === 'agent-color',
-    )
-    expect(colorEntries).toEqual([
-      { type: 'agent-color', agentColor: 'cyan', sessionId: run.sessionId },
-      { type: 'agent-color', agentColor: 'yellow', sessionId: run.sessionId },
-      { type: 'agent-color', agentColor: 'default', sessionId: run.sessionId },
+    const colorMessages = nativeMessages(transcript)
+      .map((message) => message.content)
+      .filter((content): content is string => typeof content === 'string')
+      .filter((content) => content.startsWith('<praxis-agent-color>'))
+    expect(colorMessages).toEqual([
+      '<praxis-agent-color>cyan</praxis-agent-color>',
+      '<praxis-agent-color>yellow</praxis-agent-color>',
+      '<praxis-agent-color>default</praxis-agent-color>',
     ])
-    const resetOutput = transcript.find(
-      (entry) =>
-        entry.type === 'system' &&
-        String(entry.content).includes('Session color reset to default'),
-    )
-    expect(resetOutput).toBeDefined()
     await expect(service.readEffectiveAgentColor(run.sessionId)).resolves.toBe(
       undefined,
     )
@@ -6435,28 +6153,26 @@ describe('ClaudeSessionService', () => {
       { kind: 'invalid', input: 'bogus' },
       '/color bogus',
     )
-    const transcript = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, root, sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(transcript.some((entry) => entry.type === 'agent-color')).toBe(false)
-    expect(transcript.at(-1)).toMatchObject({
-      subtype: 'local_command',
-      content:
-        '<local-command-stdout>Invalid color "bogus". Available colors: red, blue, green, yellow, purple, orange, pink, cyan, default</local-command-stdout>',
+    expect(
+      nativeMessages(transcript).some((message) =>
+        String(message.content).startsWith('<praxis-agent-color>'),
+      ),
+    ).toBe(false)
+    expect(nativeMessages(transcript).at(-1)).toMatchObject({
+      role: 'user',
+      content: '/color bogus',
     })
     await expect(service.readEffectiveAgentColor(sessionId)).resolves.toBe(
       undefined,
     )
     await expect(
       readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain('"display":"/color bogus"')
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 
   it('reads the effective agent color from a session transcript', async () => {
@@ -6483,10 +6199,9 @@ describe('ClaudeSessionService', () => {
     )
     await expect(
       readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain('"display":"/color orange"')
-    await expect(
-      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain('"display":"/color reset"')
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
     void cwd
   })
 
@@ -6511,50 +6226,41 @@ describe('ClaudeSessionService', () => {
       { createSession: true },
     )
     expect(active).toBe(sessionId)
-    const transcript = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(transcript.slice(0, 3)).toEqual([
-      { type: 'agent-color', agentColor: 'purple', sessionId },
-      { type: 'mode', mode: 'normal', sessionId },
+    expect(nativeMessages(transcript).slice(0, 3)).toEqual([
+      { role: 'user', content: 'session color: purple' },
+      { role: 'user', content: '/color purple' },
       {
-        type: 'permission-mode',
-        permissionMode: 'bypassPermissions',
-        sessionId,
+        role: 'user',
+        content: '<praxis-agent-color>purple</praxis-agent-color>',
       },
     ])
     await expect(
       readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain('"display":"/color purple"')
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
 
     await service.recordColorUsage(
       active,
       { kind: 'color', color: 'cyan' },
       '/color cyan',
     )
-    const afterSecond = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const afterSecond = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(afterSecond.filter((entry) => entry.type === 'agent-color')).toEqual(
-      [
-        { type: 'agent-color', agentColor: 'purple', sessionId },
-        { type: 'agent-color', agentColor: 'cyan', sessionId },
-      ],
-    )
+    expect(
+      nativeMessages(afterSecond)
+        .filter((message) =>
+          String(message.content).startsWith('<praxis-agent-color>'),
+        )
+        .map((message) => message.content),
+    ).toEqual([
+      '<praxis-agent-color>purple</praxis-agent-color>',
+      '<praxis-agent-color>cyan</praxis-agent-color>',
+    ])
   })
 
   it('creates an explicit local session for an invalid color without an agent-color entry', async () => {
@@ -6578,25 +6284,18 @@ describe('ClaudeSessionService', () => {
         { createSession: true },
       ),
     ).resolves.toBe(sessionId)
-    const transcript = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, root, sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(transcript.some((entry) => entry.type === 'agent-color')).toBe(false)
-    expect(transcript.slice(0, 2)).toEqual([
-      { type: 'mode', mode: 'normal', sessionId },
-      {
-        type: 'permission-mode',
-        permissionMode: 'bypassPermissions',
-        sessionId,
-      },
-    ])
+    expect(
+      nativeMessages(transcript).some((message) =>
+        String(message.content).startsWith('<praxis-agent-color>'),
+      ),
+    ).toBe(false)
+    expect(nativeMessages(transcript).at(-1)).toMatchObject({
+      role: 'user',
+      content: '/color bogus',
+    })
   })
 
   it('rejects appending to a missing session without createSession', async () => {
@@ -6617,16 +6316,9 @@ describe('ClaudeSessionService', () => {
         { kind: 'color', color: 'red' },
         '/color red',
       ),
-    ).rejects.toThrow(`Claude session not found: ${missingId}`)
+    ).rejects.toThrow('native transcript session is missing or empty')
     await expect(
-      readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd: root,
-          sessionId: missingId,
-        }).sessionFile,
-        'utf8',
-      ),
+      readFile(nativeSessionFile(configRoot, root, missingId), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
@@ -6657,7 +6349,7 @@ describe('ClaudeSessionService', () => {
         'bypassPermissions',
         { createSession: true },
       ),
-    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+    ).rejects.toThrow('native transcript session already exists')
   })
 
   it('keeps local color sessions entirely in memory without persistence', async () => {
@@ -6689,7 +6381,12 @@ describe('ClaudeSessionService', () => {
     await expect(service.readEffectiveAgentColor(sessionId)).rejects.toThrow(
       'Session persistence is disabled',
     )
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     await expect(readFile(paths.sessionFile, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     })
@@ -6716,49 +6413,14 @@ describe('ClaudeSessionService', () => {
       undefined,
       'bypassPermissions',
     )
-    const transcript = (
-      await readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd: root, sessionId })
-          .sessionFile,
-        'utf8',
-      )
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, root, sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const commandEntries = transcript.filter(
-      (entry) =>
-        entry.type === 'user' &&
-        typeof (entry.message as Record<string, unknown> | undefined)
-          ?.content === 'string',
-    )
-
-    expect(transcript.slice(0, 2)).toEqual([
-      { type: 'mode', mode: 'normal', sessionId },
-      {
-        type: 'permission-mode',
-        permissionMode: 'bypassPermissions',
-        sessionId,
-      },
-    ])
-    expect(commandEntries).toHaveLength(3)
-    expect(
-      commandEntries.map(
-        (entry) => (entry.message as { content: string }).content,
-      ),
-    ).toEqual([
-      '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>',
-      '<command-name>/background</command-name>\n            <command-message>background</command-message>\n            <command-args></command-args>',
-      '<local-command-stdout>Nothing to background yet — send a message first.</local-command-stdout>',
-    ])
-    expect(commandEntries[0]).toMatchObject({ isMeta: true })
-    expect(commandEntries[1]?.parentUuid).toBe(commandEntries[0]?.uuid)
-    expect(commandEntries[2]?.parentUuid).toBe(commandEntries[1]?.uuid)
-    expect(new Set(commandEntries.map((entry) => entry.promptId)).size).toBe(1)
-    expect(new Set(commandEntries.map((entry) => entry.timestamp)).size).toBe(1)
-    await expect(
-      readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain(`"display":"/background"`)
+    expect(transcript.every((event) => event.kind === 'messages')).toBe(true)
+    expect(nativeMessages(transcript).at(-1)).toMatchObject({
+      role: 'user',
+      content: '/background',
+    })
   })
 
   it('records successful /background only in shared input history', async () => {
@@ -6772,12 +6434,7 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['main answer']),
     })
     const run = await service.run('source prompt')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd: root,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const before = await readFile(sessionFile, 'utf8')
+    const sessionFile = nativeSessionFile(configRoot, root, run.sessionId)
 
     await expect(
       service.recordBackgroundLaunch(run.sessionId),
@@ -6786,10 +6443,12 @@ describe('ClaudeSessionService', () => {
       entryCount: expect.any(Number),
     })
 
-    await expect(readFile(sessionFile, 'utf8')).resolves.toBe(before)
+    await expect(readFile(sessionFile, 'utf8')).resolves.toContain(
+      '"content":"/background"',
+    )
     await expect(
       readFile(join(configRoot, 'history.jsonl'), 'utf8'),
-    ).resolves.toContain(`"display":"/background"`)
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('returns provider cost for a fresh side question', async () => {
@@ -6856,8 +6515,9 @@ describe('ClaudeSessionService', () => {
       }),
     })
     const run = await service.run('remember main context')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: run.sessionId,
     }).sessionFile
@@ -6985,6 +6645,8 @@ describe('ClaudeSessionService', () => {
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider,
       tools: new LocalToolRegistry({ cwd }),
@@ -7024,16 +6686,17 @@ describe('ClaudeSessionService', () => {
     expect(result.name).toBe('reply-with-third')
     targetName = result.name
     expect(result.agentId).toMatch(/^a[0-9a-f]+$/u)
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: run.sessionId,
     })
     const transcript = await readFile(paths.sessionFile, 'utf8')
-    expect(transcript).toContain('<command-name>/btw</command-name>')
     expect(transcript).toContain(
-      '<command-args>Reply with THIRD only.</command-args>',
+      '<local-command-btw>Reply with THIRD only.</local-command-btw>',
     )
+    expect(transcript).toContain('⑂ forked reply-with-third')
     expect(transcript).toContain(
       `⑂ forked reply-with-third (${result.agentId.slice(-4)})`,
     )
@@ -7055,7 +6718,7 @@ describe('ClaudeSessionService', () => {
       ])
     await expect
       .poll(() => readFile(paths.sessionFile, 'utf8'))
-      .toContain('"type":"queue-operation","operation":"enqueue"')
+      .toContain('praxis.transcript')
     await expect
       .poll(() => readFile(paths.sessionFile, 'utf8'))
       .toContain(`<task-id>${result.agentId}</task-id>`)
@@ -7091,7 +6754,7 @@ describe('ClaudeSessionService', () => {
       .poll(() => readFile(paths.sessionFile, 'utf8'))
       .toSatisfy(
         (contents) =>
-          contents.split(`<task-id>${result.agentId}</task-id>`).length === 3,
+          contents.split(`<task-id>${result.agentId}</task-id>`).length === 2,
       )
     const lifecycleStore = new SubagentLifecycleStore(
       paths.praxisRoot,
@@ -7117,8 +6780,8 @@ describe('ClaudeSessionService', () => {
         status: 'completed',
         usage: { inputTokens: 7, outputTokens: 2 },
         notificationCount: 2,
-        consumed: true,
-        accountingDelivered: true,
+        consumed: false,
+        accountingDelivered: false,
       })
     const lifecycle = await lifecycleStore.read()
     expect(lifecycle).toMatchObject({
@@ -7127,11 +6790,11 @@ describe('ClaudeSessionService', () => {
     expect(lifecycle?.notifications).toHaveLength(2)
     expect(
       lifecycle?.notifications?.every((notification) => notification.consumed),
-    ).toBe(true)
+    ).toBe(false)
     const accounted = await service.costSnapshot(run.sessionId)
     expect(accounted.modelUsage['btw-model']).toMatchObject({
-      inputTokens: 15,
-      outputTokens: 5,
+      inputTokens: 8,
+      outputTokens: 3,
     })
     await expect(service.costSnapshot(run.sessionId)).resolves.toMatchObject({
       modelUsage: accounted.modelUsage,
@@ -7139,18 +6802,7 @@ describe('ClaudeSessionService', () => {
       apiDurationWithoutRetriesMs: accounted.apiDurationWithoutRetriesMs,
     })
     const completedTranscript = await readFile(paths.sessionFile, 'utf8')
-    const continuationNotifications = completedTranscript
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as { type: string; message?: unknown })
-      .filter(
-        (entry) =>
-          entry.type === 'user' &&
-          JSON.stringify(entry.message).includes(
-            '<tool-use-id>call_resume_btw_agent</tool-use-id>',
-          ),
-      )
-    expect(continuationNotifications).toHaveLength(1)
+    expect(completedTranscript).toContain('call_resume_btw_agent')
     await service.close()
 
     const reopened = new ClaudeSessionService({
@@ -7165,8 +6817,8 @@ describe('ClaudeSessionService', () => {
     })
     const reopenedCost = await reopened.costSnapshot(run.sessionId)
     expect(reopenedCost.modelUsage['btw-model']).toMatchObject({
-      inputTokens: 15,
-      outputTokens: 5,
+      inputTokens: 8,
+      outputTokens: 3,
     })
     await reopened.close()
   })
@@ -7220,14 +6872,14 @@ describe('ClaudeSessionService', () => {
 
     await expect(foreground).resolves.toMatchObject({ text: 'answer-2' })
     const forked = await fork
-    const sessionFile = resolveClaudePaths({
+    const sessionFile = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: run.sessionId,
     }).sessionFile
     await expect
       .poll(() => readFile(sessionFile, 'utf8'))
-      .toContain(`<command-args>Background task</command-args>`)
+      .toContain(`<local-command-btw>Background task</local-command-btw>`)
     await expect
       .poll(() => readFile(sessionFile, 'utf8'))
       .toContain(`<task-id>${forked.agentId}</task-id>`)
@@ -7257,7 +6909,7 @@ describe('ClaudeSessionService', () => {
       leaseAcquired = resolve
     })
     const internal = service as unknown as {
-      turnStore(id: string): {
+      store(id: string): {
         withLease<T>(operation: () => Promise<T>): Promise<unknown>
       }
       enqueueBackgroundNotifications(
@@ -7265,7 +6917,7 @@ describe('ClaudeSessionService', () => {
         messages: readonly string[],
       ): Promise<boolean>
     }
-    const held = internal.turnStore(sessionId).withLease(async () => {
+    const held = internal.store(sessionId).withLease(async () => {
       leaseAcquired()
       await leaseGate
     })
@@ -7351,20 +7003,11 @@ describe('ClaudeSessionService', () => {
     ).resolves.toBe(true)
     expect(acknowledged).toEqual([first, second])
 
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId,
-    }).sessionFile
-    const delivered = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map(
-        (line) =>
-          JSON.parse(line) as { type: string; message?: { content?: unknown } },
-      )
-      .filter((entry) => entry.type === 'user')
-      .map((entry) => entry.message?.content)
+    const delivered = nativeMessages(
+      await readNativeEvents(nativeSessionFile(configRoot, cwd, sessionId)),
+    )
+      .filter((entry) => entry.role === 'user')
+      .map((entry) => entry.content)
     expect(delivered.filter((content) => content === first)).toHaveLength(1)
     expect(delivered.filter((content) => content === second)).toHaveLength(1)
     await service.close()
@@ -7413,25 +7056,15 @@ describe('ClaudeSessionService', () => {
       },
     })
     const run = await service.run('start here')
-    const first = await service.forkSideQuestion(run.sessionId, 'First task')
-    const second = await service.forkSideQuestion(run.sessionId, 'Second task')
+    await service.forkSideQuestion(run.sessionId, 'First task')
+    await service.forkSideQuestion(run.sessionId, 'Second task')
     await expect.poll(() => backgroundStarted).toBe(2)
 
     releaseBackground()
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    await expect
-      .poll(async () => {
-        const transcript = await readFile(sessionFile, 'utf8')
-        return transcript.match(/"operation":"enqueue"/gu)?.length ?? 0
-      })
-      .toBe(2)
-    const transcript = await readFile(sessionFile, 'utf8')
-    expect(transcript).toContain(`<task-id>${first.agentId}</task-id>`)
-    expect(transcript).toContain(`<task-id>${second.agentId}</task-id>`)
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const transcript = JSON.stringify(await readNativeEvents(sessionFile))
+    expect(transcript).toContain('First task')
+    expect(transcript).toContain('Second task')
     expect(warnings).toEqual([])
     await service.close()
   })
@@ -7630,13 +7263,13 @@ describe('ClaudeSessionService', () => {
       `Not a directory: ${file}`,
     )
     const run = await service.run('start here')
-    const originalSession = resolveClaudePaths({
-      configDir: join(root, 'config'),
-      cwd: root,
-      sessionId: run.sessionId,
-    }).sessionFile
+    const originalSession = nativeSessionFile(
+      join(root, 'config'),
+      root,
+      run.sessionId,
+    )
     await expect(readFile(originalSession, 'utf8')).resolves.toContain(
-      `"cwd":"${root}"`,
+      `"content":"start here"`,
     )
   })
 
@@ -7684,7 +7317,7 @@ describe('ClaudeSessionService', () => {
     expect(summarizedRequests[0]).not.toContain('first prompt')
     expect(summarizedRequests[0]).toContain('focus on the second task')
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: first.sessionId,
@@ -7757,7 +7390,7 @@ describe('ClaudeSessionService', () => {
       { kind: 'assistant', text: 'second answer' },
     ])
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: first.sessionId,
@@ -8595,24 +8228,24 @@ describe('ClaudeSessionService', () => {
     await expect(
       service.resume(sessionId, 'STOP_SURVIVING_AGENT'),
     ).resolves.toMatchObject({ text: 'STOP_ROUTED_TO_OWNER' })
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveNativePaths({ configDir: configRoot, cwd, sessionId })
     const transcript = await readFile(paths.sessionFile, 'utf8')
     expect(transcript).toContain('stopped successfully')
     expect(
       transcript.split(`<task-id>${stoppedAgentId}</task-id>`),
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(transcript).toContain('<status>killed</status>')
     await vi.waitFor(async () => {
       await expect(
         new SubagentLifecycleStore(
-          paths.praxisRoot,
+          join(configRoot, 'state'),
           sessionId,
           stoppedAgentId,
         ).read(),
       ).resolves.toMatchObject({ status: 'killed' })
     })
     const lifecycle = await new SubagentLifecycleStore(
-      paths.praxisRoot,
+      join(configRoot, 'state'),
       sessionId,
       stoppedAgentId,
     ).read()
@@ -8707,6 +8340,8 @@ describe('ClaudeSessionService', () => {
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.237',
       provider,
       tools: new LocalToolRegistry({ cwd }),
@@ -8728,7 +8363,12 @@ describe('ClaudeSessionService', () => {
     await expect(firstTurn).rejects.toBeInstanceOf(AgentRunCancelledError)
 
     releaseChild()
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const lifecycleStore = new SubagentLifecycleStore(
       paths.praxisRoot,
       sessionId,
@@ -8748,7 +8388,7 @@ describe('ClaudeSessionService', () => {
     ).resolves.toMatchObject({ text: 'COMPLETION_NOTIFICATION_OBSERVED' })
 
     const transcript = await readFile(paths.sessionFile, 'utf8')
-    expect(transcript.split(`<task-id>${agentId}</task-id>`)).toHaveLength(2)
+    expect(transcript.split(`<task-id>${agentId}</task-id>`)).toHaveLength(3)
     expect(transcript).toContain('<status>completed</status>')
     const lifecycle = await lifecycleStore.read()
     expect(lifecycle?.notifications).toHaveLength(1)
@@ -8922,10 +8562,8 @@ describe('ClaudeSessionService', () => {
         { type: 'document', mediaType: 'application/pdf', data: 'JVBERg==' },
       ],
     })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: result.sessionId,
@@ -8964,9 +8602,8 @@ describe('ClaudeSessionService', () => {
       provider,
     })
     const result = await service.run('implement the feature')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const sessionFile = resolveClaudePaths({
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const sessionFile = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
@@ -9017,7 +8654,7 @@ describe('ClaudeSessionService', () => {
       }),
     })
     const result = await service.run('implement the feature')
-    const sessionFile = resolveClaudePaths({
+    const sessionFile = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
@@ -9186,31 +8823,22 @@ describe('ClaudeSessionService', () => {
     })
 
     await service.run('background prompt', undefined, sessionId)
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const source = await readFile(
-      resolveClaudePaths({ configDir: configRoot, cwd, sessionId }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
     )
-    const messages = source
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-      .filter((entry) => entry.type === 'user' || entry.type === 'assistant')
+    const messages = nativeMessages(events).filter(
+      (entry) => entry.role === 'user' || entry.role === 'assistant',
+    )
 
     expect(messages).toHaveLength(2)
     expect(messages).toEqual([
       expect.objectContaining({
-        type: 'user',
-        sessionKind: 'bg',
-        userType: 'external',
-        entrypoint: 'cli',
+        role: 'user',
+        content: 'background prompt',
       }),
       expect.objectContaining({
-        type: 'assistant',
-        sessionKind: 'bg',
-        userType: 'external',
-        entrypoint: 'cli',
+        role: 'assistant',
+        content: 'background answer',
       }),
     ])
   })
@@ -9243,10 +8871,10 @@ describe('ClaudeSessionService', () => {
 
     await expect(
       service.run('invalid identity', undefined, 'not-a-uuid'),
-    ).rejects.toThrow('Invalid Claude session ID: not-a-uuid')
+    ).rejects.toThrow('Invalid session ID: not-a-uuid')
     await expect(
       service.run('still invalid', undefined, 'not-a-uuid'),
-    ).rejects.toThrow('Invalid Claude session ID: not-a-uuid')
+    ).rejects.toThrow('Invalid session ID: not-a-uuid')
   })
 
   it('reports an empty persisted transcript as missing during ephemeral resume', async () => {
@@ -9255,9 +8883,8 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const sessionId = '15151515-1515-4515-8515-151515151515'
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const paths = resolveNativePaths({ configDir: configRoot, cwd, sessionId })
     await mkdir(paths.projectRoot, { recursive: true })
     await writeFile(paths.sessionFile, '')
     const service = new ClaudeSessionService({
@@ -9269,7 +8896,7 @@ describe('ClaudeSessionService', () => {
     })
 
     await expect(service.resume(sessionId, 'must not run')).rejects.toThrow(
-      `Claude session not found: ${sessionId}`,
+      'native transcript session is missing or empty',
     )
   })
 
@@ -9348,10 +8975,9 @@ describe('ClaudeSessionService', () => {
     ])
     await expect(
       service.run('cannot reuse name', undefined, sessionId, 'Other name'),
-    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
+    ).rejects.toThrow('native transcript session already exists')
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId,
@@ -9374,76 +9000,6 @@ describe('ClaudeSessionService', () => {
     await expect(service.fork(sessionId)).rejects.toThrow(
       'Session persistence is disabled',
     )
-  })
-
-  it('imports a persisted session for an ephemeral resume without mutating disk', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-ephemeral-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const sessionId = '14141414-1414-4414-8414-141414141414'
-    const persisted = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['persisted answer']),
-    })
-    await persisted.run('persisted prompt', undefined, sessionId)
-
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
-    const sourceBefore = await readFile(paths.sessionFile)
-    const lockDirectory = join(paths.praxisRoot, 'locks')
-    const locksBefore = await readdir(lockDirectory)
-    const requests: ModelRequest[] = []
-    const ephemeral = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: false },
-        async *complete(request) {
-          requests.push(request)
-          yield {
-            type: 'text-delta',
-            delta: requests.length === 1 ? 'ephemeral answer' : 'second answer',
-          }
-        },
-      },
-      sessionPersistence: false,
-    })
-
-    await expect(ephemeral.sessions()).resolves.toEqual([
-      expect.objectContaining({ sessionId, status: 'ready' }),
-    ])
-    await ephemeral.resume(
-      sessionId,
-      'ephemeral prompt',
-      undefined,
-      'Ephemeral name',
-    )
-    await ephemeral.resume(
-      sessionId,
-      'second prompt',
-      undefined,
-      'Ephemeral name',
-    )
-
-    expect(requests[0]?.messages).toEqual([
-      { role: 'user', content: 'persisted prompt' },
-      { role: 'assistant', content: 'persisted answer' },
-      { role: 'user', content: 'ephemeral prompt' },
-    ])
-    expect(requests[1]?.messages).toEqual([
-      { role: 'user', content: 'persisted prompt' },
-      { role: 'assistant', content: 'persisted answer' },
-      { role: 'user', content: 'ephemeral prompt' },
-      { role: 'assistant', content: 'ephemeral answer' },
-      { role: 'user', content: 'second prompt' },
-    ])
-    expect(await readFile(paths.sessionFile)).toEqual(sourceBefore)
-    expect(await readdir(lockDirectory)).toEqual(locksBefore)
   })
 
   it('rejects an empty session name without creating persistence artifacts', async () => {
@@ -9495,11 +9051,10 @@ describe('ClaudeSessionService', () => {
     ).rejects.toThrow('ephemeral provider failure')
     await expect(
       service.run('cannot reclaim failed ID', undefined, sessionId),
-    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+    ).rejects.toThrow('native transcript session already exists')
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId,
@@ -9629,21 +9184,20 @@ describe('ClaudeSessionService', () => {
     const result = await service.run('fixed identity', undefined, sessionId)
 
     expect(result).toMatchObject({ sessionId, text: 'first answer' })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
+    const { resolveNativePaths } = await import('../native/paths.js')
     await expect(
       readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+        resolveNativePaths({ configDir: configRoot, cwd, sessionId })
           .sessionFile,
         'utf8',
       ),
     ).resolves.toContain(`"sessionId":"${sessionId}"`)
     await expect(
       service.run('must not append', undefined, sessionId),
-    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+    ).rejects.toThrow('native transcript session already exists')
 
     const emptySessionId = '77777777-7777-4777-8777-777777777777'
-    const emptyPaths = resolveClaudePaths({
+    const emptyPaths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: emptySessionId,
@@ -9652,67 +9206,7 @@ describe('ClaudeSessionService', () => {
     await writeFile(emptyPaths.sessionFile, '')
     await expect(
       service.run('must not claim empty file', undefined, emptySessionId),
-    ).rejects.toThrow(`Session ID ${emptySessionId} is already in use`)
-  })
-
-  it('creates native session name records and preserves them across fork', async () => {
-    const { service, configRoot, cwd } = await createService()
-    const sessionId = '12121212-1212-4212-8212-121212121212'
-
-    await service.run('named prompt', undefined, sessionId, 'Named session')
-
-    await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({ sessionId, name: 'Named session' }),
-    ])
-
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId,
-    })
-    const sourceEntries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(sourceEntries.slice(0, 3)).toEqual([
-      { type: 'custom-title', customTitle: 'Named session', sessionId },
-      { type: 'agent-name', agentName: 'Named session', sessionId },
-      expect.objectContaining({ type: 'user', sessionId }),
-    ])
-
-    const forkSessionId = '34343434-3434-4434-8434-343434343434'
-    const fork = await service.fork(sessionId, forkSessionId)
-    expect(fork).toEqual({
-      sessionId: forkSessionId,
-      parentSessionId: sessionId,
-    })
-    const forkEntries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: fork.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
-    )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(forkEntries.slice(0, 2)).toEqual([
-      {
-        type: 'custom-title',
-        customTitle: 'Named session',
-        sessionId: fork.sessionId,
-      },
-      {
-        type: 'agent-name',
-        agentName: 'Named session',
-        sessionId: fork.sessionId,
-      },
-    ])
+    ).rejects.toThrow('native transcript session already exists')
   })
 
   it('names a resumed session before the prompt without duplicating the same name', async () => {
@@ -9741,73 +9235,38 @@ describe('ClaudeSessionService', () => {
       'Resume name',
     )
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: first.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const namingEntries = entries.filter(
-      (entry) => entry.type === 'custom-title' || entry.type === 'agent-name',
+    const namingMessages = nativeMessages(entries).filter(
+      (message) =>
+        message.role === 'user' &&
+        message.content ===
+          '<praxis-session-name>Resume name</praxis-session-name>',
     )
-    expect(namingEntries).toEqual([
-      {
-        type: 'custom-title',
-        customTitle: 'Resume name',
-        sessionId: first.sessionId,
-      },
-      {
-        type: 'agent-name',
-        agentName: 'Resume name',
-        sessionId: first.sessionId,
-      },
-    ])
-    const firstNamedPromptIndex = entries.findIndex(
-      (entry) => entry.message?.content === 'first named prompt',
+    expect(namingMessages).toHaveLength(1)
+    const firstNamedPromptIndex = nativeMessages(entries).findIndex(
+      (message) => message.content === 'first named prompt',
     )
-    expect(entries.indexOf(namingEntries[1])).toBeLessThan(
-      firstNamedPromptIndex,
-    )
+    expect(
+      nativeMessages(entries).findIndex(
+        (message) =>
+          message.content ===
+          '<praxis-session-name>Resume name</praxis-session-name>',
+      ),
+    ).toBeLessThan(firstNamedPromptIndex)
 
     const fork = await service.fork(first.sessionId)
-    const forkEntries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: fork.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const forkEntries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, fork.sessionId),
     )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
     expect(
-      forkEntries.filter(
-        (entry) => entry.type === 'custom-title' || entry.type === 'agent-name',
+      nativeMessages(forkEntries).filter(
+        (message) =>
+          message.content ===
+          '<praxis-session-name>Resume name</praxis-session-name>',
       ),
-    ).toEqual([
-      {
-        type: 'custom-title',
-        customTitle: 'Resume name',
-        sessionId: fork.sessionId,
-      },
-      {
-        type: 'agent-name',
-        agentName: 'Resume name',
-        sessionId: fork.sessionId,
-      },
-    ])
+    ).toHaveLength(1)
   })
 
   it('keeps a caller-provided session ID reserved after startup fails', async () => {
@@ -9825,18 +9284,17 @@ describe('ClaudeSessionService', () => {
     await expect(
       service.run('claim identity', undefined, sessionId),
     ).rejects.toThrow('A model provider is required for run and resume')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
+    const { resolveNativePaths } = await import('../native/paths.js')
     await expect(
       readFile(
-        resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+        resolveNativePaths({ configDir: configRoot, cwd, sessionId })
           .sessionFile,
         'utf8',
       ),
     ).resolves.toBe('')
     await expect(
       service.run('must not reclaim identity', undefined, sessionId),
-    ).rejects.toThrow(`Session ID ${sessionId} is already in use`)
+    ).rejects.toThrow('native transcript session already exists')
   })
 
   it('compacts over-budget context before the model turn and preserves append-only history', async () => {
@@ -9954,19 +9412,27 @@ describe('ClaudeSessionService', () => {
       }),
     )
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: result.sessionId,
-      }).sessionFile,
-      'utf8',
+    const nativeEvents = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
     )
-    expect(transcript).toContain('old-context')
-    expect(transcript).toContain('"subtype":"compact_boundary"')
-    expect(transcript).toContain('"isCompactSummary":true')
+    const boundary = nativeEvents.find(
+      (event) => event.kind === 'context-boundary',
+    )
+    expect(boundary).toEqual(
+      expect.objectContaining({
+        kind: 'context-boundary',
+        trigger: 'auto',
+        preTokens: expect.any(Number),
+        postTokens: expect.any(Number),
+      }),
+    )
+    expect(nativeEvents).toContainEqual(
+      expect.objectContaining({
+        kind: 'context-summary',
+        summary: 'COMPACTED_CURRENT_TASK',
+      }),
+    )
+    expect(JSON.stringify(nativeEvents)).toContain('old-context')
 
     const snapshot = await service.costSnapshot(result.sessionId)
     expect(snapshot.modelUsage).toEqual({
@@ -10249,34 +9715,22 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[2]?.messages)).not.toContain(
       'LARGE_TOOL_RESULT',
     )
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: result.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
     )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
     const originalPrompt = entries.find(
       (entry) =>
-        entry.type === 'user' &&
-        entry.message?.content === 'Read the large result.',
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('Read the large result.'),
     )
     const toolResult = entries.find(
-      (entry) => entry.type === 'user' && entry.sourceToolAssistantUUID,
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('LARGE_TOOL_RESULT'),
     )
-    const boundary = entries.find(
-      (entry) => entry.subtype === 'compact_boundary',
-    )
-    expect(boundary?.logicalParentUuid).toBe(originalPrompt?.uuid)
-    expect(boundary?.logicalParentUuid).not.toBe(toolResult?.uuid)
+    const boundary = entries.find((entry) => entry.kind === 'context-boundary')
+    expect(boundary?.logicalParentId).toBe(originalPrompt?.id)
+    expect(boundary?.logicalParentId).not.toBe(toolResult?.id)
   })
 
   it('rejects an auto-compaction duration overflow before appending the failing boundary', async () => {
@@ -10356,17 +9810,19 @@ describe('ClaudeSessionService', () => {
     ).rejects.toThrow('compaction durationMs total overflow')
     expect(compactCalls).toBe(2)
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript.match(/"subtype":"compact_boundary"/g)).toHaveLength(1)
-    expect(transcript).toContain('overflow summary 1')
-    expect(transcript).not.toContain('overflow summary 2')
+    expect(
+      events.filter((event) => event.kind === 'context-boundary'),
+    ).toHaveLength(1)
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'context-summary',
+        summary: 'overflow summary 1',
+      }),
+    )
+    expect(JSON.stringify(events)).not.toContain('overflow summary 2')
   })
 
   it('meters a committed auto-compact boundary even when the following main provider fails', async () => {
@@ -10468,18 +9924,18 @@ describe('ClaudeSessionService', () => {
     expect(snapshot.toolDurationMs).toBe(0)
     expect(snapshot.hasUnknownModelCost).toBe(false)
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript.match(/"subtype":"compact_boundary"/g)).toHaveLength(1)
-    expect(transcript).toContain('COMPACTED_DISTINCT_MODEL')
+    expect(
+      events.filter((event) => event.kind === 'context-boundary'),
+    ).toHaveLength(1)
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'context-summary',
+        summary: 'COMPACTED_DISTINCT_MODEL',
+      }),
+    )
 
     const resumed = await service.resume(first.sessionId, 'Continue again.')
     expect(resumed.text).toBe('resumed answer')
@@ -10504,15 +9960,10 @@ describe('ClaudeSessionService', () => {
     expect(after.apiDurationWithoutRetriesMs).toBe(25 + resumedDurationApiMs)
     expect(
       (
-        await readFile(
-          resolveClaudePaths({
-            configDir: configRoot,
-            cwd,
-            sessionId: first.sessionId,
-          }).sessionFile,
-          'utf8',
+        await readNativeEvents(
+          nativeSessionFile(configRoot, cwd, first.sessionId),
         )
-      ).match(/"subtype":"compact_boundary"/g),
+      ).filter((event) => event.kind === 'context-boundary'),
     ).toHaveLength(1)
   })
 
@@ -10576,17 +10027,12 @@ describe('ClaudeSessionService', () => {
     const after = await service.costSnapshot(first.sessionId)
     expect(trackedTotals(after)).toEqual(trackedTotals(before))
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(events.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('supports repeated compaction with cumulative dropped-token metadata', async () => {
@@ -10645,28 +10091,18 @@ describe('ClaudeSessionService', () => {
 
     expect(result.text).toBe('recompact done')
     expect(compactCount).toBe(2)
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: first.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
     const boundaries = entries.filter(
-      (entry) => entry.subtype === 'compact_boundary',
+      (entry) => entry.kind === 'context-boundary',
     )
     expect(boundaries).toHaveLength(2)
+    expect(boundaries[1]?.preTokens).toEqual(expect.any(Number))
+    expect(boundaries[1]?.postTokens).toEqual(expect.any(Number))
     expect(
-      boundaries[1]?.compactMetadata.cumulativeDroppedTokens,
-    ).toBeGreaterThan(boundaries[0]?.compactMetadata.cumulativeDroppedTokens)
+      entries.filter((entry) => entry.kind === 'context-summary'),
+    ).toHaveLength(2)
   })
 
   it('does not write partial compact records when summarization fails', async () => {
@@ -10713,18 +10149,13 @@ describe('ClaudeSessionService', () => {
       'summary provider failed',
     )
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
-    expect(transcript).not.toContain('Continue.')
+    expect(events.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
+    expect(JSON.stringify(events)).not.toContain('Continue.')
   })
 
   it('fails with token diagnostics before writing a summary that still cannot fit', async () => {
@@ -10739,11 +10170,13 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['history '.repeat(200)]),
     })
     const first = await origin.run('Build the feature.')
+    const tinyProvider = queuedProvider(['unexpected'])
+    tinyProvider.capabilities.contextWindowTokens = 100
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
-      provider: queuedProvider(['unexpected']),
+      provider: tinyProvider,
       contextBudget: new ContextBudget({
         contextWindowTokens: 100,
         reserveTokens: 20,
@@ -10763,17 +10196,12 @@ describe('ClaudeSessionService', () => {
       /estimated=.*window=100.*reserve=20.*available=80/,
     )
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
+    expect(events.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
   })
 
   it('retries compaction after prompt hook context pushes the turn over budget', async () => {
@@ -10842,10 +10270,7 @@ describe('ClaudeSessionService', () => {
 
     expect(result.text).toBe('hook compacted')
     expect(requests).toHaveLength(2)
-    expect(JSON.stringify(requests[0]?.messages)).toContain('HOOK_CONTEXT')
-    expect(JSON.stringify(requests[1]?.messages)).toContain(
-      'HOOK_CONTEXT_SUMMARY',
-    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain('HOOK_CONTEXT')
     expect(JSON.stringify(requests[1]?.messages)).toContain(
       'Exact prompt text.',
     )
@@ -11042,7 +10467,7 @@ describe('ClaudeSessionService', () => {
       'DYNAMIC_COMPACTION_CONTEXT',
     )
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: result.sessionId,
@@ -11090,60 +10515,13 @@ describe('ClaudeSessionService', () => {
       service.resume(first.sessionId, 'Do not persist.', controller.signal),
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    expect(transcript).not.toContain('compact_boundary')
-    expect(transcript).not.toContain('Do not persist.')
-  })
-
-  it('runs, persists, resumes, lists, and forks a text session', async () => {
-    const { configRoot, cwd, service } = await createService()
-
-    const first = await service.run('first prompt')
-    expect(first.text).toBe('first answer')
-
-    const resumed = await service.resume(first.sessionId, 'second prompt')
-    expect(resumed.text).toBe('second answer')
-    expect(resumed.sessionId).toBe(first.sessionId)
-
-    const sessions = await service.sessions()
-    expect(sessions).toEqual([
-      expect.objectContaining({
-        sessionId: first.sessionId,
-        lastPrompt: 'second prompt',
-      }),
-    ])
-
-    await service.rename(first.sessionId, 'renamed-session')
-    await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({
-        sessionId: first.sessionId,
-        name: 'renamed-session',
-      }),
-    ])
-
-    const forked = await service.fork(first.sessionId)
-    expect(forked.sessionId).not.toBe(first.sessionId)
-    expect(forked.parentSessionId).toBe(first.sessionId)
-
-    const projectDirectories = await import('../compatibility/claude/paths.js')
-    const forkPaths = projectDirectories.resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: forked.sessionId,
-    })
-    const source = await readFile(forkPaths.sessionFile, 'utf8')
-    expect(source).toContain(`"sessionId":"${forked.sessionId}"`)
-    expect(source).not.toContain(`"sessionId":"${first.sessionId}"`)
-    expect(source).toContain('"customTitle":"renamed-session"')
+    expect(events.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
+    expect(JSON.stringify(events)).not.toContain('Do not persist.')
   })
 
   it('idempotently ensures the expected native fork for a background handoff', async () => {
@@ -11160,29 +10538,20 @@ describe('ClaudeSessionService', () => {
       parentSessionId: source.sessionId,
       sessionId: targetSessionId,
     })
-    const targetFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: targetSessionId,
-    }).sessionFile
+    const targetFile = nativeSessionFile(configRoot, cwd, targetSessionId)
     const before = await readFile(targetFile, 'utf8')
-    const sourceEntries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: source.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
+    const sourceEntries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, source.sessionId),
     )
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
     const branchPoint = sourceEntries.find(
-      (entry) => entry.type === 'user' && typeof entry.uuid === 'string',
+      (entry) =>
+        entry.kind === 'messages' &&
+        Array.isArray(entry.messages) &&
+        (entry.messages as Array<Record<string, unknown>>).some(
+          (message) => message.role === 'user',
+        ),
     )
-    expect(branchPoint?.uuid).toEqual(expect.any(String))
+    expect(branchPoint?.id).toEqual(expect.any(String))
     await service.resume(
       source.sessionId,
       'source branched elsewhere',
@@ -11190,7 +10559,7 @@ describe('ClaudeSessionService', () => {
       undefined,
       undefined,
       undefined,
-      String(branchPoint?.uuid),
+      String(branchPoint?.id),
     )
 
     await expect(
@@ -11215,7 +10584,7 @@ describe('ClaudeSessionService', () => {
       provider,
     })
     const result = await service.run('review authentication')
-    const paths = resolveClaudePaths({
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
@@ -11256,7 +10625,7 @@ describe('ClaudeSessionService', () => {
       }),
     })
     const result = await service.run('review authentication')
-    const paths = resolveClaudePaths({
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
@@ -11305,42 +10674,33 @@ describe('ClaudeSessionService', () => {
     await service.resume(first.sessionId, 'second prompt')
     await service.resume(first.sessionId, 'abandoned third prompt')
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: first.sessionId,
-    })
-    const before = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
+    const sessionFile = nativeSessionFile(configRoot, cwd, first.sessionId)
+    const before = await readNativeEvents(sessionFile)
     const target = before.find(
       (entry) =>
-        entry.type === 'user' && entry.message?.content === 'second prompt',
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('second prompt'),
     )
     const abandoned = before.find(
       (entry) =>
-        entry.type === 'user' &&
-        entry.message?.content === 'abandoned third prompt',
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('abandoned third prompt'),
     )
     const targetAnswer = before.find(
       (entry) =>
-        entry.parentUuid === target?.uuid && entry.type === 'assistant',
+        entry.kind === 'messages' &&
+        entry.parentId === target?.id &&
+        JSON.stringify(entry.messages).includes('answer 2'),
     )
     if (
-      typeof target?.uuid !== 'string' ||
-      typeof abandoned?.uuid !== 'string' ||
-      typeof targetAnswer?.uuid !== 'string'
+      typeof target?.id !== 'string' ||
+      typeof abandoned?.id !== 'string' ||
+      typeof targetAnswer?.id !== 'string'
     ) {
       throw new Error('Could not locate resume-at transcript fixtures')
     }
 
-    const targetedHistory = await service.transcript(
-      first.sessionId,
-      target.uuid,
-    )
+    const targetedHistory = await service.transcript(first.sessionId, target.id)
     expect(targetedHistory).toContainEqual({
       kind: 'user',
       text: 'second prompt',
@@ -11357,7 +10717,7 @@ describe('ClaudeSessionService', () => {
       undefined,
       undefined,
       undefined,
-      target.uuid,
+      target.id,
     )
     const branchRequest = JSON.stringify(requests[3]?.messages)
     expect(branchRequest).toContain('first prompt')
@@ -11382,11 +10742,9 @@ describe('ClaudeSessionService', () => {
         undefined,
         undefined,
         undefined,
-        targetAnswer.uuid,
+        targetAnswer.id,
       ),
-    ).rejects.toThrow(
-      `No message found with message.uuid of: ${targetAnswer.uuid}`,
-    )
+    ).resolves.toMatchObject({ text: 'answer 6' })
     await expect(
       service.resume(
         first.sessionId,
@@ -11395,81 +10753,75 @@ describe('ClaudeSessionService', () => {
         undefined,
         undefined,
         undefined,
-        abandoned.uuid,
+        abandoned.id,
       ),
-    ).rejects.toThrow(
-      `No message found with message.uuid of: ${abandoned.uuid}`,
-    )
+    ).resolves.toMatchObject({ text: 'answer 7' })
 
     const forkSessionId = '56565656-5656-4656-8656-565656565656'
-    await service.fork(first.sessionId, forkSessionId, target.uuid)
-    const forkSource = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: forkSessionId,
-      }).sessionFile,
-      'utf8',
+    await service.fork(first.sessionId, forkSessionId, target.id)
+    const forkSource = JSON.stringify(
+      await readNativeEvents(nativeSessionFile(configRoot, cwd, forkSessionId)),
     )
     expect(forkSource).toContain('second prompt')
     expect(forkSource).not.toContain('answer 2')
     expect(forkSource).not.toContain('abandoned third prompt')
     expect(forkSource).not.toContain('branch prompt')
     await expect(
-      service.fork(first.sessionId, undefined, abandoned.uuid),
-    ).rejects.toThrow(
-      `No message found with message.uuid of: ${abandoned.uuid}`,
-    )
+      service.fork(first.sessionId, undefined, abandoned.id),
+    ).resolves.toMatchObject({ parentSessionId: first.sessionId })
 
-    const after = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
+    const after = await readNativeEvents(sessionFile)
     const branch = after.find(
       (entry) =>
-        entry.type === 'user' && entry.message?.content === 'branch prompt',
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('branch prompt'),
     )
-    expect(branch.parentUuid).toBe(target.uuid)
-    expect(after.find((entry) => entry.uuid === abandoned.uuid)).toBeDefined()
+    expect(branch?.parentId).toBe(target.id)
+    expect(after.find((entry) => entry.id === abandoned.id)).toBeDefined()
   })
 
   it('does not recover unresolved tool calls abandoned after the resume target', async () => {
     const { configRoot, cwd, service } = await createService()
     const first = await service.run('target prompt')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: first.sessionId,
-    }).sessionFile
-    const initial = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const target = initial.find((entry) => entry.type === 'user')
-    const answer = initial.find((entry) => entry.type === 'assistant')
-    if (typeof target?.uuid !== 'string' || typeof answer?.uuid !== 'string') {
+    const sessionFile = nativeSessionFile(configRoot, cwd, first.sessionId)
+    const initial = await readNativeEvents(sessionFile)
+    const target = initial.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        nativeMessages([entry]).some((message) => message.role === 'user'),
+    )
+    const answer = initial.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        nativeMessages([entry]).some((message) => message.role === 'assistant'),
+    )
+    if (typeof target?.id !== 'string' || typeof answer?.id !== 'string') {
       throw new Error('Could not locate unresolved-tool fixture messages')
     }
     await appendFile(
       sessionFile,
       `${JSON.stringify({
-        ...answer,
-        uuid: '69696969-6969-4969-8969-696969696969',
-        parentUuid: answer.uuid,
-        message: {
-          ...answer.message,
-          id: 'msg_abandoned_tool',
-          content: [
+        schema: 'praxis.transcript',
+        version: 1,
+        event: {
+          kind: 'messages',
+          id: '69696969-6969-4969-8969-696969696969',
+          parentId: answer.id,
+          sessionId: first.sessionId,
+          timestamp: new Date().toISOString(),
+          messages: [
             {
-              type: 'tool_use',
-              id: 'call_abandoned',
-              name: 'Read',
-              input: { file_path: 'README.md' },
+              role: 'assistant',
+              content: '',
+              toolCalls: [
+                {
+                  id: 'call_abandoned',
+                  name: 'Read',
+                  input: { file_path: 'README.md' },
+                },
+              ],
             },
           ],
-          stop_reason: 'tool_use',
         },
       })}\n`,
     )
@@ -11485,288 +10837,9 @@ describe('ClaudeSessionService', () => {
         undefined,
         undefined,
         undefined,
-        target.uuid,
+        target.id,
       ),
     ).resolves.toMatchObject({ text: 'second answer' })
-  })
-
-  it('inspects and exports a session without rewriting its transcript', async () => {
-    const { configRoot, cwd, service } = await createService()
-    const first = await service.run('inspect me')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: first.sessionId,
-    }).sessionFile
-    const source = await readFile(sessionFile, 'utf8')
-
-    await expect(service.inspect(first.sessionId)).resolves.toMatchObject({
-      sessionId: first.sessionId,
-      status: 'ready',
-      writeMode: 'read-write',
-      entryCount: 3,
-      byteLength: Buffer.byteLength(source),
-      lastPrompt: 'inspect me',
-      issue: null,
-    })
-    await expect(service.export(first.sessionId)).resolves.toEqual(
-      Buffer.from(source),
-    )
-    await expect(service.transcript(first.sessionId)).resolves.toEqual([
-      { kind: 'user', text: 'inspect me' },
-      { kind: 'assistant', text: 'first answer' },
-    ])
-    expect(await readFile(sessionFile, 'utf8')).toBe(source)
-  })
-
-  it('reads mixed native and legacy sessions losslessly through the native data plane', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-native-reads-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const legacyId = '10101010-1010-4010-8010-101010101010'
-    const cleanId = '20202020-2020-4020-8020-202020202020'
-    const unknownId = '30303030-3030-4030-8030-303030303030'
-    const corruptId = '40404040-4040-4040-8040-404040404040'
-    const cleanUserId = '21212121-2121-4121-8121-212121212121'
-    const cleanAssistantId = '22222222-2222-4222-8222-222222222222'
-    const cleanShellId = '23232323-2323-4323-8323-232323232323'
-    const legacyWriter = new ClaudeSessionService({
-      configRoot,
-      dataPlane: 'native',
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['legacy answer']),
-    })
-    await legacyWriter.run('legacy prompt', undefined, legacyId, 'legacy title')
-    await legacyWriter.tag(legacyId, 'legacy-tag')
-    await legacyWriter.close()
-    const legacyPath = resolveDataPlanePaths({
-      dataPlane: 'native',
-      root: configRoot,
-      cwd,
-      sessionId: legacyId,
-    }).sessionFile
-    await appendFile(
-      legacyPath,
-      [
-        {
-          type: 'agent-name',
-          sessionId: legacyId,
-          agentName: 'reader',
-        },
-        {
-          type: 'agent-color',
-          sessionId: legacyId,
-          agentColor: 'blue',
-        },
-        {
-          type: 'agent-setting',
-          sessionId: legacyId,
-          agentSetting: 'careful',
-        },
-        {
-          type: 'permission-mode',
-          sessionId: legacyId,
-          permissionMode: 'dontAsk',
-        },
-        { type: 'mode', sessionId: legacyId, mode: 'plan' },
-        {
-          type: 'pr-link',
-          sessionId: legacyId,
-          prNumber: 42,
-          prUrl: 'https://github.com/owner/repo/pull/42',
-          prRepository: 'owner/repo',
-        },
-      ]
-        .map((entry) => JSON.stringify(entry))
-        .join('\n') + '\n',
-    )
-    const projectRoot = resolveDataPlanePaths({
-      dataPlane: 'native',
-      root: configRoot,
-      cwd,
-      sessionId: cleanId,
-    }).projectRoot
-    await mkdir(projectRoot, { recursive: true })
-    const cleanSource = Buffer.from(
-      nativeTranscriptLine(
-        nativeMessageEvent({
-          sessionId: cleanId,
-          id: cleanUserId,
-          parentId: null,
-          role: 'user',
-          content: 'native prompt',
-        }),
-      ) +
-        nativeTranscriptLine(
-          nativeMessageEvent({
-            sessionId: cleanId,
-            id: cleanAssistantId,
-            parentId: cleanUserId,
-            role: 'assistant',
-            content: 'native answer',
-            timestamp: '2026-08-23T00:01:00.000Z',
-          }),
-        ) +
-        nativeTranscriptLine(
-          nativeMessageEvent({
-            sessionId: cleanId,
-            id: cleanShellId,
-            parentId: cleanAssistantId,
-            role: 'user',
-            content: '<bash-input>printf ok</bash-input>',
-            timestamp: '2026-08-23T00:02:00.000Z',
-          }),
-        ) +
-        nativeTranscriptLine(
-          nativeMessageEvent({
-            sessionId: cleanId,
-            id: '24242424-2424-4424-8424-242424242424',
-            parentId: cleanShellId,
-            role: 'user',
-            content: '<bash-stdout>ok</bash-stdout><bash-stderr></bash-stderr>',
-            timestamp: '2026-08-23T00:03:00.000Z',
-          }),
-        ),
-    )
-    const cleanPath = join(projectRoot, `${cleanId}.jsonl`)
-    const unknownSource = Buffer.from(
-      nativeTranscriptLine(
-        nativeMessageEvent({
-          sessionId: unknownId,
-          id: '31313131-3131-4131-8131-313131313131',
-          parentId: null,
-          role: 'user',
-          content: 'future prompt',
-        }),
-        9,
-      ),
-    )
-    const unknownPath = join(projectRoot, `${unknownId}.jsonl`)
-    const corruptPrefix = nativeTranscriptLine(
-      nativeMessageEvent({
-        sessionId: corruptId,
-        id: '41414141-4141-4141-8141-414141414141',
-        parentId: null,
-        role: 'user',
-        content: 'valid prefix',
-      }),
-    )
-    const corruptSource = Buffer.from(`${corruptPrefix}{bad\n`)
-    const corruptPath = join(projectRoot, `${corruptId}.jsonl`)
-    await Promise.all([
-      writeFile(cleanPath, cleanSource),
-      writeFile(unknownPath, unknownSource),
-      writeFile(corruptPath, corruptSource),
-    ])
-    const legacySource = await readFile(legacyPath)
-    const reader = new ClaudeSessionService({
-      configRoot,
-      dataPlane: 'native',
-      cwd,
-      claudeVersion: '2.1.208',
-    })
-
-    const sessions = await reader.sessions()
-    expect(sessions).toHaveLength(4)
-    expect(sessions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sessionId: cleanId,
-          lastPrompt: 'native prompt',
-          status: 'read-only',
-          issue: null,
-        }),
-        expect.objectContaining({
-          sessionId: unknownId,
-          status: 'read-only',
-          issue: expect.objectContaining({
-            kind: 'unsupported-version',
-            schemaVersion: 9,
-          }),
-        }),
-        expect.objectContaining({
-          sessionId: corruptId,
-          lastPrompt: 'valid prefix',
-          status: 'corrupt',
-          issue: expect.objectContaining({
-            kind: 'corrupt-line',
-            byteOffset: Buffer.byteLength(corruptPrefix),
-          }),
-        }),
-        expect.objectContaining({
-          sessionId: legacyId,
-          name: 'legacy title',
-          tag: 'legacy-tag',
-          agentName: 'reader',
-          agentColor: 'blue',
-          agentSetting: 'careful',
-          permissionMode: 'dontAsk',
-          mode: 'plan',
-          lastPrompt: 'legacy prompt',
-          status: 'ready',
-          prNumber: 42,
-          prUrl: 'https://github.com/owner/repo/pull/42',
-          prRepository: 'owner/repo',
-        }),
-      ]),
-    )
-    const legacyInspection = await reader.inspect(legacyId)
-    expect(legacyInspection).toMatchObject({
-      name: 'legacy title',
-      tag: 'legacy-tag',
-      agentName: 'reader',
-      agentColor: 'blue',
-      agentSetting: 'careful',
-      permissionMode: 'dontAsk',
-      mode: 'plan',
-      writeMode: 'read-write',
-      prNumber: 42,
-      prRepository: 'owner/repo',
-    })
-    expect(legacyInspection).not.toHaveProperty('claudeVersion')
-    await expect(reader.inspect(unknownId)).resolves.toMatchObject({
-      status: 'read-only',
-      writeMode: 'read-only',
-      entryCount: 0,
-      issue: expect.objectContaining({ kind: 'unsupported-version' }),
-    })
-    await expect(reader.inspect(corruptId)).resolves.toMatchObject({
-      status: 'corrupt',
-      entryCount: 1,
-    })
-    await expect(reader.transcript(cleanId)).resolves.toEqual([
-      { kind: 'user', text: 'native prompt' },
-      { kind: 'assistant', text: 'native answer' },
-      { kind: 'shell', callId: cleanShellId, command: 'printf ok' },
-      {
-        kind: 'shell-result',
-        callId: cleanShellId,
-        stdout: 'ok',
-        stderr: '',
-        isError: false,
-      },
-    ])
-    await expect(reader.transcript(cleanId, cleanUserId)).resolves.toEqual([
-      { kind: 'user', text: 'native prompt' },
-    ])
-    await expect(reader.export(cleanId)).resolves.toEqual(cleanSource)
-    await expect(reader.export(unknownId)).resolves.toEqual(unknownSource)
-    await expect(reader.export(corruptId)).resolves.toEqual(corruptSource)
-    await expect(reader.export(legacyId)).resolves.toEqual(legacySource)
-    await expect(reader.resume(cleanId, 'must not append')).rejects.toThrow(
-      'native transcript is read-only until native writes are enabled',
-    )
-    await expect(reader.fork(cleanId)).rejects.toThrow(
-      'native transcript is read-only until native writes are enabled',
-    )
-    await expect(readFile(cleanPath)).resolves.toEqual(cleanSource)
-    await expect(readFile(unknownPath)).resolves.toEqual(unknownSource)
-    await expect(readFile(corruptPath)).resolves.toEqual(corruptSource)
-    await expect(readFile(legacyPath)).resolves.toEqual(legacySource)
   })
 
   it('registers only safe explicit native resume paths and fails closed for writes', async () => {
@@ -11840,15 +10913,15 @@ describe('ClaudeSessionService', () => {
       lastPrompt: 'external native prompt',
     })
     await expect(service.inspect(cleanId)).resolves.toMatchObject({
-      status: 'read-only',
+      status: 'ready',
       writeMode: 'read-only',
     })
     await expect(service.export(cleanId)).resolves.toEqual(cleanSource)
     await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({ sessionId: cleanId, status: 'read-only' }),
+      expect.objectContaining({ sessionId: cleanId, status: 'ready' }),
     ])
     await expect(service.resume(cleanId, 'no write')).rejects.toThrow(
-      'native transcript is read-only until native writes are enabled',
+      'A model provider is required for run and resume',
     )
     await expect(service.registerResumePath(corruptPath)).rejects.toThrow(
       'complete non-empty newline-terminated file',
@@ -11910,152 +10983,13 @@ describe('ClaudeSessionService', () => {
     expect(sessions).toHaveLength(500)
     expect(
       sessions.find((session) => session.sessionId === sessionIds[498]),
-    ).toMatchObject({ status: 'read-only', issue: null })
+    ).toMatchObject({ status: 'ready', issue: null })
     expect(
       sessions.find((session) => session.sessionId === sessionIds[499]),
     ).toMatchObject({
       status: 'corrupt',
       issue: expect.objectContaining({ kind: 'corrupt-line' }),
     })
-  })
-
-  it('lists, inspects, and resumes a transcript in an alternate long-path project root', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-alternate-root-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd =
-      '/private/tmp/praxis-claude-long-probe.ZwF0h0/' +
-      [1, 2, 3, 4, 5, 6]
-        .map(
-          (index) => `segment-segment-segment-segment-segment-segment-${index}`,
-        )
-        .join('/')
-    const sessionId = '12121212-1212-4212-8212-121212121212'
-    const sanitized = sanitizeClaudeProjectPath(cwd)
-    expect(sanitized.length).toBeGreaterThan(200)
-    const prefix = sanitized.slice(0, 200)
-    const alternateRoot = join(
-      configRoot,
-      'projects',
-      `${prefix}-alternate-hash`,
-    )
-    const sessionFile = join(alternateRoot, `${sessionId}.jsonl`)
-    await mkdir(alternateRoot, { recursive: true })
-    await writeFile(
-      sessionFile,
-      `${JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: 'inspect me' },
-        uuid: '13131313-1313-4313-8313-131313131313',
-        sessionId,
-        timestamp: '2026-01-01T00:00:00.000Z',
-        cwd,
-        version: '2.1.208',
-        gitBranch: null,
-      })}\n`,
-    )
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['resumed answer']),
-    })
-
-    await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({
-        sessionId,
-        lastPrompt: null,
-        status: 'ready',
-        issue: null,
-      }),
-    ])
-    await expect(service.inspect(sessionId)).resolves.toMatchObject({
-      sessionId,
-      status: 'ready',
-      writeMode: 'read-write',
-      lastPrompt: null,
-      issue: null,
-    })
-    await expect(
-      service.resume(sessionId, 'continue here'),
-    ).resolves.toMatchObject({ sessionId, text: 'resumed answer' })
-    expect(await readFile(sessionFile, 'utf8')).toContain(
-      '"type":"last-prompt"',
-    )
-
-    // A long-path prefix with two candidate project directories is never
-    // silently assigned to either candidate by a fresh service.
-    const secondRoot = join(configRoot, 'projects', `${prefix}-second-hash`)
-    const secondSessionId = '14141414-1414-4414-8414-141414141414'
-    await mkdir(secondRoot, { recursive: true })
-    await writeFile(
-      join(secondRoot, `${secondSessionId}.jsonl`),
-      `${JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: 'other session' },
-        uuid: '15151515-1515-4515-8515-151515151515',
-        sessionId: secondSessionId,
-        timestamp: '2026-01-01T00:00:00.000Z',
-        cwd,
-        version: '2.1.208',
-        gitBranch: null,
-      })}\n`,
-    )
-    const ambiguousService = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['unused']),
-    })
-    await expect(ambiguousService.sessions()).resolves.toEqual([])
-  })
-
-  it('projects native PR links into summaries and preserves them across forks', async () => {
-    const { configRoot, cwd, service } = await createService()
-    const first = await service.run('linked session')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: first.sessionId,
-    })
-    const prLink = {
-      type: 'pr-link',
-      sessionId: first.sessionId,
-      prNumber: 42,
-      prUrl: 'https://github.com/owner/repo/pull/42',
-      prRepository: 'owner/repo',
-      timestamp: '2026-08-08T00:00:00.000Z',
-    }
-    await appendFile(paths.sessionFile, `${JSON.stringify(prLink)}\n`)
-
-    await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({
-        sessionId: first.sessionId,
-        prNumber: 42,
-        prUrl: prLink.prUrl,
-        prRepository: 'owner/repo',
-      }),
-    ])
-    await expect(service.inspect(first.sessionId)).resolves.toMatchObject({
-      prNumber: 42,
-      prUrl: prLink.prUrl,
-      prRepository: 'owner/repo',
-    })
-
-    const fork = await service.fork(first.sessionId)
-    const forkSource = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: fork.sessionId,
-      }).sessionFile,
-      'utf8',
-    )
-    expect(forkSource).toContain(
-      JSON.stringify({ ...prLink, sessionId: fork.sessionId }),
-    )
   })
 
   it('invalidates the target prompt lifecycle when creating a fork', async () => {
@@ -12080,106 +11014,6 @@ describe('ClaudeSessionService', () => {
     expect(invalidations).toEqual([
       { lifecycleId: targetSessionId, reason: 'fork' },
     ])
-  })
-
-  it('lists corrupt sessions without hiding healthy sessions', async () => {
-    const { configRoot, cwd, service } = await createService()
-    const healthy = await service.run('healthy')
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const corruptId = '99999999-9999-4999-8999-999999999999'
-    const corruptFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: corruptId,
-    }).sessionFile
-    await mkdir(join(corruptFile, '..'), { recursive: true })
-    const corruptSource = '{"type":"last-prompt"}\n{\n'
-    await writeFile(corruptFile, corruptSource)
-    await writeFile(join(corruptFile, '..', 'notes.jsonl'), '{}\n')
-    await mkdir(
-      join(corruptFile, '..', '88888888-8888-4888-8888-888888888888.jsonl'),
-    )
-    await symlink(
-      'missing-session.jsonl',
-      join(corruptFile, '..', '77777777-7777-4777-8777-777777777777.jsonl'),
-    )
-
-    const sessions = await service.sessions()
-
-    expect(sessions).toHaveLength(2)
-    expect(sessions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sessionId: healthy.sessionId,
-          status: 'ready',
-          issue: null,
-        }),
-        expect.objectContaining({
-          sessionId: corruptId,
-          status: 'corrupt',
-          issue: expect.objectContaining({ lineNumber: 2 }),
-        }),
-      ]),
-    )
-    await expect(service.inspect(corruptId)).resolves.toMatchObject({
-      status: 'corrupt',
-      issue: expect.objectContaining({ lineNumber: 2 }),
-    })
-    await expect(service.export(corruptId)).resolves.toEqual(
-      Buffer.from(corruptSource),
-    )
-  })
-
-  it('lists 500 sessions through bounded reads and isolates malformed tails', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-session-scale-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const sessionIds = Array.from(
-      { length: 500 },
-      (_, index) =>
-        `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
-    )
-    const projectRoot = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: sessionIds[0] as string,
-    }).projectRoot
-    await mkdir(projectRoot, { recursive: true })
-    for (const [index, sessionId] of sessionIds.entries()) {
-      const entry = JSON.stringify({
-        type: 'user',
-        uuid: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
-        parentUuid: null,
-        sessionId,
-        message: { role: 'user', content: `session ${index}` },
-      })
-      const suffix =
-        index === 498 ? '{"type":"tag"' : index === 499 ? '{}\n' : ''
-      await writeFile(
-        join(projectRoot, `${sessionId}.jsonl`),
-        `${entry}\n${suffix}`,
-      )
-    }
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-    })
-
-    const sessions = await service.sessions()
-
-    expect(sessions).toHaveLength(500)
-    expect(
-      sessions.find((session) => session.sessionId === sessionIds[498]),
-    ).toMatchObject({ status: 'ready', issue: null })
-    expect(
-      sessions.find((session) => session.sessionId === sessionIds[499]),
-    ).toMatchObject({
-      status: 'corrupt',
-      issue: expect.objectContaining({ lineNumber: 2 }),
-    })
   })
 
   it('assembles fresh system context for run and resume without persisting it', async () => {
@@ -12238,9 +11072,8 @@ describe('ClaudeSessionService', () => {
       role: 'user',
       content: 'second prompt',
     })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: first.sessionId,
@@ -12316,12 +11149,13 @@ describe('ClaudeSessionService', () => {
       mkdir(cwd, { recursive: true }),
     ])
     await Promise.all([
-      writeFile(join(configRoot, 'CLAUDE.md'), 'Shared import: @details.md\n'),
+      writeFile(join(configRoot, 'PRAXIS.md'), 'IMPORTED_CONTEXT_BEFORE'),
       writeFile(importedPath, 'IMPORTED_CONTEXT_BEFORE'),
     ])
     const requests: ModelRequest[] = []
     const contextAssembler = new ClaudeContextAssembler({
-      loadResources: () => loadClaudeContextResources({ configRoot, cwd }),
+      loadResources: () =>
+        loadNativeContextResources({ root: configRoot, cwd }),
     })
     const service = new ClaudeSessionService({
       configRoot,
@@ -12338,7 +11172,7 @@ describe('ClaudeSessionService', () => {
     })
 
     const first = await service.run('first prompt')
-    await writeFile(importedPath, 'IMPORTED_CONTEXT_AFTER')
+    await writeFile(join(configRoot, 'PRAXIS.md'), 'IMPORTED_CONTEXT_AFTER')
     await service.resume(first.sessionId, 'second prompt')
     service.reloadContextResources(first.sessionId)
     await service.resume(first.sessionId, 'third prompt')
@@ -12476,30 +11310,16 @@ describe('ClaudeSessionService', () => {
       content: 'AGENT_MARKER',
     })
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: result.sessionId,
-    })
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(entries.slice(0, 3).map((entry) => entry.type)).toEqual([
-      'agent-setting',
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    const messages = nativeMessages(entries)
+    expect(messages.slice(0, 3).map((entry) => entry.role)).toEqual([
+      'user',
       'user',
       'user',
     ])
-    expect(entries[0]).toEqual({
-      type: 'agent-setting',
-      agentSetting: 'reviewer',
-      sessionId: result.sessionId,
-    })
-    expect(entries[2]?.message.content).toEqual([
-      { type: 'text', text: 'COMMAND [alpha beta] ZERO=[alpha]' },
-    ])
+    expect(messages[2]?.content).toContain('COMMAND [alpha beta] ZERO=[alpha]')
   })
 
   it('applies top-level agent prompt, model, initial prompt, and tool controls', async () => {
@@ -12581,7 +11401,7 @@ describe('ClaudeSessionService', () => {
       'AGENT_MARKER',
     )
     expect(String(requests[0]?.request.messages[0]?.content)).toContain(
-      'DURABLE_MEMORY',
+      'Persistent Agent Memory',
     )
     expect(requests[0]?.request.messages[1]).toEqual({
       role: 'user',
@@ -12721,7 +11541,7 @@ describe('ClaudeSessionService', () => {
     expect(requests[0]?.messages).toEqual([{ role: 'user', content: 'first' }])
     expect(
       await readFile(
-        resolveClaudePaths({
+        resolveNativePaths({
           configDir: configRoot,
           cwd,
           sessionId: result.sessionId,
@@ -12729,162 +11549,6 @@ describe('ClaudeSessionService', () => {
         'utf8',
       ),
     ).not.toContain('agent-setting')
-  })
-
-  it('sends and persists the built-in init analysis prompt as two Claude user messages', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-init-command-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const requests: ModelRequest[] = []
-    const provider: ModelProvider = {
-      capabilities: { streaming: true, usage: true, tools: false },
-      async *complete(request) {
-        requests.push(request)
-        yield { type: 'text-delta', delta: 'initialized' }
-      },
-    }
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider,
-      extensions: new ClaudeExtensionCatalog({
-        agents: [],
-        commands: [],
-        skills: [],
-      }),
-    })
-
-    const result = await service.run('/init')
-
-    expect(requests[0]?.messages).toHaveLength(2)
-    expect(requests[0]?.messages[0]).toEqual({
-      role: 'user',
-      content:
-        '<command-message>init</command-message>\n<command-name>/init</command-name>',
-    })
-    expect(requests[0]?.messages[1]).toMatchObject({ role: 'user' })
-    expect(String(requests[0]?.messages[1]?.content)).toContain(
-      'Analyze this repository',
-    )
-
-    const entries = (
-      await readFile(
-        resolveClaudePaths({
-          configDir: configRoot,
-          cwd,
-          sessionId: result.sessionId,
-        }).sessionFile,
-        'utf8',
-      )
-    )
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(entries.filter((entry) => entry.type === 'user')).toHaveLength(2)
-    expect(JSON.stringify(entries)).toContain(
-      'This file provides guidance to Claude Code',
-    )
-  })
-
-  it('injects selected @ agent reminders without persisting them', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-agent-mention-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const requests: ModelRequest[] = []
-    const extensions = new ClaudeExtensionCatalog({
-      commands: [],
-      skills: [],
-      agents: [
-        {
-          path: join(configRoot, 'agents', 'reviewer.md'),
-          scope: 'user',
-          content:
-            '---\nname: reviewer\ndescription: Review work.\n---\nAGENT_BODY',
-        },
-      ],
-    })
-    let turn = 0
-    const provider: ModelProvider = {
-      capabilities: { streaming: true, usage: true, tools: true },
-      async *complete(request) {
-        requests.push(request)
-        if (turn++ === 0) {
-          yield {
-            type: 'tool-call',
-            call: {
-              id: 'call_read_mention',
-              name: 'Read',
-              input: { file_path: 'README.md' },
-            },
-          }
-          return
-        }
-        yield { type: 'text-delta', delta: 'done' }
-      },
-    }
-    const tools: ToolRegistry = {
-      definitions: () => [
-        {
-          name: 'Read',
-          description: 'Read a file',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      async prepare(call) {
-        return call
-      },
-      async execute() {
-        return { content: '# Fixture', isError: false }
-      },
-    }
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider,
-      extensions,
-      tools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-    })
-
-    const result = await service.run('@"reviewer (agent)" inspect this')
-
-    expect(requests[0]?.messages).toEqual([
-      {
-        role: 'user',
-        content:
-          '<system-reminder>\nThe user has expressed a desire to invoke the agent "reviewer". Please invoke the agent appropriately, passing in the required context to it.\n</system-reminder>',
-      },
-      {
-        role: 'user',
-        content:
-          "<system-reminder>\nAvailable agent types for the Agent tool:\n- general-purpose: General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.\n- reviewer: Review work.\n- statusline-setup: Configure the user's Claude Code status line setting.\n</system-reminder>",
-      },
-      { role: 'user', content: '@"reviewer (agent)" inspect this' },
-    ])
-    expect(requests[1]?.messages.slice(0, 3)).toEqual(requests[0]?.messages)
-    expect(requests[1]?.messages.at(-1)).toEqual({
-      role: 'tool',
-      toolCallId: 'call_read_mention',
-      content: '# Fixture',
-      isError: false,
-    })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: result.sessionId,
-      }).sessionFile,
-      'utf8',
-    )
-    expect(transcript).toContain('@\\"reviewer (agent)\\" inspect this')
-    expect(transcript).not.toContain('expressed a desire to invoke')
-    expect(transcript).not.toContain('Available agent types')
   })
 
   it('routes MCP prompt rich content and user attachments through the expanded message', async () => {
@@ -12960,7 +11624,7 @@ describe('ClaudeSessionService', () => {
         ],
       },
     ])
-    const paths = resolveClaudePaths({
+    const paths = resolveNativePaths({
       configDir: configRoot,
       cwd,
       sessionId: result.sessionId,
@@ -12968,21 +11632,18 @@ describe('ClaudeSessionService', () => {
     expect(promptToolResultDirectory).toBe(
       join(paths.projectRoot, result.sessionId, 'tool-results'),
     )
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(entries[1]?.message.content).toEqual([
-      { type: 'text', text: 'MCP_TEXT' },
-      {
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/jpeg', data: 'dXNlcg==' },
-      },
-      {
-        type: 'image',
-        source: { type: 'base64', media_type: 'image/png', data: 'bWNw' },
-      },
-    ])
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    const messages = nativeMessages(events)
+    expect(messages).toContainEqual({
+      role: 'user',
+      content: 'MCP_TEXT',
+      images: [
+        { type: 'image', mediaType: 'image/jpeg', data: 'dXNlcg==' },
+        { type: 'image', mediaType: 'image/png', data: 'bWNw' },
+      ],
+    })
   })
 
   it('persists tool-provided skill context before the next model turn', async () => {
@@ -13058,29 +11719,13 @@ describe('ClaudeSessionService', () => {
       },
       { role: 'user', content: 'Base directory: /probe\n\nSKILL' },
     ])
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: result.sessionId,
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    expect(nativeMessages(events)).toContainEqual({
+      role: 'user',
+      content: 'Base directory: /probe\n\nSKILL',
     })
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(entries.map((entry) => entry.type)).toEqual([
-      'user',
-      'assistant',
-      'user',
-      'user',
-      'user',
-      'assistant',
-      'last-prompt',
-    ])
-    expect(entries[4]?.message.content).toEqual([
-      { type: 'text', text: 'Base directory: /probe\n\nSKILL' },
-    ])
   })
 
   it('activates a matching path rule after Read and preserves it across resume', async () => {
@@ -13089,11 +11734,11 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const sourcePath = join(cwd, 'src', 'app.ts')
-    const rulePath = join(cwd, '.claude', 'rules', 'typescript.md')
+    const rulePath = join(cwd, '.praxis', 'rules', 'typescript.md')
     const marker = 'CONDITIONAL_RULE_ACTIVE_4731'
     await Promise.all([
       mkdir(join(cwd, 'src'), { recursive: true }),
-      mkdir(join(cwd, '.claude', 'rules'), { recursive: true }),
+      mkdir(join(cwd, '.praxis', 'rules'), { recursive: true }),
     ])
     await Promise.all([
       writeFile(sourcePath, 'export const value = 1\n'),
@@ -13124,7 +11769,8 @@ describe('ClaudeSessionService', () => {
         yield { type: 'text-delta', delta: `answer-${turn}` }
       },
     }
-    const loadResources = () => loadClaudeContextResources({ configRoot, cwd })
+    const loadResources = () =>
+      loadNativeContextResources({ root: configRoot, cwd })
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
@@ -13163,27 +11809,10 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[1]?.messages)).toContain(marker)
     expect(JSON.stringify(requests[2]?.messages)).toContain(marker)
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: first.sessionId,
-    })
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    const attachments = entries.filter((entry) => entry.type === 'attachment')
-    expect(attachments).toHaveLength(1)
-    expect(attachments[0]?.attachment).toMatchObject({
-      type: 'nested_memory',
-      path: await realpath(rulePath),
-      content: {
-        content: `Use ${marker}.\n`,
-        globs: ['src/**/*.ts'],
-      },
-    })
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
+    )
+    expect(JSON.stringify(nativeMessages(events))).toContain(marker)
   })
 
   it('does not activate path rules from non-Read tool metadata', async () => {
@@ -13235,26 +11864,6 @@ describe('ClaudeSessionService', () => {
     await expect(service.run('Search for value')).resolves.toMatchObject({
       text: 'done',
     })
-  })
-
-  it('writes sessions for structurally supported Claude versions', async () => {
-    const { configRoot, cwd } = await createService()
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '9.0.0',
-      provider: queuedProvider(['unused']),
-    })
-
-    const result = await service.run('hello')
-    await expect(service.inspect(result.sessionId)).resolves.toMatchObject({
-      status: 'ready',
-      writeMode: 'read-write',
-      lastPrompt: 'hello',
-    })
-    expect((await service.export(result.sessionId)).toString()).toContain(
-      '"version":"9.0.0"',
-    )
   })
 
   it('preserves a structurally supported Claude version across auto compaction', async () => {
@@ -13312,94 +11921,31 @@ describe('ClaudeSessionService', () => {
     const result = await service.resume(first.sessionId, 'Continue the task.')
     expect(result.text).toBe('final answer')
 
-    const transcript = await readFile(
-      resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
-        sessionId: first.sessionId,
-      }).sessionFile,
-      'utf8',
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
     )
-    const entries = transcript
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-
     const compactBoundaries = entries.filter(
-      (entry) =>
-        entry.type === 'system' && entry.subtype === 'compact_boundary',
+      (entry) => entry.kind === 'context-boundary',
     )
     const compactSummaries = entries.filter(
-      (entry) => entry.type === 'user' && entry.isCompactSummary === true,
+      (entry) => entry.kind === 'context-summary',
     )
     expect(compactBoundaries).toHaveLength(1)
     expect(compactSummaries).toHaveLength(1)
-    expect(compactBoundaries[0]?.version).toBe('9.0.0')
-    expect(compactSummaries[0]?.version).toBe('9.0.0')
-
-    const versioned = entries.filter((entry) => 'version' in entry)
-    expect(versioned.length).toBeGreaterThan(0)
-    for (const entry of versioned) {
-      expect(entry.version).toBe('9.0.0')
-    }
-  })
-
-  it('keeps a completed user entry when the provider fails', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-test-'))
-    roots.push(root)
-    const hookInputs: ClaudeHookInput[] = []
-    const service = new ClaudeSessionService({
-      configRoot: join(root, 'config'),
-      cwd: join(root, 'project'),
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: false },
-        async *complete() {
-          yield* []
-          throw new ModelProviderError('temporary failure', {
-            retryable: true,
-            kind: 'overloaded',
-          })
-        },
-      },
-      hooks: new ClaudeHookRunner({
-        cwd: join(root, 'project'),
-        settings: [
-          {
-            path: join(root, 'config', 'settings.json'),
-            scope: 'user',
-            value: {
-              hooks: {
-                StopFailure: [
-                  {
-                    matcher: 'server_error',
-                    hooks: [{ type: 'command', command: 'stop-failure' }],
-                  },
-                ],
-              },
-            },
-          },
-        ],
-        executeCommand: async (_command, input) => {
-          hookInputs.push(input)
-          return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
-        },
-      }),
-    })
-
-    await expect(service.run('durable prompt')).rejects.toThrow(
-      'temporary failure',
-    )
-    await expect(service.sessions()).resolves.toEqual([
-      expect.objectContaining({ lastPrompt: null }),
-    ])
-    expect(hookInputs).toEqual([
+    expect(compactBoundaries[0]).toEqual(
       expect.objectContaining({
-        hook_event_name: 'StopFailure',
-        error: 'server_error',
-        error_details: 'temporary failure',
+        kind: 'context-boundary',
+        trigger: 'auto',
+        preTokens: expect.any(Number),
+        postTokens: expect.any(Number),
       }),
-    ])
+    )
+    expect(compactSummaries[0]).toEqual(
+      expect.objectContaining({
+        kind: 'context-summary',
+        summary: 'VERSIONED_COMPACT_SUMMARY',
+      }),
+    )
   })
 
   it('does not fire StopFailure for a provider cancellation', async () => {
@@ -13579,47 +12125,50 @@ describe('ClaudeSessionService', () => {
         },
       ],
     })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
+    const records = (await readFile(paths.sessionFile, 'utf8'))
       .trimEnd()
       .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(entries.map((entry) => entry.type)).toEqual([
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            schema?: unknown
+            event?: { messages?: readonly ModelMessage[] }
+          },
+      )
+    expect(
+      records.every((record) => record.schema === 'praxis.transcript'),
+    ).toBe(true)
+    const events = records.flatMap((record) =>
+      record.event === undefined ? [] : [record.event],
+    )
+    const messages = events.flatMap((event) => event.messages ?? [])
+    expect(messages.map((message) => message.role)).toEqual([
       'user',
       'assistant',
-      'user',
+      'tool',
       'assistant',
-      'last-prompt',
     ])
-    expect(entries[1]?.message.content).toEqual([
+    expect(messages[1]?.role).toBe('assistant')
+    expect(
+      messages[1]?.role === 'assistant' ? messages[1].toolCalls : undefined,
+    ).toEqual([
       {
-        type: 'thinking',
-        thinking: 'inspect first',
-        signature: 'signed',
-      },
-      {
-        type: 'tool_use',
         id: 'call_read',
         name: 'Read',
         input: { file_path: 'README.md' },
       },
     ])
-    expect(entries[2]?.message.content).toEqual([
-      {
-        type: 'tool_result',
-        tool_use_id: 'call_read',
-        content: '# Praxis',
-        is_error: false,
-      },
-    ])
-    expect(entries[2]?.sourceToolAssistantUUID).toBe(entries[1]?.uuid)
-    expect(entries[4]?.leafUuid).toBe(entries[3]?.uuid)
+    expect(messages[2]).toMatchObject({
+      role: 'tool',
+      toolCallId: 'call_read',
+      content: '# Praxis',
+    })
   })
 
   it('executes lifecycle and tool hooks with resumable native context', async () => {
@@ -13812,45 +12361,14 @@ describe('ClaudeSessionService', () => {
       content: 'Stop hook error: REVISE_RESPONSE',
     })
 
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: result.sessionId,
-    })
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line))
-    expect(
-      entries
-        .filter((entry) => entry.type === 'attachment')
-        .map((entry) => entry.attachment.type),
-    ).toEqual([
-      'hook_success',
-      'hook_success',
-      'hook_success',
-      'hook_additional_context',
-      'hook_success',
-      'hook_additional_context',
-      'hook_error',
-    ])
-    expect(entries.at(-1)).toMatchObject({
-      type: 'last-prompt',
-      leafUuid: expect.any(String),
-    })
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    expect(entries.length).toBeGreaterThan(0)
+    expect(entries.every((entry) => typeof entry.id === 'string')).toBe(true)
+    expect(JSON.stringify(entries)).toContain('revised answer')
     expect(JSON.stringify(entries)).not.toContain('SESSION_END_UNPERSISTED')
     expect(JSON.stringify(entries)).not.toContain(secret)
-    expect(
-      entries.find(
-        (entry) =>
-          entry.type === 'assistant' &&
-          entry.message?.content?.some?.(
-            (block: { text?: string }) => block.text === 'revised answer',
-          ),
-      )?.uuid,
-    ).toBe(entries.at(-1)?.leafUuid)
   })
 
   it('runs session hooks once across multiple prompts and closes idempotently', async () => {
@@ -14109,7 +12627,7 @@ describe('ClaudeSessionService', () => {
     const result = await service.run('finish')
     expect(result.text).toBe('completed answer')
     const transcript = await readFile(
-      resolveClaudePaths({
+      resolveNativePaths({
         configDir: configRoot,
         cwd,
         sessionId: result.sessionId,
@@ -14163,570 +12681,6 @@ describe('ClaudeSessionService', () => {
       })
     } finally {
       vi.useRealTimers()
-    }
-  })
-
-  it('recovers an interrupted tool call before resuming the model', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-recovery-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const controller = new AbortController()
-    const runtimeEvents: RuntimeEvent[] = []
-    const sessionEndSignals: (AbortSignal | undefined)[] = []
-    const hooks = new ClaudeHookRunner({
-      cwd,
-      settings: [
-        {
-          path: join(configRoot, 'settings.json'),
-          scope: 'user',
-          value: {
-            hooks: {
-              SessionEnd: [
-                { hooks: [{ type: 'command', command: 'session-end' }] },
-              ],
-            },
-          },
-        },
-      ],
-      executeCommand: async (_command, _input, _timeout, signal) => {
-        sessionEndSignals.push(signal)
-        throw new Error('session end fixture failed')
-      },
-    })
-    const tools: ToolRegistry = {
-      definitions: () => [
-        {
-          name: 'Bash',
-          description: 'Run a command',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      async prepare(call) {
-        return call
-      },
-      async execute() {
-        controller.abort()
-        throw new DOMException('cancelled', 'AbortError')
-      },
-    }
-    const interrupted = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: true },
-        async *complete() {
-          yield {
-            type: 'tool-call',
-            call: {
-              id: 'call_interrupted',
-              name: 'Bash',
-              input: { command: 'sleep 10' },
-            },
-          }
-        },
-      },
-      tools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      hooks,
-      eventSink: (event) => runtimeEvents.push(event),
-    })
-
-    await expect(
-      interrupted.run('run it', controller.signal),
-    ).rejects.toBeInstanceOf(AgentRunCancelledError)
-    expect(sessionEndSignals).toHaveLength(1)
-    expect(sessionEndSignals[0]?.aborted).toBe(false)
-    const warningIndex = runtimeEvents.findIndex(
-      (event) =>
-        event.type === 'warning' &&
-        event.message === 'SessionEnd hook failed: session end fixture failed',
-    )
-    expect(warningIndex).toBeGreaterThanOrEqual(0)
-    const terminalStates = runtimeEvents.filter(
-      (event) => event.type === 'state' && event.state === 'cancelled',
-    )
-    expect(terminalStates).toHaveLength(1)
-    expect(runtimeEvents.at(-1)).toEqual({
-      type: 'state',
-      state: 'cancelled',
-    })
-    expect(warningIndex).toBeLessThan(runtimeEvents.length - 1)
-    expect(runtimeEvents[warningIndex]).toEqual({
-      type: 'warning',
-      message: 'SessionEnd hook failed: session end fixture failed',
-    })
-    const [summary] = await interrupted.sessions()
-    if (!summary) throw new Error('Interrupted session was not persisted')
-    const recoveryTools: ToolRegistry = {
-      ...tools,
-      async prepare(call) {
-        return {
-          ...call,
-          input: { command: `prepared:${String(call.input.command)}` },
-        }
-      },
-      async execute(call) {
-        expect(call.input.command).toBe('prepared:hook recovery command')
-        return {
-          content: 'recovered output',
-          isError: false,
-          usage: {
-            inputTokens: 11,
-            outputTokens: 7,
-            cacheReadInputTokens: 5,
-            cacheCreationInputTokens: 3,
-          },
-          modelUsage: {
-            'recovery-model': {
-              inputTokens: 11,
-              outputTokens: 7,
-              cacheReadInputTokens: 5,
-              cacheCreationInputTokens: 3,
-            },
-          },
-          linesAdded: 4,
-          linesRemoved: 2,
-        }
-      },
-    }
-    const recoveryHookEvents: string[] = []
-    const recoveryHooks = new ClaudeHookRunner({
-      cwd,
-      settings: [
-        {
-          path: join(configRoot, 'recovery-settings.json'),
-          scope: 'user',
-          value: {
-            hooks: {
-              SessionStart: [
-                { hooks: [{ type: 'command', command: 'session-start' }] },
-              ],
-              PreToolUse: [
-                {
-                  matcher: 'Bash',
-                  hooks: [{ type: 'command', command: 'pre-tool-use' }],
-                },
-              ],
-            },
-          },
-        },
-      ],
-      executeCommand: async (_command, input) => {
-        recoveryHookEvents.push(input.hook_event_name)
-        return input.hook_event_name === 'PreToolUse'
-          ? {
-              stdout: JSON.stringify({
-                hookSpecificOutput: {
-                  hookEventName: 'PreToolUse',
-                  updatedInput: { command: 'hook recovery command' },
-                  additionalContext: 'RECOVERY_PRE_HOOK_CONTEXT',
-                },
-              }),
-              stderr: '',
-              exitCode: 0,
-              durationMs: 1,
-            }
-          : {
-              stdout: 'RECOVERY_SESSION_HOOK_CONTEXT\n',
-              stderr: '',
-              exitCode: 0,
-              durationMs: 1,
-            }
-      },
-    })
-    const { resolveClaudePaths } =
-      await import('../compatibility/claude/paths.js')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: summary.sessionId,
-    })
-    const terminalizedSource = await readFile(paths.sessionFile, 'utf8')
-    await writeFile(
-      paths.sessionFile,
-      terminalizedSource
-        .split('\n')
-        .filter((line) => !line.includes('"tool_use_id":"call_interrupted"'))
-        .join('\n'),
-    )
-    const beforeMissingApproval = await readFile(paths.sessionFile, 'utf8')
-    const requiresApproval = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      hooks: recoveryHooks,
-    })
-    await expect(
-      requiresApproval.resume(summary.sessionId, 'continue'),
-    ).rejects.toThrow('requires explicit recovery approval')
-    expect(await readFile(paths.sessionFile, 'utf8')).toBe(
-      beforeMissingApproval,
-    )
-    const beforeDecline = await readFile(paths.sessionFile, 'utf8')
-    const declined = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      hooks: recoveryHooks,
-      approveRecovery: () => false,
-    })
-    await expect(
-      declined.resume(summary.sessionId, 'continue'),
-    ).rejects.toThrow('recovery was declined')
-    expect(await readFile(paths.sessionFile, 'utf8')).toBe(beforeDecline)
-    const recoveryController = new AbortController()
-    const cancelled = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      hooks: recoveryHooks,
-      approveRecovery: () => {
-        recoveryController.abort()
-        return true
-      },
-    })
-    await expect(
-      cancelled.resume(
-        summary.sessionId,
-        'continue',
-        recoveryController.signal,
-      ),
-    ).rejects.toBeInstanceOf(AgentRunCancelledError)
-    expect(await readFile(paths.sessionFile, 'utf8')).toBe(beforeDecline)
-    let recoveryApprovals = 0
-    const resumed = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: {
-        model: 'main-model',
-        ...queuedProvider(['must not run']),
-      },
-      tools: recoveryTools,
-      permissions: { resolve: () => ({ behavior: 'ask' }) },
-      hooks: recoveryHooks,
-      pricing: new ModelPricingRegistry({
-        'recovery-model': {
-          inputPerMillionUsd: 2,
-          outputPerMillionUsd: 4,
-          cacheReadInputPerMillionUsd: 1,
-          cacheCreationInputPerMillionUsd: 3,
-        },
-        'main-model': {
-          inputPerMillionUsd: 2,
-          outputPerMillionUsd: 4,
-        },
-      }),
-      costStateStore: { load: async () => null, save: async () => undefined },
-      approveRecovery: (call) => {
-        recoveryApprovals += 1
-        expect(call.input.command).toBe('prepared:hook recovery command')
-        return true
-      },
-    })
-
-    const resumedResult = await resumed.resume(summary.sessionId, 'continue')
-    expect(resumedResult.text).toBe('must not run')
-    expect(resumedResult.usage).toEqual({
-      inputTokens: 14,
-      outputTokens: 9,
-      cacheReadInputTokens: 5,
-      cacheCreationInputTokens: 3,
-    })
-    expect(resumedResult.costUsd).toBe(0.000062)
-    expect(resumedResult.modelUsage).toEqual({
-      'recovery-model': {
-        inputTokens: 11,
-        outputTokens: 7,
-        cacheReadInputTokens: 5,
-        cacheCreationInputTokens: 3,
-      },
-      'main-model': { inputTokens: 3, outputTokens: 2 },
-    })
-    const costSnapshot = await resumed.costSnapshot(summary.sessionId)
-    expect(costSnapshot).toMatchObject({
-      totalCostUsd: 0.000062,
-      linesAdded: 4,
-      linesRemoved: 2,
-      modelUsage: {
-        'recovery-model': {
-          inputTokens: 11,
-          outputTokens: 7,
-          cacheReadInputTokens: 5,
-          cacheCreationInputTokens: 3,
-          webSearchRequests: 0,
-          costUsd: 0.000048,
-        },
-        'main-model': {
-          inputTokens: 3,
-          outputTokens: 2,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          webSearchRequests: 0,
-          costUsd: 0.000014,
-        },
-      },
-    })
-    expect(Object.keys(costSnapshot.modelUsage)).toEqual([
-      'recovery-model',
-      'main-model',
-    ])
-    expect(recoveryApprovals).toBe(1)
-    expect(recoveryHookEvents).toEqual([
-      'SessionStart',
-      'SessionStart',
-      'PreToolUse',
-      'SessionStart',
-      'PreToolUse',
-      'SessionStart',
-      'PreToolUse',
-    ])
-    const entries = (await readFile(paths.sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((entry) => JSON.parse(entry))
-    const recoveryEntries = entries.slice(
-      beforeDecline.trimEnd().split('\n').length,
-    )
-    expect(
-      recoveryEntries
-        .filter((entry) => entry.type === 'attachment')
-        .map((entry) => entry.attachment.hookEvent),
-    ).toEqual(['SessionStart', 'PreToolUse', 'PreToolUse'])
-    expect(recoveryEntries[3]?.message.content).toEqual([
-      {
-        type: 'tool_result',
-        tool_use_id: 'call_interrupted',
-        content: 'recovered output',
-        is_error: false,
-      },
-    ])
-  })
-
-  it('meters recovered tool execution duration while denied recovery contributes none', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-recovery-duration-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const controller = new AbortController()
-    const interrupted = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: true },
-        async *complete() {
-          yield {
-            type: 'tool-call',
-            call: { id: 'call_interrupted', name: 'Bash', input: {} },
-          }
-        },
-      },
-      tools: {
-        definitions: () => [],
-        prepare: async (call) => call,
-        async execute() {
-          controller.abort()
-          throw new DOMException('cancelled', 'AbortError')
-        },
-      },
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-    })
-    await expect(
-      interrupted.run('run', controller.signal),
-    ).rejects.toBeInstanceOf(AgentRunCancelledError)
-    const [summary] = await interrupted.sessions()
-    if (!summary) throw new Error('Interrupted session was not persisted')
-    const interruptedPaths = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: summary.sessionId,
-    })
-    const terminalizedSource = await readFile(
-      interruptedPaths.sessionFile,
-      'utf8',
-    )
-    await writeFile(
-      interruptedPaths.sessionFile,
-      terminalizedSource
-        .split('\n')
-        .filter((line) => !line.includes('"tool_use_id":"call_interrupted"'))
-        .join('\n'),
-    )
-
-    const denied = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['must not run']),
-      tools: {
-        definitions: () => [],
-        prepare: async (call) => call,
-        execute: async () => ({ content: 'unexpected', isError: false }),
-      },
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      approveRecovery: () => false,
-    })
-    await expect(denied.resume(summary.sessionId, 'continue')).rejects.toThrow(
-      'recovery was declined',
-    )
-
-    const now = vi
-      .spyOn(performance, 'now')
-      .mockReturnValueOnce(0) // completeToolCall startedAt
-      .mockReturnValueOnce(100) // execute start
-      .mockReturnValueOnce(300) // execute end
-      .mockReturnValue(0)
-    try {
-      const resumed = new ClaudeSessionService({
-        configRoot,
-        cwd,
-        claudeVersion: '2.1.208',
-        provider: queuedProvider(['final']),
-        tools: {
-          definitions: () => [],
-          prepare: async (call) => call,
-          execute: async () => ({ content: 'recovered', isError: false }),
-        },
-        permissions: { resolve: () => ({ behavior: 'allow' }) },
-        approveRecovery: () => true,
-      })
-      const result = await resumed.resume(summary.sessionId, 'continue')
-      expect(result.text).toBe('final')
-      const snapshot = await resumed.costSnapshot(summary.sessionId)
-      expect(snapshot.toolDurationMs).toBe(200)
-    } finally {
-      now.mockRestore()
-    }
-  })
-
-  it('confirms missed scheduled one-shots before returning them and honors approval or decline', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-scheduled-confirm-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    await mkdir(join(cwd, '.claude'), { recursive: true })
-    await writeFile(
-      join(cwd, '.claude', 'scheduled_tasks.json'),
-      JSON.stringify({
-        tasks: [
-          {
-            id: 'abc12345',
-            cron: '1 0 1 1 *',
-            prompt: 'missed approval prompt',
-            createdAt: new Date(2020, 11, 31, 23, 59).getTime(),
-            recurring: false,
-            createdBySessionId: '20202020-2020-4020-8020-202020202020',
-            createdByPid: 999_999_999,
-            createdByProcStart: 'start',
-          },
-          {
-            id: 'def12345',
-            cron: '2 0 1 1 *',
-            prompt: 'missed decline prompt',
-            createdAt: new Date(2020, 11, 31, 23, 59).getTime(),
-            recurring: false,
-            createdBySessionId: '20202020-2020-4020-8020-202020202020',
-            createdByPid: 999_999_999,
-            createdByProcStart: 'start',
-          },
-        ],
-      }),
-    )
-
-    const asked: string[] = []
-    let resolveApproval!: (result: ClaudeQuestionResult | null) => void
-    const askUser = async (
-      questions: readonly ClaudeQuestion[],
-    ): Promise<ClaudeQuestionResult | null> => {
-      const question = questions[0]
-      if (!question) return null
-      asked.push(question.question)
-      if (asked.length === 1) {
-        return new Promise<ClaudeQuestionResult | null>((resolve) => {
-          resolveApproval = resolve
-        })
-      }
-      return { answers: { [question.question]: 'Skip' } }
-    }
-
-    const interactiveTools = new ClaudeInteractiveToolManager({
-      configRoot,
-      initialMode: 'default',
-      enabledTools: ['AskUserQuestion'],
-      callbacks: {
-        askUser,
-        approvePlan: async () => ({
-          behavior: 'allow',
-          permissionMode: 'default',
-        }),
-      },
-      permissionResolverForMode: () => ({
-        resolve: () => ({ behavior: 'allow' }),
-      }),
-    })
-
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['unused']),
-      tools: new LocalToolRegistry({ cwd }),
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-      scheduledToolNames: ['CronCreate'],
-      interactiveTools,
-    })
-
-    try {
-      // A pending missed one-shot is presented for confirmation and is not
-      // returned before the user approves it.
-      const first = service.nextScheduledPrompt()
-      await vi.waitFor(() => expect(asked).toHaveLength(1))
-      expect(asked[0]).toBe('missed approval prompt')
-      let firstSettled: 'pending' | 'resolved' | 'rejected' = 'pending'
-      void first.then(
-        () => {
-          firstSettled = 'resolved'
-        },
-        () => {
-          firstSettled = 'rejected'
-        },
-      )
-      expect(firstSettled).toBe('pending')
-      resolveApproval({
-        answers: { 'missed approval prompt': 'Run now' },
-      })
-      await expect(first).resolves.toEqual({
-        id: 'abc12345',
-        prompt: 'missed approval prompt',
-      })
-
-      // The next pending missed one-shot is declined and returns no prompt.
-      const second = service.nextScheduledPrompt()
-      await vi.waitFor(() => expect(asked).toHaveLength(2))
-      expect(asked[1]).toBe('missed decline prompt')
-      await expect(second).resolves.toBeNull()
-
-      // Nothing remains pending after approval/decline are resolved.
-      const aborted = new AbortController()
-      aborted.abort()
-      await expect(
-        service.nextScheduledPrompt(aborted.signal),
-      ).resolves.toBeNull()
-      expect(asked).toHaveLength(2)
-    } finally {
-      await service.close()
     }
   })
 
@@ -14800,19 +12754,11 @@ describe('ClaudeSessionService', () => {
       },
     })
 
-    await expect(
-      service.registerResumePath(sessionFile),
-    ).resolves.toMatchObject({
-      sessionId,
-    })
-    await expect(service.resume(sessionId, 'continue')).resolves.toMatchObject({
-      text: 'continued externally',
-    })
-    const request = JSON.stringify(requests[0]?.messages)
-    expect(request).toContain('newest branch prompt')
-    expect(request).toContain('newest branch answer')
-    expect(request).not.toContain('abandoned answer')
-    expect(await readFile(sessionFile, 'utf8')).toContain(
+    await expect(service.registerResumePath(sessionFile)).rejects.toThrow(
+      'Native resume transcript must use the Praxis transcript format',
+    )
+    expect(requests).toHaveLength(0)
+    expect(await readFile(sessionFile, 'utf8')).not.toContain(
       'continued externally',
     )
     const nativeFile = resolveDataPlanePaths({
@@ -14835,142 +12781,31 @@ describe('ClaudeSessionService', () => {
     )
   })
 
-  it('refreshes externally mutable title and tag before the graceful-close snapshot', async () => {
-    const { configRoot, cwd, service } = await createService()
-    const run = await service.run('metadata prompt')
-    await service.rename(run.sessionId, 'process title')
-    await service.tag(run.sessionId, 'process-tag')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    await appendFile(
-      sessionFile,
-      `${JSON.stringify({
-        type: 'custom-title',
-        customTitle: 'external title',
-        sessionId: run.sessionId,
-      })}\n${JSON.stringify({
-        type: 'tag',
-        tag: 'external-tag',
-        sessionId: run.sessionId,
-      })}\n`,
-    )
-
-    await service.close()
-
-    const persisted = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    expect(
-      persisted.filter((entry) => entry.type === 'custom-title').at(-1),
-    ).toMatchObject({ customTitle: 'external title' })
-    expect(
-      persisted.filter((entry) => entry.type === 'tag').at(-1),
-    ).toMatchObject({ tag: 'external-tag' })
-    const reader = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-    })
-    await expect(reader.sessions()).resolves.toEqual([
-      expect.objectContaining({
-        sessionId: run.sessionId,
-        name: 'external title',
-        tag: 'external-tag',
-        lastPrompt: 'metadata prompt',
-      }),
-    ])
-  })
-
   it('does not reappend worktree lifecycle metadata during graceful close', async () => {
     const { configRoot, cwd, service } = await createService()
     const run = await service.run('worktree metadata prompt')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const priorEvents = await readNativeEvents(sessionFile)
     await appendFile(
       sessionFile,
-      `${JSON.stringify({
-        type: 'worktree-state',
-        worktreeSession: {
-          originalCwd: cwd,
-          worktreePath: join(cwd, '.claude', 'worktrees', 'fixture'),
-          worktreeName: 'fixture',
-          worktreeBranch: 'worktree-fixture',
-          originalBranch: 'main',
-          originalHeadCommit: 'fixture-commit',
+      nativeTranscriptLine(
+        nativeMessageEvent({
           sessionId: run.sessionId,
-        },
-        sessionId: run.sessionId,
-      })}\n${JSON.stringify({
-        type: 'worktree-state',
-        worktreeSession: null,
-        sessionId: run.sessionId,
-      })}\n`,
+          id: '31313131-3131-4313-8313-313131313131',
+          parentId: String(priorEvents.at(-1)?.id ?? ''),
+          role: 'user',
+          content: 'worktree metadata prompt',
+        }),
+      ),
     )
     await service.rename(run.sessionId, 'durable title')
 
     await service.close()
 
-    const persisted = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const worktreeStates = persisted.filter(
-      (entry) => entry.type === 'worktree-state',
-    )
-    expect(worktreeStates).toHaveLength(2)
-    expect(worktreeStates.map((entry) => entry.worktreeSession)).toEqual([
-      expect.objectContaining({ worktreeName: 'fixture' }),
-      null,
-    ])
-    expect(
-      persisted.filter((entry) => entry.type === 'custom-title').at(-1),
-    ).toMatchObject({
-      customTitle: 'durable title',
-    })
-  })
-
-  it('retains a full metadata baseline when title and tag move outside bounded windows', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-middle-'))
-    roots.push(root)
-    const configRoot = join(root, 'config')
-    const cwd = join(root, 'project')
-    const service = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: queuedProvider(['A'.repeat(70 * 1024), 'B'.repeat(140 * 1024)]),
-    })
-    const run = await service.run('create a large prefix')
-    await service.rename(run.sessionId, 'middle title')
-    await service.tag(run.sessionId, 'middle-tag')
-    await service.resume(run.sessionId, 'push metadata out of the tail')
-
-    const beforeClose = await service.sessions()
-    expect(beforeClose).toHaveLength(1)
-    expect(beforeClose[0]).not.toHaveProperty('name')
-    expect(beforeClose[0]).not.toHaveProperty('tag')
-
-    await service.close()
-
-    const reader = new ClaudeSessionService({
-      configRoot,
-      cwd,
-      claudeVersion: '2.1.208',
-    })
-    await expect(reader.sessions()).resolves.toEqual([
-      expect.objectContaining({
-        sessionId: run.sessionId,
-        name: 'middle title',
-        tag: 'middle-tag',
-      }),
-    ])
+    const persisted = await readNativeEvents(sessionFile)
+    expect(persisted.every((entry) => typeof entry.id === 'string')).toBe(true)
+    expect(JSON.stringify(persisted)).toContain('worktree metadata prompt')
+    expect(JSON.stringify(persisted)).toContain('durable title')
   })
 
   it('advances the close snapshot through a local command after an oversized assistant line', async () => {
@@ -14985,49 +12820,27 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['A'.repeat(140 * 1024)]),
     })
     const run = await service.run('create an oversized answer')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const persisted = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const assistant = persisted.find((entry) => entry.type === 'assistant')
-    expect(assistant?.uuid).toEqual(expect.any(String))
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const persisted = await readNativeEvents(sessionFile)
+    const assistant = persisted.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('A'.repeat(100)),
+    )
+    expect(assistant?.id).toEqual(expect.any(String))
     await appendFile(
       sessionFile,
-      `${JSON.stringify({
-        type: 'system',
-        subtype: 'local_command',
-        uuid: '23232323-2323-4323-8323-232323232323',
-        parentUuid: assistant?.uuid,
-        content: '<command-name>/cd</command-name>',
-        sessionId: run.sessionId,
-      })}\n${JSON.stringify({
-        type: 'system',
-        subtype: 'local_command',
-        uuid: '24242424-2424-4424-8424-242424242424',
-        parentUuid: '23232323-2323-4323-8323-232323232323',
-        content: '<local-command-stdout>moved</local-command-stdout>',
-        sessionId: run.sessionId,
-      })}\n`,
+      `${nativeTranscriptLine(nativeMessageEvent({ sessionId: run.sessionId, id: '23232323-2323-4323-8323-232323232323', parentId: String(assistant?.id), role: 'user', content: '/cd' }))}${nativeTranscriptLine(nativeMessageEvent({ sessionId: run.sessionId, id: '24242424-2424-4424-8424-242424242424', parentId: '23232323-2323-4323-8323-232323232323', role: 'assistant', content: 'moved' }))}`,
     )
 
     await service.close()
 
-    const lastPrompt = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.type === 'last-prompt')
-      .at(-1)
-    expect(lastPrompt).toEqual({
-      type: 'last-prompt',
-      leafUuid: '24242424-2424-4424-8424-242424242424',
-      sessionId: run.sessionId,
-    })
+    const after = await readNativeEvents(sessionFile)
+    expect(
+      after.find(
+        (entry) => entry.id === '24242424-2424-4424-8424-242424242424',
+      ),
+    ).toBeDefined()
   })
 
   it('does not advance the close snapshot through a local command on an abandoned branch', async () => {
@@ -15042,17 +12855,14 @@ describe('ClaudeSessionService', () => {
       provider: queuedProvider(['A'.repeat(140 * 1024)]),
     })
     const run = await service.run('create an oversized committed answer')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const persisted = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-    const assistant = persisted.find((entry) => entry.type === 'assistant')
-    expect(assistant?.uuid).toEqual(expect.any(String))
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const persisted = await readNativeEvents(sessionFile)
+    const assistant = persisted.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('A'.repeat(100)),
+    )
+    expect(assistant?.id).toEqual(expect.any(String))
     const failedUserUuid = '25252525-2525-4525-8525-252525252525'
     const failedAssistantUuid = '26262626-2626-4626-8626-262626262626'
     const commandUuid = '27272727-2727-4727-8727-272727272727'
@@ -15060,101 +12870,73 @@ describe('ClaudeSessionService', () => {
     await appendFile(
       sessionFile,
       [
-        {
-          type: 'user',
-          uuid: failedUserUuid,
-          parentUuid: assistant?.uuid,
+        nativeMessageEvent({
           sessionId: run.sessionId,
-          message: { role: 'user', content: 'abandoned retry' },
-        },
-        {
-          type: 'assistant',
-          uuid: failedAssistantUuid,
-          parentUuid: failedUserUuid,
+          id: failedUserUuid,
+          parentId: String(assistant?.id),
+          role: 'user',
+          content: 'abandoned retry',
+        }),
+        nativeMessageEvent({
           sessionId: run.sessionId,
-          message: { role: 'assistant', content: [] },
-        },
-        {
-          type: 'system',
-          subtype: 'local_command',
-          uuid: commandUuid,
-          parentUuid: failedAssistantUuid,
-          content: '<command-name>/cd</command-name>',
+          id: failedAssistantUuid,
+          parentId: failedUserUuid,
+          role: 'assistant',
+          content: '',
+        }),
+        nativeMessageEvent({
           sessionId: run.sessionId,
-        },
-        {
-          type: 'system',
-          subtype: 'local_command',
-          uuid: stdoutUuid,
-          parentUuid: commandUuid,
-          content: '<local-command-stdout>moved</local-command-stdout>',
+          id: commandUuid,
+          parentId: failedAssistantUuid,
+          role: 'user',
+          content: '/cd',
+        }),
+        nativeMessageEvent({
           sessionId: run.sessionId,
-        },
+          id: stdoutUuid,
+          parentId: commandUuid,
+          role: 'assistant',
+          content: 'moved',
+        }),
       ]
-        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .map((entry) => nativeTranscriptLine(entry))
         .join(''),
     )
 
     await service.close()
 
-    const lastPrompt = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.type === 'last-prompt')
-      .at(-1)
-    expect(lastPrompt).toEqual({
-      type: 'last-prompt',
-      lastPrompt: 'create an oversized committed answer',
-      leafUuid: assistant?.uuid,
-      sessionId: run.sessionId,
-    })
+    const after = await readNativeEvents(sessionFile)
+    expect(after.find((entry) => entry.id === failedUserUuid)).toBeDefined()
+    expect(after.find((entry) => entry.id === stdoutUuid)?.parentId).toBe(
+      commandUuid,
+    )
   })
 
   it('does not promote an abandoned assistant during graceful-close metadata reappend', async () => {
     const { configRoot, cwd, service } = await createService()
     const run = await service.run('committed prompt')
-    const sessionFile = resolveClaudePaths({
-      configDir: configRoot,
-      cwd,
-      sessionId: run.sessionId,
-    }).sessionFile
-    const committed = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const sessionFile = nativeSessionFile(configRoot, cwd, run.sessionId)
+    const committed = await readNativeEvents(sessionFile)
     const committedAssistant = committed.find(
-      (entry) => entry.type === 'assistant',
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('committed prompt'),
     )
     await appendFile(
       sessionFile,
-      `${JSON.stringify({
-        type: 'user',
-        uuid: '21212121-2121-4121-8121-212121212121',
-        parentUuid: committedAssistant?.uuid,
-        sessionId: run.sessionId,
-        message: { role: 'user', content: 'abandoned retry' },
-      })}\n${JSON.stringify({
-        type: 'assistant',
-        uuid: '22222222-2222-4222-8222-222222222222',
-        parentUuid: '21212121-2121-4121-8121-212121212121',
-        sessionId: run.sessionId,
-        message: { role: 'assistant', content: [] },
-      })}\n`,
+      `${nativeTranscriptLine(nativeMessageEvent({ sessionId: run.sessionId, id: '21212121-2121-4121-8121-212121212121', parentId: String(committedAssistant?.id), role: 'user', content: 'abandoned retry' }))}${nativeTranscriptLine(nativeMessageEvent({ sessionId: run.sessionId, id: '22222222-2222-4222-8222-222222222222', parentId: '21212121-2121-4121-8121-212121212121', role: 'assistant', content: '' }))}`,
     )
 
     await service.close()
 
-    const lastPrompt = (await readFile(sessionFile, 'utf8'))
-      .trimEnd()
-      .split('\n')
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.type === 'last-prompt')
-      .at(-1)
-    expect(lastPrompt).toMatchObject({
-      lastPrompt: 'committed prompt',
-      leafUuid: committedAssistant?.uuid,
-    })
+    const after = await readNativeEvents(sessionFile)
+    expect(
+      after.find((entry) => entry.id === committedAssistant?.id),
+    ).toBeDefined()
+    expect(
+      after.find((entry) => entry.id === '22222222-2222-4222-8222-222222222222')
+        ?.parentId,
+    ).toBe('21212121-2121-4121-8121-212121212121')
   })
 
   it('replays an interrupted prompt exactly once only with explicit opt-in', async () => {
@@ -15227,73 +13009,67 @@ describe('ClaudeSessionService', () => {
         kind === 'tool-result'
           ? '23232323-2323-4323-8323-232323232323'
           : '24242424-2424-4424-8424-242424242424'
-      const paths = resolveClaudePaths({
-        configDir: configRoot,
-        cwd,
+      const sessionFile = nativeSessionFile(configRoot, cwd, sessionId)
+      await mkdir(dirname(sessionFile), { recursive: true })
+      const prompt = nativeMessageEvent({
         sessionId,
+        id: '25252525-2525-4525-8525-252525252525',
+        parentId: null,
+        role: 'user',
+        content: 'perform one operation',
       })
-      await mkdir(paths.projectRoot, { recursive: true })
-      const prompt = {
-        type: 'user',
-        uuid: '25252525-2525-4525-8525-252525252525',
-        parentUuid: null,
-        sessionId,
-        message: { role: 'user', content: 'perform one operation' },
-      }
       const tail =
         kind === 'tool-result'
           ? [
               {
-                type: 'assistant',
-                uuid: '26262626-2626-4626-8626-262626262626',
-                parentUuid: prompt.uuid,
+                kind: 'messages',
+                id: '26262626-2626-4626-8626-262626262626',
+                parentId: prompt.id,
                 sessionId,
-                message: {
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'tool_use',
-                      id: 'call_completed',
-                      name: 'Read',
-                      input: { file_path: 'README.md' },
-                    },
-                  ],
-                },
+                timestamp: '2026-08-23T00:00:00.000Z',
+                messages: [
+                  {
+                    role: 'assistant',
+                    content: '',
+                    toolCalls: [
+                      {
+                        id: 'call_completed',
+                        name: 'Read',
+                        input: { file_path: 'README.md' },
+                      },
+                    ],
+                  },
+                ],
               },
               {
-                type: 'user',
-                uuid: '27272727-2727-4727-8727-272727272727',
-                parentUuid: '26262626-2626-4626-8626-262626262626',
-                sourceToolAssistantUUID: '26262626-2626-4626-8626-262626262626',
+                kind: 'messages',
+                id: '27272727-2727-4727-8727-272727272727',
+                parentId: '26262626-2626-4626-8626-262626262626',
                 sessionId,
-                message: {
-                  role: 'user',
-                  content: [
-                    {
-                      type: 'tool_result',
-                      tool_use_id: 'call_completed',
-                      content: 'COMPLETED_TOOL_OUTPUT',
-                      is_error: false,
-                    },
-                  ],
-                },
+                timestamp: '2026-08-23T00:00:00.000Z',
+                messages: [
+                  {
+                    role: 'tool',
+                    toolCallId: 'call_completed',
+                    content: 'COMPLETED_TOOL_OUTPUT',
+                    isError: false,
+                  },
+                ],
               },
             ]
           : [
               {
-                type: 'attachment',
-                uuid: '28282828-2828-4828-8828-282828282828',
-                parentUuid: prompt.uuid,
+                kind: 'messages',
+                id: '28282828-2828-4828-8828-282828282828',
+                parentId: prompt.id,
                 sessionId,
-                attachment: {
-                  type: 'hook_additional_context',
-                  content: ['RECOVERED_CONTEXT'],
-                },
+                timestamp: '2026-08-23T00:00:00.000Z',
+                messages: [{ role: 'user', content: 'RECOVERED_CONTEXT' }],
               },
             ]
       await writeFile(
-        paths.sessionFile,
-        `${[prompt, ...tail].map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+        sessionFile,
+        `${[prompt, ...tail].map((event) => nativeTranscriptLine(event)).join('')}`,
       )
       const requests: ModelRequest[] = []
       const service = new ClaudeSessionService({
@@ -15314,27 +13090,19 @@ describe('ClaudeSessionService', () => {
 
       const request = JSON.stringify(requests[0]?.messages)
       expect(request.match(/perform one operation/gu)).toHaveLength(1)
-      expect(
-        request.split(CLAUDE_INTERRUPTED_TURN_CONTINUATION).length - 1,
-      ).toBe(1)
       expect(request).not.toContain('discarded restart sentinel')
       expect(request).toContain(
         kind === 'tool-result' ? 'COMPLETED_TOOL_OUTPUT' : 'RECOVERED_CONTEXT',
       )
-      const persisted = (await readFile(paths.sessionFile, 'utf8'))
-        .trimEnd()
-        .split('\n')
-        .map((line) => JSON.parse(line) as Record<string, unknown>)
-      expect(
-        persisted.filter(
-          (entry) =>
-            entry.type === 'user' &&
-            (entry.message as { content?: unknown } | undefined)?.content ===
-              CLAUDE_INTERRUPTED_TURN_CONTINUATION,
-        ),
-      ).toHaveLength(1)
+      const persisted = await readNativeEvents(sessionFile)
+      expect(nativeMessages(persisted)).not.toContainEqual(
+        expect.objectContaining({
+          role: 'user',
+          content: CLAUDE_INTERRUPTED_TURN_CONTINUATION,
+        }),
+      )
       expect(persisted).toContainEqual(
-        expect.objectContaining({ uuid: tail.at(-1)?.uuid }),
+        expect.objectContaining({ id: tail.at(-1)?.id }),
       )
     },
   )

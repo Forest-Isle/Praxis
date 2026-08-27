@@ -21,7 +21,6 @@ export interface DoctorInstallationDiagnostic {
   readonly packageManager: string | null
   readonly installationPath: string
   readonly invokedBinary: string
-  readonly configInstallMethod: string
   readonly search: DoctorSearchStatus
   readonly recommendation: string | null
   readonly multipleInstallations: readonly string[]
@@ -277,17 +276,12 @@ export async function collectDoctorLocalDiagnostics(
       ? 'Remove stale duplicate Praxis installations and keep only the executable reported by this doctor report'
       : null
 
-  const claudeConfigDir = options.environment.CLAUDE_CONFIG_DIR
   const diagnostic: DoctorInstallationDiagnostic = {
     installationType,
     version: options.version,
     packageManager: installationType === 'npm' ? 'npm' : null,
     installationPath,
     invokedBinary,
-    configInstallMethod:
-      typeof claudeConfigDir === 'string' && claudeConfigDir.trim().length > 0
-        ? 'CLAUDE_CONFIG_DIR'
-        : 'default (~/.claude)',
     search,
     recommendation,
     multipleInstallations,

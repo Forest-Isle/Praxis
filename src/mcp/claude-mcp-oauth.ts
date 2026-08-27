@@ -174,7 +174,7 @@ export function mcpOAuthRecordKey(server: McpOAuthServerIdentity): string {
 
 export function mcpOAuthCredentialService(configRoot: string): string {
   const canonical = resolve(configRoot)
-  const defaultRoot = resolve(join(homedir(), '.claude'))
+  const defaultRoot = resolve(join(homedir(), '.praxis'))
   if (canonical === defaultRoot) return CREDENTIAL_SERVICE
   const digest = createHash('sha256')
     // codeql[js/insufficient-password-hash] keychain service name from config path, not secret hashing

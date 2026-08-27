@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
-import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import type { RuntimeEventSink } from '../core/runtime.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
@@ -90,20 +90,16 @@ export interface BackgroundBashToolResult {
   }
 }
 
-export function claudeBackgroundTaskParent(cwd: string): string {
+export function nativeBackgroundTaskParent(cwd: string): string {
   const uid = process.getuid?.() ?? 'unknown'
-  return resolve(
-    '/tmp',
-    `claude-${uid}`,
-    sanitizeClaudeProjectPath(resolve(cwd)),
-  )
+  return resolve('/tmp', `praxis-${uid}`, sanitizeProjectPath(resolve(cwd)))
 }
 
-export function claudeBackgroundTaskRoot(
+export function nativeBackgroundTaskRoot(
   cwd: string,
   sessionId: string,
 ): string {
-  return resolve(claudeBackgroundTaskParent(cwd), sessionId, 'tasks')
+  return resolve(nativeBackgroundTaskParent(cwd), sessionId, 'tasks')
 }
 
 function parsePersistedTask(
@@ -164,7 +160,7 @@ export class BackgroundBashManager {
       cwd: options.cwd,
       maxOutputBytes: options.maxOutputBytes ?? 128 * 1024,
     })
-    this.outputRoot = claudeBackgroundTaskRoot(options.cwd, options.sessionId)
+    this.outputRoot = nativeBackgroundTaskRoot(options.cwd, options.sessionId)
     this.sessionStateRoot = resolve(options.stateRoot, options.sessionId)
   }
 

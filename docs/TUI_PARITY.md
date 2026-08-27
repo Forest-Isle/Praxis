@@ -4,7 +4,7 @@
 
 Reproduce Claude Code 2.1.208's observable single-user terminal presentation
 and interaction in Praxis without copying Claude Code source. Keep
-Praxis branding, provider neutrality, shared transcript compatibility, and
+Praxis branding, provider neutrality, native transcript stability, and
 screen-reader output. Visual resemblance alone is not sufficient evidence for
 interactive parity.
 
@@ -48,7 +48,7 @@ Together they establish these stable rules:
 - `Ctrl+G` suspends Ink, opens `$VISUAL`, `$EDITOR`, or `vi` with the exact
   composer bytes, then restores and redraws the terminal;
 - `/keybindings` creates the observed 2.1.208 template when absent and opens the
-  shared Claude config-root file in the same external-editor lifecycle;
+  shared Praxis config-root file in the same external-editor lifecycle;
 - `Ctrl+V` briefly shows `Pasting…`, inserts clipboard text at the real cursor,
   and represents clipboard images as monotonic `[Image #N]` composer markers;
 - `Ctrl+Z` releases the terminal, prints the branded suspend/`fg` notice, and
@@ -204,23 +204,23 @@ also carries live lifecycle/input state.
   timers, answer parsing, raw keyboard state, and approval/answer effects.
 - `ToolPermissionDialog`: source-dispatched Bash/PowerShell, edit/write,
   notebook, filesystem, WebFetch, Skill, and fallback views; inline diffs,
-  permission explanations, editable reusable command/Skill rules, `.claude`
+  permission explanations, editable reusable command/Skill rules, native
   session grants, compound-shell multi-rule choices, external-directory
   read/edit grants, accept/reject feedback, and screen-reader selection text.
 - `/tui` switches between the default and fullscreen renderers, persists the
-  Claude-compatible `tui` runtime setting, and resumes the active session after
+  native `tui` runtime setting, and resumes the active session after
   the renderer restart.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
-  estimates for skills discovered through the shared Claude data plane.
+  estimates for skills discovered through the shared Praxis data plane.
 - `ConfigDashboard`: the shared Status, Config, and Usage pane opened at the
   command-specific default tab by `/status`, `/config`, or `/usage`. Subscription
   account rows and the enterprise-only Gates tab stay outside the product boundary.
 - `MemoryDashboard`: shared user/project instruction files, `@`-imported rows,
   `autoMemoryEnabled` state, and the canonical project auto-memory folder. The
-  shared compatibility resolver owns recursive imports for both this view and
+  shared native resolver owns recursive imports for both this view and
   provider context. File edits use the suspended editor lifecycle; the next
   turn reloads instructions without adding shared transcript fields.
-- `ListDashboard`: shared presentation for `.claude` skills and local
+- `ListDashboard`: shared presentation for native skills and local
   background task/workflow state.
 - `HookDashboard`: read-only 2.1.208 event catalog with bounded event, matcher,
   and individual-hook views projected from fresh shared settings.
@@ -322,7 +322,7 @@ also carries live lifecycle/input state.
   changed final pre-rename fingerprint triggers a bounded reread/merge/retry;
   atomic rename prevents partial files but is not an OS-level compare-and-swap,
   so a non-cooperating writer can still win the syscall window after that check.
-  Custom profiles use Claude's `.claude/themes/<slug>.json` shape, persist
+  Custom profiles use the native `~/.praxis/themes/<slug>.json` shape, persist
   `theme: "custom:<slug>"`, and support creation, token editing/reset, and
   deletion from the picker. Built-in profiles remain protected; custom sidecars
   are validated, leased, and atomically updated.
@@ -338,8 +338,8 @@ also carries live lifecycle/input state.
   and Workspace tabs. Recently denied is a process-local list of actual
   `automode-blocked` actions (newest first, duplicates retained); it opens
   first when non-empty and supports the native approve/retry footer. Rule
-  search is local; adding a rule chooses `.claude/settings.local.json`,
-  checked-in `.claude/settings.json`, or user `settings.json`. Selecting an
+  search is local; adding a rule chooses project `.praxis/settings.local.json`,
+  checked-in `.praxis/settings.json`, or user `settings.json`. Selecting an
   existing rule opens the observed allowed/ask/denied deletion confirmation.
   Both mutations preserve unrelated settings, use atomic compare-before-commit
   writes, retain Claude's empty arrays, and retire the active service so the
@@ -382,8 +382,6 @@ also carries live lifecycle/input state.
   without trimming any leading/trailing whitespace and participate in existing
   `Ctrl+Shift+_` undo; non-zero exits preserve the original composer and show
   the editor's executable name and exit code. Prompt files are always removed.
-- `/keybindings` resolves `keybindings.json` under `CLAUDE_CONFIG_DIR` (or
-  `~/.claude`), creates the byte-for-byte observed Claude Code 2.1.208 template
   with private permissions only when absent, and opens that authoritative file
   directly without a temporary copy. Existing content is never overwritten.
   Closing the editor reloads the shared file; partial context overrides merge

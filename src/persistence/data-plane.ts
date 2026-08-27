@@ -1,7 +1,5 @@
-import { claudeDataPlaneAdapter } from '../compatibility/claude/data-plane-adapter.js'
 import type {
   DataPlane,
-  DataPlaneAdapter,
   DataPlanePaths,
   DataPlaneRootOptions,
 } from './data-plane-adapter.js'
@@ -9,16 +7,18 @@ import { nativeDataPlaneAdapter } from './native-data-plane-adapter.js'
 
 export type { DataPlane, DataPlanePaths } from './data-plane-adapter.js'
 
+export function assertNativeDataPlane(
+  value: unknown,
+): asserts value is DataPlane {
+  if (value !== 'native') {
+    throw new Error('Praxis supports only the native data plane')
+  }
+}
+
 export interface ResolveDataPlaneOptions extends DataPlaneRootOptions {
   dataPlane?: DataPlane
   cwd: string
   sessionId: string
-}
-
-function adapterFor(dataPlane: DataPlane): DataPlaneAdapter {
-  return dataPlane === 'native'
-    ? nativeDataPlaneAdapter
-    : claudeDataPlaneAdapter
 }
 
 export function resolveDataPlane(
@@ -26,24 +26,27 @@ export function resolveDataPlane(
 ): DataPlane {
   const value = environment.PRAXIS_DATA_PLANE?.trim()
   if (value === undefined || value === '') return 'native'
-  if (value === 'native' || value === 'claude') return value
-  throw new Error('PRAXIS_DATA_PLANE must be "native" or "claude"')
+  if (value === 'native') return value
+  throw new Error('PRAXIS_DATA_PLANE must be "native"')
 }
 
 export function resolveDataPlaneRoot(
-  options: DataPlaneRootOptions & { dataPlane?: DataPlane } = {},
+  options: DataPlaneRootOptions = {},
 ): string {
   const environment = options.environment ?? process.env
-  const dataPlane = options.dataPlane ?? resolveDataPlane(environment)
-  return adapterFor(dataPlane).resolveRoot(options)
+  resolveDataPlane(environment)
+  return nativeDataPlaneAdapter.resolveRoot(options)
 }
 
 export function resolveDataPlanePaths(
   options: ResolveDataPlaneOptions,
 ): DataPlanePaths {
   const environment = options.environment ?? process.env
-  const dataPlane = options.dataPlane ?? resolveDataPlane(environment)
-  return adapterFor(dataPlane).resolvePaths(options)
+  resolveDataPlane(environment)
+  if (options.dataPlane !== undefined) {
+    assertNativeDataPlane(options.dataPlane)
+  }
+  return nativeDataPlaneAdapter.resolvePaths(options)
 }
 
 export function resolveScheduledTaskFile(options: {
@@ -51,5 +54,6 @@ export function resolveScheduledTaskFile(options: {
   cwd: string
   root: string
 }): string {
-  return adapterFor(options.dataPlane).resolveScheduledTaskFile(options)
+  assertNativeDataPlane(options.dataPlane)
+  return nativeDataPlaneAdapter.resolveScheduledTaskFile(options)
 }

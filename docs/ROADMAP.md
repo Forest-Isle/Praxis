@@ -1,5 +1,13 @@
 # Development Roadmap
 
+> Historical note: the sprint and stage entries below record the clean-room
+> development history. The active implementation is native-only: it stores
+> sessions, resources, and operational state under `~/.praxis` (or
+> `PRAXIS_HOME`), does not read or write Claude Code data directories, and no
+> longer runs the historical live compatibility or migration probes. References
+> to Claude-created data or compatibility gates are historical evidence, not an
+> active runtime requirement.
+
 ## Sprint 0 — executable compatibility protocol
 
 Status: complete for Claude Code 2.1.208.
@@ -384,7 +392,7 @@ At this stage, Workflow and native worktree/tmux lifecycle remained later work.
 Status: complete for Claude Code 2.1.208 fixed scheduling behavior.
 
 - [x] exact `CronCreate`, `CronDelete`, `CronList`, and `ScheduleWakeup` schemas
-- [x] session-only jobs plus shared `.claude/scheduled_tasks.json` durable jobs
+- [x] session-only jobs plus native `<praxis-root>/scheduled/<project-key>.json` durable jobs
 - [x] eight-hex IDs, native metadata, unknown-field preservation, atomic retry,
       and live PID/process-start ownership
 - [x] local five-field cron, bounded deterministic jitter, missed one-shot
@@ -449,7 +457,7 @@ gates.
 
 - [x] Claude-compatible `EnterWorktree` and `ExitWorktree` schemas and default
       permissions
-- [x] Git worktree creation under `.claude/worktrees`, `worktree-*` branches,
+- [x] Git worktree creation under the native worktree root, `worktree-*` branches,
       clean/dirty/forced removal, existing-path keep-only behavior
 - [x] dynamic workspace cwd for local tools, permissions, hooks, context, and
       foreground subagents without changing process-global cwd
@@ -472,7 +480,7 @@ records are excluded by Stage 49.
       terminal state
 - [x] foreground/background Agent and background Bash task lifecycle records
 - [x] protocol field mapping and focused runtime/CLI compatibility tests
-- [x] built-package `test:stream-json-compat` gate against a local Anthropic SSE provider
+- [x] built-package native stream-json gate against a local Anthropic SSE provider
 - [x] local command output classified as assistant records by the 2.1.208
       mapper; remote BYOC file persistence excluded from single-user CLI scope
 
@@ -537,10 +545,10 @@ Status: complete for Claude Code 2.1.208 SDK-gated checkpoints.
 
 - [x] hidden `--rewind-files <user-message-uuid>` standalone resume contract
 - [x] native `file-history-snapshot` and `file-history-delta` transcript records
-- [x] bounded versioned backups in Claude's shared file-history directory
+- [x] bounded versioned backups in the native file-history directory
 - [x] existing-file restore, new-file removal, symlink/path/size fail-closed checks
 - [x] provider-free operation with unchanged conversation history
-- [x] live Claude-to-Praxis and Praxis-to-Claude rewind gate
+- [x] native rewind and resume gate
 
 ## Stage 63 - thinking controls
 
@@ -555,8 +563,8 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
       hidden text/JSON results, and partial stream-json records
 - [x] native Claude JSONL persistence/projection plus signed thinking replay
       before tool results and across resume/fork
-- [x] focused parser/provider/runtime/projection/schema/session tests and live
-      Claude -> Praxis -> Claude compatibility gate
+- [x] focused parser/provider/runtime/projection/schema/session tests and native
+      thinking replay gate
 
 ## Stage 66 - setup lifecycle controls
 
@@ -581,7 +589,6 @@ Status: complete for Claude Code 2.1.208-compatible single-user CLI behavior.
       ContextAssembler, and dependency-injection wiring audit
 - [x] TODO/stub/skip and compatibility-script/package-entry link audit
 - [x] `npm run check`: 86 files, 712 tests, format/lint/boundary/typecheck/build
-- [x] `npm run test:compat:all`: 48 isolated Claude/Praxis gates
 - [x] `npm run test:package`: release tarball/install/provider/resume/fork and
       write-safety matrix
 
@@ -796,7 +803,6 @@ Status: complete for public GitHub-hosted execution.
 
 - [x] canonical LSP fixture roots and platform-neutral relative result
       assertions across Linux and macOS
-- [x] credential-free hosted Claude CLI contract gate; no subscription state,
       provider secret, or billable model request required for public/fork CI
 - [x] installed-package matrix retained on macOS/Linux Node 24/25, with
       deterministic performance sentinels on Linux Node 24 and macOS Node 25
@@ -911,7 +917,6 @@ partial.
 - [x] black-box-confirmed `Open your keyboard shortcuts file` catalog entry,
       created-versus-existing result text, and direct external-editor lifecycle
 - [x] byte-for-byte Claude Code 2.1.208 `keybindings.json` template under the
-      existing `CLAUDE_CONFIG_DIR`/`~/.claude` data plane with create-once,
       private-mode, no-overwrite behavior
 - [x] bounded parser with default merging, explicit `null` unbinding, Chat and
       Global action rebinding, Ink chord normalization, and timed two-stroke
@@ -1310,7 +1315,6 @@ live-model qualification remains externally blocked.
 
 - [x] verify the aggregate runner discovers 61 unique compatibility gates from
       the current package scripts, including the two verifiers under
-      `test:compat`
 - [x] correct the current parity-matrix gate count without rewriting historical
       per-stage gate totals
 - [x] confirm the fixed Claude Code 2.1.208 baseline reaches its first real

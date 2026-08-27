@@ -108,7 +108,7 @@ describe('SessionWorktreeManager', () => {
       sessionId: '11111111-1111-4111-8111-111111111111',
     })
     const result = await manager.enter({ name: 'feature/probe' }, 'enter')
-    expect(workspace.cwd()).toContain('/.claude/worktrees/feature/probe')
+    expect(workspace.cwd()).toContain('/.praxis/worktrees/feature/probe')
     expect(result.nativeToolUseResult).toMatchObject({
       worktreeBranch: 'worktree-feature-probe',
     })
@@ -120,7 +120,7 @@ describe('SessionWorktreeManager', () => {
       'rev-parse',
       '--git-dir',
     ]).then(({ stdout }) => stdout.trim())
-    expect(await readFile(join(gitDir, 'CLAUDE_BASE'), 'utf8')).toMatch(
+    expect(await readFile(join(gitDir, 'PRAXIS_BASE'), 'utf8')).toMatch(
       /^[0-9a-f]{40}\n$/u,
     )
 
@@ -292,7 +292,7 @@ describe('SessionWorktreeManager', () => {
 
   it('does not remove manually entered worktrees', async () => {
     const root = await repository()
-    const path = join(root, '.claude', 'worktrees', 'manual')
+    const path = join(root, '.praxis', 'worktrees', 'manual')
     await execFileAsync('git', [
       '-C',
       root,

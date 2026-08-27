@@ -29,7 +29,7 @@ async function fixture(): Promise<{
   const configRoot = join(root, 'config')
   const projectRoot = join(root, 'project')
   const executablePath = join(root, 'praxis')
-  await mkdir(join(projectRoot, '.claude'), { recursive: true })
+  await mkdir(join(projectRoot, '.praxis'), { recursive: true })
   await mkdir(configRoot, { recursive: true })
   await writeFile(executablePath, '#!/bin/sh\n')
   await chmod(executablePath, 0o755)
@@ -38,7 +38,7 @@ async function fixture(): Promise<{
     JSON.stringify({ permissions: { allow: ['Read'] } }),
   )
   await writeFile(
-    join(projectRoot, '.claude', 'settings.local.json'),
+    join(projectRoot, '.praxis', 'settings.local.json'),
     JSON.stringify({
       autoMode: {
         allow: ['$defaults', 'local builds'],
@@ -50,7 +50,7 @@ async function fixture(): Promise<{
     }),
   )
   await writeFile(
-    join(projectRoot, '.mcp.json'),
+    join(projectRoot, '.praxis', 'mcp.json'),
     JSON.stringify({
       mcpServers: {
         docs: { type: 'http', url: 'https://example.test/mcp' },
@@ -86,6 +86,7 @@ describe('Praxis doctor', () => {
       join(value.projectRoot, '.praxis', 'settings.json'),
       JSON.stringify({ permissions: { allow: ['Read'] } }),
     )
+    await mkdir(join(value.projectRoot, '.claude'), { recursive: true })
     await writeFile(
       join(value.projectRoot, '.claude', 'settings.local.json'),
       '{ invalid claude settings',
@@ -133,7 +134,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'anthropic',
@@ -183,7 +184,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'anthropic',
@@ -210,7 +211,7 @@ describe('Praxis doctor', () => {
     await mkdir(join(value.configRoot, 'plugins'), { recursive: true })
     await writeFile(pluginRegistryPath(value.configRoot), '{invalid')
     await writeFile(
-      join(value.projectRoot, '.mcp.json'),
+      join(value.projectRoot, '.praxis', 'mcp.json'),
       JSON.stringify({
         mcpServers: { broken: { type: 'http', url: 'file:///secret' } },
       }),
@@ -222,7 +223,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v22.0.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'unknown',
@@ -238,14 +239,23 @@ describe('Praxis doctor', () => {
       report.checks
         .filter((check) => check.status === 'fail')
         .map((check) => check.id),
-    ).toEqual(['node', 'provider', 'settings', 'plugins', 'mcp'])
+    ).toEqual([
+      'node',
+      'provider',
+      'settings',
+      'plugins',
+      'mcp',
+      'resources',
+      'permissions',
+      'hooks',
+    ])
     expect(JSON.stringify(report)).not.toContain('secret-not-for-output')
   })
 
   it('wires JSON output and failure exit status through the CLI', async () => {
     const value = await fixture()
-    vi.stubEnv('CLAUDE_CONFIG_DIR', value.configRoot)
-    vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
+    vi.stubEnv('PRAXIS_HOME', value.configRoot)
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'native')
     vi.stubEnv('PRAXIS_PROVIDER', 'openai')
     vi.stubEnv('PRAXIS_API_KEY', '')
     vi.stubEnv('PRAXIS_MODEL', 'fixture-model')
@@ -275,7 +285,6 @@ describe('Praxis doctor', () => {
         version: expect.any(String),
         installationPath: expect.any(String),
         invokedBinary: expect.any(String),
-        configInstallMethod: 'CLAUDE_CONFIG_DIR',
       },
       updates: {
         channel: 'latest',
@@ -290,7 +299,7 @@ describe('Praxis doctor', () => {
   it('validates hook matchers, permission rules, and MCP stdio prerequisites without execution', async () => {
     const value = await fixture()
     await writeFile(
-      join(value.projectRoot, '.claude', 'settings.local.json'),
+      join(value.projectRoot, '.praxis', 'settings.json'),
       JSON.stringify({
         permissions: { allow: ['Bash('] },
         hooks: {
@@ -306,7 +315,7 @@ describe('Praxis doctor', () => {
       }),
     )
     await writeFile(
-      join(value.projectRoot, '.mcp.json'),
+      join(value.projectRoot, '.praxis', 'mcp.json'),
       JSON.stringify({
         mcpServers: { broken: { command: 'praxis-command-does-not-exist' } },
       }),
@@ -317,7 +326,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'openai',
@@ -343,7 +352,7 @@ describe('Praxis doctor', () => {
   it('reports ignored MCP entries as non-blocking warnings', async () => {
     const value = await fixture()
     await writeFile(
-      join(value.projectRoot, '.mcp.json'),
+      join(value.projectRoot, '.praxis', 'mcp.json'),
       JSON.stringify({ mcpServers: [] }),
     )
     const report = await runDoctor({
@@ -352,7 +361,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'openai',
@@ -390,7 +399,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'openai',
@@ -406,7 +415,6 @@ describe('Praxis doctor', () => {
       installationType: 'source',
       packageManager: null,
       version: '0.1.0',
-      configInstallMethod: 'default (~/.claude)',
     })
     expect(diagnostic.multipleInstallations).toContain(
       diagnostic.installationPath,
@@ -422,7 +430,7 @@ describe('Praxis doctor', () => {
     const output = formatDoctorReport(report)
     expect(output).toContain('Diagnostics')
     expect(output).toContain('Currently running: Praxis 0.1.0 (source)')
-    expect(output).toContain('Config install method: default (~/.claude)')
+    expect(output).not.toContain('Config install method')
     expect(output).toContain('Updates')
     expect(output).toContain('Auto-updates: Managed by source checkout')
     expect(output).toContain('Update channel: stable')
@@ -447,7 +455,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'openai',
@@ -511,7 +519,7 @@ describe('Praxis doctor', () => {
       nodeExecutablePath: process.execPath,
       nodeVersion: 'v24.1.0',
       configRoot: value.configRoot,
-      claudeStatePath: join(value.configRoot, '.claude.json'),
+      claudeStatePath: join(value.configRoot, 'state.json'),
       cwd: value.projectRoot,
       environment: {
         PRAXIS_PROVIDER: 'openai',

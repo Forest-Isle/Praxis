@@ -11,7 +11,7 @@ Protected assets:
 - files outside the active workspace;
 - credentials, environment variables, keychain items, and provider tokens;
 - shell/process integrity;
-- shared Claude sessions, memory, and configuration;
+- shared Praxis sessions, memory, and configuration;
 - user intent expressed through permission decisions.
 
 ## Main threats and required controls
@@ -25,8 +25,8 @@ Protected assets:
 | Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts |
 | Malicious hook, skill, or MCP server           | Treat as user-installed executable code; show origin, preserve Claude scopes, require the applicable permission policy                                    |
 | Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
-| Unsupported Claude format                      | Version adapter selects read-only fallback before any write                                                                                               |
-| Provider payload incompatibility               | Persist only translated Claude-native completed events; raw payload stays in sidecar                                                                      |
+| Unsupported transcript format                  | Native codec selects read-only fallback before any write                                                                                                  |
+| Provider payload incompatibility               | Persist only translated native completed events; raw payload stays in sidecar                                                                             |
 | Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                    |
 | Fetched-page prompt injection                  | Serialize page text as untrusted JSON data and keep the user request distinct under a higher-priority system instruction                                  |
 | Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
@@ -44,10 +44,11 @@ Protected assets:
   excluded or explicitly overridden Bash commands, hooks, and MCP servers still
   run as the local user and may access files or OS credential services available
   to that user.
-- Claude Code does not honor Praxis locks; optimistic checks reduce but cannot
-  eliminate a simultaneous append race from an uncooperative process.
-- Claude Code also does not honor the Praxis scheduled-task lease. Physical
-  fingerprint checks narrow but cannot eliminate the final check/replace race.
+- External processes do not honor Praxis locks; optimistic checks reduce but
+  cannot eliminate a simultaneous append race from an uncooperative process.
+- External processes also do not honor the Praxis scheduled-task lease.
+  Physical fingerprint checks narrow but cannot eliminate the final
+  check/replace race.
 - A process already running as the user can alter shared files and sidecars.
   Sidecars therefore provide coordination, not an authorization boundary.
 - Enterprise managed-policy enforcement and multi-user isolation are outside

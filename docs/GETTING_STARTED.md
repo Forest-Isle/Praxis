@@ -9,8 +9,9 @@ Praxis supports macOS and Linux and requires:
 - `ripgrep` (`rg`) for the Grep tool;
 - an API key and model ID for an Anthropic or OpenAI-compatible provider.
 
-Praxis does not authenticate with a Claude subscription. Its Claude Code
-compatibility concerns local data and behavior, not account or billing access.
+Praxis does not authenticate with a Claude subscription. Claude Code is used
+only as a clean-room behavioral reference; Praxis owns and stores all runtime
+data in its native local data plane.
 
 Install `ripgrep` with your system package manager if `rg --version` fails.
 
@@ -106,26 +107,11 @@ praxis export <session-id> > session.jsonl
 `--resume` opens a picker in a terminal. It also accepts a session UUID, exact
 title in print mode, or search text in the interactive picker.
 
-## Share local state with Claude Code
+## Native local state
 
 Praxis uses its independent `~/.praxis` data plane by default, or `PRAXIS_HOME`
-when set. To intentionally share compatible sessions, instructions, memory,
-skills, agents, hooks, settings, plugins, and MCP configuration with Claude
-Code, launch Praxis with `--data-plane claude`; that compatibility mode uses
-`CLAUDE_CONFIG_DIR` or `~/.claude`.
-
-Before relying on bidirectional writes, check the installed Claude Code version:
-
-```sh
-claude --version
-praxis doctor
-```
-
-Every semver-like Claude Code producer version is structurally validated and
-read/write compatible when its entry shapes are supported. Malformed or
-unsupported shapes remain available for safe inspection and export but fail
-closed for transcript writes. See [COMPATIBILITY.md](COMPATIBILITY.md) for the
-exact contract.
+when set. Sessions, instructions, memory, skills, agents, hooks, settings,
+plugins, and MCP configuration are kept in this native local data plane.
 
 ## Safe and isolated runs
 
@@ -141,8 +127,8 @@ praxis -p --no-session-persistence "Answer without writing a session"
 `--dangerously-skip-permissions` intentionally bypasses normal checks except
 explicit deny rules. Do not use it as a routine setup shortcut.
 
-To run Bash commands inside the Claude-compatible OS sandbox, open `/sandbox`
-and select an isolated mode, or add this to `.claude/settings.local.json`:
+To run Bash commands inside the OS sandbox, open `/sandbox`
+and select an isolated mode, or add this to `.praxis/settings.local.json`:
 
 ```json
 {
@@ -155,7 +141,7 @@ and select an isolated mode, or add this to `.claude/settings.local.json`:
 
 Auto-allow applies only when the command will actually run inside the sandbox;
 explicit ask and deny rules still win. The sandbox restricts filesystem writes
-and network access according to shared Claude settings. Use `/sandbox` to check
+and network access according to native Praxis settings. Use `/sandbox` to check
 dependencies and inspect the effective configuration.
 
 ## Update or remove Praxis

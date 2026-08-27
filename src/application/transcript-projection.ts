@@ -82,7 +82,8 @@ export function projectActiveMessages(
   const messages: ModelMessage[] = []
   for (const event of activeEvents(events, checkpoint)) {
     if (event.kind === 'context-boundary') {
-      messages.length = 0
+      if (event.direction !== 'from' || event.preservePrefix !== true)
+        messages.length = 0
       continue
     }
     if (event.kind === 'context-summary') {
@@ -90,7 +91,17 @@ export function projectActiveMessages(
       continue
     }
     if (event.kind === 'tool-execution-started') continue
-    messages.push(...event.messages)
+    for (const message of event.messages) {
+      // Praxis operational metadata is persisted as reserved user-envelope
+      // markers but must never be replayed to the model as user intent.
+      if (
+        message.role === 'user' &&
+        /^<praxis-[\w-]+>[\s\S]*<\/praxis-[\w-]+>$/u.test(message.content)
+      ) {
+        continue
+      }
+      messages.push(message)
+    }
   }
   return messages
 }
@@ -118,6 +129,13 @@ export function projectTranscriptDisplay(
   const items: TranscriptDisplayItem[] = []
   let pendingShell: { callId: string; command: string } | null = null
   for (const event of activeEvents(events, checkpoint)) {
+    if (event.kind === 'context-boundary') {
+      if (event.direction !== 'from' || event.preservePrefix !== true) {
+        items.length = 0
+        pendingShell = null
+      }
+      continue
+    }
     if (event.kind === 'context-summary') {
       items.push({ kind: 'compact', summary: event.summary })
       continue

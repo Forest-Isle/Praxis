@@ -17,10 +17,10 @@ import { parse as parseYaml } from 'yaml'
 import { countTokens } from '@anthropic-ai/tokenizer'
 
 import type {
-  ClaudeJsonResource,
-  ClaudeResourceScope,
-  ClaudeTextResource,
-} from '../compatibility/claude/shared-resources.js'
+  JsonResource,
+  ResourceScope,
+  TextResource,
+} from '../core/resources.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 import {
   claudePluginDataPath,
@@ -80,11 +80,11 @@ export interface ClaudePluginRecord {
 
 export interface ClaudePluginResources {
   plugins: readonly ClaudePluginRecord[]
-  commands: ClaudeTextResource[]
-  skills: ClaudeTextResource[]
-  agents: ClaudeTextResource[]
-  settings: ClaudeJsonResource[]
-  mcp: ClaudeJsonResource[]
+  commands: TextResource[]
+  skills: TextResource[]
+  agents: TextResource[]
+  settings: JsonResource[]
+  mcp: JsonResource[]
   lsp: ClaudePluginLspServer[]
 }
 
@@ -174,7 +174,7 @@ function nonEmptyString(value: unknown, label: string): string {
   return value
 }
 
-function scopeForPath(path: string, cwd: string): ClaudeResourceScope {
+function scopeForPath(path: string, cwd: string): ResourceScope {
   return path === cwd || path.startsWith(`${cwd}/`) ? 'project' : 'user'
 }
 
@@ -431,12 +431,12 @@ async function loadTextResources(
   pluginPath: string,
   roots: readonly string[],
   name: string,
-  scope: ClaudeResourceScope,
+  scope: ResourceScope,
   kind: 'commands' | 'skills' | 'agents',
   pluginData: string,
   userConfig?: Readonly<Record<string, string | number | boolean | string[]>>,
   userConfigSchema?: Readonly<Record<string, unknown>>,
-): Promise<ClaudeTextResource[]> {
+): Promise<TextResource[]> {
   return Promise.all(
     files.map(async (file) => ({
       path: namespacedPath(pluginPath, roots, file, name, kind),
@@ -858,7 +858,7 @@ async function loadPlugin(
   enabled: boolean,
   cwd: string,
   requireManifest = false,
-  resourceScope?: ClaudeResourceScope,
+  resourceScope?: ResourceScope,
   configRoot?: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
   configId?: string,
@@ -1035,7 +1035,7 @@ async function loadPlugin(
       })
     }
   }
-  const settings: ClaudeJsonResource[] = []
+  const settings: JsonResource[] = []
   const loadedHookPaths = new Set<string>()
   const normalizeHooks = (value: unknown): unknown =>
     isRecord(value) && 'hooks' in value ? value : { hooks: value }
@@ -1131,7 +1131,7 @@ async function loadPlugin(
       mcpErrors.push(`Invalid plugin MCP config: ${mcpPath}`)
     }
   }
-  const mcp: ClaudeJsonResource[] = []
+  const mcp: JsonResource[] = []
   if (mcpValue !== undefined) {
     try {
       mcp.push({
@@ -1371,7 +1371,7 @@ export async function loadClaudePlugins(options: {
     path: string
     source: string
     enabled: boolean
-    resourceScope?: ClaudeResourceScope
+    resourceScope?: ResourceScope
     configId?: string
   }> = []
   for (const source of inlineSources) {
@@ -1392,7 +1392,7 @@ export async function loadClaudePlugins(options: {
     path: string
     source: string
     enabled: boolean
-    resourceScope?: ClaudeResourceScope
+    resourceScope?: ResourceScope
     configId?: string
   }> = [
     ...nativeRegistry
@@ -1401,7 +1401,7 @@ export async function loadClaudePlugins(options: {
         path: entry.installPath,
         source: entry.id,
         enabled: entry.enabled,
-        resourceScope: entry.scope as ClaudeResourceScope,
+        resourceScope: entry.scope as ResourceScope,
         configId: entry.id,
       })),
     ...skillsDirectoryRegistry
@@ -1410,7 +1410,7 @@ export async function loadClaudePlugins(options: {
         path: entry.installPath,
         source: entry.id,
         enabled: entry.enabled,
-        resourceScope: 'user' as ClaudeResourceScope,
+        resourceScope: 'user' as ResourceScope,
         configId: entry.id,
       })),
     ...registry
@@ -1971,7 +1971,7 @@ function pluginDetailBucketTokenCount(content: string): number {
 }
 
 function keysFromJsonResources(
-  resources: readonly ClaudeJsonResource[],
+  resources: readonly JsonResource[],
   property: 'hooks' | 'mcpServers',
 ): string[] {
   return [

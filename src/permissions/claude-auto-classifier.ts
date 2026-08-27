@@ -1,4 +1,4 @@
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../core/resources.js'
 import type {
   ModelMessage,
   ModelProvider,
@@ -76,7 +76,7 @@ function configuredList(
 }
 
 export function loadClaudeAutoModeConfig(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
 ): ClaudeAutoModeConfig {
   let config = defaultClaudeAutoModeConfig()
   for (const resource of settings) {

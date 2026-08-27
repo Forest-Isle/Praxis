@@ -1,6 +1,5 @@
 import { Box, Text } from 'ink'
 
-import type { DataPlane } from '../../persistence/data-plane.js'
 import {
   tuiMcpServerActions,
   type TuiMcpPanelCommand,
@@ -9,9 +8,6 @@ import {
   type TuiMcpServer,
 } from './mcp-panel-projector.js'
 import type { TuiMcpSurfaceModel } from './mcp-surface-model.js'
-
-const CLAUDE_EMPTY_MESSAGE =
-  'No MCP servers configured. Run claude doctor if this is unexpected — it lists MCP config files that failed validation. Otherwise, run claude mcp --help or visit https://code.claude.com/docs/en/mcp to learn more.'
 
 const SCOPE_LABELS = {
   project: 'Project MCPs',
@@ -51,12 +47,10 @@ function ListPanel({
   model,
   state,
   screenReader,
-  dataPlane,
 }: {
   model: TuiMcpPanelModel
   state: TuiMcpPanelState
   screenReader: boolean
-  dataPlane: DataPlane
 }) {
   return (
     <Box flexDirection="column">
@@ -104,13 +98,7 @@ function ListPanel({
           </Box>
         ))
       })}
-      <Text>
-        ※ Run {dataPlane === 'native' ? 'praxis' : 'claude'} --debug to see
-        error logs
-      </Text>
-      {dataPlane === 'claude' ? (
-        <Text>https://code.claude.com/docs/en/mcp for help</Text>
-      ) : null}
+      <Text>※ Run praxis --debug to see error logs</Text>
       <Text dimColor>↑/↓ to navigate · Enter to confirm · Esc to cancel</Text>
     </Box>
   )
@@ -226,12 +214,10 @@ export function McpPanel({
   surface,
   screenReader = false,
   width,
-  dataPlane = 'claude',
 }: {
   surface: TuiMcpSurfaceModel
   screenReader?: boolean
   width?: number
-  dataPlane?: DataPlane
 }) {
   const { model, state } = surface
   const terminalWidth = width ?? 80
@@ -240,9 +226,8 @@ export function McpPanel({
   if (model.servers.length === 0)
     content = (
       <Text>
-        {dataPlane === 'native'
-          ? 'No MCP servers configured. Run praxis doctor if this is unexpected — it lists MCP config files that failed validation.'
-          : CLAUDE_EMPTY_MESSAGE}
+        No MCP servers configured. Run praxis doctor if this is unexpected — it
+        lists MCP config files that failed validation.
       </Text>
     )
   else if (!server) content = null
@@ -258,12 +243,7 @@ export function McpPanel({
     content = <ToolPanel server={server} state={state} />
   } else {
     content = (
-      <ListPanel
-        model={model}
-        state={state}
-        screenReader={screenReader}
-        dataPlane={dataPlane}
-      />
+      <ListPanel model={model} state={state} screenReader={screenReader} />
     )
   }
   return (

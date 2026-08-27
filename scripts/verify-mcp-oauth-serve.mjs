@@ -127,7 +127,7 @@ try {
   }
   env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: configRoot,
+
     PRAXIS_DATA_PLANE: 'native',
     PRAXIS_HOME: configRoot,
     PRAXIS_MCP_OAUTH_STORE: 'file',

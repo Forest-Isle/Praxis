@@ -1,4 +1,4 @@
-export type DataPlane = 'native' | 'claude'
+export type DataPlane = 'native'
 
 export interface DataPlaneRootOptions {
   root?: string
@@ -23,7 +23,6 @@ export interface DataPlanePaths {
   sessionFile: string
   taskRoot: string
   stateRoot: string
-  /** Compatibility alias for callers that previously received `praxisRoot`. */
   praxisRoot: string
   memoryRoot: string
 }

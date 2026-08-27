@@ -27,7 +27,7 @@ const ENTER_DEFINITION: ModelToolDefinition = {
       },
       path: {
         description:
-          'Path to an existing worktree to switch into instead of creating a new one. Must be registered with the current repository and live under .claude/worktrees. Mutually exclusive with name.',
+          'Path to an existing worktree to switch into instead of creating a new one. Must be registered with the current repository and live under .praxis/worktrees. Mutually exclusive with name.',
         type: 'string',
       },
     },
@@ -60,10 +60,7 @@ const EXIT_DEFINITION: ModelToolDefinition = {
   },
 }
 
-function worktreeDefinitions(
-  dataPlane: DataPlane,
-): readonly ModelToolDefinition[] {
-  if (dataPlane === 'claude') return [ENTER_DEFINITION, EXIT_DEFINITION]
+function worktreeDefinitions(): readonly ModelToolDefinition[] {
   return [
     {
       ...ENTER_DEFINITION,
@@ -132,7 +129,7 @@ export class ClaudeWorktreeToolRegistry implements ToolRegistry {
   definitions(): readonly ModelToolDefinition[] {
     const base = this.options.base.definitions()
     const existing = new Set(base.map(({ name }) => name))
-    const definitions = worktreeDefinitions(this.options.dataPlane ?? 'claude')
+    const definitions = worktreeDefinitions()
     return [
       ...base,
       ...definitions.filter(

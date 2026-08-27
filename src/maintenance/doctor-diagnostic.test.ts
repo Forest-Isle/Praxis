@@ -69,9 +69,7 @@ describe('collectDoctorDiagnostics', () => {
       'praxis',
     )
     await makeExecutable(executablePath)
-    const result = await collectDoctorDiagnostics(
-      options(executablePath, { CLAUDE_CONFIG_DIR: join(root, 'config') }),
-    )
+    const result = await collectDoctorDiagnostics(options(executablePath, {}))
     expect(result.diagnostic.installationType).toBe('npm')
     expect(result.diagnostic.packageManager).toBe('npm')
     expect(result.diagnostic.version).toBe('0.1.0')
@@ -79,7 +77,6 @@ describe('collectDoctorDiagnostics', () => {
       await realpath(executablePath),
     )
     expect(result.diagnostic.invokedBinary).toBe(resolve(executablePath))
-    expect(result.diagnostic.configInstallMethod).toBe('CLAUDE_CONFIG_DIR')
     expect(result.diagnostic.search).toEqual({
       working: false,
       mode: 'system',
@@ -110,7 +107,6 @@ describe('collectDoctorDiagnostics', () => {
     const result = await collectDoctorDiagnostics(options(executablePath, {}))
     expect(result.diagnostic.installationType).toBe('source')
     expect(result.diagnostic.packageManager).toBeNull()
-    expect(result.diagnostic.configInstallMethod).toBe('default (~/.claude)')
     expect(result.updates.autoUpdates).toBe('Managed by source checkout')
   })
 
@@ -341,7 +337,6 @@ describe('collectDoctorLocalDiagnostics', () => {
     expect(result.diagnostic.installationType).toBe('npm')
     expect(result.diagnostic.packageManager).toBe('npm')
     expect(result.diagnostic.version).toBe('0.1.0')
-    expect(result.diagnostic.configInstallMethod).toBe('default (~/.claude)')
     expect(result.updates).toEqual({
       autoUpdates: 'Manual (praxis update)',
       hasUpdatePermissions: true,

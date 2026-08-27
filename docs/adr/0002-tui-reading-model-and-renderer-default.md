@@ -6,6 +6,11 @@ Accepted
 
 ## Context
 
+The active runtime is Praxis-native only. References to Claude-compatible
+transcripts below describe the retained message/tool protocol shape; sessions,
+resources, and operational state are stored under `~/.praxis` (or
+`PRAXIS_HOME`) and no legacy Claude data directory is consulted.
+
 Praxis already has a broad Ink-based TUI surface, but its interaction model
 still exposes too much implementation detail in the primary conversation flow.
 Long tool output can compete with conclusions and the composer. The project
@@ -13,8 +18,8 @@ also has both a classic renderer and a bounded fullscreen renderer, but the
 fullscreen layout is not yet the primary product surface.
 
 The redesign must improve readability, stability, performance, and ease of use
-without changing Claude-compatible transcripts, runtime behavior, permissions,
-or CLI contracts.
+without changing native transcripts, runtime behavior, permissions, or CLI
+contracts.
 
 ## Decision
 

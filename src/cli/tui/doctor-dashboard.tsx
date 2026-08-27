@@ -168,7 +168,6 @@ export function DoctorDashboard({
       )}
       <Text>{`Path: ${diagnostic.installationPath}`}</Text>
       <Text>{`Invoked: ${diagnostic.invokedBinary}`}</Text>
-      <Text>{`Config install method: ${diagnostic.configInstallMethod}`}</Text>
       {diagnostic.search.working ? (
         <>
           <Text>{`Search: OK (${diagnostic.search.mode})`}</Text>

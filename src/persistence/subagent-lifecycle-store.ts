@@ -1,8 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { isClaudeSessionId } from '../compatibility/claude/paths.js'
-import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
+import { isSessionId } from '../core/session.js'
 import {
   createAgentLifecycle,
   continueLifecycle,
@@ -83,9 +82,9 @@ function publicRecord(record: StoredLifecycle): PersistedSubagentLifecycle {
 }
 
 function assertIdentity(sessionId: string, agentId: string): void {
-  if (!isClaudeSessionId(sessionId))
+  if (!isSessionId(sessionId))
     throw new Error(`Invalid subagent lifecycle session ID: ${sessionId}`)
-  if (!isClaudeAgentId(agentId))
+  if (!/^a(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}-)?[0-9a-f]{16}$/u.test(agentId))
     throw new Error(`Invalid subagent lifecycle agent ID: ${agentId}`)
 }
 

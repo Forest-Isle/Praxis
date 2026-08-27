@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { ClaudeDataPlaneAdapter } from '../compatibility/claude/data-plane-adapter.js'
 import { NativeDataPlaneAdapter } from './native-data-plane-adapter.js'
+import {
+  resolveInteractiveRuntimeSettingsLocation,
+  resolveUnknownCostSidecarPath,
+} from '../cli-runtime.js'
+import {
+  getNativeDataOwnership,
+  NATIVE_DATA_OWNERSHIP,
+} from '../native/ownership.js'
+import {
+  resolveNativePaths,
+  resolveNativeScheduledTaskFile,
+} from '../native/paths.js'
 import {
   resolveDataPlane,
   resolveDataPlanePaths,
@@ -39,34 +50,20 @@ describe('data plane paths', () => {
     ).toBe('/home/alice/.praxis/scheduled/-work-example.json')
   })
 
-  it('uses Claude paths only when explicitly selected', () => {
+  it('rejects the removed Claude data plane', () => {
     const environment = {
       PRAXIS_DATA_PLANE: 'claude',
-      CLAUDE_CONFIG_DIR: '/shared/claude',
+      PRAXIS_HOME: '/shared/claude',
     }
-    const paths = resolveDataPlanePaths({
-      cwd: '/work/example',
-      sessionId: SESSION_ID,
-      environment,
-    })
-
-    expect(paths.root).toBe('/shared/claude')
-    expect(paths.sessionFile).toBe(
-      '/shared/claude/projects/-work-example/11111111-1111-4111-8111-111111111111.jsonl',
+    expect(() => resolveDataPlane(environment)).toThrow(
+      'PRAXIS_DATA_PLANE must be "native"',
     )
-    expect(
-      resolveScheduledTaskFile({
-        dataPlane: 'claude',
-        cwd: '/work/example',
-        root: paths.root,
-      }),
-    ).toBe('/work/example/.claude/scheduled_tasks.json')
   })
 
-  it('honours PRAXIS_HOME without reading CLAUDE_CONFIG_DIR in native mode', () => {
+  it('honours PRAXIS_HOME without reading a legacy config sentinel in native mode', () => {
     const environment = {
       PRAXIS_HOME: '/private/praxis',
-      CLAUDE_CONFIG_DIR: '/shared/claude',
+      LEGACY_CONFIG_SENTINEL: '/shared/legacy',
     }
     expect(resolveDataPlane(environment)).toBe('native')
     expect(resolveDataPlaneRoot({ environment })).toBe('/private/praxis')
@@ -76,18 +73,10 @@ describe('data plane paths', () => {
     for (const value of ['', '   ', '\t\n']) {
       expect(
         resolveDataPlaneRoot({
-          dataPlane: 'native',
           environment: { PRAXIS_HOME: value },
           homeDirectory: '/home/alice',
         }),
       ).toBe('/home/alice/.praxis')
-      expect(
-        resolveDataPlaneRoot({
-          dataPlane: 'claude',
-          environment: { CLAUDE_CONFIG_DIR: value },
-          homeDirectory: '/home/alice',
-        }),
-      ).toBe('/home/alice/.claude')
     }
   })
 
@@ -97,18 +86,35 @@ describe('data plane paths', () => {
     )
   })
 
+  it('rejects runtime-invalid planes at path boundaries', () => {
+    expect(() =>
+      resolveDataPlanePaths({
+        cwd: '/work/example',
+        sessionId: SESSION_ID,
+        dataPlane: 'claude' as never,
+      }),
+    ).toThrow('native data plane')
+    expect(() =>
+      resolveScheduledTaskFile({
+        dataPlane: 'claude' as never,
+        cwd: '/work/example',
+        root: '/tmp/praxis',
+      }),
+    ).toThrow('native data plane')
+    expect(() =>
+      resolveInteractiveRuntimeSettingsLocation('claude' as never, {}),
+    ).toThrow('native data plane')
+    expect(() =>
+      resolveUnknownCostSidecarPath('claude' as never, '/tmp/praxis'),
+    ).toThrow('native data plane')
+  })
+
   it('keeps the adapter path meanings aligned for injected roots', () => {
     const native = new NativeDataPlaneAdapter()
-    const claude = new ClaudeDataPlaneAdapter()
     const nativePaths = native.resolvePaths({
       cwd: '/work/example',
       sessionId: SESSION_ID,
       root: '/tmp/praxis',
-    })
-    const claudePaths = claude.resolvePaths({
-      cwd: '/work/example',
-      sessionId: SESSION_ID,
-      root: '/tmp/claude',
     })
 
     expect(nativePaths).toMatchObject({
@@ -116,22 +122,40 @@ describe('data plane paths', () => {
       root: '/tmp/praxis',
       taskRoot: '/tmp/praxis/tasks/11111111-1111-4111-8111-111111111111',
     })
-    expect(claudePaths).toMatchObject({
-      dataPlane: 'claude',
-      root: '/tmp/claude',
-      taskRoot: '/tmp/claude/tasks/11111111-1111-4111-8111-111111111111',
-    })
     expect(
       native.resolveScheduledTaskFile({
         cwd: '/work/example',
         root: nativePaths.root,
       }),
     ).toBe('/tmp/praxis/scheduled/-work-example.json')
+  })
+
+  it('keeps native ownership metadata aligned with native path helpers', () => {
+    expect(getNativeDataOwnership('transcript').location).toBe(
+      'sessions/<project-key>/<session-id>.jsonl',
+    )
+    expect(getNativeDataOwnership('scheduled-prompts').location).toBe(
+      'scheduled/<project-key>.json',
+    )
+    expect(getNativeDataOwnership('auto-memory').location).toBe(
+      'memory/<project-key>/',
+    )
+    expect(NATIVE_DATA_OWNERSHIP).toBeDefined()
     expect(
-      claude.resolveScheduledTaskFile({
+      resolveNativePaths({
         cwd: '/work/example',
-        root: claudePaths.root,
+        sessionId: SESSION_ID,
+        configDir: '/tmp/praxis',
       }),
-    ).toBe('/work/example/.claude/scheduled_tasks.json')
+    ).toEqual(
+      resolveNativePaths({
+        cwd: '/work/example',
+        sessionId: SESSION_ID,
+        configDir: '/tmp/praxis',
+      }),
+    )
+    expect(resolveNativeScheduledTaskFile('/work/example', '/tmp/praxis')).toBe(
+      '/tmp/praxis/scheduled/-work-example.json',
+    )
   })
 })

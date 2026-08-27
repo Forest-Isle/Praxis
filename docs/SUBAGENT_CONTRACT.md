@@ -45,9 +45,7 @@ use the same precedence as other Claude-compatible tool permissions.
    apply inside the child. External custom agents cannot recursively invoke
    Agent or main-thread coordination tools.
 6. Definition skills are preloaded as meta user messages. Persistent agent
-   memory uses `<config>/agent-memory/<agent>/`,
-   `.claude/agent-memory/<agent>/`, or
-   `.claude/agent-memory-local/<agent>/`; its index is added to the child
+   memory uses `<praxis-root>/agent-memory/<agent>/`; its index is added to the child
    system context, and explicit tool lists receive `Read`, `Edit`, and `Write`.
 7. Global `SubagentStart`/`SubagentStop` hooks and agent frontmatter tool/stop
    hooks run only for that child lifecycle. Referenced MCP servers reuse parent
@@ -147,8 +145,8 @@ or ambiguous automatic recovery is isolated to that sidechain and warns, while
 an explicit management request fails locally. Usage already settled before a
 later failure or kill is retained in the terminal result and notification.
 Praxis-specific fields are never added to shared sidechain JSONL or metadata.
-The private state root is `~/.praxis/state` in native mode and
-`<CLAUDE_CONFIG_DIR>/praxis` in explicit Claude compatibility mode.
+The private state root is `~/.praxis/state` in native mode (or
+`$PRAXIS_HOME/state` when configured).
 
 Foreground `toolUseResult` records status, prompt, agent ID/type, returned
 content, resolved model, duration, usage, and tool-call count. Background launch

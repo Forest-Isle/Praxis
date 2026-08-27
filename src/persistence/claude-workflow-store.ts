@@ -1,13 +1,95 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
-import type { ClaudeWorkflowPaths } from '../compatibility/claude/workflow.js'
-import {
-  workflowReplayDescriptor,
-  type WorkflowReplayOptions,
-} from '../compatibility/claude/workflow-replay.js'
+import { resolve } from 'node:path'
+
+export interface NativeWorkflowPaths {
+  sessionDirectory: string
+  workflowDirectory: string
+  scriptsDirectory: string
+  scriptFile: string
+  runFile: string
+  transcriptDirectory: string
+  journalFile: string
+}
+
+export interface WorkflowReplayOptions {
+  model?: string
+  effort?: string
+  agentType?: string
+  schema?: Record<string, unknown>
+  isolation?: 'worktree'
+}
+
+const WORKFLOW_RUN_ID = /^wf_[a-z0-9-]{6,}$/u
+
+export function resolveNativeWorkflowPaths(options: {
+  praxisRoot: string
+  sessionId: string
+  runId: string
+  workflowName: string
+}): NativeWorkflowPaths {
+  if (!WORKFLOW_RUN_ID.test(options.runId)) {
+    throw new Error(`Invalid workflow run ID: ${options.runId}`)
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u.test(options.workflowName)) {
+    throw new Error(`Invalid workflow name: ${options.workflowName}`)
+  }
+  const sessionDirectory = resolve(options.praxisRoot, options.sessionId)
+  const workflowDirectory = resolve(sessionDirectory, 'workflows')
+  const scriptsDirectory = resolve(workflowDirectory, 'scripts')
+  const transcriptDirectory = resolve(
+    sessionDirectory,
+    'subagents',
+    'workflows',
+    options.runId,
+  )
+  return {
+    sessionDirectory,
+    workflowDirectory,
+    scriptsDirectory,
+    scriptFile: resolve(
+      scriptsDirectory,
+      `${options.workflowName}-${options.runId}.js`,
+    ),
+    runFile: resolve(workflowDirectory, `${options.runId}.json`),
+    transcriptDirectory,
+    journalFile: resolve(transcriptDirectory, 'journal.jsonl'),
+  }
+}
+
+function stable(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`
+  return `{${Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stable(item)}`)
+    .join(',')}}`
+}
+
+export function workflowReplayDescriptor(
+  prompt: string,
+  options: WorkflowReplayOptions = {},
+): string {
+  return stable({ prompt, ...options })
+}
+
+export function workflowReplayKey(
+  prompt: string,
+  options: WorkflowReplayOptions = {},
+  previousKey = '',
+): string {
+  return `v2:${createHash('sha256')
+    .update(previousKey)
+    .update('\0')
+    .update(prompt)
+    .update('\0')
+    .update(JSON.stringify(options, Object.keys(options).sort()))
+    .digest('hex')}`
+}
 
 export interface WorkflowJournalStarted {
   type: 'started'
@@ -76,7 +158,7 @@ async function atomicWrite(path: string, source: string): Promise<void> {
 export class ClaudeWorkflowStore {
   private appendTail = Promise.resolve()
 
-  constructor(readonly paths: ClaudeWorkflowPaths) {}
+  constructor(readonly paths: NativeWorkflowPaths) {}
 
   async initialize(script: string): Promise<void> {
     await Promise.all([

@@ -2,6 +2,11 @@
 
 Status: accepted — 2026-08-03
 
+> Historical decision. ADR 0002 supersedes this ADR's shared-data-plane and
+> migration assumptions; the active runtime is Praxis-native only. Claude
+> behavior and message/tool shapes remain clean-room references, while legacy
+> Claude data directories are unsupported.
+
 ## Decision
 
 Build Praxis as an independent TypeScript CLI. Preserve Claude Code's

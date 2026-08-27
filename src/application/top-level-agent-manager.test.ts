@@ -12,7 +12,6 @@ import { Server } from 'node:net'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
   ClaudeJobExecution,
   ClaudeJobStore,
@@ -39,7 +38,7 @@ const roots: string[] = []
 async function fixture(
   options: {
     deferInitialTurn?: boolean
-    dataPlane?: 'native' | 'claude'
+    dataPlane?: 'native'
     sourceSessionId?: string
     sourceCheckpoint?: { resumeSessionAt: string; entryCount: number }
   } = {},
@@ -76,10 +75,7 @@ async function fixture(
     socketPath: join(configRoot, 'control.sock'),
     controlToken: 'fixture-control-token',
   }
-  const store = new ClaudeJobStore(
-    configRoot,
-    join(configRoot, options.dataPlane === 'native' ? 'state' : 'praxis'),
-  )
+  const store = new ClaudeJobStore(configRoot, join(configRoot, 'state'))
   await store.create(state, {
     version: 1,
     argv: ['initial prompt'],
@@ -195,8 +191,13 @@ describe('TopLevelAgentManager', () => {
     })
 
     await expect(
-      access(join(fixtureState.configRoot, 'sessions', `${process.pid}.json`)),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
+      access(
+        join(
+          topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+          `${process.pid}.json`,
+        ),
+      ),
+    ).resolves.toBeUndefined()
     await expect(
       fixtureState.manager.list({ cwd: fixtureState.cwd, all: false }),
     ).resolves.toEqual([
@@ -256,7 +257,10 @@ describe('TopLevelAgentManager', () => {
       try {
         const processState = JSON.parse(
           await readFile(
-            join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+            join(
+              topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+              `${process.pid}.json`,
+            ),
             'utf8',
           ),
         )
@@ -441,7 +445,10 @@ describe('TopLevelAgentManager', () => {
     await waitFor(async () => {
       const processState = JSON.parse(
         await readFile(
-          join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+          join(
+            topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+            `${process.pid}.json`,
+          ),
           'utf8',
         ),
       )
@@ -479,7 +486,10 @@ describe('TopLevelAgentManager', () => {
     await worker
     await expect(
       readFile(
-        join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+        join(
+          topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+          `${process.pid}.json`,
+        ),
         'utf8',
       ),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -564,10 +574,15 @@ describe('TopLevelAgentManager', () => {
     const fixtureState = await fixture()
     const otherCwd = join(fixtureState.configRoot, 'other')
     await mkdir(otherCwd)
-    await mkdir(join(fixtureState.configRoot, 'sessions'))
+    await mkdir(topLevelAgentProcessRegistryRoot(fixtureState.configRoot), {
+      recursive: true,
+    })
     const nativeSessionId = 'aaaaaaaa-1111-4111-8111-111111111111'
     await writeFile(
-      join(fixtureState.configRoot, 'sessions', '12345.json'),
+      join(
+        topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+        '12345.json',
+      ),
       JSON.stringify({
         pid: 12345,
         sessionId: nativeSessionId,
@@ -579,7 +594,10 @@ describe('TopLevelAgentManager', () => {
       }),
     )
     await writeFile(
-      join(fixtureState.configRoot, 'sessions', '12346.json'),
+      join(
+        topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+        '12346.json',
+      ),
       JSON.stringify({
         id: 'native000',
         sessionId: 'bbbbbbbb-1111-4111-8111-111111111111',
@@ -590,8 +608,9 @@ describe('TopLevelAgentManager', () => {
         state: 'done',
       }),
     )
-    const nativeTranscript = resolveClaudePaths({
-      configDir: fixtureState.configRoot,
+    const nativeTranscript = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: fixtureState.configRoot,
       cwd: otherCwd,
       sessionId: nativeSessionId,
     }).sessionFile
@@ -720,8 +739,10 @@ describe('TopLevelAgentManager', () => {
 
   it('lists native Claude bg/daemon registry records and rejects unknown or malformed ones', async () => {
     const fixtureState = await fixture()
-    const sessionsDir = join(fixtureState.configRoot, 'sessions')
-    await mkdir(sessionsDir)
+    const sessionsDir = topLevelAgentProcessRegistryRoot(
+      fixtureState.configRoot,
+    )
+    await mkdir(sessionsDir, { recursive: true })
     const base = {
       pid: 12345,
       cwd: fixtureState.cwd,
@@ -1189,7 +1210,10 @@ describe('TopLevelAgentManager', () => {
       ).resolves.toMatchObject({ lifecycleState: 'cancelled' })
       await expect(
         access(
-          join(fixtureState.configRoot, 'sessions', `${process.pid}.json`),
+          join(
+            topLevelAgentProcessRegistryRoot(fixtureState.configRoot),
+            `${process.pid}.json`,
+          ),
         ),
       ).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
@@ -1293,7 +1317,7 @@ describe('TopLevelAgentManager', () => {
       executablePath: process.execPath,
       version: '0.1.0',
     })
-    const store = new ClaudeJobStore(configRoot)
+    const store = new ClaudeJobStore(configRoot, join(configRoot, 'state'))
     let spawnedPid: number | undefined
     let child: ClaudeJobExecution | undefined
     try {
@@ -1344,7 +1368,10 @@ describe('TopLevelAgentManager', () => {
     await expect(
       manager.launch({ prompt: 'must fail', argv: ['must fail'] }),
     ).rejects.toThrow('Could not start background agent')
-    const [failed] = await new ClaudeJobStore(configRoot).list()
+    const [failed] = await new ClaudeJobStore(
+      configRoot,
+      join(configRoot, 'state'),
+    ).list()
     expect(failed?.state).toBe('failed')
     expect(failed).not.toHaveProperty('pid')
     expect(failed).not.toHaveProperty('socketPath')
@@ -1365,7 +1392,7 @@ describe('TopLevelAgentManager', () => {
       executablePath: process.execPath,
       version: '0.1.0',
     })
-    const store = new ClaudeJobStore(configRoot)
+    const store = new ClaudeJobStore(configRoot, join(configRoot, 'state'))
     let spawnedPid: number | undefined
     const update = vi
       .spyOn(ClaudeJobExecution.prototype, 'update')
@@ -1416,7 +1443,7 @@ describe('TopLevelAgentManager', () => {
       executablePath: process.execPath,
       version: '0.1.0',
     })
-    const store = new ClaudeJobStore(configRoot)
+    const store = new ClaudeJobStore(configRoot, join(configRoot, 'state'))
     const originalUpdate = ClaudeJobExecution.prototype.update
     let spawnedPid: number | undefined
     const update = vi
@@ -1685,6 +1712,12 @@ describe('TopLevelAgentManager', () => {
     await mkdir(cwd)
     const outputPath = join(configRoot, 'environment.json')
     const scriptPath = join(configRoot, 'worker.mjs')
+    const legacyDisableSonnet = ['DISABLE', 'PROMPT', 'CACHING', 'SONNET'].join(
+      '_',
+    )
+    const legacyForceFiveMinutes = ['FORCE', 'PROMPT', 'CACHING', '5M'].join(
+      '_',
+    )
     await writeFile(
       scriptPath,
       `import { writeFile } from 'node:fs/promises'
@@ -1702,8 +1735,8 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         PRAXIS_MODEL: 'worker-model',
         PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
         PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
-        DISABLE_PROMPT_CACHING_SONNET: '1',
-        FORCE_PROMPT_CACHING_5M: '1',
+        [legacyDisableSonnet]: '1',
+        [legacyForceFiveMinutes]: '1',
         AWS_SECRET_ACCESS_KEY: 'ambient-secret',
         BASH_ENV: '/tmp/untrusted-startup',
         PRAXIS_TEST_SECRET: 'unrelated-secret',
@@ -1731,13 +1764,13 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     expect(environment.PRAXIS_MODEL).toBe('worker-model')
     expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHING).toBe('true')
     expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL).toBe('1h')
-    expect(environment.DISABLE_PROMPT_CACHING_SONNET).toBe('1')
-    expect(environment.FORCE_PROMPT_CACHING_5M).toBe('1')
     expect(environment.PATH).toBe(process.env.PATH ?? '')
     expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(environment.BASH_ENV).toBeUndefined()
     expect(environment.PRAXIS_TEST_SECRET).toBeUndefined()
-    expect(environment.CLAUDE_CONFIG_DIR).toBe(configRoot)
+    expect(environment.PRAXIS_HOME).toBe(configRoot)
+    expect(environment[legacyDisableSonnet]).toBeUndefined()
+    expect(environment[legacyForceFiveMinutes]).toBeUndefined()
   })
 
   it('records runtime initialization failures immediately', async () => {

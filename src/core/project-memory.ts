@@ -1,7 +1,6 @@
 export const PROJECT_MEMORY_INDEX_MAX_LINES = 200
 export const PROJECT_MEMORY_INDEX_MAX_BYTES = 25 * 1024
-
-export type ProjectMemoryDataPlane = 'native' | 'claude'
+export type ProjectMemoryDataPlane = 'native'
 
 export interface ProjectMemoryPolicy {
   enabled: boolean
@@ -10,7 +9,8 @@ export interface ProjectMemoryPolicy {
 }
 
 export interface ResolveProjectMemoryPolicyOptions {
-  dataPlane: ProjectMemoryDataPlane
+  /** @deprecated Native policy is the only supported policy. */
+  dataPlane?: ProjectMemoryDataPlane
   settings: readonly { value: unknown }[]
   environment: Readonly<Record<string, string | undefined>>
 }
@@ -73,14 +73,11 @@ function enabledEnvironmentValue(value: string | undefined): boolean {
 }
 
 export function resolveProjectMemoryPolicy({
-  dataPlane,
   settings,
   environment,
 }: ResolveProjectMemoryPolicyOptions): ProjectMemoryPolicy {
   const disabledByEnvironment = enabledEnvironmentValue(
-    dataPlane === 'claude'
-      ? environment.CLAUDE_CODE_DISABLE_AUTO_MEMORY
-      : environment.PRAXIS_DISABLE_AUTO_MEMORY,
+    environment.PRAXIS_DISABLE_AUTO_MEMORY,
   )
   const enabled =
     !disabledByEnvironment &&

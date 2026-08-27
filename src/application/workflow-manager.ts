@@ -7,19 +7,18 @@ import {
   formatWorkflowLaunch,
   isWorkflowRunId,
   isWorkflowTaskId,
-  resolveClaudeWorkflowPaths,
-} from '../compatibility/claude/workflow.js'
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+} from '../native/workflow.js'
 import {
   resolveDataPlanePaths,
   type DataPlane,
 } from '../persistence/data-plane.js'
 import {
+  ClaudeWorkflowStore,
+  resolveNativeWorkflowPaths,
   workflowReplayDescriptor,
   workflowReplayKey,
-} from '../compatibility/claude/workflow-replay.js'
+} from '../persistence/claude-workflow-store.js'
 import type { ModelUsage, ModelUsageByModel } from '../core/runtime.js'
-import { ClaudeWorkflowStore } from '../persistence/claude-workflow-store.js'
 import type {
   WorkflowAgentRunOptions,
   WorkflowAgentRunResult,
@@ -391,21 +390,14 @@ export class WorkflowManager {
     }
     this.activeRuns.add(activeRunKey)
     const taskId = this.uniqueTaskId()
-    const claudePaths =
-      this.dataPlane === 'native'
-        ? resolveDataPlanePaths({
-            dataPlane: 'native',
-            root: this.configRoot,
-            cwd: this.currentCwd(),
-            sessionId: options.sessionId,
-          })
-        : resolveClaudePaths({
-            configDir: this.configRoot,
-            cwd: this.currentCwd(),
-            sessionId: options.sessionId,
-          })
-    const paths = resolveClaudeWorkflowPaths({
-      projectRoot: claudePaths.projectRoot,
+    const dataPlanePaths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: this.configRoot,
+      cwd: this.currentCwd(),
+      sessionId: options.sessionId,
+    })
+    const paths = resolveNativeWorkflowPaths({
+      praxisRoot: dataPlanePaths.projectRoot,
       sessionId: options.sessionId,
       runId,
       workflowName: options.parsed.meta.name,
@@ -604,7 +596,7 @@ export class WorkflowManager {
     private readonly configRoot: string,
     private readonly cwd: string,
     private readonly cwdProvider?: () => string,
-    private readonly dataPlane: DataPlane = 'claude',
+    private readonly dataPlane: DataPlane = 'native',
   ) {}
 
   private currentCwd(): string {

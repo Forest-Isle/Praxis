@@ -50,9 +50,9 @@ praxis stop <agent-id>
 
 # Inside the interactive TUI
 /init
-# Analyze the repository and create or improve its shared CLAUDE.md guidance.
-# Set CLAUDE_CODE_NEW_INIT=1 before launch to enable the source-gated
-# CLAUDE.md + CLAUDE.local.md + skills/hooks onboarding flow.
+# Analyze the repository and create or improve its shared PRAXIS.md guidance.
+# Set PRAXIS_NEW_INIT=1 before launch to enable the enhanced
+# PRAXIS.md + PRAXIS.local.md + skills/hooks onboarding flow.
 /btw Explain this result without changing the conversation
 # Press f in the answer panel to continue it as a background Agent.
 /background
@@ -163,23 +163,18 @@ or tool capability. Teams remain local-first, single-user, and non-remote.
 | `PRAXIS_CONTEXT_RESERVE_TOKENS`     | No                 | Positive reserve; requires an explicit context window.                      |
 | `PRAXIS_PRICING_JSON`               | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
 | `PRAXIS_HOME`                       | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
-| `PRAXIS_DATA_PLANE`                 | No                 | `native` (default) or explicit `claude` compatibility mode.                 |
 | `PRAXIS_DISABLE_AUTO_MEMORY`        | No                 | `1` or `true`; disables every native Project-memory capability.             |
 | `PRAXIS_PROJECT_MEMORY_EXTRACTION`  | No                 | `1` or `true`; enables isolated background Project-memory extraction.       |
 | `PRAXIS_PROJECT_MEMORY_RECALL`      | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.        |
 | `PRAXIS_ENABLE_TEAMS`               | No                 | `true`; explicitly enables experimental local Team commands and tools.      |
-| `CLAUDE_CONFIG_DIR`                 | Claude mode only   | Claude compatibility root; defaults to `~/.claude`.                         |
-| `CLAUDE_CODE_DISABLE_AUTO_MEMORY`   | Claude mode only   | `1` or `true`; disables every Claude-compatible Project-memory capability.  |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`.
 
 Prompt caching defaults to five minutes on the official Anthropic endpoint and
-to disabled on compatible gateways. In Claude data-plane mode, Praxis also
-honors `DISABLE_PROMPT_CACHING`, the model-family-specific
-`DISABLE_PROMPT_CACHING_HAIKU`, `DISABLE_PROMPT_CACHING_SONNET`, and
-`DISABLE_PROMPT_CACHING_OPUS` controls, plus `ENABLE_PROMPT_CACHING_1H` and
-`FORCE_PROMPT_CACHING_5M`. Cache policy is captured when a session runtime is
+to disabled on compatible gateways. Configure it with the native
+`PRAXIS_ANTHROPIC_PROMPT_CACHING` and `PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL`
+variables. Cache policy is captured when a session runtime is
 created; changing these variables affects only newly created runtimes. Setting
 the one-hour TTL is an explicit operator capability declaration for every model
 that runtime may select; Praxis does not probe compatible gateways for it.
@@ -190,7 +185,7 @@ the files API key is next; `PRAXIS_API_KEY` is the final credential fallback.
 
 ## Settings and shared resources
 
-Praxis can load Claude-compatible user, project, and local settings. Important
+Praxis can load native user, project, and local settings. Important
 controls include:
 
 - `--setting-sources user,project,local` to select normal shared sources;
@@ -223,17 +218,16 @@ Claude-compatible `sandbox` settings enable OS-level isolation for Bash:
 
 Use `/sandbox` for the Mode, Dependencies, Overrides, and Config panels. Use
 `/sandbox exclude "pattern"` to append an exclusion to
-`.claude/settings.local.json`. Explicit `Bash(...)` deny and ask rules remain
+`.praxis/settings.local.json`. Explicit `Bash(...)` deny and ask rules remain
 stronger than sandbox auto-allow. `dangerouslyDisableSandbox` only bypasses
 isolation when `allowUnsandboxedCommands` is true.
 
-See [COMPATIBILITY.md](COMPATIBILITY.md) for precedence and shared file layouts.
-
 ## Persistence and recovery
 
-Normal runs persist Claude-compatible JSONL under the shared config root.
-`--no-session-persistence` keeps a print-mode run in memory. `inspect` and
-`export` remain available for malformed or unverified-version transcripts.
+Normal runs persist native `praxis.transcript` v1 JSONL under
+`$PRAXIS_HOME/sessions/<project-key>/`. `--no-session-persistence` keeps a
+print-mode run in memory. `inspect` and `export` preserve malformed or
+unsupported native files for diagnostics without rewriting them.
 
 When `CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true`, successful file edits
 create compatible checkpoints. Rewind is a provider-free operation:

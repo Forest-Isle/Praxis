@@ -15,10 +15,18 @@ import {
   unresolvedActiveToolCallIds,
 } from './transcript-projection.js'
 import type {
-  NativeTranscriptStore,
+  NativeTranscriptLease,
+  NativeTranscriptLeaseResult,
   NativeTranscriptSnapshot,
   NativeTranscriptTail,
 } from '../persistence/native-transcript-store.js'
+
+/** Minimal transcript-store contract required by the native session facade. */
+export interface NativeSessionTranscriptStore {
+  withLease<T>(
+    operation: (lease: NativeTranscriptLease) => Promise<T>,
+  ): Promise<NativeTranscriptLeaseResult<T>>
+}
 
 export type NativeTranscriptActivation =
   | { readonly kind: 'start' }
@@ -37,6 +45,11 @@ export interface NativeCompactionAppend {
   readonly postTokens: number
   readonly durationMs: number
   readonly preservedMessages?: readonly ModelMessage[]
+  /** Optional parent in the active branch when compacting a selected range. */
+  readonly logicalParentId?: string
+  readonly direction?: 'from' | 'up_to'
+  readonly messagesSummarized?: number
+  readonly preservePrefix?: boolean
 }
 
 export type NativeInterruption =
@@ -53,6 +66,8 @@ export type NativeInterruption =
     }
 
 export interface NativeSessionTranscriptLease {
+  /** Events on the currently selected active branch, in parent order. */
+  activeEvents(): TranscriptEvent[]
   activeMessages(): ModelMessage[]
   interruption(): NativeInterruption
   beginToolExecution(callId: string): Promise<void>
@@ -76,14 +91,14 @@ export interface NativeForkOptions {
 
 export interface NativeSessionTranscriptOptions {
   readonly sessionId: string
-  readonly store: NativeTranscriptStore
+  readonly store: NativeSessionTranscriptStore
   readonly createId?: () => string
   readonly now?: () => string
 }
 
 export class NativeSessionTranscript {
   private readonly sessionId: string
-  private readonly store: NativeTranscriptStore
+  private readonly store: NativeSessionTranscriptStore
   private readonly createId: () => string
   private readonly now: () => string
 
@@ -198,6 +213,13 @@ export class NativeSessionTranscript {
       const initial = prepared
       const currentId = selectedId ?? initial.records.at(-1)?.event.id ?? null
       const records = [...initial.records]
+      const usedIds = new Set(records.map((record) => record.event.id))
+      const createUniqueId = (): string => {
+        let id = this.createId()
+        while (usedIds.has(id)) id = this.createId()
+        usedIds.add(id)
+        return id
+      }
       let tail: NativeTranscriptTail =
         currentId === null
           ? initial.tail
@@ -213,6 +235,11 @@ export class NativeSessionTranscript {
         return result
       }
       const lease: NativeSessionTranscriptLease = {
+        activeEvents: () =>
+          activeEvents(
+            records.map((record) => record.event),
+            activeId ?? undefined,
+          ).slice(),
         activeMessages: () =>
           projectActiveMessages(
             records.map((record) => record.event),
@@ -321,7 +348,7 @@ export class NativeSessionTranscript {
               throw new Error(`Native tool call already claimed: ${callId}`)
             const event: TranscriptEvent = {
               kind: 'tool-execution-started',
-              id: this.createId(),
+              id: createUniqueId(),
               parentId: activeId,
               sessionId: this.sessionId,
               timestamp: this.now(),
@@ -374,7 +401,7 @@ export class NativeSessionTranscript {
               throw new Error(`Native tool call is already resolved: ${callId}`)
             const event: TranscriptEvent = {
               kind: 'messages',
-              id: this.createId(),
+              id: createUniqueId(),
               parentId: activeId,
               sessionId: this.sessionId,
               timestamp: this.now(),
@@ -413,7 +440,7 @@ export class NativeSessionTranscript {
               throw new Error('native transcript cannot append empty messages')
             const event: TranscriptEvent = {
               kind: 'messages',
-              id: this.createId(),
+              id: createUniqueId(),
               parentId: activeId,
               sessionId: this.sessionId,
               timestamp: this.now(),
@@ -458,19 +485,28 @@ export class NativeSessionTranscript {
               throw new Error(
                 'Cannot compact a native transcript with unresolved tool calls',
               )
-            const boundaryId = this.createId()
-            const summaryId = this.createId()
+            const boundaryId = createUniqueId()
+            const summaryId = createUniqueId()
             const boundary: TranscriptEvent = {
               kind: 'context-boundary',
               id: boundaryId,
               parentId: null,
               sessionId: this.sessionId,
               timestamp: this.now(),
-              logicalParentId: activeId,
+              logicalParentId: input.logicalParentId ?? activeId,
               trigger: input.trigger,
               preTokens: input.preTokens,
               postTokens: input.postTokens,
               durationMs: input.durationMs,
+              ...(input.direction === undefined
+                ? {}
+                : { direction: input.direction }),
+              ...(input.messagesSummarized === undefined
+                ? {}
+                : { messagesSummarized: input.messagesSummarized }),
+              ...(input.preservePrefix === undefined
+                ? {}
+                : { preservePrefix: input.preservePrefix }),
             }
             const summary: TranscriptEvent = {
               kind: 'context-summary',
@@ -485,34 +521,40 @@ export class NativeSessionTranscript {
             for (const message of suffix) {
               if (message.role !== 'assistant') continue
               for (const call of message.toolCalls ?? [])
-                replayToolCallIds.set(call.id, this.createId())
+                replayToolCallIds.set(call.id, createUniqueId())
             }
-            const replaySuffix: ModelMessage[] = suffix.map((message) => {
-              if (message.role === 'assistant')
-                return {
-                  ...message,
-                  ...(message.toolCalls === undefined
-                    ? {}
-                    : {
-                        toolCalls: message.toolCalls.map((call) => ({
-                          ...call,
-                          id: replayToolCallIds.get(call.id) ?? call.id,
-                        })),
-                      }),
-                }
-              if (message.role === 'tool')
-                return {
-                  ...message,
-                  toolCallId:
-                    replayToolCallIds.get(message.toolCallId) ??
-                    message.toolCallId,
-                }
-              return { ...message }
-            })
+            const replaySuffix: ModelMessage[] = suffix
+              .filter(
+                (message) =>
+                  message.role !== 'tool' ||
+                  replayToolCallIds.has(message.toolCallId),
+              )
+              .map((message) => {
+                if (message.role === 'assistant')
+                  return {
+                    ...message,
+                    ...(message.toolCalls === undefined
+                      ? {}
+                      : {
+                          toolCalls: message.toolCalls.map((call) => ({
+                            ...call,
+                            id: replayToolCallIds.get(call.id) ?? call.id,
+                          })),
+                        }),
+                  }
+                if (message.role === 'tool')
+                  return {
+                    ...message,
+                    toolCallId:
+                      replayToolCallIds.get(message.toolCallId) ??
+                      message.toolCallId,
+                  }
+                return { ...message }
+              })
             const suffixEvent: TranscriptEvent | undefined = replaySuffix.length
               ? {
                   kind: 'messages',
-                  id: this.createId(),
+                  id: createUniqueId(),
                   parentId: summaryId,
                   sessionId: this.sessionId,
                   timestamp: this.now(),

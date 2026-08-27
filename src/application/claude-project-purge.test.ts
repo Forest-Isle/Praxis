@@ -13,9 +13,9 @@ import { dirname, join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 import { resolveDataPlaneRoot } from '../persistence/data-plane.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   executeClaudeProjectPurge,
   planClaudeProjectPurge,
@@ -53,7 +53,7 @@ async function fixture(): Promise<{
   return {
     root,
     configRoot,
-    statePath: join(configRoot, '.claude.json'),
+    statePath: join(configRoot, 'state.json'),
     project,
     otherProject,
   }
@@ -80,13 +80,13 @@ describe('Claude project purge', () => {
     const { configRoot, statePath, project, otherProject } = await fixture()
     const projectRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(project),
+      'sessions',
+      sanitizeProjectPath(project),
     )
     const otherProjectRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(otherProject),
+      'sessions',
+      sanitizeProjectPath(otherProject),
     )
     const state = {
       theme: 'dark',
@@ -128,7 +128,7 @@ describe('Claude project purge', () => {
       ),
       writeFixture(join(configRoot, 'shell-snapshots', 'keep.sh'), 'keep'),
       writeFixture(join(configRoot, 'backups', 'keep.json'), 'keep'),
-      writeFixture(join(configRoot, 'praxis', 'keep.json'), 'keep'),
+      writeFixture(join(configRoot, 'state', 'keep.json'), 'keep'),
     ])
 
     const plan = await planClaudeProjectPurge({
@@ -180,7 +180,7 @@ describe('Claude project purge', () => {
       access(join(configRoot, 'file-history', SESSION_B)),
       access(join(configRoot, 'shell-snapshots', 'keep.sh')),
       access(join(configRoot, 'backups', 'keep.json')),
-      access(join(configRoot, 'praxis', 'keep.json')),
+      access(join(configRoot, 'state', 'keep.json')),
     ])
     expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({
       theme: 'dark',
@@ -201,8 +201,8 @@ describe('Claude project purge', () => {
     const { configRoot, statePath, project } = await fixture()
     const projectRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(project),
+      'sessions',
+      sanitizeProjectPath(project),
     )
     await Promise.all([
       writeFixture(join(projectRoot, SESSION_A, 'subagents', 'agent.jsonl')),
@@ -237,16 +237,16 @@ describe('Claude project purge', () => {
 
   it('includes Claude project directories for worktrees below the target project', async () => {
     const { configRoot, statePath, project } = await fixture()
-    const worktree = join(project, '.claude', 'worktrees', 'feature')
+    const worktree = join(project, '.praxis', 'worktrees', 'feature')
     const targetRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(project),
+      'sessions',
+      sanitizeProjectPath(project),
     )
     const worktreeRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(worktree),
+      'sessions',
+      sanitizeProjectPath(worktree),
     )
     await Promise.all([
       writeFixture(join(targetRoot, `${SESSION_A}.jsonl`)),
@@ -281,12 +281,12 @@ describe('Claude project purge', () => {
     const targetRoot = join(
       configRoot,
       'sessions',
-      sanitizeClaudeProjectPath(project),
+      sanitizeProjectPath(project),
     )
     const worktreeRoot = join(
       configRoot,
       'sessions',
-      sanitizeClaudeProjectPath(worktree),
+      sanitizeProjectPath(worktree),
     )
     await Promise.all([
       writeFixture(join(targetRoot, `${SESSION_A}.jsonl`)),
@@ -320,8 +320,8 @@ describe('Claude project purge', () => {
       writeFixture(
         join(
           configRoot,
-          'projects',
-          sanitizeClaudeProjectPath(project),
+          'sessions',
+          sanitizeProjectPath(project),
           `${SESSION_A}.jsonl`,
         ),
       ),
@@ -331,7 +331,7 @@ describe('Claude project purge', () => {
       writeFixture(join(configRoot, 'history.jsonl'), '{}\n'),
       writeFixture(join(configRoot, 'shell-snapshots', 'keep.sh')),
       writeFixture(join(configRoot, 'backups', 'keep.json')),
-      writeFixture(join(configRoot, 'praxis', 'keep.json')),
+      writeFixture(join(configRoot, 'state', 'keep.json')),
       writeFixture(
         statePath,
         JSON.stringify({
@@ -361,7 +361,7 @@ describe('Claude project purge', () => {
     expect(result.failures).toEqual([])
     expect(result.deleted).toHaveLength(6)
     await Promise.all(
-      ['projects', 'tasks', 'debug', 'file-history', 'history.jsonl'].map(
+      ['sessions', 'tasks', 'debug', 'file-history', 'history.jsonl'].map(
         async (name) =>
           expect(await missing(join(configRoot, name))).toBe(true),
       ),
@@ -369,7 +369,7 @@ describe('Claude project purge', () => {
     await Promise.all([
       access(join(configRoot, 'shell-snapshots', 'keep.sh')),
       access(join(configRoot, 'backups', 'keep.json')),
-      access(join(configRoot, 'praxis', 'keep.json')),
+      access(join(configRoot, 'state', 'keep.json')),
     ])
     expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({
       version: 7,
@@ -380,8 +380,8 @@ describe('Claude project purge', () => {
 
   it('purges native project memory and scheduled prompts for one project', async () => {
     const { configRoot, statePath, project, otherProject } = await fixture()
-    const projectKey = sanitizeClaudeProjectPath(project)
-    const otherKey = sanitizeClaudeProjectPath(otherProject)
+    const projectKey = sanitizeProjectPath(project)
+    const otherKey = sanitizeProjectPath(otherProject)
     const projectRoot = join(configRoot, 'sessions', projectKey)
     await Promise.all([
       writeFixture(join(projectRoot, `${SESSION_A}.jsonl`)),
@@ -442,7 +442,7 @@ describe('Claude project purge', () => {
       'worktrees',
       'purge-memory',
     )
-    const mainKey = sanitizeClaudeProjectPath(mainRepository)
+    const mainKey = sanitizeProjectPath(mainRepository)
     await Promise.all([
       writeFixture(join(worktree, '.git'), `gitdir: ${gitDirectory}\n`),
       writeFixture(join(gitDirectory, 'commondir'), '../..\n'),
@@ -471,7 +471,7 @@ describe('Claude project purge', () => {
 
   it('purges all native memory and scheduled prompt roots with --all', async () => {
     const { configRoot, statePath, project } = await fixture()
-    const projectKey = sanitizeClaudeProjectPath(project)
+    const projectKey = sanitizeProjectPath(project)
     await Promise.all([
       writeFixture(
         join(configRoot, 'sessions', projectKey, `${SESSION_A}.jsonl`),
@@ -527,7 +527,6 @@ describe('Claude project purge', () => {
     const home = join(root, 'home')
     const cwd = join(root, 'workspace')
     const configRoot = resolveDataPlaneRoot({
-      dataPlane: 'native',
       environment: { PRAXIS_HOME: '   ' },
       homeDirectory: home,
     })
@@ -559,8 +558,8 @@ describe('Claude project purge', () => {
     const { configRoot, statePath, project } = await fixture()
     const transcript = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(project),
+      'sessions',
+      sanitizeProjectPath(project),
       `${SESSION_A}.jsonl`,
     )
     await Promise.all([
@@ -584,8 +583,8 @@ describe('Claude project purge', () => {
     const outside = join(root, 'outside')
     const projectRoot = join(
       configRoot,
-      'projects',
-      sanitizeClaudeProjectPath(project),
+      'sessions',
+      sanitizeProjectPath(project),
     )
     await Promise.all([
       mkdir(dirname(projectRoot), { recursive: true }),
@@ -609,7 +608,7 @@ describe('Claude project purge', () => {
 
   it.each([
     ['native', 'state.json'],
-    ['claude', '.claude.json'],
+    ['native', 'state.json'],
   ] as const)(
     'rejects an outside %s state symlink without mutating its target',
     async (dataPlane: DataPlane, stateName: string) => {
@@ -620,7 +619,7 @@ describe('Claude project purge', () => {
       const transcript = join(
         configRoot,
         dataPlane === 'native' ? 'sessions' : 'projects',
-        sanitizeClaudeProjectPath(project),
+        sanitizeProjectPath(project),
         `${SESSION_A}.jsonl`,
       )
       await Promise.all([
@@ -704,7 +703,7 @@ describe('Claude project purge', () => {
     await expect(
       planClaudeProjectPurge({ cwd: project, configRoot }),
     ).resolves.toMatchObject({
-      statePath: join(configRoot, '.claude.json'),
+      statePath: join(configRoot, 'state.json'),
       items: [],
     })
   })

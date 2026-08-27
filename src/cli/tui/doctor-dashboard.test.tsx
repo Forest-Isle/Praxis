@@ -24,7 +24,6 @@ function report(overrides: Partial<DoctorReport> = {}): DoctorReport {
       packageManager: 'npm',
       installationPath: '/usr/local/lib/node_modules/praxis-agent/dist/cli.js',
       invokedBinary: '/usr/local/bin/praxis',
-      configInstallMethod: 'default (~/.claude)',
       search: {
         working: true,
         mode: 'system',
@@ -132,7 +131,6 @@ describe('DoctorDashboard', () => {
       'Path: /usr/local/lib/node_modules/praxis-agent/dist/cli.js',
     )
     expect(frame).toContain('Invoked: /usr/local/bin/praxis')
-    expect(frame).toContain('Config install method: default (~/.claude)')
     expect(frame).toContain('Search: OK (system)')
     expect(frame).toContain('└ /usr/local/bin/rg')
     expect(frame).toContain('Updates')

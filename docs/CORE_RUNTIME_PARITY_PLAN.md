@@ -20,10 +20,9 @@ it does not mean copying Claude Code source.
    remain a preflight fallback only. Context recovery is staged and bounded:
    result snip/micro-compaction, automatic summary compaction, then one
    reactive retry for a provider prompt-too-long/media-size error.
-4. Keep private operational state in the Claude config root under `praxis/`.
-   Session Memory is a sidecar with atomic files and progress metadata; it is
-   injected into model context but never adds Praxis-only entries to shared
-   transcripts.
+4. Keep private operational state in the Praxis root. Session Memory is a
+   sidecar with atomic files and progress metadata; it is injected into model
+   context but never adds Praxis-only entries to shared transcripts.
 5. Preserve every Claude transcript producer version. Read and write adapters
    are selected by structural entry shape, with an explicit unsupported-shape
    error rather than a version allowlist.
@@ -68,8 +67,7 @@ heuristic estimates remain available for providers that emit no usage.
 artifacts, and a small JSON progress record under the selected private data
 plane. The progress record atomically points to the authoritative artifact, so
 a failed write or crash cannot pair a new summary with an old watermark. Native
-runs use `<praxis-root>/state/session-memory/<sessionId>/`; explicit Claude
-compatibility uses `<claude-config>/praxis/session-memory/<sessionId>/`.
+runs use `<praxis-root>/state/session-memory/<sessionId>/`.
 `SessionMemoryController` snapshots model messages before asynchronous work,
 tracks current ContextEngine occupancy plus tool thresholds, serializes
 extraction, and gives compact a soft 15-second wait that immediately ignores
@@ -106,7 +104,7 @@ this branch:
   authoritative and heuristic estimates as the preflight fallback.
 - **Session Memory** — a readable `summary.md` mirror plus atomically selected
   immutable summary artifacts and progress metadata persist only in the chosen
-  native or Claude-compatibility private root; the shared JSONL remains
+  Praxis private root; the shared JSONL remains
   Claude-compatible append-only data without Praxis-only entry types or fields.
 - **Transcript read/write** — schema adapters are selected from entry structure
   rather than an installed/producer-version allowlist; every semver-like
@@ -121,19 +119,14 @@ this branch:
 - **Verification** — focused Vitest tests and negative paths, the
   task/workflow/cron/background capability matrices, prompt-too-long recovery,
   session-memory extraction, resume/fork, and supported-transcript-producer
-  verification pass in this local environment. The full current-Claude
-  compatibility matrix remains blocked here because the externally routed
-  `haiku` model request maps to a local provider model that reports
-  `unrecognized_model`; this is an external model-routing failure, not a
-  schema/version assertion failure. Ordinary current-Claude compatibility and
-  probe gates accept a detected semver-like producer version; historical
-  cross-version tests retain their explicitly pinned reference binaries.
+  verification pass in this local environment. The native qualification
+  matrix is the release gate; provider model routing remains an external
+  integration concern and is not represented as a storage or runtime lane.
 
-Known caveat: current Claude Code's internal model routing (which upstream
-model serves a given request) is external to the local compatibility contract
-and is not observable from the shared filesystem or probe gates. Praxis routes
-provider requests through its configured `ModelProvider`, so model-level
-routing parity with the current Claude release is not claimed.
+Known caveat: provider model routing is external to the local runtime contract
+and is not observable from the shared filesystem. Praxis routes provider
+requests through its configured `ModelProvider`; model-level routing parity is
+not claimed.
 
 ## Acceptance Gates
 
@@ -141,7 +134,6 @@ routing parity with the current Claude release is not claimed.
 - `npm run format:check`, `npm run lint`, `npm run typecheck`, and the focused
   test files before integration.
 - After sequential integration: `npm run check`,
-  `npm run test:compat:all`, `npm run test:package`,
   `npm run test:performance`, and `npm audit --omit=dev`.
 - A smoke session through the connected Claude Worker MCP proving model -> tool
   -> continuation, compact recovery, and resume from a prior JSONL transcript.

@@ -3,14 +3,13 @@ import {
   mkdtemp,
   readFile,
   readdir,
-  realpath,
   rm,
   symlink,
   utimes,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -28,11 +27,6 @@ import {
   type ProjectMemoryRecallHandle,
   type ProjectMemoryRecallPayload,
 } from './project-memory.js'
-import { resolveProjectMemoryPolicy } from '../core/project-memory.js'
-import {
-  resolveProjectMemoryDirectory,
-  resolveProjectMemoryStatePath,
-} from '../platform/project-memory-paths.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -70,11 +64,6 @@ function attachmentBlocks(payload: ProjectMemoryRecallPayload): string[] {
 
 const roots: string[] = []
 
-async function fixture(path: string, content: string): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, content)
-}
-
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -82,75 +71,6 @@ afterEach(async () => {
 })
 
 describe('Project memory', () => {
-  it('uses one canonical project key across native and Claude linked worktrees', async () => {
-    const root = await realpath(
-      await mkdtemp(join(tmpdir(), 'praxis-project-memory-')),
-    )
-    roots.push(root)
-    const mainRepository = join(root, 'main')
-    const worktree = join(root, 'worktree')
-    const gitDirectory = join(
-      mainRepository,
-      '.git',
-      'worktrees',
-      'fixture-worktree',
-    )
-    await Promise.all([
-      fixture(join(worktree, '.git'), `gitdir: ${gitDirectory}\n`),
-      fixture(join(gitDirectory, 'commondir'), '../..\n'),
-    ])
-
-    const nativeMain = await resolveProjectMemoryDirectory({
-      dataPlane: 'native',
-      configRoot: join(root, 'praxis'),
-      cwd: mainRepository,
-    })
-    const nativeWorktree = await resolveProjectMemoryDirectory({
-      dataPlane: 'native',
-      configRoot: join(root, 'praxis'),
-      cwd: join(worktree, 'packages', 'app'),
-    })
-    const claudeMain = await resolveProjectMemoryDirectory({
-      dataPlane: 'claude',
-      configRoot: join(root, 'claude'),
-      cwd: mainRepository,
-    })
-    const claudeWorktree = await resolveProjectMemoryDirectory({
-      dataPlane: 'claude',
-      configRoot: join(root, 'claude'),
-      cwd: join(worktree, 'packages', 'app'),
-    })
-
-    expect(nativeWorktree).toBe(nativeMain)
-    expect(claudeWorktree).toBe(claudeMain)
-    expect(nativeMain).toContain(`${join(root, 'praxis', 'memory')}`)
-    expect(claudeMain).toContain(`${join(root, 'claude', 'projects')}`)
-    expect(nativeMain).not.toBe(claudeMain)
-    expect(
-      resolveProjectMemoryStatePath({
-        dataPlane: 'native',
-        configRoot: join(root, 'praxis'),
-        memoryDirectory: nativeMain,
-      }),
-    ).toBe(
-      join(
-        root,
-        'praxis',
-        'state',
-        'project-memory',
-        mainRepository.replaceAll('/', '-'),
-        'cursor.json',
-      ),
-    )
-    expect(
-      resolveProjectMemoryStatePath({
-        dataPlane: 'claude',
-        configRoot: join(root, 'claude'),
-        memoryDirectory: claudeMain,
-      }),
-    ).toContain(join('claude', 'praxis', 'project-memory'))
-  })
-
   it('bounds the injected index by both lines and UTF-8 bytes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-'))
     roots.push(root)
@@ -207,54 +127,6 @@ describe('Project memory', () => {
       typeStatus: 'unknown',
       content: 'Keep this too.',
     })
-  })
-
-  it('uses one disable switch for every Project-memory capability', () => {
-    expect(
-      resolveProjectMemoryPolicy({
-        dataPlane: 'native',
-        settings: [{ value: { autoMemoryEnabled: false } }],
-        environment: {
-          PRAXIS_PROJECT_MEMORY_EXTRACTION: '1',
-          PRAXIS_PROJECT_MEMORY_RECALL: '1',
-        },
-      }),
-    ).toEqual({ enabled: false, extraction: false, recall: false })
-    expect(
-      resolveProjectMemoryPolicy({
-        dataPlane: 'native',
-        settings: [],
-        environment: {
-          PRAXIS_DISABLE_AUTO_MEMORY: '1',
-          PRAXIS_PROJECT_MEMORY_EXTRACTION: '1',
-          PRAXIS_PROJECT_MEMORY_RECALL: '1',
-        },
-      }),
-    ).toEqual({ enabled: false, extraction: false, recall: false })
-    expect(
-      resolveProjectMemoryPolicy({
-        dataPlane: 'claude',
-        settings: [],
-        environment: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
-      }),
-    ).toEqual({ enabled: false, extraction: false, recall: false })
-    expect(
-      resolveProjectMemoryPolicy({
-        dataPlane: 'native',
-        settings: [],
-        environment: {
-          PRAXIS_PROJECT_MEMORY_EXTRACTION: 'true',
-          PRAXIS_PROJECT_MEMORY_RECALL: 'true',
-        },
-      }),
-    ).toEqual({ enabled: true, extraction: true, recall: true })
-    expect(
-      resolveProjectMemoryPolicy({
-        dataPlane: 'claude',
-        settings: [],
-        environment: {},
-      }),
-    ).toEqual({ enabled: true, extraction: false, recall: false })
   })
 
   it('offers only the 200 newest bounded topic metadata records to recall', async () => {

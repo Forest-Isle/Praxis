@@ -54,6 +54,8 @@ import type { DataPlane } from '../persistence/data-plane.js'
 
 export interface LocalToolRegistryOptions {
   cwd: string
+  /** @deprecated Accepted for caller compatibility; native storage is always used. */
+  dataPlane?: DataPlane
   cwdProvider?: () => string
   sharedMemoryDirectory?: string
   additionalDirectories?: readonly string[]
@@ -69,7 +71,6 @@ export interface LocalToolRegistryOptions {
   sandbox?: BashSandboxRuntime
   homeDirectory?: string
   configRoot?: string
-  dataPlane?: DataPlane
 }
 
 export interface BashSandboxRuntime {
@@ -698,14 +699,11 @@ export class LocalToolRegistry implements ToolRegistry {
       : homedir()
     this.configRoot = options.configRoot
       ? resolve(options.configRoot)
-      : process.env.CLAUDE_CONFIG_DIR
-        ? resolve(process.env.CLAUDE_CONFIG_DIR)
-        : resolve(this.homeDirectory, '.claude')
+      : resolve(this.homeDirectory, '.praxis')
     this.protectedWriteReason = (absolutePath) =>
       protectedWritePathReason(absolutePath, {
         homeDirectory: this.homeDirectory,
         configRoot: this.configRoot,
-        dataPlane: options.dataPlane ?? 'claude',
       })
     this.processRunner = new BoundedProcessRunner({
       cwd: this.cwd,

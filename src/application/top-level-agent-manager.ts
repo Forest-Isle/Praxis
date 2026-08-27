@@ -5,7 +5,6 @@ import { mkdir, readFile, readdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import { isTerminalLifecycleState } from '../core/agent-orchestration.js'
 import type { RuntimeEventSink } from '../core/runtime.js'
 import {
@@ -111,12 +110,6 @@ const WORKER_RUNTIME_ENVIRONMENT = [
   'PRAXIS_ANTHROPIC_WEB_SEARCH',
   'PRAXIS_ANTHROPIC_PROMPT_CACHING',
   'PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL',
-  'DISABLE_PROMPT_CACHING',
-  'DISABLE_PROMPT_CACHING_HAIKU',
-  'DISABLE_PROMPT_CACHING_SONNET',
-  'DISABLE_PROMPT_CACHING_OPUS',
-  'ENABLE_PROMPT_CACHING_1H',
-  'FORCE_PROMPT_CACHING_5M',
   'PRAXIS_CONTEXT_WINDOW_TOKENS',
   'PRAXIS_CONTEXT_RESERVE_TOKENS',
   'PRAXIS_PRICING_JSON',
@@ -130,20 +123,14 @@ const WORKER_RUNTIME_ENVIRONMENT = [
 function workerEnvironment(
   source: NodeJS.ProcessEnv,
   configRoot: string,
-  dataPlane: DataPlane,
 ): Record<string, string> {
-  const environment = sanitizeChildEnvironment({}, source)
+  const environment = sanitizeChildEnvironment({ PATH: source.PATH }, {})
   for (const name of WORKER_RUNTIME_ENVIRONMENT) {
     const value = source[name]
     if (value !== undefined) environment[name] = value
   }
-  if (dataPlane === 'native') {
-    environment.PRAXIS_DATA_PLANE = 'native'
-    environment.PRAXIS_HOME = configRoot
-  } else {
-    environment.PRAXIS_DATA_PLANE = 'claude'
-    environment.CLAUDE_CONFIG_DIR = configRoot
-  }
+  environment.PRAXIS_DATA_PLANE = 'native'
+  environment.PRAXIS_HOME = configRoot
   return environment
 }
 
@@ -158,12 +145,10 @@ function socketPath(configRoot: string, id: string): string {
 
 export function topLevelAgentProcessRegistryRoot(
   configRoot: string,
-  dataPlane: DataPlane = 'claude',
+  dataPlane?: DataPlane,
 ): string {
-  return join(
-    configRoot,
-    ...(dataPlane === 'native' ? ['state', 'sessions'] : ['sessions']),
-  )
+  void dataPlane
+  return join(configRoot, 'state', 'sessions')
 }
 
 function writeWire(socket: Socket, message: WireMessage): void {
@@ -334,10 +319,7 @@ export class TopLevelAgentManager {
   constructor(private readonly options: TopLevelAgentManagerOptions) {
     this.store = new ClaudeJobStore(
       options.configRoot,
-      join(
-        options.configRoot,
-        options.dataPlane === 'native' ? 'state' : 'praxis',
-      ),
+      join(options.configRoot, 'state'),
     )
   }
 
@@ -463,7 +445,6 @@ export class TopLevelAgentManager {
           env: workerEnvironment(
             this.options.environment ?? process.env,
             this.options.configRoot,
-            this.options.dataPlane ?? 'claude',
           ),
           detached: true,
           stdio: 'ignore',
@@ -631,7 +612,6 @@ export class TopLevelAgentManager {
   ): Promise<TopLevelAgentSummary[]> {
     const registryRoot = topLevelAgentProcessRegistryRoot(
       this.options.configRoot,
-      this.options.dataPlane,
     )
     let files: string[]
     try {
@@ -679,19 +659,12 @@ export class TopLevelAgentManager {
       }
     }
     try {
-      const paths =
-        this.options.dataPlane === 'native'
-          ? resolveDataPlanePaths({
-              dataPlane: 'native',
-              root: this.options.configRoot,
-              cwd: agent.cwd,
-              sessionId: agent.sessionId,
-            })
-          : resolveClaudePaths({
-              configDir: this.options.configRoot,
-              cwd: agent.cwd,
-              sessionId: agent.sessionId,
-            })
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: this.options.configRoot,
+        cwd: agent.cwd,
+        sessionId: agent.sessionId,
+      })
       return await readFile(paths.sessionFile, 'utf8')
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -934,10 +907,7 @@ export class TopLevelAgentManager {
       const value = JSON.parse(
         await readFile(
           join(
-            topLevelAgentProcessRegistryRoot(
-              this.options.configRoot,
-              this.options.dataPlane,
-            ),
+            topLevelAgentProcessRegistryRoot(this.options.configRoot),
             `${state.pid}.json`,
           ),
           'utf8',
@@ -987,10 +957,7 @@ export async function runTopLevelAgentWorker(options: {
   }
   const store = new ClaudeJobStore(
     options.configRoot,
-    join(
-      options.configRoot,
-      options.dataPlane === 'native' ? 'state' : 'praxis',
-    ),
+    join(options.configRoot, 'state'),
   )
   let execution: ClaudeJobExecution | undefined
   let cleanupClaimed: (() => Promise<void>) | undefined
@@ -1136,7 +1103,7 @@ export async function runTopLevelAgentWorker(options: {
     const socketFile =
       initial.socketPath ?? socketPath(options.configRoot, options.id)
     const processFile = join(
-      topLevelAgentProcessRegistryRoot(options.configRoot, options.dataPlane),
+      topLevelAgentProcessRegistryRoot(options.configRoot),
       `${process.pid}.json`,
     )
     const processStartedAt = Date.now()

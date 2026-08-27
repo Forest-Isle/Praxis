@@ -9,12 +9,11 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
 import {
   projectContextSnapshot,
   type ContextSnapshot,
@@ -33,7 +32,6 @@ import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
-import { ClaudeSidechainStore } from '../persistence/claude-sidechain-store.js'
 import {
   SubagentExecution,
   SubagentLifecycleStore,
@@ -182,6 +180,27 @@ function entries(source: string): Record<string, unknown>[] {
     .map((line) => JSON.parse(line) as Record<string, unknown>)
 }
 
+function nativeEnvelope(
+  sessionId: string,
+  id: string,
+  parentId: string | null,
+  messages: ModelRequest['messages'],
+  timestamp: string,
+): string {
+  return `${JSON.stringify({
+    schema: 'praxis.transcript',
+    version: 1,
+    event: {
+      kind: 'messages',
+      id,
+      parentId,
+      sessionId,
+      timestamp,
+      messages,
+    },
+  })}\n`
+}
+
 describe('foreground Claude Agent execution', () => {
   it('installs the no-hook stop boundary for durable follow-ups', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-durable-stop-test-'))
@@ -190,7 +209,7 @@ describe('foreground Claude Agent execution', () => {
     let acknowledged = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider: {
@@ -233,7 +252,7 @@ describe('foreground Claude Agent execution', () => {
     let completed = false
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider: {
@@ -279,7 +298,7 @@ describe('foreground Claude Agent execution', () => {
     let turn = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -465,6 +484,7 @@ describe('foreground Claude Agent execution', () => {
     const runtimeEvents: RuntimeEvent[] = []
     const service = new ClaudeSessionService({
       configRoot,
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -494,8 +514,9 @@ describe('foreground Claude Agent execution', () => {
         summary: 'FOREGROUND_CHILD_RESULT',
       }),
     )
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
@@ -583,7 +604,7 @@ describe('foreground Claude Agent execution', () => {
     const lineChanges: { linesAdded: number; linesRemoved: number }[] = []
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: parentProvider,
@@ -659,7 +680,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -793,7 +814,7 @@ describe('foreground Claude Agent execution', () => {
     const rejection = new Error('line change accounting failed')
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: parentProvider,
@@ -828,7 +849,12 @@ describe('foreground Claude Agent execution', () => {
 
     expect(lineChanges).toEqual([{ linesAdded: 3, linesRemoved: 1 }])
 
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const sidechainDirectory = join(paths.projectRoot, sessionId, 'subagents')
     const transcriptFile = (await readdir(sidechainDirectory)).find((name) =>
       name.endsWith('.jsonl'),
@@ -862,7 +888,7 @@ describe('foreground Claude Agent execution', () => {
     roots.push(root)
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd: join(root, 'project'),
       claudeVersion: '2.1.208',
       provider: {
@@ -903,10 +929,7 @@ describe('foreground Claude Agent execution', () => {
     ).rejects.toThrow('Workflow agents require session persistence')
   })
 
-  it.each([
-    { dataPlane: 'native' as const, projectDirectory: 'sessions' },
-    { dataPlane: 'claude' as const, projectDirectory: 'projects' },
-  ])(
+  it.each([{ dataPlane: 'native' as const, projectDirectory: 'sessions' }])(
     'stores $dataPlane sidechains and locks in that data plane',
     async ({ dataPlane, projectDirectory }) => {
       const root = await mkdtemp(join(tmpdir(), `praxis-${dataPlane}-agent-`))
@@ -961,15 +984,12 @@ describe('foreground Claude Agent execution', () => {
         { cwd },
       )
       const agentId = String(result.nativeToolUseResult?.agentId)
-      const paths =
-        dataPlane === 'native'
-          ? resolveDataPlanePaths({
-              dataPlane,
-              root: configRoot,
-              cwd,
-              sessionId,
-            })
-          : resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId,
+      })
       const transcript = join(
         paths.projectRoot,
         sessionId,
@@ -1000,9 +1020,6 @@ describe('foreground Claude Agent execution', () => {
           cwd,
           promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
         })
-      } else {
-        expect(source).toContain('"isSidechain":true')
-        expect(source).not.toContain('"schema":"praxis.transcript"')
       }
       expect((await stat(join(paths.praxisRoot, 'locks'))).isDirectory()).toBe(
         true,
@@ -1014,10 +1031,7 @@ describe('foreground Claude Agent execution', () => {
       await expect(stat(wrongProjectRoot)).rejects.toMatchObject({
         code: 'ENOENT',
       })
-      const wrongLockRoot = join(
-        configRoot,
-        dataPlane === 'native' ? 'praxis' : 'state',
-      )
+      const wrongLockRoot = join(configRoot, 'praxis')
       await expect(stat(wrongLockRoot)).rejects.toMatchObject({
         code: 'ENOENT',
       })
@@ -1277,7 +1291,10 @@ describe('foreground Claude Agent execution', () => {
     }
     const service = new ClaudeSessionService({
       configRoot,
+      dataPlane: 'native',
       cwd,
+      sessionPersistence: true,
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider,
       tools: emptyTools,
@@ -1290,30 +1307,19 @@ describe('foreground Claude Agent execution', () => {
     expect(result.text).toBe('MAIN_RESULT')
     expect(result.usage).toEqual({ inputTokens: 15, outputTokens: 7 })
     expect(requests).toHaveLength(3)
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
     const mainEntries = entries(await readFile(paths.sessionFile, 'utf8'))
-    const toolResult = mainEntries.find(
-      (entry) =>
-        entry.type === 'user' &&
-        typeof entry.toolUseResult === 'object' &&
-        entry.toolUseResult !== null &&
-        (entry.toolUseResult as Record<string, unknown>).agentId,
-    )
-    expect(toolResult?.toolUseResult).toMatchObject({
-      status: 'completed',
-      prompt: 'Return CHILD_RESULT',
-      agentType: 'general-purpose',
-      resolvedModel: 'fixture-model',
-      totalTokens: 10,
-      totalToolUseCount: 0,
-      usage: { input_tokens: 7, output_tokens: 3 },
-    })
-    const nativeResult = toolResult?.toolUseResult as Record<string, unknown>
-    const agentId = String(nativeResult.agentId)
+    const source = JSON.stringify(mainEntries)
+    expect(source).toContain('call_agent')
+    expect(source).toContain('CHILD_RESULT')
+    const agentIdMatch = source.match(/agentId: (a[0-9a-f]{16})/u)
+    if (!agentIdMatch) throw new Error('Native Agent result is missing agentId')
+    const agentId = agentIdMatch[1]
     expect(agentId).toMatch(/^a[0-9a-f]{16}$/)
 
     const subagentDirectory = join(
@@ -1330,24 +1336,17 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(sidechainEntries).toHaveLength(2)
     expect(sidechainEntries[0]).toMatchObject({
-      parentUuid: null,
-      isSidechain: true,
-      agentId,
-      type: 'user',
-      sessionId: result.sessionId,
-      message: { role: 'user', content: 'Return CHILD_RESULT' },
+      schema: 'praxis.transcript',
+      event: {
+        kind: 'messages',
+        parentId: null,
+        messages: [{ role: 'user', content: 'Return CHILD_RESULT' }],
+      },
     })
     expect(sidechainEntries[1]).toMatchObject({
-      isSidechain: true,
-      agentId,
-      attributionAgent: 'general-purpose',
-      type: 'assistant',
-      sessionId: result.sessionId,
+      schema: 'praxis.transcript',
+      event: { kind: 'messages' },
     })
-    const mainPrompt = mainEntries.find(
-      (entry) => entry.type === 'user' && entry.promptSource === 'interactive',
-    )
-    expect(sidechainEntries[0]?.promptId).toBe(mainPrompt?.promptId)
     expect(
       JSON.parse(
         await readFile(
@@ -1355,7 +1354,7 @@ describe('foreground Claude Agent execution', () => {
           'utf8',
         ),
       ),
-    ).toEqual({
+    ).toMatchObject({
       agentType: 'general-purpose',
       description: 'Return marker',
       toolUseId: 'call_agent',
@@ -1477,7 +1476,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1548,7 +1547,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1617,7 +1616,7 @@ describe('foreground Claude Agent execution', () => {
     const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
       new ClaudeSubagentExecutor({
         configRoot: join(root, 'config'),
-        dataPlane: 'claude',
+        dataPlane: 'native',
         cwd,
         claudeVersion: '2.1.208',
         provider: {
@@ -1699,8 +1698,9 @@ describe('foreground Claude Agent execution', () => {
       )
       await registry.execute(call, { cwd })
     }
-    const paths = resolveClaudePaths({
-      configDir: join(root, 'config'),
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: join(root, 'config'),
       cwd,
       sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     })
@@ -1743,7 +1743,7 @@ describe('foreground Claude Agent execution', () => {
     let providerCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1782,7 +1782,12 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(providerCalls).toBe(0)
 
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const lifecycleDirectory = join(
       paths.praxisRoot,
       'subagent-lifecycle',
@@ -1835,7 +1840,7 @@ describe('foreground Claude Agent execution', () => {
     let initialProviderCalls = 0
     const interrupted = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1905,7 +1910,12 @@ describe('foreground Claude Agent execution', () => {
       releaseSpy.mockRestore()
     }
 
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const lifecycleStore = new SubagentLifecycleStore(
       paths.praxisRoot,
       sessionId,
@@ -1918,7 +1928,7 @@ describe('foreground Claude Agent execution', () => {
     let recoveryProviderCalls = 0
     const recovered = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -1975,7 +1985,7 @@ describe('foreground Claude Agent execution', () => {
     let providerCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -2003,7 +2013,7 @@ describe('foreground Claude Agent execution', () => {
       )
       .mockResolvedValue({ cwd: join(cwd, 'fake-worktree'), cleanup })
     const sidechainSpy = vi
-      .spyOn(ClaudeSidechainStore.prototype, 'create')
+      .spyOn(NativeSidechainTranscript.prototype, 'create')
       .mockRejectedValue(new Error('sidechain setup failed'))
     try {
       const registry = executor.registry(sessionId, 0, () => promptId)
@@ -2039,8 +2049,9 @@ describe('foreground Claude Agent execution', () => {
       expect(providerCalls).toBe(0)
       expect(cleanup).toHaveBeenCalledTimes(1)
 
-      const paths = resolveClaudePaths({
-        configDir: configRoot,
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
         cwd,
         sessionId,
       })
@@ -2187,12 +2198,12 @@ describe('foreground Claude Agent execution', () => {
     )
   })
 
-  it('retains project agent memory under .claude in explicit compatibility mode', async () => {
+  it('retains project agent memory under .praxis', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-agent-memory-compat-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
-    const memoryDirectory = join(cwd, '.claude', 'agent-memory', 'rememberer')
+    const memoryDirectory = join(cwd, '.praxis', 'agent-memory', 'rememberer')
     await mkdir(memoryDirectory, { recursive: true })
     await writeFile(join(memoryDirectory, 'MEMORY.md'), 'COMPAT_MEMORY_MARKER')
     const extensions = new ClaudeExtensionCatalog({
@@ -2212,7 +2223,7 @@ describe('foreground Claude Agent execution', () => {
       configRoot,
       cwd,
       extensions.agent('rememberer'),
-      'claude',
+      'native',
     )
 
     expect(prompt).toContain('COMPAT_MEMORY_MARKER')
@@ -2359,6 +2370,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const service = new ClaudeSessionService({
       configRoot,
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -2610,6 +2622,9 @@ describe('foreground Claude Agent execution', () => {
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      sessionPersistence: true,
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider,
       tools: emptyTools,
@@ -2620,14 +2635,15 @@ describe('foreground Claude Agent execution', () => {
     const result = await service.run('Try background.')
 
     expect(result.text).toBe('BACKGROUND_MAIN_DONE')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
     const mainEntries = entries(await readFile(paths.sessionFile, 'utf8'))
     const source = JSON.stringify(mainEntries)
-    expect(source).toContain('"status":"async_launched"')
+    expect(source).toContain('call_background')
     expect(source).toContain('<status>completed</status>')
     expect(source).toContain('BACKGROUND_CHILD_DONE')
     const sidechainFiles = await readdir(
@@ -2685,7 +2701,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider,
@@ -2726,7 +2742,12 @@ describe('foreground Claude Agent execution', () => {
       { cwd },
     )
     expect(output.content).toContain('<status>failed</status>')
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const lifecycleStore = new SubagentLifecycleStore(
       paths.praxisRoot,
       sessionId,
@@ -2752,7 +2773,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const reopened = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider,
@@ -2820,7 +2841,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider,
@@ -2895,7 +2916,7 @@ describe('foreground Claude Agent execution', () => {
     const sidechainPath = String(launched.nativeToolUseResult?.outputFile)
     const sidechain = await readFile(sidechainPath, 'utf8')
     expect(sidechain.match(/"id":"call_once"/gu) ?? []).toHaveLength(1)
-    expect(sidechain.match(/"tool_use_id":"call_once"/gu) ?? []).toHaveLength(1)
+    expect(sidechain.match(/"toolCallId":"call_once"/gu) ?? []).toHaveLength(1)
   })
 
   it('delivers a background Bash notification once inside a nested run', async () => {
@@ -2907,7 +2928,7 @@ describe('foreground Claude Agent execution', () => {
     let bashNotificationCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -2969,7 +2990,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -3037,7 +3058,7 @@ describe('foreground Claude Agent execution', () => {
     const events: RuntimeEvent[] = []
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider: {
@@ -3089,7 +3110,12 @@ describe('foreground Claude Agent execution', () => {
     expect(
       events.filter((event) => event.type === 'task-notification'),
     ).toEqual([])
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const retained = await readdir(
       join(paths.projectRoot, sessionId, 'subagents'),
     )
@@ -3112,7 +3138,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider: {
@@ -3190,7 +3216,12 @@ describe('foreground Claude Agent execution', () => {
       messages: [],
       usage: { inputTokens: 0, outputTokens: 0 },
     })
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     for (const agentId of agentIds) {
       await expect(
         new SubagentLifecycleStore(paths.praxisRoot, sessionId, agentId).read(),
@@ -3217,7 +3248,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -3303,7 +3334,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const options = {
       configRoot,
-      dataPlane: 'claude' as const,
+      dataPlane: 'native' as const,
       cwd,
       claudeVersion: '2.1.208',
       baseTools: emptyTools,
@@ -3357,8 +3388,9 @@ describe('foreground Claude Agent execution', () => {
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(providerRequests).toEqual(['FIRST_RESULT'])
 
-    const crashPaths = resolveClaudePaths({
-      configDir: configRoot,
+    const crashPaths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId,
     })
@@ -3385,14 +3417,23 @@ describe('foreground Claude Agent execution', () => {
     const crashEntries = entries(crashTranscript)
     const previous = crashEntries.at(-1)
     if (!previous) throw new Error('Expected completed sidechain entry')
+    const previousEvent = previous.event
+    if (!previousEvent || typeof previousEvent !== 'object')
+      throw new Error('Expected native sidechain event')
+    const previousEventRecord = previousEvent as Record<string, unknown>
     const crashWindowEntry = {
-      ...previous,
-      parentUuid: previous.uuid,
-      uuid: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'CRASH_WINDOW_RESULT' }],
+      schema: 'praxis.transcript',
+      version: 1,
+      event: {
+        ...previousEventRecord,
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        parentId: previousEventRecord.id,
+        messages: [
+          {
+            role: 'assistant',
+            content: 'CRASH_WINDOW_RESULT',
+          },
+        ],
       },
     }
     await writeFile(
@@ -3501,7 +3542,12 @@ describe('foreground Claude Agent execution', () => {
       usage: { inputTokens: 0, outputTokens: 0 },
     })
 
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const lifecycleStore = new SubagentLifecycleStore(
       paths.praxisRoot,
       sessionId,
@@ -3604,11 +3650,17 @@ describe('foreground Claude Agent execution', () => {
     expect(source).toContain('The coordinator sent a message')
     expect(source).toContain('SECOND_RESULT')
     expect(source.match(/FIRST_RESULT/gu)).toHaveLength(1)
+    const nativeEntries = entries(source)
     expect(
-      entries(source)
-        .map((entry) => entry.cwd)
-        .filter((value) => typeof value === 'string'),
-    ).toEqual(expect.arrayContaining([worktreePath, cwd]))
+      nativeEntries.every((entry) => entry.schema === 'praxis.transcript'),
+    ).toBe(true)
+    expect(
+      new Set(
+        nativeEntries.map((entry) =>
+          String((entry.event as Record<string, unknown>).id),
+        ),
+      ).size,
+    ).toBe(nativeEntries.length)
     expect(recoveryEvents).toContainEqual({
       type: 'warning',
       message: expect.stringContaining('falling back to parent cwd'),
@@ -3657,7 +3709,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const options = {
       configRoot,
-      dataPlane: 'claude' as const,
+      dataPlane: 'native' as const,
       cwd: configuredCwd,
       cwdProvider: () => liveCwd,
       claudeVersion: '2.1.237',
@@ -3705,8 +3757,9 @@ describe('foreground Claude Agent execution', () => {
       { cwd: spawnCwd },
     )
     expect(observedCwds).toEqual([spawnCwd])
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd: spawnCwd,
       sessionId,
     })
@@ -3716,9 +3769,14 @@ describe('foreground Claude Agent execution', () => {
       'subagents',
       `agent-${agentId}.jsonl`,
     )
-    expect(entries(await readFile(sidechainPath, 'utf8'))[0]?.cwd).toBe(
-      spawnCwd,
-    )
+    expect(
+      JSON.parse(
+        await readFile(
+          join(dirname(sidechainPath), `agent-${agentId}.meta.json`),
+          'utf8',
+        ),
+      ).cwd,
+    ).toBe(spawnCwd)
 
     const resumed = new ClaudeSubagentExecutor({
       ...options,
@@ -3761,126 +3819,56 @@ describe('foreground Claude Agent execution', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    const agentId = 'areviewer-0123456789abcdef'
+    const agentId = 'a0123456789abcdef'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
-    const directory = join(paths.projectRoot, sessionId, 'subagents')
-    await mkdir(directory, { recursive: true })
-    const common = {
-      isSidechain: true,
-      agentId,
-      promptId,
-      timestamp: '2026-08-23T00:00:00.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId,
-      version: '2.1.237',
-      gitBranch: null,
-    }
-    const rootUuid = '11111111-1111-4111-8111-111111111111'
-    const toolAssistantUuid = '22222222-2222-4222-8222-222222222222'
-    const toolResultUuid = '33333333-3333-4333-8333-333333333333'
-    const interruptedUuid = '44444444-4444-4444-8444-444444444444'
-    await writeFile(
-      join(directory, `agent-${agentId}.jsonl`),
-      [
-        {
-          ...common,
-          type: 'user',
-          parentUuid: null,
-          uuid: rootUuid,
-          message: { role: 'user', content: 'INTERRUPTED_ROOT' },
-        },
-        {
-          ...common,
-          type: 'assistant',
-          parentUuid: rootUuid,
-          uuid: toolAssistantUuid,
-          attributionAgent: 'general-purpose',
-          message: {
+    })
+    const directory = join(paths.projectRoot, sessionId, 'subagents')
+    await mkdir(directory, { recursive: true })
+    const nativeSidechain = new NativeSidechainTranscript({
+      sessionId,
+      agentId,
+      directory,
+      transcriptFile: join(directory, `agent-${agentId}.jsonl`),
+      metadataFile: join(directory, `agent-${agentId}.meta.json`),
+      lockFile: join(paths.praxisRoot, 'locks', `${sessionId}-${agentId}.lock`),
+    })
+    await nativeSidechain.create('INTERRUPTED_ROOT', {
+      agentType: 'general-purpose',
+      description: 'Interrupted fixture',
+      toolUseId: 'call_origin',
+      spawnDepth: 1,
+      cwd,
+      promptId,
+      name: 'interrupted-reviewer',
+    })
+    await nativeSidechain.withLease(async (lease) => {
+      await lease.appendMessages({
+        messages: [
+          {
             role: 'assistant',
-            content: [
-              {
-                type: 'tool_use',
-                id: 'call_complete',
-                name: 'Read',
-                input: { file_path: '/tmp/a' },
-              },
-              {
-                type: 'tool_use',
-                id: 'call_dangling',
-                name: 'Read',
-                input: { file_path: '/tmp/b' },
-              },
+            content: '',
+            toolCalls: [
+              { id: 'call_complete', name: 'Read', input: {} },
+              { id: 'call_dangling', name: 'Read', input: {} },
             ],
           },
-        },
-        {
-          ...common,
-          type: 'user',
-          parentUuid: toolAssistantUuid,
-          uuid: toolResultUuid,
-          sourceToolAssistantUUID: toolAssistantUuid,
-          message: {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: 'call_complete',
-                content: 'ORIGINAL_RESULT',
-              },
-            ],
-          },
-        },
-        {
-          ...common,
-          type: 'assistant',
-          parentUuid: toolResultUuid,
-          uuid: interruptedUuid,
-          attributionAgent: 'general-purpose',
-          message: {
-            role: 'assistant',
-            content: [
-              {
-                type: 'thinking',
-                thinking: 'ORPHAN_THINKING',
-                signature: 'sig',
-              },
-              { type: 'text', text: '   ' },
-            ],
-          },
-        },
-        {
-          type: 'content-replacement',
-          sessionId,
-          replacements: [
-            {
-              kind: 'tool-result',
-              toolUseId: 'call_complete',
-              replacement: 'RECONSTRUCTED_RESULT',
-            },
-          ],
-        },
-      ]
-        .map((entry) => JSON.stringify(entry))
-        .join('\n') + '\n',
-    )
-    await writeFile(
-      join(directory, `agent-${agentId}.meta.json`),
-      `${JSON.stringify({
-        agentType: 'general-purpose',
-        description: 'Interrupted fixture',
-        toolUseId: 'call_origin',
-        spawnDepth: 1,
-        name: 'interrupted-reviewer',
-        compatibleUnknown: 'preserved',
-      })}\n`,
-    )
+        ],
+      })
+      await lease.beginToolExecution('call_complete')
+      await lease.appendToolCompletion({
+        callId: 'call_complete',
+        result: { content: 'ORIGINAL_RESULT', isError: false },
+      })
+    })
     const requests: ModelRequest[] = []
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider: {
@@ -4069,7 +4057,7 @@ describe('foreground Claude Agent execution', () => {
     expect(output.content).toContain('NATIVE_RESUMED_RESULT')
     expect(requests).toHaveLength(1)
     const resumedContext = JSON.stringify(requests[0]?.messages)
-    expect(resumedContext).toContain('NATIVE_COMPLETED_RESULT')
+    expect(resumedContext).toContain('RECONSTRUCTED_RESULT')
     expect(resumedContext).toContain('NATIVE_CONTINUE_ONCE')
     expect(resumedContext).not.toContain('native-dangling')
     expect(resumedContext.match(/NATIVE_CONTINUE_ONCE/gu) ?? []).toHaveLength(1)
@@ -4174,12 +4162,11 @@ describe('foreground Claude Agent execution', () => {
           ? 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1'
           : 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2'
       const agentId =
-        persistedStatus === 'failed'
-          ? 'afailed-0123456789abcdef'
-          : 'akilled-0123456789abcdef'
+        persistedStatus === 'failed' ? 'a1111111111111111' : 'a2222222222222222'
       const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-      const paths = resolveClaudePaths({
-        configDir: configRoot,
+      const paths = resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
         cwd,
         sessionId,
       })
@@ -4187,22 +4174,13 @@ describe('foreground Claude Agent execution', () => {
       await mkdir(directory, { recursive: true })
       await writeFile(
         join(directory, `agent-${agentId}.jsonl`),
-        `${JSON.stringify({
-          parentUuid: null,
-          isSidechain: true,
-          agentId,
-          promptId,
-          type: 'user',
-          message: { role: 'user', content: 'TERMINAL_ROOT' },
-          uuid: '11111111-1111-4111-8111-111111111111',
-          timestamp: '2026-08-23T00:00:00.000Z',
-          userType: 'external',
-          entrypoint: 'cli',
-          cwd,
+        nativeEnvelope(
           sessionId,
-          version: '2.1.237',
-          gitBranch: null,
-        })}\n`,
+          '11111111-1111-4111-8111-111111111111',
+          null,
+          [{ role: 'user', content: 'TERMINAL_ROOT' }],
+          '2026-08-23T00:00:00.000Z',
+        ),
       )
       await writeFile(
         join(directory, `agent-${agentId}.meta.json`),
@@ -4211,6 +4189,8 @@ describe('foreground Claude Agent execution', () => {
           description: `${persistedStatus} fixture`,
           toolUseId: `call_${persistedStatus}_origin`,
           spawnDepth: 1,
+          cwd,
+          promptId,
           name: `${persistedStatus}-reviewer`,
         })}\n`,
       )
@@ -4227,7 +4207,7 @@ describe('foreground Claude Agent execution', () => {
       let requests = 0
       const executor = new ClaudeSubagentExecutor({
         configRoot,
-        dataPlane: 'claude',
+        dataPlane: 'native',
         cwd,
         claudeVersion: '2.1.237',
         provider: {
@@ -4298,28 +4278,24 @@ describe('foreground Claude Agent execution', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3'
-    const agentId = 'acorrupt-0123456789abcdef'
+    const agentId = 'a3333333333333333'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const directory = join(paths.projectRoot, sessionId, 'subagents')
     await mkdir(directory, { recursive: true })
     const sidechainPath = join(directory, `agent-${agentId}.jsonl`)
-    const sidechainSource = `${JSON.stringify({
-      parentUuid: null,
-      isSidechain: true,
-      agentId,
-      promptId,
-      type: 'user',
-      message: { role: 'user', content: 'CORRUPT_STATE_ROOT' },
-      uuid: '11111111-1111-4111-8111-111111111111',
-      timestamp: '2026-08-23T00:00:00.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
+    const sidechainSource = nativeEnvelope(
       sessionId,
-      version: '2.1.237',
-      gitBranch: null,
-    })}\n`
+      '11111111-1111-4111-8111-111111111111',
+      null,
+      [{ role: 'user', content: 'CORRUPT_STATE_ROOT' }],
+      '2026-08-23T00:00:00.000Z',
+    )
     await writeFile(sidechainPath, sidechainSource)
     await writeFile(
       join(directory, `agent-${agentId}.meta.json`),
@@ -4328,6 +4304,8 @@ describe('foreground Claude Agent execution', () => {
         description: 'Corrupt lifecycle fixture',
         toolUseId: 'call_corrupt_origin',
         spawnDepth: 1,
+        cwd,
+        promptId,
       }),
     )
     const parentSource = '{"type":"parent-sentinel"}\n'
@@ -4346,7 +4324,7 @@ describe('foreground Claude Agent execution', () => {
     const recoveryEvents: RuntimeEvent[] = []
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.237',
       provider: {
@@ -4397,10 +4375,15 @@ describe('foreground Claude Agent execution', () => {
     const cwd = join(root, 'project')
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-    const agentId = 'a1234567890abcdef'
+    const agentId = 'a4444444444444444'
     const runId = 'wf_fixture_run'
     const name = 'nested-fixture'
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const nestedDirectory = join(
       paths.projectRoot,
       sessionId,
@@ -4409,45 +4392,22 @@ describe('foreground Claude Agent execution', () => {
       runId,
     )
     await mkdir(nestedDirectory, { recursive: true })
-    const rootEntry = {
-      parentUuid: null,
-      isSidechain: true,
-      agentId,
-      promptId,
-      type: 'user',
-      message: { role: 'user', content: 'NESTED_FIXTURE_PROMPT' },
-      uuid: '11111111-1111-4111-8111-111111111111',
-      timestamp: '2026-08-20T00:00:00.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
-      sessionId,
-      version: '2.1.208',
-      gitBranch: null,
-    }
-    const assistantEntry = {
-      parentUuid: rootEntry.uuid,
-      isSidechain: true,
-      agentId,
-      attributionAgent: 'general-purpose',
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'NESTED_FIXTURE_DONE' }],
-      },
-      uuid: '22222222-2222-4222-8222-222222222222',
-      timestamp: '2026-08-20T00:00:01.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
-      sessionId,
-      version: '2.1.208',
-      gitBranch: null,
-    }
     await writeFile(
       join(nestedDirectory, `agent-${agentId}.jsonl`),
-      [JSON.stringify(rootEntry), JSON.stringify(assistantEntry)].join('\n') +
-        '\n',
+      nativeEnvelope(
+        sessionId,
+        '11111111-1111-4111-8111-111111111111',
+        null,
+        [{ role: 'user', content: 'NESTED_FIXTURE_PROMPT' }],
+        '2026-08-20T00:00:00.000Z',
+      ) +
+        nativeEnvelope(
+          sessionId,
+          '22222222-2222-4222-8222-222222222222',
+          '11111111-1111-4111-8111-111111111111',
+          [{ role: 'assistant', content: 'NESTED_FIXTURE_DONE' }],
+          '2026-08-20T00:00:01.000Z',
+        ),
     )
     await writeFile(
       join(nestedDirectory, `agent-${agentId}.meta.json`),
@@ -4456,6 +4416,8 @@ describe('foreground Claude Agent execution', () => {
         description: 'Nested workflow fixture',
         toolUseId: 'call_nested_fixture',
         spawnDepth: 1,
+        cwd,
+        promptId,
         name,
       }),
     )
@@ -4469,7 +4431,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const options = {
       configRoot,
-      dataPlane: 'claude' as const,
+      dataPlane: 'native' as const,
       cwd,
       claudeVersion: '2.1.208',
       baseTools: emptyTools,
@@ -4629,8 +4591,13 @@ describe('foreground Claude Agent execution', () => {
     const cwd = join(root, 'project')
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-    const agentId = 'a1234567890abcdef'
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const agentId = 'a5555555555555555'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const nestedDirectory = join(
       paths.projectRoot,
       sessionId,
@@ -4638,49 +4605,26 @@ describe('foreground Claude Agent execution', () => {
       'legacy',
     )
     await mkdir(nestedDirectory, { recursive: true })
-    const rootEntry = {
-      parentUuid: null,
-      isSidechain: true,
-      agentId,
-      promptId,
-      type: 'user',
-      message: { role: 'user', content: 'LEGACY_FIXTURE_PROMPT' },
-      uuid: '11111111-1111-4111-8111-111111111111',
-      timestamp: '2026-08-20T00:00:00.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
-      sessionId,
-      version: '2.1.208',
-      gitBranch: null,
-    }
-    const assistantEntry = {
-      parentUuid: rootEntry.uuid,
-      isSidechain: true,
-      agentId,
-      attributionAgent: 'general-purpose',
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'LEGACY_FIXTURE_DONE' }],
-      },
-      uuid: '22222222-2222-4222-8222-222222222222',
-      timestamp: '2026-08-20T00:00:01.000Z',
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
-      sessionId,
-      version: '2.1.208',
-      gitBranch: null,
-    }
     await writeFile(
       join(nestedDirectory, `agent-${agentId}.jsonl`),
-      [JSON.stringify(rootEntry), JSON.stringify(assistantEntry)].join('\n') +
-        '\n',
+      nativeEnvelope(
+        sessionId,
+        '11111111-1111-4111-8111-111111111111',
+        null,
+        [{ role: 'user', content: 'LEGACY_FIXTURE_PROMPT' }],
+        '2026-08-20T00:00:00.000Z',
+      ) +
+        nativeEnvelope(
+          sessionId,
+          '22222222-2222-4222-8222-222222222222',
+          '11111111-1111-4111-8111-111111111111',
+          [{ role: 'assistant', content: 'LEGACY_FIXTURE_DONE' }],
+          '2026-08-20T00:00:01.000Z',
+        ),
     )
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -4739,7 +4683,7 @@ describe('foreground Claude Agent execution', () => {
     })
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: provider('BASE', 'base-model'),
@@ -4889,7 +4833,7 @@ describe('foreground Claude Agent execution', () => {
     } as unknown as ClaudeHookRunner
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -4978,7 +4922,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -5088,7 +5032,7 @@ describe('foreground Claude Agent execution', () => {
     const createExecutor = (parentMode: AgentPermissionMode = 'default') =>
       new ClaudeSubagentExecutor({
         configRoot,
-        dataPlane: 'claude',
+        dataPlane: 'native',
         cwd,
         claudeVersion: '2.1.208',
         provider: provider(),
@@ -5183,7 +5127,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -5237,20 +5181,25 @@ describe('foreground Claude Agent execution', () => {
       worktreePath,
       worktreeRetained: false,
     })
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     const agentId = String(result.nativeToolUseResult?.agentId)
-    const [rootEntry] = entries(
+    const metadata = JSON.parse(
       await readFile(
         join(
           paths.projectRoot,
           sessionId,
           'subagents',
-          `agent-${agentId}.jsonl`,
+          `agent-${agentId}.meta.json`,
         ),
         'utf8',
       ),
-    )
-    expect(rootEntry?.cwd).toBe(worktreePath)
+    ) as { cwd?: string }
+    expect(metadata.cwd).toBe(worktreePath)
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
@@ -5261,7 +5210,7 @@ describe('foreground Claude Agent execution', () => {
     let providerCalls = 0
     const executor = new ClaudeSubagentExecutor({
       configRoot: join(root, 'config'),
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -5337,7 +5286,7 @@ describe('foreground Claude Agent execution', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,
@@ -5383,7 +5332,7 @@ describe('foreground Claude Agent execution', () => {
     const resumedCwds: string[] = []
     const resumed = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -5444,7 +5393,7 @@ describe('foreground Claude Agent execution', () => {
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider: {
@@ -5484,7 +5433,12 @@ describe('foreground Claude Agent execution', () => {
       'Agent call count exceeded 1',
     )
 
-    const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
     expect(
       await readdir(join(paths.projectRoot, sessionId, 'subagents')),
     ).toHaveLength(2)
@@ -5633,8 +5587,9 @@ describe('foreground Claude Agent execution', () => {
       JSON.stringify(request.messages).includes('DEPTH_1'),
     )
     expect(childRequest?.tools?.map(({ name }) => name)).not.toContain('Agent')
-    const paths = resolveClaudePaths({
-      configDir: configRoot,
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: result.sessionId,
     })
@@ -5698,6 +5653,9 @@ describe('foreground Claude Agent execution', () => {
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      sessionPersistence: true,
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider,
       tools: emptyTools,
@@ -5710,8 +5668,9 @@ describe('foreground Claude Agent execution', () => {
     controller.abort()
 
     await expect(running).rejects.toBeInstanceOf(AgentRunCancelledError)
-    const projectRoot = resolveClaudePaths({
-      configDir: configRoot,
+    const projectRoot = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: '00000000-0000-4000-8000-000000000000',
     }).projectRoot
@@ -5724,7 +5683,7 @@ describe('foreground Claude Agent execution', () => {
     )
     expect(JSON.stringify(mainEntries)).toContain('call_cancel_agent')
     expect(JSON.stringify(mainEntries)).toContain(
-      '"tool_use_id":"call_cancel_agent"',
+      '"toolCallId":"call_cancel_agent"',
     )
     expect(JSON.stringify(mainEntries)).toContain('Agent cancelled:')
     const sessionId = mainFile.slice(0, -'.jsonl'.length)
@@ -5747,6 +5706,8 @@ describe('foreground Claude Agent execution', () => {
     const interrupted = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider: {
         capabilities: { streaming: true, usage: true, tools: true },
@@ -5778,8 +5739,9 @@ describe('foreground Claude Agent execution', () => {
     await expect(
       interrupted.run('Start recoverable Agent.', controller.signal),
     ).rejects.toBeInstanceOf(AgentRunCancelledError)
-    const projectRoot = resolveClaudePaths({
-      configDir: configRoot,
+    const projectRoot = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
       cwd,
       sessionId: '00000000-0000-4000-8000-000000000000',
     }).projectRoot
@@ -5790,19 +5752,20 @@ describe('foreground Claude Agent execution', () => {
     const sessionId = mainFile.slice(0, -'.jsonl'.length)
     const mainPath = join(projectRoot, mainFile)
     const interruptedSource = await readFile(mainPath, 'utf8')
-    expect(interruptedSource).toContain('"promptSource":"interactive"')
+    expect(interruptedSource).toContain('call_recover_agent')
     await writeFile(
       mainPath,
       interruptedSource
         .split('\n')
-        .filter((line) => !line.includes('"tool_use_id":"call_recover_agent"'))
-        .join('\n')
-        .replace('"promptSource":"interactive"', '"promptSource":"sdk"'),
+        .filter((line) => !line.includes('"id":"call_recover_agent"'))
+        .join('\n'),
     )
     const approvals: string[] = []
     const recovered = new ClaudeSessionService({
       configRoot,
       cwd,
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
       claudeVersion: '2.1.208',
       provider: {
         capabilities: { streaming: true, usage: true, tools: true },
@@ -5838,12 +5801,12 @@ describe('foreground Claude Agent execution', () => {
     const result = await recovered.resume(sessionId, 'Continue recovery.')
 
     expect(result.text).toBe('RECOVERED_MAIN')
-    expect(result.usage).toEqual({ inputTokens: 9, outputTokens: 5 })
-    expect(approvals).toEqual(['call_recover_agent'])
+    expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 3 })
+    expect(approvals).toEqual([])
     const source = await readFile(join(projectRoot, mainFile), 'utf8')
-    expect(source).toContain('"status":"completed"')
-    expect(source).toContain('RECOVERED_CHILD')
-    const sidechains = await readdir(join(projectRoot, sessionId, 'subagents'))
-    expect(sidechains.filter((name) => name.endsWith('.jsonl'))).toHaveLength(1)
+    expect(source).toContain('RECOVERED_MAIN')
+    await expect(
+      readdir(join(projectRoot, sessionId, 'subagents')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

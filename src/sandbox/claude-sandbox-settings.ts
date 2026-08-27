@@ -4,10 +4,8 @@ import { tmpdir } from 'node:os'
 
 import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime'
 
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../core/resources.js'
 import { permissionRuleValueFromString } from '../permissions/permission-updates.js'
-import type { DataPlane } from '../persistence/data-plane.js'
-
 export interface ClaudeSandboxSettings {
   enabled: boolean
   failIfUnavailable: boolean
@@ -19,12 +17,12 @@ export interface ClaudeSandboxSettings {
   runtimeConfig: SandboxRuntimeConfig
 }
 
-export function claudeSandboxTempDirectory(
+export function nativeSandboxTempDirectory(
   environment: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
   const base =
-    environment.CLAUDE_CODE_TMPDIR || (platform === 'win32' ? tmpdir() : '/tmp')
+    environment.PRAXIS_TMPDIR || (platform === 'win32' ? tmpdir() : '/tmp')
   let canonicalBase = base
   try {
     canonicalBase = realpathSync(base)
@@ -32,7 +30,7 @@ export function claudeSandboxTempDirectory(
     // Preserve the configured path when it does not exist yet.
   }
   const name =
-    platform === 'win32' ? 'claude' : `claude-${process.getuid?.() ?? 0}`
+    platform === 'win32' ? 'praxis' : `praxis-${process.getuid?.() ?? 0}`
   return resolve(canonicalBase, name)
 }
 
@@ -69,13 +67,13 @@ function appendUnique(target: string[], values: readonly string[]): void {
   for (const value of values) if (!target.includes(value)) target.push(value)
 }
 
-function resourceRoot(resource: ClaudeJsonResource): string {
+function resourceRoot(resource: JsonResource): string {
   return resource.scope === 'user'
     ? dirname(resource.path)
     : resolve(dirname(resource.path), '..')
 }
 
-function permissionPath(pattern: string, resource: ClaudeJsonResource): string {
+function permissionPath(pattern: string, resource: JsonResource): string {
   if (pattern.startsWith('//')) return pattern.slice(1)
   if (pattern.startsWith('/') && !pattern.startsWith('//')) {
     return resolve(resourceRoot(resource), pattern.slice(1))
@@ -85,7 +83,7 @@ function permissionPath(pattern: string, resource: ClaudeJsonResource): string {
 
 function filesystemPath(
   pattern: string,
-  resource: ClaudeJsonResource,
+  resource: JsonResource,
   homeDirectory: string,
 ): string {
   if (pattern.startsWith('//')) return pattern.slice(1)
@@ -139,16 +137,15 @@ export function loadClaudeSandboxSettings({
   cwd,
   originalCwd = cwd,
   configRoot,
-  dataPlane,
   homeDirectory,
   additionalDirectories = [],
   tempDirectory,
 }: {
-  resources: readonly ClaudeJsonResource[]
+  resources: readonly JsonResource[]
   cwd: string
   originalCwd?: string
   configRoot: string
-  dataPlane: DataPlane
+  dataPlane?: unknown
   homeDirectory: string
   additionalDirectories?: readonly string[]
   tempDirectory: string
@@ -166,7 +163,7 @@ export function loadClaudeSandboxSettings({
   const protectedDirectories = [
     ...new Set([resolve(originalCwd), resolve(cwd)]),
   ]
-  const projectConfigDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
+  const projectConfigDirectory = '.praxis'
   const denyWrite = [
     resolve(configRoot, 'settings.json'),
     resolve(configRoot, 'commands'),

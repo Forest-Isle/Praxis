@@ -1,17 +1,15 @@
 import { readFile, realpath, stat } from 'node:fs/promises'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, normalize, resolve } from 'node:path'
 
 import { stringify as stringifyYaml } from 'yaml'
 
-import type {
-  ClaudeJsonResource,
-  ClaudeTextResource,
-} from '../compatibility/claude/shared-resources.js'
-import {
-  parseClaudeFileSpecs,
-  type ClaudeFileResource,
-} from '../compatibility/claude/file-resources.js'
+import type { JsonResource, TextResource } from '../core/resources.js'
 import type { CliControls } from './protocol.js'
+
+interface FileResource {
+  fileId: string
+  relativePath: string
+}
 
 export const DEFAULT_CLI_CONTROLS: CliControls = {
   forwardSubagentText: false,
@@ -60,20 +58,20 @@ export interface ResolvedCliControls extends Omit<
   | 'addDirectories'
   | 'fileResources'
 > {
-  additionalSettings: ClaudeJsonResource | undefined
-  inlineAgents: readonly ClaudeTextResource[]
-  mcpResources: readonly ClaudeJsonResource[]
+  additionalSettings: JsonResource | undefined
+  inlineAgents: readonly TextResource[]
+  mcpResources: readonly JsonResource[]
   systemPrompt: string | undefined
   appendSystemPrompt: string | undefined
   additionalDirectories: readonly string[]
-  fileResources: readonly ClaudeFileResource[]
+  fileResources: readonly FileResource[]
 }
 
 function absolutePath(cwd: string, path: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(cwd, path)
 }
 
-function parseSettings(source: string, path: string): ClaudeJsonResource {
+function parseSettings(source: string, path: string): JsonResource {
   let value: unknown
   try {
     value = JSON.parse(source)
@@ -89,7 +87,7 @@ function parseSettings(source: string, path: string): ClaudeJsonResource {
 async function resolveSettings(
   cwd: string,
   value: string | undefined,
-): Promise<ClaudeJsonResource | undefined> {
+): Promise<JsonResource | undefined> {
   if (value === undefined) return undefined
   if (value.trimStart().startsWith('{')) {
     return parseSettings(value, '<command-line>')
@@ -130,7 +128,7 @@ function parseObject(source: string, label: string): Record<string, unknown> {
 async function resolveMcpConfigs(
   cwd: string,
   values: readonly string[],
-): Promise<ClaudeJsonResource[]> {
+): Promise<JsonResource[]> {
   return Promise.all(
     values.map(async (value, index) => {
       const path = value.trimStart().startsWith('{')
@@ -153,7 +151,7 @@ async function resolveMcpConfigs(
   )
 }
 
-function resolveInlineAgents(source: string | undefined): ClaudeTextResource[] {
+function resolveInlineAgents(source: string | undefined): TextResource[] {
   if (source === undefined) return []
   const parsed = parseObject(source, 'agents')
   return Object.entries(parsed).map(([name, value]) => {
@@ -185,6 +183,43 @@ function resolveInlineAgents(source: string | undefined): ClaudeTextResource[] {
   })
 }
 
+function parseFileSpecs(values: readonly string[]): FileResource[] {
+  const resources: FileResource[] = []
+  for (const value of values) {
+    for (const spec of value.split(/\s+/u).filter(Boolean)) {
+      const separator = spec.indexOf(':')
+      if (separator <= 0 || separator === spec.length - 1) {
+        throw new Error(
+          `Invalid --file spec ${spec}; expected file_id:relative_path`,
+        )
+      }
+      const fileId = spec.slice(0, separator)
+      const relativePath = spec.slice(separator + 1).replaceAll('\\', '/')
+      if (!fileId || /[\\/\s\0]/u.test(fileId))
+        throw new Error(`Invalid --file file ID: ${fileId}`)
+      if (
+        !relativePath ||
+        relativePath.includes('\0') ||
+        isAbsolute(relativePath)
+      )
+        throw new Error(
+          `Invalid file resource path: ${relativePath || '<empty>'}`,
+        )
+      const normalized = normalize(relativePath)
+      if (
+        normalized === '.' ||
+        normalized === '..' ||
+        normalized.startsWith('../')
+      )
+        throw new Error(
+          `File resource path escapes the session uploads directory: ${relativePath}`,
+        )
+      resources.push({ fileId, relativePath: normalized })
+    }
+  }
+  return resources
+}
+
 export async function resolveCliControls(
   controls: CliControls,
   cwd: string,
@@ -208,9 +243,6 @@ export async function resolveCliControls(
   ])
 
   return {
-    ...(controls.dataPlane === undefined
-      ? {}
-      : { dataPlane: controls.dataPlane }),
     ...(controls.autocompact === undefined
       ? {}
       : { autocompact: controls.autocompact }),
@@ -275,7 +307,7 @@ export async function resolveCliControls(
     ...(controls.brief ? { brief: true } : {}),
     ...(controls.axScreenReader ? { axScreenReader: true } : {}),
     forwardSubagentText: controls.forwardSubagentText,
-    fileResources: parseClaudeFileSpecs(controls.fileResources),
+    fileResources: parseFileSpecs(controls.fileResources),
     ...(controls.maxTurns === undefined ? {} : { maxTurns: controls.maxTurns }),
     inlineAgents: resolveInlineAgents(controls.agentDefinitions),
     mcpResources,

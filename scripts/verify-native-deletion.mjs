@@ -115,28 +115,18 @@ try {
         throw new Error(`native CLI emitted stderr: ${result.stderr.trim()}`)
       return result.stdout
     }
-    const listed = JSON.parse(
-      runCli(['--data-plane', 'native', 'sessions', '--json']),
-    )
+    const listed = JSON.parse(runCli(['sessions', '--json']))
     if (!listed.sessions.some((item) => item.sessionId === event.sessionId))
       throw new Error('native CLI sessions did not list the native transcript')
-    const inspected = JSON.parse(
-      runCli(['--data-plane', 'native', 'inspect', '--json', event.sessionId]),
-    )
+    const inspected = JSON.parse(runCli(['inspect', '--json', event.sessionId]))
     if (inspected.session?.sessionId !== event.sessionId)
       throw new Error('native CLI inspect did not return the native transcript')
     if (
-      Buffer.from(
-        runCli(['--data-plane', 'native', 'export', event.sessionId]),
-      ).toString() !== `${encoded.line}\n`
+      Buffer.from(runCli(['export', event.sessionId])).toString() !==
+      `${encoded.line}\n`
     )
       throw new Error('native CLI export changed native transcript bytes')
-    const forked = runCli([
-      '--data-plane',
-      'native',
-      'fork',
-      event.sessionId,
-    ]).trim()
+    const forked = runCli(['fork', event.sessionId]).trim()
     if (!/^[-0-9a-f]{36}$/u.test(forked))
       throw new Error('native CLI fork did not return a session id')
 

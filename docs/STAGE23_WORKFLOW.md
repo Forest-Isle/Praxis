@@ -33,8 +33,8 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 
 ## Key components
 
-- `compatibility/claude/workflow.ts`: schemas, IDs, paths, launch/notification text.
-- `persistence/claude-workflow-store.ts`: atomic scripts/run JSON, append-only journal,
+- `application/workflow-contract.ts`: schemas, IDs, paths, launch/notification text.
+- `persistence/workflow-store.ts`: atomic scripts/run JSON, append-only journal,
   replay index, workflow agent transcript and metadata.
 - `application/workflow-meta.ts`: parse module, require pure-literal `meta` first,
   validate name/description/phases without executing script.
@@ -48,7 +48,7 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 ## Data flow
 
 1. Resolve source in order `scriptPath`, `script`, `name`; saved workflows live under
-   project/user `.claude/workflows`; built-ins are `deep-research` and `code-review`.
+   project/user Praxis workflow roots; built-ins are `deep-research` and `code-review`.
 2. Parse pure first-statement metadata before permission or execution. Permission mode
    defaults to `ask`; denial creates no workflow artifacts.
 3. Allocate `wf_<8hex>-<3hex>` and `w<8alnum>`, persist script, return launch result,

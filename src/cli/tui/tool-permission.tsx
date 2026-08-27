@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 
 import { Box, Text } from 'ink'
@@ -16,10 +15,8 @@ import {
   shellPermissionSuggestions,
 } from '../../permissions/permission-updates.js'
 import { redactSensitiveText } from '../../platform/sensitive-data.js'
-import {
-  type DataPlane,
-  resolveDataPlaneRoot,
-} from '../../persistence/data-plane.js'
+import type { DataPlane } from '../../persistence/data-plane.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import {
   composerEditorSegments,
   type ComposerEditorState,
@@ -82,16 +79,12 @@ function pathIsWithin(root: string, path: string): boolean {
 function settingsFolderSessionOption(
   path: string,
   cwd: string,
-  dataPlane: DataPlane,
 ): TuiToolPermissionOption | undefined {
-  const directory = dataPlane === 'native' ? '.praxis' : '.claude'
+  const directory = '.praxis'
   const projectSettings = resolve(cwd, directory)
-  const globalSettings =
-    dataPlane === 'native'
-      ? resolveDataPlaneRoot({ dataPlane })
-      : resolve(homedir(), '.claude')
+  const globalSettings = resolveDataPlaneRoot()
   const pattern = pathIsWithin(globalSettings, path)
-    ? dataPlane === 'native' && process.env.PRAXIS_HOME
+    ? process.env.PRAXIS_HOME
       ? `${globalSettings}/**`
       : `~/${directory}/**`
     : pathIsWithin(projectSettings, path)
@@ -100,7 +93,7 @@ function settingsFolderSessionOption(
   if (!pattern) return undefined
   return {
     action: 'allow-session-action',
-    label: `Yes, and allow ${dataPlane === 'native' ? 'Praxis' : 'Claude'} to edit its own settings for this session`,
+    label: 'Yes, and allow Praxis to edit its own settings for this session',
     rule: `Edit(${pattern})`,
     updates: [
       {
@@ -143,11 +136,12 @@ function fileOptions(
   cwd: string,
   readOnly: boolean,
   suggestions: readonly PermissionUpdate[] = [],
-  dataPlane: DataPlane = 'claude',
+  _dataPlane: DataPlane = 'native',
 ): readonly TuiToolPermissionOption[] {
+  void _dataPlane
   const settingsFolderOption = readOnly
     ? undefined
-    : settingsFolderSessionOption(path, cwd, dataPlane)
+    : settingsFolderSessionOption(path, cwd)
   return [
     { action: 'allow-once', label: 'Yes' },
     settingsFolderOption ?? {
@@ -165,7 +159,7 @@ function fileModel(
   cwd: string,
   sensitiveValues: readonly string[],
   decision?: PermissionDecision,
-  dataPlane: DataPlane = 'claude',
+  _dataPlane: DataPlane = 'native',
 ): TuiToolPermissionModel | undefined {
   const path = stringInput(call, 'file_path')
   if (!path) return undefined
@@ -200,7 +194,7 @@ function fileModel(
         cwd,
         false,
         decision?.behavior === 'ask' ? decision.suggestions : [],
-        dataPlane,
+        _dataPlane,
       ),
     }
   }
@@ -237,7 +231,7 @@ function fileModel(
         cwd,
         false,
         decision?.behavior === 'ask' ? decision.suggestions : [],
-        dataPlane,
+        _dataPlane,
       ),
     }
   }
@@ -418,7 +412,7 @@ export function projectTuiToolPermission(
   cwd: string,
   sensitiveValues: readonly string[],
   decision?: PermissionDecision,
-  dataPlane: DataPlane = 'claude',
+  dataPlane: DataPlane = 'native',
 ): TuiToolPermissionModel {
   const explain = (model: TuiToolPermissionModel): TuiToolPermissionModel =>
     decision?.behavior === 'ask' && decision.reason

@@ -28,14 +28,13 @@ src/
 ├── cli/           terminal UI and structured output
 ├── application/   run, resume, inspect, and configure use cases
 ├── core/          Praxis Core Contract and provider-neutral domain types
-├── compatibility/ optional versioned Claude local-protocol adapters
 ├── providers/     capability-aware model adapters
 ├── tools/         local executable capabilities
 ├── extensions/    skills, commands, and agents
 ├── hooks/         shared hook parsing, execution, and tool coordination
-├── mcp/           shared Claude MCP config, clients, and tool adapter
-├── persistence/   data-plane seam, native storage, compatibility stores, indexes
-├── sandbox/       Claude settings conversion and OS sandbox runtime adapter
+├── mcp/           shared MCP config, clients, and tool adapter
+├── persistence/   native storage, sessions, transcripts, and indexes
+├── sandbox/       settings conversion and OS sandbox runtime adapter
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
 
@@ -44,18 +43,18 @@ src/
 - `core` must not import React, Ink, model-vendor SDKs, filesystem, or storage.
 - Provider adapters depend inward on the Praxis Core Contract; core never
   imports provider implementations or provider wire types.
-- Native modules depend on core, platform, and shared seams, never on the
-  Claude compatibility adapter. Claude compatibility modules implement the
-  same seams without becoming dependencies of native modules.
+- Runtime modules depend on core, platform, and shared seams; storage and
+  session behavior is implemented by the Praxis-native path.
 - `npm run check:boundaries` rejects reverse source imports. `npm run
 build:native` emits the implemented core/provider/native transcript and
-  session profile without Claude compatibility sources, while
+  session profile, while
   `npm run test:native:deletion` is an executable emitted-output deletion gate.
   This profile and gate are implemented; the full native package is not yet
   qualified.
 - The CLI observes runtime events; it does not own agent state.
-- Claude Code-compatible JSONL transcripts remain authoritative and
-  append-only.
+- Praxis `praxis.transcript` v1 JSONL transcripts remain authoritative and
+  append-only. Claude-shaped message/tool fields are protocol data only; the
+  runtime never reads or writes Claude Code session files.
 - Provider adapters expose capabilities instead of flattening every model to a
   lowest-common-denominator API.
 - Tool permissions are local `allow`, `ask`, or `deny` decisions.
@@ -125,9 +124,9 @@ See [PERFORMANCE.md](PERFORMANCE.md).
 Release artifacts contain compiled `dist` output plus npm-required manifest,
 README, and license files only. The package gate installs that tarball in an
 empty project and exercises the real npm bin, preventing source-tree resolution
-or symlink behavior from masking release failures. Claude write compatibility
-remains an exact version allowlist; nearby and future versions stay read-only.
-See [RELEASE.md](RELEASE.md).
+or symlink behavior from masking release failures. Native `praxis.transcript`
+v1 is writable; unsupported schema versions and non-native files remain
+read-only and are never migrated or mutated. See [RELEASE.md](RELEASE.md).
 
 Provider selection stays at the CLI composition root. `core` receives the same
 `ModelProvider` port whether the adapter serializes OpenAI Chat Completions or
@@ -149,30 +148,15 @@ redirect, bounds network/content/model output, converts supported documents to
 Markdown, serializes untrusted page data behind a JSON boundary, and asks the
 selected provider to process it.
 
-## Native and Claude-compatible data planes
+## Native data plane
 
 Praxis defaults to its independent local root, `PRAXIS_HOME` or `~/.praxis`.
-The public data-plane facade selects one `DataPlaneAdapter`: the native adapter
-owns Praxis root and path construction, while the optional Claude adapter owns
-Claude path rules. Both expose the same path meanings to the existing Session
-and Runtime implementations, so selecting a data plane never creates a second
-agent loop or synchronized transcript.
-Native sessions, memory, tasks, scheduled prompts, resources, and private state
-remain there and never require a Claude Code directory. Explicit
-`--data-plane claude` compatibility mode instead uses `CLAUDE_CONFIG_DIR` or
-`~/.claude` and shares:
-
-- workspace session JSONL files and UUID/parent UUID chains;
-- `CLAUDE.md`, `.claude/CLAUDE.md`, and `.claude/rules` instructions;
-- global and project skills, commands, and agent definitions;
-- auto memory under the Claude project memory directory;
-- compatible settings, hooks, and MCP configuration;
-- project-local scheduled prompts in `.claude/scheduled_tasks.json`.
-
-Praxis-only indexes, provider payloads, and locks are non-authoritative
-sidecars under `<claude-config>/praxis/` in compatibility mode and under
-`<praxis-root>/state/` in native mode. They must never be required to resume
-the human-visible conversation from Claude Code.
+The public data-plane facade selects the native `DataPlaneAdapter`, which owns
+Praxis root and path construction. Native sessions, memory, tasks, scheduled
+prompts, resources, and private state remain under `PRAXIS_HOME` or `~/.praxis`
+and never require a Claude Code directory. Praxis-only indexes, provider
+payloads, and locks live under `<praxis-root>/state/` and are never part of the
+authoritative append-only transcript.
 
 Session reads use a recovery parser that returns the valid prefix plus exact
 line/byte diagnostics without changing the source file. Listing, inspection,
@@ -193,15 +177,15 @@ a later Praxis turn can hydrate one by its `a` plus 16-hex agent ID and continue
 it through `SendMessage` without a private conversation store.
 
 `ClaudeTaskToolRegistry` wraps selected base tools once per persisted session.
-`ClaudeTaskStore` reads and writes Claude's shared `tasks/<session-id>` JSON
-files, maintains reciprocal dependency edges, and allocates from both
-`.highwatermark` and observed task IDs so stale Claude high-watermarks cannot
-collide. New task files use exclusive atomic publication so an overlapping
-Claude create is never overwritten. Updates use stable file fingerprints and
-full-operation retry to rebase requested fields over a simultaneous native
-writer; no-op updates do not replace files. Praxis mutations and transcript
-appends share one token-owned hard-link lease primitive with ownership-checked
-release and guarded dead-owner reclaim. `TaskList` omits native internal tasks.
+`ClaudeTaskStore` reads and writes native `tasks/<session-id>` JSON files,
+maintains reciprocal dependency edges, and allocates from both
+`.highwatermark` and observed task IDs so stale high-watermarks cannot collide.
+New task files use exclusive atomic publication so an overlapping create is
+never overwritten. Updates use stable file fingerprints and full-operation retry
+to rebase requested fields over a simultaneous native writer; no-op updates do
+not replace files. Praxis mutations and transcript appends share one
+token-owned hard-link lease primitive with ownership-checked release and
+guarded dead-owner reclaim. `TaskList` omits native internal tasks.
 `BackgroundBashManager` uses the same bounded, credential-sanitized process
 runner as foreground Bash, writes Claude-shaped temporary output, and persists
 only validated resumable operational metadata through atomic sidecar
@@ -225,9 +209,10 @@ session on first attach. Job controls are operational state only; all resumable
 conversation content stays in shared project JSONL.
 
 `ScheduledPromptManager` owns session-only jobs in memory and durable jobs in
-the shared project-local `scheduled_tasks.json`. `ClaudeScheduledTaskStore`
-preserves Claude fields, serializes Praxis writers with a sidecar lease, and
-retries atomic replacement when the physical native file changes. The manager
+the native shared file `<praxis-root>/scheduled/<project-key>.json`.
+`NativeScheduledTaskStore` preserves the established task fields, serializes
+Praxis writers with a sidecar lease, and retries atomic replacement when the
+physical native file changes. The manager
 uses PID plus process-start identity to avoid stealing a live foreign job,
 catches up expired one-shot tasks, bounds deterministic jitter, and queues due
 prompts for the idle interactive runtime. Fixed `/loop` expansion remains an
@@ -285,7 +270,7 @@ escapes, while `Grep` remains workspace-scoped.
 `ProjectMemoryRecallController` and `ProjectMemoryExtractionController` are
 deep application modules behind narrow runtime interfaces rather than branches
 inside the Agent loop. A shared platform project-identity module canonicalizes
-git roots and linked worktrees for both native and compatibility callers. The
+git roots and linked worktrees for all callers. The
 default context path injects only the bounded `MEMORY.md` index. Capability-
 gated recall prefetches bounded topic metadata concurrently and contributes an
 ephemeral user-role background attachment only when already settled after
@@ -353,8 +338,6 @@ mismatched session IDs, and invalid cross-entry links fail closed so a partial
 or semantically reduced fork is never published. Sidechain records and orphaned
 `last-prompt` hints are excluded because they do not belong to the resumable
 main chain.
-
-Detailed contract: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Local Team observability and qualification
 

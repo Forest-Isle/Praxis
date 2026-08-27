@@ -3,15 +3,9 @@ import { mkdir, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, relative, resolve } from 'node:path'
 
-import {
-  loadClaudeContextResources,
-  loadClaudeSettings,
-  type ClaudeResourceScope,
-  type ClaudeTextResource,
-} from '../../compatibility/claude/shared-resources.js'
+import type { ResourceScope, TextResource } from '../../core/resources.js'
 import { resolveProjectMemoryPolicy } from '../../core/project-memory.js'
 import { resolveProjectMemoryDirectory } from '../../platform/project-memory-paths.js'
-import type { DataPlane } from '../../persistence/data-plane.js'
 import {
   loadNativeContextResources,
   loadNativeSettings,
@@ -23,7 +17,7 @@ export interface TuiMemoryFileEntry {
   path: string
   displayPath: string
   annotation?: string
-  scope: ClaudeResourceScope
+  scope: ResourceScope
   imported?: true
 }
 
@@ -36,7 +30,6 @@ export interface LoadTuiMemoryFilesOptions {
   configRoot: string
   cwd: string
   homeDirectory?: string
-  dataPlane?: DataPlane
   environment?: Readonly<Record<string, string | undefined>>
 }
 
@@ -63,13 +56,13 @@ export function displayTuiMemoryPath(
   return absolute
 }
 
-function isMemoryInstruction(resource: ClaudeTextResource): boolean {
+function isMemoryInstruction(resource: TextResource): boolean {
   return /^(?:CLAUDE(?:\.local)?|PRAXIS)\.md$/u.test(basename(resource.path))
 }
 
 function importedEntries(
-  resource: ClaudeTextResource,
-  instructions: readonly ClaudeTextResource[],
+  resource: TextResource,
+  instructions: readonly TextResource[],
   cwd: string,
   homeDirectory: string,
   sourceDisplayPath: string,
@@ -98,43 +91,30 @@ export async function loadTuiMemoryFiles({
   configRoot,
   cwd,
   homeDirectory = homedir(),
-  dataPlane = 'claude',
   environment = process.env,
 }: LoadTuiMemoryFilesOptions): Promise<TuiMemoryFiles> {
   const [canonicalCwd, canonicalHome] = await Promise.all([
     realpath(cwd),
     realpath(homeDirectory).catch(() => resolve(homeDirectory)),
   ])
-  const settings =
-    dataPlane === 'native'
-      ? await loadNativeSettings({ root: configRoot, cwd })
-      : await loadClaudeSettings({ configRoot, cwd })
+  const settings = await loadNativeSettings({ root: configRoot, cwd })
   const memoryPolicy = resolveProjectMemoryPolicy({
-    dataPlane,
     settings,
     environment,
   })
   const [context, autoMemoryDirectory] = await Promise.all([
-    dataPlane === 'native'
-      ? loadNativeContextResources({
-          root: configRoot,
-          cwd,
-          environment,
-          includeProjectMemory: memoryPolicy.enabled,
-        })
-      : loadClaudeContextResources({
-          configRoot,
-          cwd,
-          homeDirectory,
-          includeProjectMemory: memoryPolicy.enabled,
-        }),
+    loadNativeContextResources({
+      root: configRoot,
+      cwd,
+      environment,
+      includeProjectMemory: memoryPolicy.enabled,
+    }),
     resolveProjectMemoryDirectory({
-      dataPlane,
       configRoot,
       cwd,
     }),
   ])
-  const instructionName = dataPlane === 'native' ? 'PRAXIS.md' : 'CLAUDE.md'
+  const instructionName = 'PRAXIS.md'
   const userPath = resolve(configRoot, instructionName)
   const projectResources = context.instructions.filter(
     (resource) =>
@@ -147,14 +127,12 @@ export async function loadTuiMemoryFiles({
       resource.importedFrom === undefined &&
       resolve(resource.path) === userPath,
   )
-  const projectPath =
-    dataPlane === 'native'
-      ? resolve(canonicalCwd, '.praxis', 'PRAXIS.md')
-      : resolve(canonicalCwd, 'CLAUDE.md')
-  const userDisplayPath =
-    dataPlane === 'native'
-      ? displayTuiMemoryPath(userPath, canonicalCwd, canonicalHome)
-      : '~/.claude/CLAUDE.md'
+  const projectPath = resolve(canonicalCwd, '.praxis', 'PRAXIS.md')
+  const userDisplayPath = displayTuiMemoryPath(
+    userPath,
+    canonicalCwd,
+    canonicalHome,
+  )
   const entries: TuiMemoryFileEntry[] = [
     {
       kind: 'file',
@@ -204,10 +182,7 @@ export async function loadTuiMemoryFiles({
       displayPath,
       ...(activeProject
         ? {
-            annotation:
-              dataPlane === 'native'
-                ? 'Saved in ./.praxis/PRAXIS.md'
-                : 'Saved in ./CLAUDE.md',
+            annotation: 'Saved in ./.praxis/PRAXIS.md',
           }
         : {}),
       scope: resource.scope,

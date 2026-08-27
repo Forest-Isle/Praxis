@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -167,9 +167,10 @@ import {
   agentColorMessage,
   parseAgentColorInput,
   type AgentColorSelection,
-} from '../compatibility/claude/agent-color.js'
-import type { AgentColorName } from '../compatibility/claude/agent-color.js'
-import type { ClaudeResourceScope } from '../compatibility/claude/shared-resources.js'
+} from '../core/agent-color.js'
+import type { AgentColorName } from '../core/agent-color.js'
+import type { ResourceScope } from '../core/resources.js'
+type ClaudeResourceScope = ResourceScope
 import type { TuiHookConfiguration } from './tui/hook-settings.js'
 import {
   mergeTuiSlashCommands,
@@ -1184,13 +1185,11 @@ export function InteractiveApp({
   settingSources,
 }: InteractiveAppProps) {
   const { exit, suspendTerminal, waitUntilRenderFlush } = useApp()
-  const settingsDirectory = dataPlane === 'native' ? '.praxis' : '.claude'
+  const settingsDirectory = '.praxis'
   const keybindingsRoot = useMemo(
     () =>
       resolve(
-        suppliedConfigRoot ??
-          keybindingsConfigRoot ??
-          resolveDataPlaneRoot({ dataPlane }),
+        suppliedConfigRoot ?? keybindingsConfigRoot ?? resolveDataPlaneRoot(),
       ),
     [dataPlane, keybindingsConfigRoot, suppliedConfigRoot],
   )
@@ -1199,23 +1198,22 @@ export function InteractiveApp({
       runtimeSettingsTarget === undefined
         ? {
             configRoot: keybindingsRoot,
-            statePath:
-              suppliedStatePath ??
-              (dataPlane === 'native'
-                ? join(keybindingsRoot, 'state.json')
-                : process.env.CLAUDE_CONFIG_DIR
-                  ? join(keybindingsRoot, '.claude.json')
-                  : resolve(homedir(), '.claude.json')),
+            statePath: suppliedStatePath ?? join(keybindingsRoot, 'state.json'),
           }
-        : resolveConfigSettingsLocation(runtimeSettingsTarget),
+        : typeof runtimeSettingsTarget === 'string'
+          ? {
+              configRoot: runtimeSettingsTarget,
+              statePath: join(runtimeSettingsTarget, 'state.json'),
+            }
+          : resolveConfigSettingsLocation(runtimeSettingsTarget),
     [dataPlane, keybindingsRoot, runtimeSettingsTarget, suppliedStatePath],
   )
   const loadMemoryFiles = useMemo(
     () =>
       memoryFilesLoader ??
       ((configRoot: string, cwd: string) =>
-        loadTuiMemoryFiles({ configRoot, cwd, dataPlane })),
-    [dataPlane, memoryFilesLoader],
+        loadTuiMemoryFiles({ configRoot, cwd })),
+    [memoryFilesLoader],
   )
   const sensitiveValues = useMemo(
     () => sensitiveEnvironmentValues(process.env),
@@ -1234,7 +1232,6 @@ export function InteractiveApp({
       (async (onProgress?: DoctorProgressListener) => {
         const runtimeSettings = await loadRuntimeSettings(configTarget)
         return runDoctor({
-          dataPlane,
           version: display.version,
           executablePath: resolve(
             process.argv[1] ??
@@ -1267,8 +1264,7 @@ export function InteractiveApp({
   const permissionStore = useMemo(
     () =>
       permissionRuleStore ?? {
-        load: () =>
-          loadTuiPermissionRules(runtimeCwd, keybindingsRoot, dataPlane),
+        load: () => loadTuiPermissionRules(runtimeCwd, keybindingsRoot),
         add: (input: {
           behavior: TuiPermissionBehavior
           rule: string
@@ -1277,7 +1273,6 @@ export function InteractiveApp({
           addTuiPermissionRule({
             cwd: runtimeCwd,
             configRoot: keybindingsRoot,
-            dataPlane,
             ...input,
           }),
         remove: removeTuiPermissionRule,
@@ -1552,14 +1547,12 @@ export function InteractiveApp({
         cwd: runtimeCwd,
         homeDirectory: homedir(),
         additionalDirectories: runtimePreferences.additionalDirectories,
-        dataPlane,
       }),
     [
       keybindingsRoot,
       runtimeCwd,
       runtimePreferences.additionalDirectories,
       suppliedSandboxStore,
-      dataPlane,
     ],
   )
   const runtimePreferencesRef = useRef(runtimePreferences)
@@ -2185,13 +2178,8 @@ export function InteractiveApp({
     process.env.HTTP_PROXY
   const statusSettingSources = (() => {
     const projectSettings =
-      existsSync(
-        join(
-          runtimeCwd,
-          dataPlane === 'native' ? '.praxis' : '.claude',
-          'settings.json',
-        ),
-      ) || existsSync(join(runtimeCwd, 'settings.json'))
+      existsSync(join(runtimeCwd, '.praxis', 'settings.json')) ||
+      existsSync(join(runtimeCwd, 'settings.json'))
     return projectSettings ? 'User settings, Project settings' : 'User settings'
   })()
   const configMenu = menu?.kind === 'config' ? menu : null
@@ -3693,7 +3681,7 @@ export function InteractiveApp({
   }
 
   const writeCopyCandidate = async (candidate: CopyCandidate) => {
-    const directory = join(tmpdir(), 'claude')
+    const directory = join(keybindingsRoot, 'state')
     await mkdir(directory, { recursive: true })
     const path = join(directory, candidate.filename)
     await writeFile(path, candidate.text, 'utf8')
@@ -8281,7 +8269,6 @@ export function InteractiveApp({
                 display={runtimeDisplay}
                 width={width}
                 showTips={runtimeSettings.tips}
-                dataPlane={dataPlane}
               />
             ) : null}
             {screen.body.sessionLabel ? (
@@ -8490,7 +8477,6 @@ export function InteractiveApp({
                   surface={selectedSecondarySurface}
                   width={width}
                   screenReader={axScreenReader}
-                  dataPlane={dataPlane}
                 />
               ) : selectedSecondarySurface.kind === 'help' ? (
                 <HelpMenu
@@ -8765,16 +8751,8 @@ export async function runInteractive(options: {
   let currentInitialPrompt = options.initialPrompt
   let initialAgentPromptResolved = false
   const dataPlane = options.dataPlane ?? resolveDataPlane()
-  const configRoot = resolve(
-    options.configRoot ?? resolveDataPlaneRoot({ dataPlane }),
-  )
-  const statePath =
-    options.statePath ??
-    (dataPlane === 'native'
-      ? join(configRoot, 'state.json')
-      : process.env.CLAUDE_CONFIG_DIR
-        ? join(configRoot, '.claude.json')
-        : resolve(homedir(), '.claude.json'))
+  const configRoot = resolve(options.configRoot ?? resolveDataPlaneRoot())
+  const statePath = options.statePath ?? join(configRoot, 'state.json')
   const runtimeSettingsTarget = { configRoot, statePath }
   let currentRuntimeSettings =
     options.runtimeSettings ??

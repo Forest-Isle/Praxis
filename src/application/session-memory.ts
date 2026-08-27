@@ -3,7 +3,7 @@ import { readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 import { AgentRunCancelledError, type ModelMessage } from '../core/runtime.js'
-import { isClaudeSessionId } from '../compatibility/claude/paths.js'
+import { isSessionId } from '../core/session.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 
 /** A persisted extraction this old is recovered as stale and safely re-extracted. */
@@ -202,11 +202,8 @@ export interface SessionMemoryStoreOptions {
 }
 
 /**
- * Durable sidecar for one session's extracted memory. Claude compatibility
- * defaults to `<configRoot>/praxis/session-memory/<sessionId>/`; callers may
- * select another data plane with
- * `<sidecarRoot>/session-memory/<sessionId>/` (for example, native
- * `<configRoot>/state/session-memory/<sessionId>/`). All writes are atomic
+ * Durable sidecar for one session's extracted memory. Native callers place it
+ * under `<configRoot>/state/session-memory/<sessionId>/`. All writes are atomic
  * (same-directory temp file, fsync, then rename) and version-checked. Never
  * touches shared Claude transcript entries.
  */
@@ -225,7 +222,7 @@ export class SessionMemoryStore {
         'Session memory configRoot must be a non-empty string',
       )
     }
-    if (!isClaudeSessionId(options.sessionId)) {
+    if (!isSessionId(options.sessionId)) {
       throw new SessionMemoryStateError(
         `Invalid session memory session ID: ${options.sessionId}`,
       )

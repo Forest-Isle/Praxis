@@ -25,25 +25,16 @@ import { isPathWithin } from '../platform/path-containment.js'
 
 import {
   AGENT_COLOR_DEFAULT,
-  agentColorMessage,
-  getClaudeEffectiveAgentColor,
+  isAgentColorName,
   type AgentColorName,
   type AgentColorSelection,
   type AgentColorValue,
-} from '../compatibility/claude/agent-color.js'
-import type { ClaudeConditionalRuleResolver } from '../compatibility/claude/context.js'
+} from '../core/agent-color.js'
+import type { ClaudeConditionalRuleResolver } from '../native/context.js'
+import { formatClaudeCompactSummary } from '../native/compaction.js'
+import { isClaudeAgentId } from '../native/sidechain.js'
 import {
-  createClaudeCompactEntries,
-  formatClaudeCompactSummary,
-  getCumulativeDroppedTokens,
-} from '../compatibility/claude/compaction.js'
-import {
-  discoverClaudeProjectRoot,
-  resolveClaudePaths,
-  resolveClaudeScheduledTaskFile,
-} from '../compatibility/claude/paths.js'
-import { isClaudeAgentId } from '../compatibility/claude/sidechain.js'
-import {
+  assertNativeDataPlane,
   resolveDataPlanePaths,
   resolveScheduledTaskFile,
   type DataPlane,
@@ -52,46 +43,33 @@ import {
   downloadClaudeFileResources,
   type ClaudeFileResource,
   type ClaudeFileResourceConfig,
-} from '../compatibility/claude/file-resources.js'
-import { createClaudeNativeFork } from '../compatibility/claude/fork.js'
-import {
-  selectClaudeActiveTranscript,
-  selectClaudeTranscriptAtMessage,
-  selectClaudeTranscriptFromNewestLeaf,
-} from '../compatibility/claude/history.js'
-import { ClaudeFileHistory } from '../compatibility/claude/file-history.js'
+} from '../native/file-resources.js'
+import { createClaudeNativeFork } from '../native/fork.js'
+import { selectClaudeActiveTranscript } from '../native/history.js'
+import { ClaudeFileHistory } from '../native/file-history.js'
 import {
   getClaudeAgentSetting,
-  projectClaudeDisplayTranscript,
   projectClaudeModelMessages,
-} from '../compatibility/claude/projection.js'
+} from '../native/projection.js'
 import type { TranscriptDisplayItem } from './transcript-projection.js'
-import {
-  type ClaudeTranscriptEntry,
-  selectClaudeSchemaAdapter,
-} from '../compatibility/claude/schema.js'
-import {
-  createClaudeDurableMetadataSnapshot,
-  createClaudeTagEntry,
-  mergeClaudeDurableMetadataSnapshot,
-  reduceClaudeSessionMetadata,
-  type ClaudeSessionMetadata,
-} from '../compatibility/claude/session-metadata.js'
+import { type NativeTranscriptEntry } from '../native/schema.js'
+import type { TranscriptEvent } from '../core/transcript-event.js'
+import { type ClaudeSessionMetadata } from '../native/session-metadata.js'
 import {
   classifyClaudeInterruption,
   type ClaudeInterruptionClassification,
-} from '../compatibility/claude/interruption.js'
+} from '../native/interruption.js'
 import {
   findUnresolvedClaudeToolCalls,
   getClaudeContentBlocks,
-} from '../compatibility/claude/tool-links.js'
+} from '../native/tool-links.js'
 import {
   createClaudeAgentSettingEntry,
   createClaudeHookAttachmentEntries,
   createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
-} from '../compatibility/claude/translation.js'
+} from '../native/translation.js'
 import {
   AgentRunCancelledError,
   type AgentRunRequest,
@@ -128,6 +106,156 @@ import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import { isSessionId } from '../core/session.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
+
+/** Project authoritative native events for legacy-only session helpers. */
+function projectNativeEvents(
+  events: readonly TranscriptEvent[],
+): NativeTranscriptEntry[] {
+  const entries: NativeTranscriptEntry[] = []
+  for (const event of events) {
+    if (event.kind === 'context-boundary') {
+      entries.push({
+        type: 'system',
+        uuid: event.id,
+        parentUuid: event.parentId,
+        subtype: 'compact_boundary',
+        logicalParentUuid: event.logicalParentId,
+        compactMetadata: {
+          trigger: event.trigger,
+          preTokens: event.preTokens,
+          postTokens: event.postTokens,
+          durationMs: event.durationMs,
+        },
+      })
+      continue
+    }
+    if (event.kind === 'context-summary') {
+      entries.push({
+        type: 'user',
+        uuid: event.id,
+        parentUuid: event.parentId,
+        isCompactSummary: true,
+        message: { role: 'user', content: event.summary },
+      })
+      continue
+    }
+    if (event.kind !== 'messages') continue
+    let parentUuid = event.parentId
+    event.messages.forEach((message, index) => {
+      // Native event parent links target the event ID. Assign that ID to the
+      // final projected message so the next event and memory watermark attach
+      // to the visible tail of this event; intermediate messages get stable
+      // derived IDs within the event.
+      const uuid =
+        index === event.messages.length - 1 ? event.id : `${event.id}:${index}`
+      if (message.role === 'user' && typeof message.content === 'string') {
+        const agentMatch = message.content.match(
+          /^<praxis-agent-setting>([^<]+)<\/praxis-agent-setting>$/u,
+        )
+        if (agentMatch?.[1]) {
+          entries.push({
+            type: 'agent-setting',
+            agentSetting: agentMatch[1],
+            uuid,
+            parentUuid,
+            sessionId: event.sessionId,
+          })
+          parentUuid = uuid
+          return
+        }
+        const nameMatch = message.content.match(
+          /^<praxis-session-name>([^<]+)<\/praxis-session-name>$/u,
+        )
+        if (nameMatch?.[1]) {
+          entries.push({
+            type: 'custom-title',
+            customTitle: nameMatch[1],
+            uuid,
+            parentUuid,
+            sessionId: event.sessionId,
+          })
+          parentUuid = uuid
+          return
+        }
+        const match = message.content.match(
+          /^<praxis-file-history>([\s\S]*)<\/praxis-file-history>$/u,
+        )
+        if (match?.[1]) {
+          try {
+            const operational = JSON.parse(match[1]) as NativeTranscriptEntry
+            if (
+              operational &&
+              typeof operational === 'object' &&
+              typeof operational.type === 'string' &&
+              (operational.type === 'file-history-snapshot' ||
+                operational.type === 'file-history-delta')
+            ) {
+              entries.push({
+                ...operational,
+                uuid,
+                parentUuid,
+                sessionId: event.sessionId,
+              })
+              parentUuid = uuid
+              return
+            }
+          } catch {
+            // Keep malformed operational markers visible as ordinary native
+            // user messages; the authoritative transcript remains valid.
+          }
+        }
+      }
+      if (message.role === 'tool') {
+        entries.push({
+          type: 'user',
+          uuid,
+          parentUuid,
+          message: {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: message.toolCallId,
+                content: message.content,
+                is_error: message.isError,
+              },
+            ],
+          },
+        })
+        parentUuid = uuid
+        return
+      }
+      if (message.role === 'assistant') {
+        const content: Record<string, unknown>[] = []
+        if (message.content)
+          content.push({ type: 'text', text: message.content })
+        for (const call of message.toolCalls ?? [])
+          content.push({
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: call.input,
+          })
+        entries.push({
+          type: 'assistant',
+          uuid,
+          parentUuid,
+          message: { role: 'assistant', content },
+        })
+        parentUuid = uuid
+        return
+      }
+      entries.push({
+        type: message.role,
+        uuid,
+        parentUuid,
+        message: { role: message.role, content: message.content },
+      })
+      parentUuid = uuid
+    })
+  }
+  return entries
+}
 import {
   ContextBudget,
   estimateModelRequestTokens,
@@ -155,21 +283,8 @@ import type {
   ClaudeHookRunner,
 } from '../hooks/claude-hooks.js'
 import {
-  ClaudeTranscriptStore,
-  type ClaudeTranscriptLease,
-  type TranscriptParseIssue,
-  type TranscriptSnapshot,
-  type TranscriptTail,
-} from '../persistence/claude-transcript-store.js'
-import {
-  ClaudeSessionIndexCandidateError,
-  readClaudeSessionIndexes,
-  type ClaudeSessionIndex,
-} from '../persistence/claude-session-index.js'
-import {
   readNativeTranscript,
   readNativeTranscriptIndexes,
-  exportNativeTranscript,
   NativeTranscriptIndexCandidateError,
 } from '../persistence/native-transcript-reader.js'
 import {
@@ -178,10 +293,16 @@ import {
   unresolvedActiveToolCallIds,
 } from './transcript-projection.js'
 import type { TranscriptCodecDiagnostic } from '../core/transcript-codec.js'
+
 import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-store.js'
-import { NativeTranscriptStore } from '../persistence/native-transcript-store.js'
+import {
+  NativeTranscriptStore,
+  type NativeTranscriptLease,
+  type NativeTranscriptTail,
+} from '../persistence/native-transcript-store.js'
 import {
   NativeSessionTranscript,
+  type NativeSessionTranscriptStore,
   type NativeSessionTranscriptLease,
 } from './native-session-transcript.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
@@ -253,21 +374,21 @@ import type {
   ClaudeMcpToolInspection,
 } from '../mcp/claude-mcp-tools.js'
 import type { TeamLeadOperations } from './team-lead-operations.js'
-import type { ClaudeTeamCompatibilityPort } from '../tools/team-lead-tools.js'
 import { DurableFollowUpTracker } from './durable-follow-up.js'
 type TeamLeadToolRegistryFactory = (
   base: ToolRegistry,
   operations: TeamLeadOperations,
   sessionId: string,
   enabledTools: readonly string[],
-  compatibilityPort?: ClaudeTeamCompatibilityPort,
 ) => ToolRegistry
+
+type SessionTail = NativeTranscriptTail
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
-  /** `claude` preserves the legacy shared layout; the CLI selects `native` by default. */
+  /** Native Praxis transcript data plane. */
   dataPlane?: DataPlane
-  /** Experimental canonical native transcript writes. */
+  /** Retained for compatibility; native transcripts are always writable. */
   experimentalNativeTranscriptWrites?: boolean
   cwd: string
   claudeVersion: string
@@ -353,7 +474,6 @@ export interface ClaudeSessionServiceOptions {
   teamLeadOperations?: TeamLeadOperations
   /** Lazily supplied Team tool wrapper, so disabled runs do not load Team code. */
   teamLeadToolRegistryFactory?: TeamLeadToolRegistryFactory
-  teamLeadCompatibilityPort?: ClaudeTeamCompatibilityPort
 }
 
 function agentPermissionMode(
@@ -368,14 +488,19 @@ function agentToolName(rule: string): string {
 }
 
 function transcriptContainsBackgroundAgentNotification(
-  entries: readonly ClaudeTranscriptEntry[],
+  entries: readonly NativeTranscriptEntry[] | readonly ModelMessage[],
   notification: BackgroundAgentNotificationIdentity,
 ): boolean {
   const markers = backgroundAgentNotificationMarkers(notification)
   return entries.some((entry) => {
-    if (entry.type !== 'user') return false
-    const source = JSON.stringify(entry.message)
-    return markers.every((marker) => source.includes(marker))
+    if ('type' in entry) {
+      if (entry.type !== 'user') return false
+      return markers.every((marker) =>
+        JSON.stringify(entry.message).includes(marker),
+      )
+    }
+    if (entry.role !== 'user') return false
+    return markers.every((marker) => JSON.stringify(entry).includes(marker))
   })
 }
 
@@ -435,7 +560,7 @@ export interface SessionSummary {
   lastPrompt: string | null
   updatedAt: string
   status: SessionStatus
-  issue: (TranscriptParseIssue | TranscriptCodecDiagnostic) | null
+  issue: TranscriptCodecDiagnostic | null
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -451,57 +576,8 @@ export interface SessionInspection extends SessionSummary {
   newlineTerminated: boolean
 }
 
-function sessionMetadataFields(
-  metadata: ClaudeSessionMetadata,
-  options: { agentNameFallback: boolean },
-): Pick<
-  SessionSummary,
-  | 'name'
-  | 'tag'
-  | 'agentName'
-  | 'agentColor'
-  | 'agentSetting'
-  | 'permissionMode'
-  | 'mode'
-  | 'prNumber'
-  | 'prUrl'
-  | 'prRepository'
-> {
-  const name =
-    metadata.title ??
-    (options.agentNameFallback ? metadata.agentName : undefined)
-  const prLink = metadata.prLink
-  return {
-    ...(name === undefined ? {} : { name }),
-    ...(metadata.tag === undefined ? {} : { tag: metadata.tag }),
-    ...(metadata.agentName === undefined
-      ? {}
-      : { agentName: metadata.agentName }),
-    ...(metadata.agentColor === undefined
-      ? {}
-      : { agentColor: metadata.agentColor }),
-    ...(metadata.agentSetting === undefined
-      ? {}
-      : { agentSetting: metadata.agentSetting }),
-    ...(metadata.permissionMode === undefined
-      ? {}
-      : { permissionMode: metadata.permissionMode }),
-    ...(metadata.mode === undefined ? {} : { mode: metadata.mode }),
-    ...(prLink === undefined
-      ? {}
-      : {
-          prNumber: prLink.prNumber,
-          ...(prLink.prUrl === undefined ? {} : { prUrl: prLink.prUrl }),
-          ...(prLink.prRepository === undefined
-            ? {}
-            : { prRepository: prLink.prRepository }),
-        }),
-  }
-}
-
 function isSessionCandidateError(error: unknown): boolean {
   return (
-    error instanceof ClaudeSessionIndexCandidateError ||
     error instanceof NativeTranscriptIndexCandidateError ||
     ['ENOENT', 'ENOTDIR', 'ELOOP'].includes(
       (error as NodeJS.ErrnoException).code ?? '',
@@ -896,16 +972,16 @@ const MEMORY_COMPACT_MAX_SUMMARY_TOKENS = 8_192
  *  the durable session memory watermark. */
 interface MemoryPreservedCompactSelection {
   /** Active entries after the watermark that are folded into the summary. */
-  readonly compactedEntries: readonly ClaudeTranscriptEntry[]
+  readonly compactedEntries: readonly NativeTranscriptEntry[]
   /** Recent suffix retained verbatim after the compact boundary. */
-  readonly preservedEntries: readonly ClaudeTranscriptEntry[]
+  readonly preservedEntries: readonly NativeTranscriptEntry[]
   /** Last good memory artifact leading the compactor input. */
   readonly memoryMessage: ModelMessage
   /** Message the compact boundary links to, just before the preserved suffix. */
   readonly logicalParentUuid: string
 }
 
-function isTextBearingClaudeEntry(entry: ClaudeTranscriptEntry): boolean {
+function isTextBearingClaudeEntry(entry: NativeTranscriptEntry): boolean {
   if (
     typeof entry.message !== 'object' ||
     entry.message === null ||
@@ -942,7 +1018,7 @@ function isTextBearingClaudeEntry(entry: ClaudeTranscriptEntry): boolean {
   return false
 }
 
-function claudeToolResultIds(entry: ClaudeTranscriptEntry): Set<string> {
+function claudeToolResultIds(entry: NativeTranscriptEntry): Set<string> {
   const ids = new Set<string>()
   if (entry.type !== 'user') return ids
   for (const block of getClaudeContentBlocks(entry)) {
@@ -954,7 +1030,7 @@ function claudeToolResultIds(entry: ClaudeTranscriptEntry): Set<string> {
 }
 
 function claudeAssistantHasToolUse(
-  entry: ClaudeTranscriptEntry,
+  entry: NativeTranscriptEntry,
   ids: ReadonlySet<string>,
 ): boolean {
   if (entry.type !== 'assistant') return false
@@ -967,7 +1043,7 @@ function claudeAssistantHasToolUse(
 }
 
 function claudeAssistantResponseId(
-  entry: ClaudeTranscriptEntry | undefined,
+  entry: NativeTranscriptEntry | undefined,
 ): string | null {
   if (
     entry?.type !== 'assistant' ||
@@ -985,7 +1061,7 @@ function claudeAssistantResponseId(
  *  assistant records with the same message.id. Keep the whole response on one
  *  side of the compact boundary so thinking and tool siblings stay together. */
 function completeClaudeAssistantResponseBoundary(
-  activeEntries: readonly ClaudeTranscriptEntry[],
+  activeEntries: readonly NativeTranscriptEntry[],
   startIndex: number,
   lowerBound: number,
 ): number {
@@ -1006,7 +1082,7 @@ function completeClaudeAssistantResponseBoundary(
  *  tool_use. Same-response thinking/tool blocks live in one assistant entry,
  *  so entry-level cutting never splits them. */
 function completeClaudeToolPairBoundary(
-  activeEntries: readonly ClaudeTranscriptEntry[],
+  activeEntries: readonly NativeTranscriptEntry[],
   startIndex: number,
   lowerBound: number,
 ): number {
@@ -1033,7 +1109,7 @@ function completeClaudeToolPairBoundary(
 /** Walks back from the active tail to the inclusive start of the recent suffix
  *  retained verbatim, then completes sibling adjacency at the boundary. */
 export function memoryPreservedSuffixStart(
-  activeEntries: readonly ClaudeTranscriptEntry[],
+  activeEntries: readonly NativeTranscriptEntry[],
 ): number {
   let latestCompactBoundary = 0
   for (let index = activeEntries.length - 1; index >= 0; index -= 1) {
@@ -1095,7 +1171,7 @@ function validSessionName(value: string): string | null {
 }
 
 function projectMemoryMessages(
-  entries: readonly ClaudeTranscriptEntry[],
+  entries: readonly NativeTranscriptEntry[],
 ): ProjectMemoryMessage[] {
   return selectClaudeActiveTranscript(entries).flatMap((entry) => {
     if (typeof entry.uuid !== 'string') return []
@@ -1308,7 +1384,8 @@ class HookLifecycle {
 }
 
 export class ClaudeSessionService {
-  private readonly schema
+  private readonly options: ClaudeSessionServiceOptions
+  private readonly schema = { writeMode: 'read-write' as const }
   private readonly inMemoryStores = new Map<string, InMemoryTranscriptStore>()
   private readonly scheduledPrompts: ScheduledPromptManager | null
   private readonly workflowManager: WorkflowManager | null
@@ -1355,11 +1432,6 @@ export class ClaudeSessionService {
   private activeCostSessionId: string | undefined
   private closeCostSavePromise: Promise<void> | undefined
   private closeMetadataSavePromise: Promise<void> | undefined
-  private readonly durableMetadataSessions = new Set<string>()
-  private readonly durableMetadataSnapshots = new Map<
-    string,
-    ClaudeTranscriptEntry[]
-  >()
   private readonly sessionMemoryControllers = new Map<
     string,
     SessionMemoryController
@@ -1370,7 +1442,10 @@ export class ClaudeSessionService {
   private readonly fileChangeWatcher: ClaudeFileChangeWatcher | null
   private runtimeCwd: string
 
-  constructor(private readonly options: ClaudeSessionServiceOptions) {
+  constructor(options: ClaudeSessionServiceOptions) {
+    const dataPlane = options.dataPlane ?? 'native'
+    assertNativeDataPlane(dataPlane)
+    this.options = { ...options, dataPlane }
     this.assertNativeTranscriptOptions()
     this.leadOperations = options.teamLeadOperations ?? null
     this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
@@ -1394,27 +1469,21 @@ export class ClaudeSessionService {
           warn: (message) => options.eventSink?.({ type: 'warning', message }),
         })
       : null
-    this.schema = selectClaudeSchemaAdapter(options.claudeVersion)
     this.scheduledPrompts =
       options.tools && (options.scheduledToolNames?.length ?? 0) > 0
         ? new ScheduledPromptManager({
-            filePath:
-              options.dataPlane === 'native'
-                ? resolveScheduledTaskFile({
-                    dataPlane: 'native',
-                    cwd: options.cwd,
-                    root: options.configRoot,
-                  })
-                : resolveClaudeScheduledTaskFile(options.cwd),
+            filePath: resolveScheduledTaskFile({
+              dataPlane: 'native',
+              cwd: options.cwd,
+              root: options.configRoot,
+            }),
             lockFile: join(
-              options.dataPlane === 'native'
-                ? resolveDataPlanePaths({
-                    dataPlane: 'native',
-                    root: options.configRoot,
-                    cwd: options.cwd,
-                    sessionId: '00000000-0000-4000-8000-000000000000',
-                  }).praxisRoot
-                : resolve(options.configRoot, 'praxis'),
+              resolveDataPlanePaths({
+                dataPlane: 'native',
+                root: options.configRoot,
+                cwd: options.cwd,
+                sessionId: '00000000-0000-4000-8000-000000000000',
+              }).praxisRoot,
               'locks',
               'scheduled-tasks.lock',
             ),
@@ -1437,7 +1506,6 @@ export class ClaudeSessionService {
         ? new SessionWorktreeManager({
             workspace: options.workspace,
             sessionId: '',
-            dataPlane: options.dataPlane ?? 'claude',
             ...(options.worktreeBaseRef
               ? { baseRef: options.worktreeBaseRef }
               : {}),
@@ -1694,11 +1762,7 @@ export class ClaudeSessionService {
     )
     this.sessionMemoryControllers.clear()
     await this.workflowManager?.close()
-    this.closeMetadataSavePromise ??= Promise.all(
-      [...this.durableMetadataSessions].map((sessionId) =>
-        this.reappendDurableMetadata(sessionId),
-      ),
-    ).then(() => undefined)
+    this.closeMetadataSavePromise ??= Promise.resolve()
     await this.closeMetadataSavePromise
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
     await this.closeCostSavePromise
@@ -1955,7 +2019,7 @@ export class ClaudeSessionService {
             manager: this.scheduledPrompts,
             sessionId,
             enabledTools: scheduledToolNames,
-            dataPlane: this.options.dataPlane ?? 'claude',
+            dataPlane: 'native',
           })
         : null
     const wrappedBase = scheduledTools ?? taskTools ?? baseTools
@@ -1964,7 +2028,7 @@ export class ClaudeSessionService {
       this.options.permissions
         ? new ClaudeSubagentExecutor({
             configRoot: this.options.configRoot,
-            dataPlane: this.options.dataPlane ?? 'claude',
+            dataPlane: 'native',
             cwd: this.activeCwd(),
             cwdProvider: () => this.activeCwd(),
             claudeVersion: this.options.claudeVersion,
@@ -2083,7 +2147,6 @@ export class ClaudeSessionService {
             defaultModel: this.options.provider?.model ?? 'praxis/provider',
             tokenBudget: null,
             enabled: capabilities.has('Workflow'),
-            dataPlane: this.options.dataPlane ?? 'claude',
           })
         : agentTools
     if (this.worktreeManager) this.worktreeManager.bindSession(sessionId)
@@ -2093,7 +2156,7 @@ export class ClaudeSessionService {
             base: workflowTools,
             manager: this.worktreeManager,
             workspace: this.options.workspace,
-            dataPlane: this.options.dataPlane ?? 'claude',
+            dataPlane: 'native',
             ...(this.options.worktreeToolNames
               ? { enabledTools: this.options.worktreeToolNames }
               : {}),
@@ -2297,25 +2360,16 @@ export class ClaudeSessionService {
     )
     await this.appendInputHistory(`/btw ${prompt}`, activeSessionId)
     const provider = this.provider()
-    let entries: ClaudeTranscriptEntry[] = []
+    let nativeMessages: ModelMessage[] = []
     if (sessionId) {
-      const loaded =
-        this.options.sessionPersistence === false
-          ? await this.turnStore(activeSessionId).withLease((lease) =>
-              lease.load(),
-            )
-          : {
-              status: 'completed' as const,
-              value: await this.store(activeSessionId).loadReadOnly(),
-            }
-      if (loaded.status === 'conflict') {
-        throw new Error(`Claude side question conflict: ${loaded.reason}`)
-      }
-      if (loaded.value.entries.length === 0) {
-        throw new Error(`Claude session not found: ${activeSessionId}`)
-      }
-      entries = loaded.value.entries
-      this.restoreWorktree(entries)
+      const transcript = new NativeSessionTranscript({
+        sessionId: activeSessionId,
+        store: this.nativeStore(activeSessionId),
+      })
+      nativeMessages = await transcript.withLease(
+        { kind: 'resume' },
+        async (lease) => lease.activeMessages(),
+      )
     }
     const assembledContext = await assembleContextSnapshot(
       this.options.contextAssembler,
@@ -2328,10 +2382,7 @@ export class ClaudeSessionService {
     const messages = [
       ...contextProjection.systemMessages,
       ...injectFirstUserMessageContext(
-        [
-          ...projectClaudeModelMessages(entries),
-          { role: 'user' as const, content: prompt },
-        ],
+        [...nativeMessages, { role: 'user' as const, content: prompt }],
         contextProjection.firstUserMessageContext,
       ),
     ]
@@ -2447,17 +2498,19 @@ export class ClaudeSessionService {
     if (this.hostedSubagentNotificationPumps.has(executor)) return
     const pump = (async () => {
       while (!this.closing) {
-        const reconciled = await this.turnStore(sessionId).withLease(
-          async (lease) => {
-            const snapshot = await lease.load()
+        const reconciled = await new NativeSessionTranscript({
+          sessionId,
+          store: this.nativeStore(sessionId),
+        })
+          .withLease({ kind: 'resume' }, async (lease) => {
             await executor.reconcileDetachedNotifications((notification) =>
               transcriptContainsBackgroundAgentNotification(
-                snapshot.entries,
+                lease.activeMessages(),
                 notification,
               ),
             )
-          },
-        )
+          })
+          .then(() => ({ status: 'completed' as const }))
         if (reconciled.status !== 'completed') {
           await new Promise<void>((resolve) => setTimeout(resolve, 25))
           continue
@@ -2504,69 +2557,50 @@ export class ClaudeSessionService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
-    const loaded =
-      this.options.sessionPersistence === false
-        ? await this.turnStore(sessionId).withLease((lease) => lease.load())
-        : {
-            status: 'completed' as const,
-            value: await this.store(sessionId).loadReadOnly(),
-          }
-    if (loaded.status === 'conflict') return null
-    const entries = loaded.value
-    this.restoreWorktree(entries.entries)
-    const agentName =
-      this.options.agent ?? getClaudeAgentSetting(entries.entries)
-    const agent = this.resolveAgent(agentName)
-    const provider = this.providerForAgent(agent)
-    this.activeProvider = provider
-    const agentSystem = await this.mainAgentSystemPrompt(agent)
-    const assembledContext = await assembleContextSnapshot(
-      this.options.contextAssembler,
-      {
-        cwd: this.activeCwd(),
-        lifecycleId: sessionId,
-        ...(agentSystem
-          ? { mode: 'agent', baseSystemPrompt: agentSystem }
-          : {}),
-      },
-    )
-    const contextProjection = projectContextSnapshot(assembledContext)
-    const contextMessages = [...contextProjection.systemMessages]
-    const messages = [
-      ...contextMessages,
-      ...injectFirstUserMessageContext(
-        [
-          ...projectClaudeModelMessages(entries.entries),
-          { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
-        ],
-        contextProjection.firstUserMessageContext,
-      ),
-    ]
-    const suggestionTools =
-      agent && this.options.tools
-        ? new FilteredToolRegistry(this.options.tools, {
-            tools: mainAgentToolNames(this.options.tools, agent),
-          })
-        : this.options.tools
-    await this.activateSessionCostTracker(sessionId)
-    const metrics = await completeMeteredModelRequest(
-      provider,
-      {
-        messages,
-        stableSystemMessageCount: contextProjection.stableSystemSectionCount,
-        ...(provider.capabilities.tools
-          ? { tools: suggestionTools?.definitions() ?? [] }
-          : {}),
-        ...(this.options.effort ? { effort: this.options.effort } : {}),
-        ...(signal ? { signal } : {}),
-      },
-      {
-        onMetrics: (recorded) =>
-          this.recordAuxiliaryMetrics(sessionId, recorded),
-      },
-    )
-    if (metrics.toolCalls.length > 0) return null
-    return validPromptSuggestion(metrics.text)
+    {
+      const transcript = new NativeSessionTranscript({
+        sessionId,
+        store: this.store(sessionId),
+      })
+      const nativeMessages = await transcript.withLease(
+        { kind: 'resume' },
+        async (lease) => lease.activeMessages(),
+      )
+      const provider = this.provider()
+      const assembledContext = await assembleContextSnapshot(
+        this.options.contextAssembler,
+        { cwd: this.activeCwd(), lifecycleId: sessionId },
+      )
+      const contextProjection = projectContextSnapshot(assembledContext)
+      const messages = [
+        ...contextProjection.systemMessages,
+        ...injectFirstUserMessageContext(
+          [
+            ...nativeMessages,
+            { role: 'user' as const, content: PROMPT_SUGGESTION_INSTRUCTION },
+          ],
+          contextProjection.firstUserMessageContext,
+        ),
+      ]
+      const metrics = await completeMeteredModelRequest(
+        provider,
+        {
+          messages,
+          stableSystemMessageCount: contextProjection.stableSystemSectionCount,
+          ...(provider.capabilities.tools
+            ? { tools: this.options.tools?.definitions() ?? [] }
+            : {}),
+          ...(this.options.effort ? { effort: this.options.effort } : {}),
+          ...(signal ? { signal } : {}),
+        },
+        {
+          onMetrics: (recorded) =>
+            this.recordAuxiliaryMetrics(sessionId, recorded),
+        },
+      )
+      if (metrics.toolCalls.length > 0) return null
+      return validPromptSuggestion(metrics.text)
+    }
   }
 
   async sessionNameSuggestion(
@@ -2574,41 +2608,39 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
   ): Promise<string | null> {
     const provider = this.provider()
-    const loaded = await this.turnStore(sessionId).withLease((lease) =>
-      lease.load(),
-    )
-    if (loaded.status === 'conflict' || loaded.value.entries.length === 0) {
-      return null
+    {
+      const transcript = new NativeSessionTranscript({
+        sessionId,
+        store: this.store(sessionId),
+      })
+      const messages = await transcript.withLease(
+        { kind: 'resume' },
+        async (lease) => lease.activeMessages(),
+      )
+      if (messages.length === 0) return null
+      await this.activateSessionCostTracker(sessionId)
+      const metrics = await completeMeteredModelRequest(
+        provider,
+        {
+          messages: [
+            ...messages,
+            { role: 'user', content: SESSION_NAME_INSTRUCTION },
+          ],
+          ...(this.options.effort ? { effort: this.options.effort } : {}),
+          ...(signal ? { signal } : {}),
+        },
+        {
+          onMetrics: (recorded) =>
+            this.recordAuxiliaryMetrics(sessionId, recorded),
+        },
+      )
+      if (metrics.toolCalls.length > 0) return null
+      return validSessionName(metrics.text)
     }
-    await this.activateSessionCostTracker(sessionId)
-    const metrics = await completeMeteredModelRequest(
-      provider,
-      {
-        messages: [
-          ...projectClaudeModelMessages(loaded.value.entries),
-          { role: 'user', content: SESSION_NAME_INSTRUCTION },
-        ],
-        ...(this.options.effort ? { effort: this.options.effort } : {}),
-        ...(signal ? { signal } : {}),
-      },
-      {
-        onMetrics: (recorded) =>
-          this.recordAuxiliaryMetrics(sessionId, recorded),
-      },
-    )
-    if (metrics.toolCalls.length > 0) return null
-    return validSessionName(metrics.text)
   }
 
   async sessions(): Promise<SessionSummary[]> {
-    const discoveredRoot =
-      this.options.dataPlane === 'native'
-        ? undefined
-        : await discoverClaudeProjectRoot({
-            configRoot: this.options.configRoot,
-            cwd: this.activeCwd(),
-          })
-    const projectRoot = discoveredRoot ?? this.paths(randomUUID()).projectRoot
+    const projectRoot = this.paths(randomUUID()).projectRoot
     let names: string[]
     try {
       names = await readdir(projectRoot)
@@ -2627,39 +2659,20 @@ export class ClaudeSessionService {
         ...this.explicitSessionFiles.keys(),
       ]),
     ]
-    if (this.options.dataPlane === 'native') {
-      const nativeResults = await readNativeTranscriptIndexes(
-        sessionIds.map((sessionId) => ({
-          sessionId,
-          path:
-            this.explicitSessionFiles.get(sessionId) ??
-            join(projectRoot, `${sessionId}.jsonl`),
-        })),
-      )
-      const legacyResults = await readClaudeSessionIndexes(
-        nativeResults.flatMap((result) =>
-          'result' in result && result.result.format === 'legacy'
-            ? [{ sessionId: result.sessionId, path: result.path }]
-            : [],
-        ),
-        this.schema,
-      )
-      const legacyBySessionId = new Map(
-        legacyResults.map((result) => [result.sessionId, result]),
-      )
-      const nativeSummaries = nativeResults.map((result) => {
+    const nativeResults = await readNativeTranscriptIndexes(
+      sessionIds.map((sessionId) => ({
+        sessionId,
+        path:
+          this.explicitSessionFiles.get(sessionId) ??
+          join(projectRoot, `${sessionId}.jsonl`),
+      })),
+    )
+    return nativeResults
+      .map((result): SessionSummary | null => {
         try {
           if ('error' in result) throw result.error
           const file = result.result
-          if (file.format === 'legacy') {
-            const legacy = legacyBySessionId.get(result.sessionId)
-            if (!legacy)
-              throw new Error(
-                `Missing legacy transcript index for ${result.sessionId}`,
-              )
-            if ('error' in legacy) throw legacy.error
-            return this.claudeSessionSummary(result.sessionId, legacy.index)
-          }
+          if (file.format === 'unsupported') return null
           return {
             sessionId: result.sessionId,
             lastPrompt: lastUserPrompt(
@@ -2674,39 +2687,6 @@ export class ClaudeSessionService {
           throw error
         }
       })
-      return nativeSummaries
-        .filter((summary): summary is SessionSummary => summary !== null)
-        .sort(
-          (left, right) =>
-            right.updatedAt.localeCompare(left.updatedAt) ||
-            left.sessionId.localeCompare(right.sessionId),
-        )
-    }
-    if (discoveredRoot !== undefined) {
-      for (const sessionId of discoveredSessionIds) {
-        this.discoveredProjectRoots.set(sessionId, projectRoot)
-      }
-    }
-
-    const indexResults = await readClaudeSessionIndexes(
-      sessionIds.map((sessionId) => ({
-        sessionId,
-        path:
-          this.explicitSessionFiles.get(sessionId) ??
-          join(projectRoot, `${sessionId}.jsonl`),
-      })),
-      this.schema,
-    )
-    const summaries = indexResults.map((result) => {
-      try {
-        if ('error' in result) throw result.error
-        return this.claudeSessionSummary(result.sessionId, result.index)
-      } catch (error) {
-        if (isSessionCandidateError(error)) return null
-        throw error
-      }
-    })
-    return summaries
       .filter((summary): summary is SessionSummary => summary !== null)
       .sort(
         (left, right) =>
@@ -2717,68 +2697,22 @@ export class ClaudeSessionService {
 
   async inspect(sessionId: string): Promise<SessionInspection> {
     this.assertSessionPersistence()
-    if (this.options.dataPlane === 'native') {
-      const paths = this.paths(sessionId)
-      const file = await readNativeTranscript(paths.sessionFile)
-      if (file.format === 'legacy') {
-        const recovery = await this.store(sessionId).loadReadOnly()
-        const metadata = reduceClaudeSessionMetadata(
-          recovery.entries,
-          sessionId,
-        )
-        return {
-          sessionId,
-          ...sessionMetadataFields(metadata, { agentNameFallback: false }),
-          lastPrompt: metadata.lastPrompt ?? null,
-          updatedAt: file.updatedAt,
-          status: this.sessionStatus(recovery.issue, recovery.entries.length),
-          issue: recovery.issue,
-          writeMode: this.schema.writeMode,
-          entryCount: recovery.entries.length,
-          byteLength: file.byteLength,
-          newlineTerminated: file.newlineTerminated,
-        }
-      }
-      return {
-        sessionId,
-        lastPrompt: lastUserPrompt(file.records.map((record) => record.event)),
-        updatedAt: file.updatedAt,
-        status: this.nativeSessionStatus(file.issue, file.records.length),
-        issue: file.issue,
-        writeMode: file.writeMode,
-        entryCount: file.records.length,
-        byteLength: file.byteLength,
-        newlineTerminated: file.newlineTerminated,
-      }
-    }
-    await this.discoverProjectRoot(sessionId)
     const paths = this.paths(sessionId)
-    let metadata
-    try {
-      metadata = await stat(paths.sessionFile)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      throw error
-    }
-    const recovery = await this.store(sessionId).loadReadOnly()
-    const sessionMetadata = reduceClaudeSessionMetadata(
-      recovery.entries,
-      sessionId,
-    )
+    const file = await readNativeTranscript(paths.sessionFile)
+    if (file.format === 'unsupported')
+      throw new Error(
+        `Native session transcript is not a native file: ${sessionId}`,
+      )
     return {
       sessionId,
-      ...sessionMetadataFields(sessionMetadata, { agentNameFallback: false }),
-      lastPrompt: sessionMetadata.lastPrompt ?? null,
-      updatedAt: metadata.mtime.toISOString(),
-      status: this.sessionStatus(recovery.issue, recovery.entries.length),
-      issue: recovery.issue,
-      claudeVersion: this.options.claudeVersion,
-      writeMode: this.schema.writeMode,
-      entryCount: recovery.entries.length,
-      byteLength: recovery.tail.byteLength,
-      newlineTerminated: recovery.tail.newlineTerminated,
+      lastPrompt: lastUserPrompt(file.records.map((record) => record.event)),
+      updatedAt: file.updatedAt,
+      status: this.nativeSessionStatus(file.issue, file.records.length),
+      issue: file.issue,
+      writeMode: file.writeMode,
+      entryCount: file.records.length,
+      byteLength: file.byteLength,
+      newlineTerminated: file.newlineTerminated,
     }
   }
 
@@ -2786,20 +2720,43 @@ export class ClaudeSessionService {
     sessionId: string,
   ): Promise<AgentColorName | undefined> {
     this.assertSessionPersistence()
-    const recovery = await this.store(sessionId).loadReadOnly()
-    return getClaudeEffectiveAgentColor(recovery.entries, sessionId)
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.store(sessionId),
+    })
+    return transcript.withLease({ kind: 'resume' }, async (lease) => {
+      let color: AgentColorName | undefined
+      for (const event of lease.activeEvents()) {
+        if (event.kind !== 'messages') continue
+        for (const message of event.messages) {
+          if (message.role !== 'user' || typeof message.content !== 'string')
+            continue
+          const match = message.content.match(/<praxis-agent-color>([^<]+)</u)
+          if (!match) continue
+          if (match[1] === AGENT_COLOR_DEFAULT) {
+            color = undefined
+          } else if (isAgentColorName(match[1])) {
+            color = match[1]
+          }
+        }
+      }
+      return color
+    })
   }
 
   async export(sessionId: string): Promise<Buffer> {
     this.assertSessionPersistence()
-    if (this.options.dataPlane === 'native')
-      return exportNativeTranscript(this.paths(sessionId).sessionFile)
-    await this.discoverProjectRoot(sessionId)
+    const nativeStore = this.store(sessionId)
+    const file = await readNativeTranscript(this.paths(sessionId).sessionFile)
+    if (file.format === 'unsupported')
+      throw new Error(
+        `Native session transcript is not a native file: ${sessionId}`,
+      )
     try {
-      return await this.store(sessionId).exportReadOnly()
+      return await nativeStore.exportReadOnly()
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Error(`Claude session not found: ${sessionId}`)
+        throw new Error(`Native session not found: ${sessionId}`)
       }
       throw error
     }
@@ -2809,8 +2766,7 @@ export class ClaudeSessionService {
     this.assertSessionPersistence()
     const path = resolve(requestedPath)
     const pathMetadata = await lstat(path)
-    const dataPlaneName =
-      this.options.dataPlane === 'native' ? 'Native' : 'Claude'
+    const dataPlaneName = 'Native'
     if (!pathMetadata.isFile()) {
       throw new Error(
         `${dataPlaneName} resume path must be a regular JSONL file: ${path}`,
@@ -2828,86 +2784,33 @@ export class ClaudeSessionService {
       )
     }
     const canonicalPath = await realpath(path)
-    if (this.options.dataPlane === 'native') {
-      const detected = await readNativeTranscript(canonicalPath)
-      if (detected.format === 'native') {
-        if (detected.issue?.kind === 'unsupported-version')
-          throw new Error('Native resume transcript version is unsupported')
-        if (
-          detected.issue ||
-          !detected.newlineTerminated ||
-          detected.records.length === 0
-        )
-          throw new Error(
-            'Native resume transcript must be a complete non-empty newline-terminated file',
-          )
-        if (
-          detected.records.some(
-            (record) => record.event.sessionId !== sessionId,
-          )
-        )
-          throw new Error(
-            'Native resume transcript contains a different sessionId',
-          )
-        this.explicitSessionFiles.set(sessionId, canonicalPath)
-        this.discoveredProjectRoots.set(sessionId, dirname(canonicalPath))
-        return {
-          sessionId,
-          lastPrompt: lastUserPrompt(
-            detected.records.map((record) => record.event),
-          ),
-          updatedAt: detected.updatedAt,
-          status: 'read-only',
-          issue: detected.issue,
-        }
-      }
-    }
-    const exact = this.pathsForCwd(sessionId, this.activeCwd())
-    const candidate = new ClaudeTranscriptStore({
-      sessionFile: canonicalPath,
-      lockFile: join(exact.praxisRoot, 'locks', `${sessionId}.lock`),
-      schema: this.schema,
-    })
-    const snapshot = await candidate.load()
-    if (!snapshot.tail.newlineTerminated) {
-      throw new Error('Claude resume transcript must be newline-terminated')
-    }
-    if (snapshot.entries.length === 0) {
-      throw new Error('Claude resume transcript must not be empty')
-    }
+    const detected = await readNativeTranscript(canonicalPath)
+    if (detected.format !== 'native')
+      throw new Error(
+        'Native resume transcript must use the Praxis transcript format',
+      )
+    if (detected.issue?.kind === 'unsupported-version')
+      throw new Error('Native resume transcript version is unsupported')
     if (
-      this.options.dataPlane === 'native' &&
-      this.schema.writeMode !== 'read-write'
-    ) {
-      throw new Error('Native legacy resume transcript is read-only')
-    }
-    let matchingSessionIdentity = false
-    for (const entry of snapshot.entries) {
-      if (entry.sessionId === sessionId) matchingSessionIdentity = true
-      if (
-        typeof entry.sessionId === 'string' &&
-        entry.sessionId !== sessionId
-      ) {
-        throw new Error(
-          `Claude resume transcript contains a different sessionId: ${String(entry.sessionId)}`,
-        )
-      }
-    }
-    if (!matchingSessionIdentity) {
-      throw new Error('Claude resume transcript is missing its sessionId')
-    }
-    const selected = selectClaudeTranscriptFromNewestLeaf(snapshot.entries)
+      detected.issue ||
+      !detected.newlineTerminated ||
+      detected.records.length === 0
+    )
+      throw new Error(
+        'Native resume transcript must be a complete non-empty newline-terminated file',
+      )
+    if (detected.records.some((record) => record.event.sessionId !== sessionId))
+      throw new Error('Native resume transcript contains a different sessionId')
     this.explicitSessionFiles.set(sessionId, canonicalPath)
-    this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
     this.discoveredProjectRoots.set(sessionId, dirname(canonicalPath))
-    const metadata = reduceClaudeSessionMetadata(snapshot.entries, sessionId)
     return {
       sessionId,
-      ...sessionMetadataFields(metadata, { agentNameFallback: false }),
-      lastPrompt: metadata.lastPrompt ?? null,
-      updatedAt: pathMetadata.mtime.toISOString(),
-      status: this.sessionStatus(null, snapshot.entries.length),
-      issue: null,
+      lastPrompt: lastUserPrompt(
+        detected.records.map((record) => record.event),
+      ),
+      updatedAt: detected.updatedAt,
+      status: 'read-only',
+      issue: detected.issue,
     }
   }
 
@@ -2915,38 +2818,22 @@ export class ClaudeSessionService {
     sessionId: string,
     resumeSessionAt?: string,
   ): Promise<TranscriptDisplayItem[]> {
-    if (this.options.dataPlane === 'native') {
-      const file = await readNativeTranscript(this.paths(sessionId).sessionFile)
-      if (file.format === 'native')
-        return projectTranscriptDisplay(
-          file.records.map((record) => record.event),
-          resumeSessionAt,
-        )
-    }
-    await this.discoverProjectRoot(sessionId)
-    try {
-      const recovery = await this.store(sessionId).loadReadOnly()
-      if (recovery.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      const entries =
-        resumeSessionAt === undefined
-          ? recovery.entries
-          : selectClaudeTranscriptAtMessage(recovery.entries, resumeSessionAt)
-      return projectClaudeDisplayTranscript(entries)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      throw error
-    }
+    const file = await readNativeTranscript(this.paths(sessionId).sessionFile)
+    if (file.format === 'native')
+      return projectTranscriptDisplay(
+        file.records.map((record) => record.event),
+        resumeSessionAt,
+      )
+    throw new Error(
+      `Native session transcript is not a native file: ${sessionId}`,
+    )
   }
 
   async interruption(
     sessionId: string,
   ): Promise<ClaudeInterruptionClassification> {
     this.assertSessionPersistence()
-    if (this.options.dataPlane === 'native') {
+    {
       const sessionPaths = this.paths(sessionId)
       const nativeTranscript = new NativeSessionTranscript({
         sessionId,
@@ -2967,74 +2854,55 @@ export class ClaudeSessionService {
         return { kind: interruption.kind }
       })
     }
-    await this.discoverProjectRoot(sessionId)
-    const snapshot = await this.store(sessionId).loadReadOnly()
-    if (snapshot.entries.length === 0) {
-      throw new Error(`Claude session not found: ${sessionId}`)
-    }
-    return classifyClaudeInterruption(snapshot.entries)
   }
 
   async metadata(sessionId: string): Promise<ClaudeSessionMetadata> {
     this.assertSessionPersistence()
-    await this.discoverProjectRoot(sessionId)
-    const snapshot = await this.store(sessionId).loadReadOnly()
-    if (snapshot.entries.length === 0) {
-      throw new Error(`Claude session not found: ${sessionId}`)
+    {
+      const file = await readNativeTranscript(this.paths(sessionId).sessionFile)
+      if (file.format === 'unsupported' || file.records.length === 0)
+        throw new Error(`Native session not found: ${sessionId}`)
+      const events = file.records.map((record) => record.event)
+      const prompt = lastUserPrompt(events)
+      const lastId = events.at(-1)?.id
+      const metadata: ClaudeSessionMetadata = {
+        ...(prompt === null ? {} : { lastPrompt: prompt }),
+        ...(lastId === undefined ? {} : { lastPromptLeafUuid: lastId }),
+      }
+      for (const event of events) {
+        if (event.kind !== 'messages') continue
+        for (const message of event.messages) {
+          if (message.role !== 'user' || typeof message.content !== 'string')
+            continue
+          const command = message.content.trim()
+          let match = /^\/rename\s+(.+)$/u.exec(command)
+          if (match?.[1]) metadata.customTitle = match[1].trim()
+          match = /^\/tag\s+(.+)$/u.exec(command)
+          if (match?.[1]) metadata.tag = match[1].trim()
+          match = /^\/permission-mode\s+(.+)$/u.exec(command)
+          if (match?.[1]) metadata.permissionMode = match[1].trim()
+          match = /<praxis-agent-color>([^<]+)</u.exec(command)
+          if (match?.[1]) {
+            if (match[1] === AGENT_COLOR_DEFAULT) delete metadata.agentColor
+            else metadata.agentColor = match[1]
+          }
+        }
+      }
+      return metadata
     }
-    return reduceClaudeSessionMetadata(snapshot.entries, sessionId)
   }
 
   async rename(sessionId: string, name: string): Promise<void> {
     this.assertWritable()
     const normalized = name.trim()
     if (!normalized) throw new Error('Session name must not be empty')
-    const result = await this.turnStore(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      this.rememberDurableMetadata(sessionId, snapshot.entries)
-      if (this.hasSessionName(snapshot.entries, normalized)) return
-      const entries = this.sessionNameEntries(sessionId, normalized)
-      const appendResult = await lease.appendMany(snapshot.tail, entries)
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude transcript rename conflict: ${appendResult.reason}`,
-        )
-      }
-      this.rememberDurableMetadata(sessionId, [...snapshot.entries, ...entries])
-    })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude transcript rename conflict: ${result.reason}`)
-    }
-    this.durableMetadataSessions.add(sessionId)
+    await this.appendNativeCommand(sessionId, `/rename ${normalized}`)
   }
 
   async tag(sessionId: string, tag: string): Promise<void> {
     this.assertWritable()
     const normalized = tag.trim()
-    const entry = createClaudeTagEntry(sessionId, normalized)
-    const result = await this.turnStore(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      this.rememberDurableMetadata(sessionId, snapshot.entries)
-      const current = reduceClaudeSessionMetadata(snapshot.entries, sessionId)
-      if (current.tag === normalized) return
-      const appendResult = await lease.append(snapshot.tail, entry)
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude transcript tag conflict: ${appendResult.reason}`,
-        )
-      }
-      this.rememberDurableMetadata(sessionId, [...snapshot.entries, entry])
-    })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude transcript tag conflict: ${result.reason}`)
-    }
-    this.durableMetadataSessions.add(sessionId)
+    await this.appendNativeCommand(sessionId, `/tag ${normalized}`)
   }
 
   async changeCwd(
@@ -3071,77 +2939,46 @@ export class ClaudeSessionService {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         }
         const sourceStore = this.store(sessionId)
-        const relocated = await sourceStore.withLease(async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${sessionId}`)
-          }
-          await mkdir(targetPaths.projectRoot, { recursive: true })
-          const relocationId = randomUUID()
-          const stagingFile = join(
-            targetPaths.projectRoot,
-            `.${sessionId}.${relocationId}.relocating`,
-          )
-          const stagingStore = new ClaudeTranscriptStore({
-            sessionFile: stagingFile,
-            lockFile: join(
-              targetPaths.praxisRoot,
-              'locks',
-              `${sessionId}.${relocationId}.lock`,
-            ),
-            schema: this.schema,
-          })
-          let publishedIdentity: { dev: number; ino: number } | undefined
-          try {
-            await copyFile(sourcePaths.sessionFile, stagingFile)
-            const staged = await stagingStore.withLease((stagingLease) =>
-              stagingLease.appendMany(snapshot.tail, [
-                {
-                  type: 'relocated',
-                  sessionId,
-                  relocatedCwd: cwd,
-                },
-                ...this.cdCommandEntries(
-                  sessionId,
-                  cwd,
-                  this.logicalTailUuid(snapshot.tail),
-                ),
-              ]),
+        const relocated = await sourceStore.withLease(
+          async (lease: NativeTranscriptLease) => {
+            const snapshot = await lease.load()
+            if (snapshot.entries.length === 0) {
+              throw new Error(`Claude session not found: ${sessionId}`)
+            }
+            await mkdir(targetPaths.projectRoot, { recursive: true })
+            const relocationId = randomUUID()
+            const stagingFile = join(
+              targetPaths.projectRoot,
+              `.${sessionId}.${relocationId}.relocating`,
             )
-            if (staged.status === 'conflict') {
-              throw new Error(
-                `Claude transcript relocation conflict: ${staged.reason}`,
-              )
-            }
-            if (staged.value.status === 'conflict') {
-              throw new Error(
-                `Claude transcript relocation conflict: ${staged.value.reason}`,
-              )
-            }
-            const stagingMetadata = await lstat(stagingFile)
-            await link(stagingFile, targetPaths.sessionFile)
-            publishedIdentity = {
-              dev: stagingMetadata.dev,
-              ino: stagingMetadata.ino,
-            }
-            await unlink(stagingFile)
-            await unlink(sourcePaths.sessionFile)
-          } catch (error) {
-            await unlink(stagingFile).catch(() => undefined)
-            if (publishedIdentity) {
-              const targetMetadata = await lstat(targetPaths.sessionFile).catch(
-                () => undefined,
-              )
-              if (
-                targetMetadata?.dev === publishedIdentity.dev &&
-                targetMetadata.ino === publishedIdentity.ino
-              ) {
-                await unlink(targetPaths.sessionFile).catch(() => undefined)
+            let publishedIdentity: { dev: number; ino: number } | undefined
+            try {
+              await copyFile(sourcePaths.sessionFile, stagingFile)
+              const stagingMetadata = await lstat(stagingFile)
+              await link(stagingFile, targetPaths.sessionFile)
+              publishedIdentity = {
+                dev: stagingMetadata.dev,
+                ino: stagingMetadata.ino,
               }
+              await unlink(stagingFile)
+              await unlink(sourcePaths.sessionFile)
+            } catch (error) {
+              await unlink(stagingFile).catch(() => undefined)
+              if (publishedIdentity) {
+                const targetMetadata = await lstat(
+                  targetPaths.sessionFile,
+                ).catch(() => undefined)
+                if (
+                  targetMetadata?.dev === publishedIdentity.dev &&
+                  targetMetadata.ino === publishedIdentity.ino
+                ) {
+                  await unlink(targetPaths.sessionFile).catch(() => undefined)
+                }
+              }
+              throw error
             }
-            throw error
-          }
-        })
+          },
+        )
         if (relocated.status === 'conflict') {
           throw new Error(
             `Claude transcript relocation conflict: ${relocated.reason}`,
@@ -3178,58 +3015,20 @@ export class ClaudeSessionService {
 
   async recordCdUsage(sessionId: string): Promise<void> {
     this.assertWritable()
-    const result = await this.turnStore(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      const promptId = randomUUID()
-      const firstUuid = randomUUID()
-      const timestamp = new Date().toISOString()
-      const common = {
-        isSidechain: false,
-        promptId,
-        timestamp,
-        userType: 'external',
-        entrypoint: 'cli',
-        cwd: this.activeCwd(),
-        sessionId,
-        version: this.options.claudeVersion,
-        gitBranch: null,
-      }
-      const appendResult = await lease.appendMany(snapshot.tail, [
-        {
-          ...common,
-          parentUuid: this.logicalTailUuid(snapshot.tail),
-          type: 'user',
-          message: {
-            role: 'user',
-            content:
-              '<command-name>/cd</command-name>\n            <command-message>cd</command-message>\n            <command-args></command-args>',
-          },
-          uuid: firstUuid,
-        },
-        {
-          ...common,
-          parentUuid: firstUuid,
-          type: 'user',
-          message: {
-            role: 'user',
-            content:
-              '<local-command-stdout>Usage: /cd <path></local-command-stdout>',
-          },
-          uuid: randomUUID(),
-        },
-      ])
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude cd usage append conflict: ${appendResult.reason}`,
-        )
-      }
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.nativeStore(sessionId),
     })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude cd usage conflict: ${result.reason}`)
-    }
+    await transcript.withLease({ kind: 'resume' }, (lease) =>
+      lease.appendMessages({
+        messages: [
+          {
+            role: 'user',
+            content: '<command-name>/cd</command-name>\nUsage: /cd <path>',
+          },
+        ],
+      }),
+    )
   }
 
   async approveRecentlyDenied(
@@ -3260,40 +3059,8 @@ export class ClaudeSessionService {
       sessionId,
       permissionMode,
     )
-    await this.appendInputHistory('/btw', activeSessionId)
-    while (true) {
-      const result = await this.turnStore(activeSessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${activeSessionId}`)
-          }
-          const entries = this.localCommandEntries(
-            activeSessionId,
-            this.activeCwd(),
-            this.logicalTailUuid(snapshot.tail),
-            'btw',
-            '',
-            'Usage: /btw <your question>',
-          )
-          const leafUuid = entries.at(-1)?.uuid
-          if (typeof leafUuid !== 'string') {
-            throw new Error('Claude btw local command pair is incomplete')
-          }
-          const appended = await lease.appendMany(snapshot.tail, [
-            ...entries,
-            { type: 'last-prompt', leafUuid, sessionId: activeSessionId },
-          ])
-          if (appended.status === 'conflict') {
-            throw new Error(
-              `Claude local command append conflict: ${appended.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return activeSessionId
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
-    }
+    await this.appendNativeCommand(activeSessionId, '/btw')
+    return activeSessionId
   }
 
   async recordColorUsage(
@@ -3303,29 +3070,38 @@ export class ClaudeSessionService {
     permissionMode: ClaudePermissionMode = 'default',
     options: { createSession?: boolean } = {},
   ): Promise<string> {
-    const output = agentColorMessage(selection)
     const agentColor: AgentColorValue | undefined =
       selection.kind === 'color'
         ? selection.color
         : selection.kind === 'reset'
           ? AGENT_COLOR_DEFAULT
           : undefined
-    const createLocalSession =
-      sessionId === undefined || options.createSession === true
     const activeSessionId = await this.ensureLocalSession(
       sessionId,
       permissionMode,
-      createLocalSession ? agentColor : undefined,
+      sessionId === undefined || options.createSession === true
+        ? agentColor
+        : undefined,
       options.createSession === true,
     )
-    if (this.options.sessionPersistence !== false) {
-      await this.appendInputHistory(display, activeSessionId)
-    }
-    await this.appendAgentColorUsage(
-      activeSessionId,
-      display,
-      output,
-      createLocalSession ? undefined : agentColor,
+    const transcript = new NativeSessionTranscript({
+      sessionId: activeSessionId,
+      store: this.nativeStore(activeSessionId),
+    })
+    await transcript.withLease({ kind: 'resume' }, (lease) =>
+      lease.appendMessages({
+        messages: [
+          { role: 'user', content: display },
+          ...(agentColor === undefined
+            ? []
+            : [
+                {
+                  role: 'user' as const,
+                  content: `<praxis-agent-color>${agentColor}</praxis-agent-color>`,
+                },
+              ]),
+        ],
+      }),
     )
     return activeSessionId
   }
@@ -3339,93 +3115,22 @@ export class ClaudeSessionService {
       sessionId,
       permissionMode,
     )
-    await this.appendInputHistory('/background', activeSessionId)
-    while (true) {
-      const result = await this.turnStore(activeSessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${activeSessionId}`)
-          }
-          const timestamp = new Date().toISOString()
-          const promptId = randomUUID()
-          const firstUuid = randomUUID()
-          const commandUuid = randomUUID()
-          const common = {
-            isSidechain: false,
-            promptId,
-            timestamp,
-            userType: 'external',
-            entrypoint: 'cli',
-            cwd: this.activeCwd(),
-            sessionId: activeSessionId,
-            version: this.options.claudeVersion,
-            gitBranch: null,
-          }
-          const appended = await lease.appendMany(snapshot.tail, [
-            {
-              ...common,
-              parentUuid: this.logicalTailUuid(snapshot.tail),
-              type: 'user',
-              message: {
-                role: 'user',
-                content:
-                  '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>',
-              },
-              isMeta: true,
-              uuid: firstUuid,
-            },
-            {
-              ...common,
-              parentUuid: firstUuid,
-              type: 'user',
-              message: {
-                role: 'user',
-                content:
-                  '<command-name>/background</command-name>\n            <command-message>background</command-message>\n            <command-args></command-args>',
-              },
-              uuid: commandUuid,
-            },
-            {
-              ...common,
-              parentUuid: commandUuid,
-              type: 'user',
-              message: {
-                role: 'user',
-                content:
-                  '<local-command-stdout>Nothing to background yet — send a message first.</local-command-stdout>',
-              },
-              uuid: randomUUID(),
-            },
-          ])
-          if (appended.status === 'conflict') {
-            throw new Error(
-              `Claude background command append conflict: ${appended.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return activeSessionId
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
-    }
+    await this.appendNativeCommand(activeSessionId, '/background')
+    return activeSessionId
   }
 
   async recordBackgroundLaunch(
     sessionId: string,
   ): Promise<SessionForkCheckpoint> {
     this.assertWritable()
-    const result = await this.turnStore(sessionId).withLease((lease) =>
-      lease.load(),
-    )
-    if (result.status === 'conflict') {
-      throw new Error(`Claude background checkpoint conflict: ${result.reason}`)
-    }
-    const resumeSessionAt = this.logicalTailUuid(result.value.tail)
-    if (!resumeSessionAt) {
-      throw new Error(`Claude session not found: ${sessionId}`)
-    }
-    await this.appendInputHistory('/background', sessionId)
-    return { resumeSessionAt, entryCount: result.value.entries.length }
+    const snapshot = await this.store(sessionId).load()
+    if (snapshot.records.length === 0)
+      throw new Error(`Native session not found: ${sessionId}`)
+    const resumeSessionAt = snapshot.tail.lastEventId
+    if (!resumeSessionAt)
+      throw new Error(`Native session not found: ${sessionId}`)
+    await this.appendNativeCommand(sessionId, '/background')
+    return { resumeSessionAt, entryCount: snapshot.records.length }
   }
 
   async compact(
@@ -3433,14 +3138,9 @@ export class ClaudeSessionService {
     signal?: AbortSignal,
     selection?: ManualCompactSelection,
   ): Promise<ManualCompactResult> {
-    if (this.nativeTranscriptWritesEnabled()) {
-      if (selection)
-        throw new Error(
-          'Native compaction supports only the full active branch',
-        )
+    {
       this.assertSessionPersistence()
       const provider = this.provider()
-      await this.activateSessionCostTracker(sessionId)
       const sessionPaths = this.paths(sessionId)
       const nativeTranscript = new NativeSessionTranscript({
         sessionId,
@@ -3449,360 +3149,213 @@ export class ClaudeSessionService {
           lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
         }),
       })
-      return nativeTranscript.withLease({ kind: 'resume' }, async (lease) => {
-        const messages = lease.activeMessages()
-        if (messages.length === 0)
-          throw new Error('Cannot compact an empty native transcript')
-        const preTokens = estimateModelRequestTokens(messages)
-        this.options.eventSink?.({ type: 'state', state: 'compacting' })
-        const contextWindowTokens =
-          this.contextBudget(provider)?.contextWindowTokens ??
-          provider.capabilities.contextWindowTokens ??
-          200_000
-        const compacted = await (
-          this.options.compactor ?? new ModelCompactor(provider)
-        ).compact({
-          messages,
-          targetTokens: Math.min(
-            8192,
-            Math.max(1, Math.floor(contextWindowTokens / 4)),
-          ),
-          contextWindowTokens,
-          ...(signal ? { signal } : {}),
-        })
-        if (signal?.aborted) throw new AgentRunCancelledError()
-        const { durationMs, durationWithoutRetriesMs } =
-          requireCompactionDurations(compacted)
-        requireManualCompactUsage(compacted.usage)
-        const compactModel =
-          compacted.model !== undefined && compacted.model.trim() !== ''
-            ? compacted.model
-            : provider.model
-        const meaningfulMetering =
-          compacted.summary.trim().length > 0 &&
-          (hasNonZeroUsage(compacted.usage) || durationMs > 0)
-        if (
-          meaningfulMetering &&
-          (compactModel === undefined || compactModel.trim() === '')
-        )
-          throw new Error(
-            'Manual compact usage requires a nonblank model identity',
-          )
-        const tracker = this.sessionCostTrackers.get(sessionId)
-        if (!tracker)
-          throw new Error(
-            `Session cost tracker is not active for session ${sessionId}`,
-          )
-        let meteringTurnInput: ClaudeSessionTurnInput | undefined
-        if (
-          meaningfulMetering &&
-          compactModel !== undefined &&
-          compactModel.trim() !== ''
-        ) {
-          const pricing = this.options.pricing?.resolve(compactModel)
-          const costUsd = pricing
-            ? usageCostUsd(compacted.usage, pricing)
-            : undefined
-          meteringTurnInput = {
-            model: compactModel,
-            usage: compacted.usage,
-            ...(costUsd === undefined ? {} : { costUsd }),
-            ...(compacted.usage.webSearchRequests === undefined
-              ? {}
-              : { webSearchRequests: compacted.usage.webSearchRequests }),
-            apiDurationMs: durationMs,
-            apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
-          }
-          const preflight = new ClaudeSessionCostTracker({
-            sessionId,
-            restored: tracker.snapshot(),
-          })
-          preflight.recordTurn(meteringTurnInput)
-        }
-        const postTokens = estimateModelRequestTokens([
-          { role: 'user', content: compacted.summary },
-        ])
-        if (signal?.aborted) throw new AgentRunCancelledError()
-        const ids = await lease.appendCompaction({
-          summary: compacted.summary,
-          trigger: 'manual',
-          preTokens,
-          postTokens,
-          durationMs,
-        })
-        if (meteringTurnInput !== undefined)
-          tracker.recordTurn(meteringTurnInput)
-        this.options.eventSink?.({
-          type: 'compact-boundary',
-          trigger: 'manual',
-          preTokens,
-          uuid: ids.boundaryId,
-        })
-        return { summary: compacted.summary, usage: compacted.usage, preTokens }
-      })
-    }
-    this.assertWritable()
-    const provider = this.provider()
-    const result = await this.turnStore(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      await this.activateSessionCostTracker(sessionId)
-      const activeEntries = selectClaudeActiveTranscript(snapshot.entries)
-      const allMessages = projectClaudeModelMessages(activeEntries)
-      let selectedEntries = activeEntries
-      let logicalParentUuid = this.lastMessageUuid(activeEntries)
-      let preservedEntries: ClaudeTranscriptEntry[] = []
-      let memoryMessage: ModelMessage | undefined
-      if (selection) {
-        const targetIndex = activeEntries.findIndex(
-          (entry) => entry.uuid === selection.messageId,
-        )
-        if (targetIndex < 0) {
-          throw new Error(
-            `No rewind point found with message.uuid of: ${selection.messageId}`,
-          )
-        }
-        if (selection.direction === 'from') {
-          selectedEntries = activeEntries.slice(targetIndex)
-          preservedEntries = activeEntries.slice(0, targetIndex)
-          logicalParentUuid = this.lastMessageUuid(preservedEntries)
-          if (!logicalParentUuid) logicalParentUuid = selection.messageId
-        } else {
-          selectedEntries = activeEntries.slice(0, targetIndex)
-          preservedEntries = activeEntries.slice(targetIndex)
-          const target = activeEntries[targetIndex]
-          logicalParentUuid =
-            typeof target?.parentUuid === 'string'
-              ? target.parentUuid
-              : this.lastMessageUuid(selectedEntries)
-        }
-      } else {
-        const memorySelection = await this.selectMemoryPreservedCompact(
-          sessionId,
-          activeEntries,
-        )
-        if (memorySelection) {
-          selectedEntries = [...memorySelection.compactedEntries]
-          preservedEntries = [...memorySelection.preservedEntries]
-          logicalParentUuid = memorySelection.logicalParentUuid
-          memoryMessage = memorySelection.memoryMessage
-        }
-      }
-      const selectedMessages = projectClaudeModelMessages(selectedEntries)
-      const messages: ModelMessage[] = [
-        ...(memoryMessage === undefined ? [] : [memoryMessage]),
-        ...selectedMessages,
-        ...(selection?.context
-          ? [
-              {
-                role: 'user' as const,
-                content: `Additional summarization context: ${selection.context}`,
-              },
-            ]
-          : []),
-      ]
-      if (!logicalParentUuid || selectedMessages.length === 0) {
-        throw new Error('Cannot compact an empty Claude transcript')
-      }
-      if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
-        throw new Error(
-          'Cannot compact a Claude session with unresolved tool calls',
-        )
-      }
-      const preCompact = await this.runAdvisoryHook(
-        sessionId,
-        'PreCompact',
+      return nativeTranscript.withLease(
         {
-          trigger: 'manual',
-          custom_instructions: selection?.context ?? null,
+          kind: 'resume',
         },
-        'manual',
-        signal,
-      )
-      messages.push(
-        ...successfulHookOutput(preCompact).map((content) => ({
-          role: 'user' as const,
-          content: `Additional summarization context: ${content}`,
-        })),
-      )
-      this.options.eventSink?.({ type: 'state', state: 'compacting' })
-      const contextWindowTokens =
-        this.contextBudget(provider)?.contextWindowTokens ??
-        provider.capabilities.contextWindowTokens ??
-        200_000
-      const compacted = await (
-        this.options.compactor ?? new ModelCompactor(provider)
-      ).compact({
-        messages,
-        targetTokens: Math.min(
-          8192,
-          Math.max(1, Math.floor(contextWindowTokens / 4)),
-        ),
-        contextWindowTokens,
-        ...(signal ? { signal } : {}),
-      })
-      if (signal?.aborted) throw new AgentRunCancelledError()
-      const {
-        durationMs: compactedDurationMs,
-        durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-      } = requireCompactionDurations(compacted)
-      requireManualCompactUsage(compacted.usage)
-      const compactorModel = compacted.model
-      const compactModel =
-        compactorModel !== undefined && compactorModel.trim() !== ''
-          ? compactorModel
-          : provider.model
-      const summary = compacted.summary
-      const meaningfulMetering =
-        summary.trim().length > 0 &&
-        (hasNonZeroUsage(compacted.usage) || compactedDurationMs > 0)
-      if (
-        meaningfulMetering &&
-        (compactModel === undefined || compactModel.trim() === '')
-      ) {
-        throw new Error(
-          'Manual compact usage requires a nonblank model identity',
-        )
-      }
-      const preTokens = estimateModelRequestTokens(allMessages)
-      const preservedMessages = projectClaudeModelMessages(preservedEntries)
-      const boundaryUuid = randomUUID()
-      const summaryUuid = randomUUID()
-      const uuids = [boundaryUuid, summaryUuid]
-      let meteringTurnInput: ClaudeSessionTurnInput | undefined
-      if (
-        meaningfulMetering &&
-        compactModel !== undefined &&
-        compactModel.trim() !== ''
-      ) {
-        const tracker = this.sessionCostTrackers.get(sessionId)
-        if (!tracker) {
-          throw new Error(
-            `Session cost tracker is not active for session ${sessionId}`,
-          )
-        }
-        const pricing = this.options.pricing?.resolve(compactModel)
-        const costUsd = pricing
-          ? usageCostUsd(compacted.usage, pricing)
-          : undefined
-        meteringTurnInput = {
-          model: compactModel,
-          usage: compacted.usage,
-          ...(costUsd === undefined ? {} : { costUsd }),
-          ...(compacted.usage.webSearchRequests === undefined
-            ? {}
-            : { webSearchRequests: compacted.usage.webSearchRequests }),
-          apiDurationMs: compactedDurationMs,
-          apiDurationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-        }
-        // Preflight the exact record input against a clone of the live
-        // tracker so a cumulative total overflow rejects before the compact
-        // boundary is appended rather than after a half-commit.
-        const preflight = new ClaudeSessionCostTracker({
-          sessionId,
-          restored: tracker.snapshot(),
-        })
-        preflight.recordTurn(meteringTurnInput)
-      }
-      const entries = createClaudeCompactEntries({
-        sessionId,
-        logicalParentUuid,
-        summary,
-        preTokens,
-        postTokens: estimateModelRequestTokens([
-          { role: 'user', content: formatClaudeCompactSummary(summary) },
-          ...preservedMessages,
-        ]),
-        previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
-          snapshot.entries,
-        ),
-        durationMs: compactedDurationMs,
-        cwd: this.activeCwd(),
-        claudeVersion: this.options.claudeVersion,
-        gitBranch: null,
-        trigger: 'manual',
-        ...(selection
-          ? {
-              summarizeMetadata: {
-                messagesSummarized: selectedMessages.length,
-                direction:
-                  selection.direction === 'to' ? 'up_to' : selection.direction,
-              },
-              preservedUuids: preservedEntries.flatMap((entry) =>
-                typeof entry.uuid === 'string' ? [entry.uuid] : [],
-              ),
+        async (lease: NativeSessionTranscriptLease) => {
+          const branchEvents = lease.activeEvents()
+          let messages = lease.activeMessages()
+          let preservedMessages: ModelMessage[] = []
+          let logicalParentId: string | undefined
+          let memorySelection: MemoryPreservedCompactSelection | null = null
+          if (selection) {
+            const targetIndex = branchEvents.findIndex(
+              (event: TranscriptEvent) => event.id === selection.messageId,
+            )
+            if (targetIndex < 0)
+              throw new Error(
+                `No native rewind point found with event.id: ${selection.messageId}`,
+              )
+            const selectedEvents =
+              selection.direction === 'from'
+                ? branchEvents.slice(targetIndex)
+                : branchEvents.slice(0, targetIndex)
+            const suffixEvents =
+              selection.direction === 'from'
+                ? []
+                : branchEvents.slice(targetIndex)
+            const project = (events: typeof branchEvents): ModelMessage[] =>
+              events.flatMap((event: TranscriptEvent) =>
+                event.kind === 'messages' ? [...event.messages] : [],
+              )
+            messages = project(selectedEvents)
+            preservedMessages = project(suffixEvents)
+            logicalParentId = (
+              selection.direction === 'from'
+                ? branchEvents[targetIndex - 1]
+                : branchEvents[targetIndex - 1]
+            )?.id
+          } else {
+            memorySelection = await this.selectMemoryPreservedCompact(
+              sessionId,
+              projectNativeEvents(branchEvents),
+            )
+            if (memorySelection) {
+              messages = [
+                memorySelection.memoryMessage,
+                ...projectClaudeModelMessages(memorySelection.compactedEntries),
+              ]
+              preservedMessages = projectClaudeModelMessages(
+                memorySelection.preservedEntries,
+              )
+              logicalParentId = memorySelection.logicalParentUuid
             }
-          : memoryMessage
-            ? {
-                preservedUuids: preservedEntries.flatMap((entry) =>
-                  typeof entry.uuid === 'string' ? [entry.uuid] : [],
-                ),
-              }
-            : {}),
-        createUuid: () => uuids.shift() ?? randomUUID(),
-      })
-      const appendResult = await lease.appendMany(snapshot.tail, entries)
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude transcript append conflict: ${appendResult.reason}`,
-        )
-      }
-      const metadataEntries = createClaudeDurableMetadataSnapshot(
-        [...snapshot.entries, ...entries],
-        sessionId,
-      )
-      if (metadataEntries.length > 0) {
-        const metadataAppend = await lease.appendMany(
-          appendResult.tail,
-          metadataEntries,
-        )
-        if (metadataAppend.status === 'conflict') {
-          throw new Error(
-            `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
+          }
+          if (messages.length === 0)
+            throw new Error('Cannot compact an empty native transcript')
+          // Do not create cost-state sidecars until the transcript has been
+          // validated and a compactable message set exists.
+          await this.activateSessionCostTracker(sessionId)
+          const preTokens = estimateModelRequestTokens(messages)
+          this.options.eventSink?.({ type: 'state', state: 'compacting' })
+          const contextWindowTokens =
+            this.contextBudget(provider)?.contextWindowTokens ??
+            provider.capabilities.contextWindowTokens ??
+            200_000
+          const preCompact = await this.runAdvisoryHook(
+            sessionId,
+            'PreCompact',
+            {
+              trigger: 'manual',
+              custom_instructions: selection?.context ?? null,
+            },
+            'manual',
+            signal,
           )
-        }
-      }
-      this.rememberDurableMetadata(sessionId, [
-        ...snapshot.entries,
-        ...entries,
-        ...metadataEntries,
-      ])
-      this.options.projectMemoryRecall?.recordCompact(sessionId)
-      this.options.eventSink?.({
-        type: 'compact-boundary',
-        trigger: 'manual',
-        preTokens,
-        uuid: boundaryUuid,
-      })
-      await this.runAdvisoryHook(
-        sessionId,
-        'PostCompact',
-        { trigger: 'manual', compact_summary: summary },
-        'manual',
-        signal,
-      )
-      if (meteringTurnInput !== undefined) {
-        const tracker = this.sessionCostTrackers.get(sessionId)
-        if (!tracker) {
-          throw new Error(
-            `Session cost tracker is not active for session ${sessionId}`,
+          const compacted = await (
+            this.options.compactor ?? new ModelCompactor(provider)
+          ).compact({
+            messages: [
+              ...messages,
+              ...(selection?.context
+                ? [
+                    {
+                      role: 'user' as const,
+                      content: `Additional summarization context: ${selection.context}`,
+                    },
+                  ]
+                : []),
+              ...successfulHookOutput(preCompact).map((content) => ({
+                role: 'user' as const,
+                content: `Additional summarization context: ${content}`,
+              })),
+            ],
+            targetTokens: Math.min(
+              8192,
+              Math.max(1, Math.floor(contextWindowTokens / 4)),
+            ),
+            contextWindowTokens,
+            ...(signal ? { signal } : {}),
+          })
+          if (signal?.aborted) throw new AgentRunCancelledError()
+          const { durationMs, durationWithoutRetriesMs } =
+            requireCompactionDurations(compacted)
+          requireManualCompactUsage(compacted.usage)
+          const compactModel =
+            compacted.model !== undefined && compacted.model.trim() !== ''
+              ? compacted.model
+              : provider.model
+          const meaningfulMetering =
+            compacted.summary.trim().length > 0 &&
+            (hasNonZeroUsage(compacted.usage) || durationMs > 0)
+          if (
+            meaningfulMetering &&
+            (compactModel === undefined || compactModel.trim() === '')
           )
-        }
-        tracker.recordTurn(meteringTurnInput)
-      }
-      return {
-        summary,
-        usage: compacted.usage,
-        preTokens,
-        ...(selection ? { messagesSummarized: selectedMessages.length } : {}),
-      }
-    })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude transcript compact conflict: ${result.reason}`)
+            throw new Error(
+              'Manual compact usage requires a nonblank model identity',
+            )
+          const tracker = this.sessionCostTrackers.get(sessionId)
+          if (!tracker)
+            throw new Error(
+              `Session cost tracker is not active for session ${sessionId}`,
+            )
+          let meteringTurnInput: ClaudeSessionTurnInput | undefined
+          if (
+            meaningfulMetering &&
+            compactModel !== undefined &&
+            compactModel.trim() !== ''
+          ) {
+            const pricing = this.options.pricing?.resolve(compactModel)
+            const costUsd = pricing
+              ? usageCostUsd(compacted.usage, pricing)
+              : undefined
+            meteringTurnInput = {
+              model: compactModel,
+              usage: compacted.usage,
+              ...(costUsd === undefined ? {} : { costUsd }),
+              ...(compacted.usage.webSearchRequests === undefined
+                ? {}
+                : { webSearchRequests: compacted.usage.webSearchRequests }),
+              apiDurationMs: durationMs,
+              apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
+            }
+            const preflight = new ClaudeSessionCostTracker({
+              sessionId,
+              restored: tracker.snapshot(),
+            })
+            preflight.recordTurn(meteringTurnInput)
+          }
+          const postTokens = estimateModelRequestTokens([
+            { role: 'user', content: compacted.summary },
+          ])
+          if (signal?.aborted) throw new AgentRunCancelledError()
+          const ids = await lease.appendCompaction({
+            summary: compacted.summary,
+            trigger: 'manual',
+            preTokens,
+            postTokens,
+            durationMs,
+            ...(preservedMessages.length > 0 ? { preservedMessages } : {}),
+            ...(logicalParentId === undefined ? {} : { logicalParentId }),
+            ...(selection
+              ? {
+                  direction:
+                    selection.direction === 'to'
+                      ? ('up_to' as const)
+                      : ('from' as const),
+                  messagesSummarized: messages.length,
+                  preservePrefix:
+                    selection.direction === 'from' &&
+                    branchEvents.findIndex(
+                      (event: TranscriptEvent) =>
+                        event.id === selection.messageId,
+                    ) > 0,
+                }
+              : {}),
+            ...(memorySelection
+              ? {
+                  direction: 'from' as const,
+                  messagesSummarized: messages.length,
+                  preservePrefix: false,
+                }
+              : {}),
+          })
+          if (meteringTurnInput !== undefined)
+            tracker.recordTurn(meteringTurnInput)
+          await this.runAdvisoryHook(
+            sessionId,
+            'PostCompact',
+            { trigger: 'manual', compact_summary: compacted.summary },
+            'manual',
+            signal,
+          )
+          this.options.eventSink?.({
+            type: 'compact-boundary',
+            trigger: 'manual',
+            preTokens,
+            uuid: ids.boundaryId,
+          })
+          return {
+            summary: compacted.summary,
+            usage: compacted.usage,
+            preTokens,
+            messagesSummarized: messages.length,
+          }
+        },
+      )
     }
-    return result.value
   }
 
   async fork(
@@ -3810,7 +3363,7 @@ export class ClaudeSessionService {
     sessionId: string = randomUUID(),
     resumeSessionAt?: string,
   ): Promise<ForkResult> {
-    if (this.nativeTranscriptWritesEnabled()) {
+    {
       this.assertSessionPersistence()
       const sourcePaths = this.paths(parentSessionId)
       const targetPaths = this.paths(sessionId)
@@ -3844,23 +3397,6 @@ export class ClaudeSessionService {
       })
       return { sessionId, parentSessionId }
     }
-    this.assertSessionPersistence()
-    await this.assertNativeWriteTargetIsLegacy(parentSessionId)
-    this.assertWritable()
-    const entries = await this.nativeForkEntries(
-      parentSessionId,
-      sessionId,
-      resumeSessionAt,
-    )
-    const result = await this.store(sessionId).create(entries)
-    if (result.status === 'conflict') {
-      throw new Error('Generated Claude fork session already exists')
-    }
-    this.options.contextAssembler?.invalidate?.({
-      lifecycleId: sessionId,
-      reason: 'fork',
-    })
-    return { sessionId, parentSessionId }
   }
 
   async ensureFork(
@@ -3868,7 +3404,7 @@ export class ClaudeSessionService {
     sessionId: string,
     checkpoint?: SessionForkCheckpoint,
   ): Promise<ForkResult> {
-    if (this.nativeTranscriptWritesEnabled()) {
+    {
       this.assertSessionPersistence()
       const sourcePaths = this.paths(parentSessionId)
       const targetPaths = this.paths(sessionId)
@@ -3905,42 +3441,6 @@ export class ClaudeSessionService {
       })
       return { sessionId, parentSessionId }
     }
-    this.assertSessionPersistence()
-    this.assertWritable()
-    const expected = await this.nativeForkEntries(
-      parentSessionId,
-      sessionId,
-      checkpoint?.resumeSessionAt,
-      checkpoint?.entryCount,
-    )
-    const target = this.store(sessionId)
-    const created = await target.create(expected)
-    if (created.status === 'created') {
-      this.options.contextAssembler?.invalidate?.({
-        lifecycleId: sessionId,
-        reason: 'fork',
-      })
-      return { sessionId, parentSessionId }
-    }
-    const existing = await target.withLease((lease) => lease.load())
-    if (existing.status === 'conflict') {
-      throw new Error(`Claude transcript fork conflict: ${existing.reason}`)
-    }
-    if (
-      existing.value.entries.length < expected.length ||
-      expected.some(
-        (entry, index) =>
-          JSON.stringify(existing.value.entries[index]) !==
-          JSON.stringify(entry),
-      )
-    ) {
-      throw new Error('Claude handoff target is not the expected native fork')
-    }
-    this.options.contextAssembler?.invalidate?.({
-      lifecycleId: sessionId,
-      reason: 'fork',
-    })
-    return { sessionId, parentSessionId }
   }
 
   private async nativeForkEntries(
@@ -3948,9 +3448,9 @@ export class ClaudeSessionService {
     sessionId: string,
     resumeSessionAt?: string,
     sourceEntryCount?: number,
-  ): Promise<ClaudeTranscriptEntry[]> {
-    const sourceResult = await this.store(parentSessionId).withLease((lease) =>
-      lease.load(),
+  ): Promise<NativeTranscriptEntry[]> {
+    const sourceResult = await this.store(parentSessionId).withLease(
+      (lease: NativeTranscriptLease) => lease.load(),
     )
     if (sourceResult.status === 'conflict') {
       throw new Error(`Claude transcript fork conflict: ${sourceResult.reason}`)
@@ -3978,100 +3478,119 @@ export class ClaudeSessionService {
   }
 
   async rewindFiles(sessionId: string, userMessageId: string): Promise<void> {
-    const result = await this.store(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      this.restoreWorktree(snapshot.entries)
-      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.store(sessionId),
+    })
+    await transcript.withLease({ kind: 'resume' }, async (lease) => {
+      const projected = projectNativeEvents(lease.activeEvents()).filter(
+        (entry) =>
+          entry.type === 'file-history-snapshot' ||
+          entry.type === 'file-history-delta',
+      )
+      if (projected.length === 0)
+        throw new Error(`Native session has no file history: ${sessionId}`)
+      // FileHistory operates on its historical projection and requires the
+      // target user message to be present by UUID. Native messages carry
+      // that identity as the event id, so provide a minimal projected user
+      // entry for the requested native checkpoint.
+      projected.unshift({
+        type: 'user',
+        uuid: userMessageId,
+        message: { role: 'user', content: '' },
+      })
       await new ClaudeFileHistory(this.options.configRoot, sessionId, [
         this.activeCwd(),
         ...(this.options.fileRewindRoots ?? []),
-      ]).rewind(snapshot.entries, userMessageId)
+      ]).rewind(projected, userMessageId)
     })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude file rewind conflict: ${result.reason}`)
-    }
   }
 
   async rewindPoints(sessionId: string): Promise<RewindPoint[]> {
-    const result = await this.turnStore(sessionId).withLease((lease) =>
-      lease.load(),
-    )
-    if (result.status === 'conflict') {
-      throw new Error(`Claude transcript rewind conflict: ${result.reason}`)
-    }
-    if (result.value.entries.length === 0) {
-      throw new Error(`Claude session not found: ${sessionId}`)
-    }
-    const active = selectClaudeActiveTranscript(result.value.entries)
-    const snapshots = new Set(
-      active
-        .filter(
-          (entry) =>
-            entry.type === 'file-history-snapshot' &&
-            typeof entry.messageId === 'string',
-        )
-        .map((entry) => entry.messageId as string),
-    )
-    const changes = new Map<string, Set<string>>()
-    for (const entry of active) {
-      if (
-        entry.type !== 'file-history-delta' ||
-        typeof entry.snapshotMessageId !== 'string' ||
-        typeof entry.trackingPath !== 'string'
-      ) {
-        continue
-      }
-      const paths = changes.get(entry.snapshotMessageId) ?? new Set<string>()
-      paths.add(entry.trackingPath)
-      changes.set(entry.snapshotMessageId, paths)
-    }
-    const points: RewindPoint[] = []
-    let branchMessageId: string | undefined
-    for (const entry of active) {
-      if (
-        (entry.type === 'user' || entry.type === 'assistant') &&
-        typeof entry.uuid === 'string'
-      ) {
-        const message = entry.message
-        if (
-          typeof message === 'object' &&
-          message !== null &&
-          !Array.isArray(message)
-        ) {
-          const role = (message as Record<string, unknown>).role
-          const content = (message as Record<string, unknown>).content
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.store(sessionId),
+    })
+    return transcript.withLease({ kind: 'resume' }, async (lease) => {
+      const events = lease.activeEvents()
+      const snapshots = new Set<string>()
+      const changes = new Map<string, Set<string>>()
+      const snapshotKeyToPrompt = new Map<string, string>()
+      let lastPromptId: string | undefined
+      for (const event of events) {
+        if (event.kind !== 'messages') continue
+        for (const message of event.messages) {
           if (
-            entry.type === 'user' &&
-            role === 'user' &&
-            typeof content === 'string' &&
-            entry.isCompactSummary !== true &&
-            entry.isMeta !== true &&
-            typeof entry.sourceToolAssistantUUID !== 'string' &&
-            !content.startsWith('<bash-input>') &&
-            !content.startsWith('<local-command-') &&
-            !content.startsWith('<command-name>')
+            message.role === 'user' &&
+            typeof message.content === 'string' &&
+            !message.content.startsWith('<praxis-file-history>')
           ) {
-            points.push({
-              messageId: entry.uuid,
-              prompt: content,
-              ...(typeof entry.timestamp === 'string'
-                ? { timestamp: entry.timestamp }
-                : {}),
-              ...(branchMessageId === undefined ? {} : { branchMessageId }),
-              fileChanges: [...(changes.get(entry.uuid) ?? [])],
-              fileRestoreAvailable: snapshots.has(entry.uuid),
-            })
+            lastPromptId = event.id
+            continue
           }
-          if (role === 'user' || role === 'assistant') {
-            branchMessageId = entry.uuid
+          if (message.role !== 'user' || typeof message.content !== 'string')
+            continue
+          const match = message.content.match(
+            /^<praxis-file-history>([\s\S]*)<\/praxis-file-history>$/u,
+          )
+          if (!match?.[1]) continue
+          try {
+            const value = JSON.parse(match[1]) as Record<string, unknown>
+            if (
+              value.type === 'file-history-snapshot' &&
+              typeof value.messageId === 'string' &&
+              lastPromptId
+            ) {
+              snapshots.add(lastPromptId)
+              snapshotKeyToPrompt.set(value.messageId, lastPromptId)
+            }
+            if (
+              value.type === 'file-history-delta' &&
+              typeof value.snapshotMessageId === 'string' &&
+              typeof value.trackingPath === 'string'
+            ) {
+              const promptId =
+                snapshotKeyToPrompt.get(value.snapshotMessageId) ??
+                value.snapshotMessageId
+              const paths = changes.get(promptId) ?? new Set<string>()
+              paths.add(value.trackingPath)
+              changes.set(promptId, paths)
+            }
+          } catch {
+            // Malformed operational markers are ignored; native transcript
+            // validation remains authoritative.
           }
         }
       }
-    }
-    return points
+      const points: RewindPoint[] = []
+      let branchMessageId: string | undefined
+      for (const event of events) {
+        if (event.kind !== 'messages') continue
+        for (const message of event.messages) {
+          if (message.role === 'user' && message.content.trim() !== '') {
+            const isOperational =
+              message.content.startsWith('<bash-input>') ||
+              message.content.startsWith('<local-command-') ||
+              message.content.startsWith('<command-name>') ||
+              message.content.startsWith('<praxis-file-history>')
+            if (!isOperational) {
+              points.push({
+                messageId: event.id,
+                prompt: message.content,
+                timestamp: event.timestamp,
+                ...(branchMessageId === undefined ? {} : { branchMessageId }),
+                fileChanges: [...(changes.get(event.id) ?? [])],
+                fileRestoreAvailable: snapshots.has(event.id),
+              })
+            }
+            branchMessageId = event.id
+          } else if (message.role === 'assistant') {
+            branchMessageId = event.id
+          }
+        }
+      }
+      return points
+    })
   }
 
   async setPermissionMode(
@@ -4080,25 +3599,11 @@ export class ClaudeSessionService {
   ): Promise<void> {
     this.assertSessionPersistence()
     this.assertWritable()
-    const result = await this.store(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      this.options.interactiveTools?.restore(sessionId, snapshot.entries)
-      const entry: ClaudeTranscriptEntry = {
-        type: 'permission-mode',
-        permissionMode,
-        sessionId,
-      }
-      await this.append(lease, snapshot.tail, entry)
-      await this.options.interactiveTools?.setMode(sessionId, permissionMode)
-    })
-    if (result.status === 'conflict') {
-      throw new Error(
-        `Claude permission mode update conflict: ${result.reason}`,
-      )
-    }
+    await this.appendNativeCommand(
+      sessionId,
+      `/permission-mode ${permissionMode}`,
+    )
+    await this.options.interactiveTools?.setMode(sessionId, permissionMode)
   }
 
   private async activateSessionCostTracker(sessionId: string): Promise<void> {
@@ -4106,7 +3611,7 @@ export class ClaudeSessionService {
     const store = this.options.costStateStore
     if (store) {
       // Load the target native state before any save so the single
-      // `.claude.json` slot is not overwritten before it is read.
+      // Native state slot is not overwritten before it is read.
       const loaded = await store.load(sessionId)
       const currentId = this.activeCostSessionId
       if (currentId !== undefined) {
@@ -4304,10 +3809,6 @@ export class ClaudeSessionService {
       this.options.eventSink ?? (() => undefined),
     )
     try {
-      if (this.nativeTranscriptWritesEnabled() && name !== undefined) {
-        throw new Error('experimental native session names are not enabled')
-      }
-      if (requireExisting) await this.assertNativeWriteTargetIsLegacy(sessionId)
       this.assertTurnWritable()
       if (prompt.length === 0 && images.length === 0 && documents.length === 0)
         throw new Error('Prompt must not be empty')
@@ -4319,12 +3820,6 @@ export class ClaudeSessionService {
       }
 
       await this.activateSessionCostTracker(sessionId)
-      if (
-        this.options.sessionPersistence !== false &&
-        !this.nativeTranscriptWritesEnabled()
-      ) {
-        this.durableMetadataSessions.add(sessionId)
-      }
 
       await this.ensureFileResources(sessionId, signal)
 
@@ -4341,7 +3836,7 @@ export class ClaudeSessionService {
       }
       this.runtimeCwd = pinnedCwd
       if (requireExisting) {
-        await this.discoverProjectRoot(sessionId)
+        // Native paths are canonical.
       }
       const sessionPaths = this.paths(sessionId)
       const toolResultDirectory = join(
@@ -4350,29 +3845,46 @@ export class ClaudeSessionService {
         'tool-results',
       )
       const runUnderLease = async (
-        lease: ClaudeTranscriptLease,
-        nativeLease?: NativeSessionTranscriptLease,
+        lease: NativeTranscriptLease,
+        nativeLease: NativeSessionTranscriptLease,
       ): Promise<SessionRunResult> => {
-        const rememberDurableMetadata = (
-          observed: readonly ClaudeTranscriptEntry[],
-        ) => {
-          if (!nativeLease) this.rememberDurableMetadata(sessionId, observed)
+        const loadedSnapshot = await lease.load()
+        let snapshot = {
+          entries: projectNativeEvents(nativeLease.activeEvents()),
+          tail: loadedSnapshot.tail,
         }
-        const store = nativeLease ? undefined : this.turnStore(sessionId)
-        if (store && !requireExisting) {
-          const initialization =
-            name === undefined
-              ? await store.reserve()
-              : await store.create(this.sessionNameEntries(sessionId, name))
-          if (initialization.status === 'conflict') {
-            throw new Error(`Session ID ${sessionId} is already in use`)
+        const activeTurnMessages = (): ModelMessage[] => {
+          // Native events remain authoritative; refresh the derived projection
+          // after each append so memory/compaction sees the live branch.
+          snapshot = {
+            ...snapshot,
+            entries: projectNativeEvents(nativeLease.activeEvents()),
+          }
+          return nativeLease.activeMessages()
+        }
+        if (
+          nativeLease &&
+          name !== undefined &&
+          this.options.sessionPersistence !== false
+        ) {
+          const marker = `<praxis-session-name>${name}</praxis-session-name>`
+          if (
+            !nativeLease
+              .activeEvents()
+              .some(
+                (event) =>
+                  event.kind === 'messages' &&
+                  event.messages.some(
+                    (message) =>
+                      message.role === 'user' && message.content === marker,
+                  ),
+              )
+          ) {
+            await nativeLease.appendMessages({
+              messages: [{ role: 'user', content: marker }],
+            })
           }
         }
-        let snapshot = await lease.load()
-        const activeTurnMessages = (): ModelMessage[] =>
-          nativeLease
-            ? nativeLease.activeMessages()
-            : projectClaudeModelMessages(snapshot.entries)
         const nativeInterruption = nativeLease?.interruption()
         if (nativeInterruption?.kind === 'indeterminate-tools')
           throw new Error(
@@ -4386,44 +3898,6 @@ export class ClaudeSessionService {
         const shouldSkipUserPrompt = () =>
           skipUserPrompt || nativeResumeInterrupted
         let automaticReplayPrompt: string | undefined
-        if (
-          store &&
-          !nativeLease &&
-          requireExisting &&
-          this.options.sessionPersistence === false &&
-          snapshot.entries.length === 0
-        ) {
-          const persisted = await this.store(sessionId).load()
-          if (persisted.entries.length > 0) {
-            const imported = await store.create(persisted.entries)
-            if (imported.status === 'created') snapshot = await lease.load()
-          }
-        }
-        if (!nativeLease && requireExisting && snapshot.entries.length === 0) {
-          throw new Error(`Claude session not found: ${sessionId}`)
-        }
-        rememberDurableMetadata(snapshot.entries)
-        if (!nativeLease && resumeSessionAt !== undefined) {
-          snapshot = {
-            entries: selectClaudeTranscriptAtMessage(
-              snapshot.entries,
-              resumeSessionAt,
-            ),
-            tail: { ...snapshot.tail, branchParentUuid: resumeSessionAt },
-          }
-        } else if (
-          !nativeLease &&
-          this.explicitResumeLeafUuids.has(sessionId)
-        ) {
-          const selected = selectClaudeTranscriptFromNewestLeaf(
-            snapshot.entries,
-          )
-          this.explicitResumeLeafUuids.set(sessionId, selected.leafUuid)
-          snapshot = {
-            entries: selected.entries,
-            tail: { ...snapshot.tail, branchParentUuid: selected.leafUuid },
-          }
-        }
         if (
           requireExisting &&
           resumeSessionAt === undefined &&
@@ -4447,7 +3921,7 @@ export class ClaudeSessionService {
               entries: interruption.replayEntries,
               tail: {
                 ...snapshot.tail,
-                branchParentUuid: interruption.replayParentUuid ?? null,
+                branchParentId: interruption.replayParentUuid ?? null,
               },
             }
           }
@@ -4455,7 +3929,7 @@ export class ClaudeSessionService {
         const initialTransition =
           this.worktreeManager?.consumeTransition('__initial__')
         if (initialTransition && snapshot.entries.length === 0) {
-          const stateEntry: ClaudeTranscriptEntry = {
+          const stateEntry: NativeTranscriptEntry = {
             type: 'worktree-state',
             worktreeSession: initialTransition.state,
             sessionId,
@@ -4465,7 +3939,6 @@ export class ClaudeSessionService {
             entries: [...snapshot.entries, stateEntry],
             tail: stateTail,
           }
-          rememberDurableMetadata(snapshot.entries)
         }
         this.restoreWorktree(snapshot.entries)
         this.options.interactiveTools?.restore(sessionId, snapshot.entries)
@@ -4475,17 +3948,14 @@ export class ClaudeSessionService {
           !this.hasSessionName(snapshot.entries, name)
         ) {
           const entries = this.sessionNameEntries(sessionId, name)
-          const appendResult = await lease.appendMany(snapshot.tail, entries)
-          if (appendResult.status === 'conflict') {
-            throw new Error(
-              `Claude transcript append conflict: ${appendResult.reason}`,
-            )
-          }
+          const appendResult = await this.appendProjectionMany(
+            snapshot.tail,
+            entries,
+          )
           snapshot = {
             entries: [...snapshot.entries, ...entries],
             tail: appendResult.tail,
           }
-          rememberDurableMetadata(snapshot.entries)
         }
         const agentName =
           this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
@@ -4549,6 +4019,7 @@ export class ClaudeSessionService {
           unresolvedToolCalls.map((call) => call.id),
         )
         const pendingRecoveryHookOutcomes: ClaudeHookOutcome[] = []
+        let refreshRuntimeContext: (() => Promise<void>) | undefined
         const currentHookCwd = () => this.activeCwd()
         const hookSession = {
           session_id: sessionId,
@@ -4565,6 +4036,26 @@ export class ClaudeSessionService {
           )) {
             const tail = await this.append(lease, snapshot.tail, entry)
             snapshot = { entries: [...snapshot.entries, entry], tail }
+            if (nativeLease) {
+              const attachment = entry.attachment as
+                Record<string, unknown> | undefined
+              const raw = attachment?.content
+              const content =
+                typeof raw === 'string'
+                  ? raw
+                  : Array.isArray(raw)
+                    ? raw
+                        .filter((value) => typeof value === 'string')
+                        .join('\n')
+                    : raw && typeof raw === 'object' && 'content' in raw
+                      ? String((raw as { content: unknown }).content)
+                      : ''
+              if (content) {
+                await nativeLease.appendMessages({
+                  messages: [{ role: 'user', content }],
+                })
+              }
+            }
           }
         }
         const recordHookOutcome = async (
@@ -4578,7 +4069,7 @@ export class ClaudeSessionService {
           await appendHookOutcome(outcome)
         }
         const flushRecoveryHookOutcomes = async () => {
-          const entries: ClaudeTranscriptEntry[] = []
+          const entries: NativeTranscriptEntry[] = []
           let history = snapshot.entries
           let parentUuid = this.logicalTailUuid(snapshot.tail)
           for (const outcome of pendingRecoveryHookOutcomes) {
@@ -4596,12 +4087,10 @@ export class ClaudeSessionService {
             pendingRecoveryHookOutcomes.length = 0
             return
           }
-          const appendResult = await lease.appendMany(snapshot.tail, entries)
-          if (appendResult.status === 'conflict') {
-            throw new Error(
-              `Claude transcript append conflict: ${appendResult.reason}`,
-            )
-          }
+          const appendResult = await this.appendProjectionMany(
+            snapshot.tail,
+            entries,
+          )
           snapshot = { entries: history, tail: appendResult.tail }
           pendingRecoveryHookOutcomes.length = 0
         }
@@ -4684,7 +4173,6 @@ export class ClaudeSessionService {
                 manager: this.scheduledPrompts,
                 sessionId,
                 enabledTools: scheduledToolNames,
-                dataPlane: this.options.dataPlane ?? 'claude',
               })
             : null
         const baseTools = scheduledTools ?? taskTools ?? this.options.tools
@@ -4697,7 +4185,7 @@ export class ClaudeSessionService {
           turnPermissions
             ? new ClaudeSubagentExecutor({
                 configRoot: this.options.configRoot,
-                dataPlane: this.options.dataPlane ?? 'claude',
+                dataPlane: 'native',
                 cwd: this.activeCwd(),
                 cwdProvider: () => this.activeCwd(),
                 claudeVersion: this.options.claudeVersion,
@@ -4835,7 +4323,6 @@ export class ClaudeSessionService {
                 defaultModel: provider.model ?? 'praxis/provider',
                 tokenBudget: workflowTokenTarget(effectivePrompt),
                 enabled: capabilities.has('Workflow'),
-                dataPlane: this.options.dataPlane ?? 'claude',
               })
             : agentTools
         const workspaceTools =
@@ -4848,7 +4335,7 @@ export class ClaudeSessionService {
                 manager: this.worktreeManager,
                 workspace: this.options.workspace,
                 enabledTools: this.options.worktreeToolNames ?? [],
-                dataPlane: this.options.dataPlane ?? 'claude',
+                dataPlane: 'native',
               })
             : turnTools
         const messageTools =
@@ -4933,6 +4420,16 @@ export class ClaudeSessionService {
                   if (entry) {
                     const tail = await this.append(lease, snapshot.tail, entry)
                     snapshot = { entries: [...snapshot.entries, entry], tail }
+                    if (nativeLease) {
+                      await nativeLease.appendMessages({
+                        messages: [
+                          {
+                            role: 'user',
+                            content: `<praxis-file-history>${JSON.stringify(entry)}</praxis-file-history>`,
+                          },
+                        ],
+                      })
+                    }
                   }
                   return result
                 },
@@ -5119,7 +4616,7 @@ export class ClaudeSessionService {
                 lifecycleId: sessionId,
                 reason: 'worktree',
               })
-              const stateEntry: ClaudeTranscriptEntry = {
+              const stateEntry: NativeTranscriptEntry = {
                 type: 'worktree-state',
                 worktreeSession: transition.state,
                 sessionId,
@@ -5137,7 +4634,7 @@ export class ClaudeSessionService {
             const permissionMode =
               this.options.interactiveTools?.consumeTransition(call.id)
             if (permissionMode) {
-              const modeEntry: ClaudeTranscriptEntry = {
+              const modeEntry: NativeTranscriptEntry = {
                 type: 'permission-mode',
                 permissionMode,
                 sessionId,
@@ -5151,14 +4648,27 @@ export class ClaudeSessionService {
                 entries: [...snapshot.entries, modeEntry],
                 tail: modeTail,
               }
+              if (nativeLease) {
+                await nativeLease.appendMessages({
+                  messages: [
+                    {
+                      role: 'user',
+                      content: `/permission-mode ${permissionMode}`,
+                    },
+                  ],
+                })
+              }
+              // Interactive mode transitions change the runtime system
+              // context for the very next provider request. Refresh here so
+              // an EnterPlanMode/ExitPlanMode tool call is immediately
+              // reflected in the native execution path.
+              if (typeof refreshRuntimeContext === 'function')
+                await refreshRuntimeContext()
             }
             if (nativeLease) {
               await nativeLease.appendToolCompletion({
                 callId: call.id,
                 result: toolResult,
-                ...(toolResult.followUpUserMessages === undefined
-                  ? {}
-                  : { followUpUserMessages: toolResult.followUpUserMessages }),
               })
             } else {
               const [entry] = translateProviderEvents(
@@ -5253,6 +4763,14 @@ export class ClaudeSessionService {
                   entries: [...snapshot.entries, attachment],
                   tail: attachmentTail,
                 }
+                if (nativeLease) {
+                  const ruleContent = rule.content.trim()
+                  if (ruleContent.length > 0) {
+                    await nativeLease.appendMessages({
+                      messages: [{ role: 'user', content: ruleContent }],
+                    })
+                  }
+                }
                 attachedRulePaths.add(rule.path)
                 await this.instructionLoaded(
                   sessionId,
@@ -5279,6 +4797,18 @@ export class ClaudeSessionService {
             messages: readonly string[],
           ) => {
             for (const content of messages) {
+              if (nativeLease) {
+                await nativeLease.appendMessages({
+                  messages: [{ role: 'user', content }],
+                })
+                currentTurnUserMessages?.push(content)
+                await Promise.all(
+                  this.sessionSubagentExecutors(sessionId, true).map(
+                    (executor) => executor.acknowledgeNotifications([content]),
+                  ),
+                )
+                continue
+              }
               const [followUpEntry] = translateProviderEvents(
                 [{ type: 'user-text-block', text: content }],
                 this.translationContext(sessionId, snapshot),
@@ -5390,6 +4920,16 @@ export class ClaudeSessionService {
               entries: [...snapshot.entries, agentSetting],
               tail: settingTail,
             }
+            if (nativeLease) {
+              await nativeLease.appendMessages({
+                messages: [
+                  {
+                    role: 'user',
+                    content: `<praxis-agent-setting>${this.options.agent}</praxis-agent-setting>`,
+                  },
+                ],
+              })
+            }
           }
 
           let agentSystem: string | null = null
@@ -5401,10 +4941,11 @@ export class ClaudeSessionService {
             stableSystemSectionCount: 0,
           }
           let stableSystemMessageCount = 0
-          const refreshRuntimeContext = async () => {
+          refreshRuntimeContext = async () => {
             agentSystem = await this.mainAgentSystemPrompt(agent)
             planModeMessage =
               this.options.interactiveTools?.contextMessage(sessionId)
+            // DEBUG_PLAN_CONTEXT
             sessionMemoryMessage = this.sessionMemoryMessage(
               await turnMemory.sessionSummary(),
             )
@@ -5589,193 +5130,15 @@ export class ClaudeSessionService {
               tools: definitions,
             }),
             propose: async () => {
-              if (nativeLease) {
-                if (!budget) throw new Error('Context budget is unavailable')
-                const historyMessages = activeTurnMessages()
-                if (historyMessages.length === 0)
-                  throw new Error('Cannot compact an empty native transcript')
-                if (unresolvedActiveToolCallIds(historyMessages).length > 0)
-                  throw new Error(
-                    'Cannot compact a native transcript with unresolved tool calls',
-                  )
-                let compactableMessages = historyMessages
-                let preservedMessages: ModelMessage[] = []
-                if (preservedUserMessages.length > 0) {
-                  let searchFrom = historyMessages.length
-                  const matchedIndexes: number[] = []
-                  for (
-                    let markerIndex = preservedUserMessages.length - 1;
-                    markerIndex >= 0;
-                    markerIndex -= 1
-                  ) {
-                    const marker = preservedUserMessages[markerIndex]
-                    let found = -1
-                    for (let index = searchFrom - 1; index >= 0; index -= 1) {
-                      const message = historyMessages[index]
-                      if (
-                        message?.role === 'user' &&
-                        message.content === marker
-                      ) {
-                        found = index
-                        break
-                      }
-                    }
-                    if (found < 0)
-                      throw new Error(
-                        'Native automatic compaction could not match the current-turn suffix',
-                      )
-                    matchedIndexes.push(found)
-                    searchFrom = found
-                  }
-                  const earliest = Math.min(...matchedIndexes)
-                  compactableMessages = historyMessages.slice(0, earliest)
-                  preservedMessages = historyMessages.slice(earliest)
-                }
-                if (compactableMessages.length === 0)
-                  throw new Error(
-                    'Cannot compact native transcript: no compactable prefix',
-                  )
-                const preTokens =
-                  estimateModelRequestTokens(compactableMessages)
-                const compacted = await (
-                  this.options.compactor ?? new ModelCompactor(provider)
-                ).compact({
-                  messages: compactableMessages,
-                  targetTokens: Math.min(
-                    8192,
-                    Math.max(1, Math.floor(budget.contextWindowTokens / 4)),
-                  ),
-                  contextWindowTokens: budget.contextWindowTokens,
-                  ...(signal ? { signal } : {}),
-                })
-                const { durationMs, durationWithoutRetriesMs } =
-                  requireCompactionDurations(compacted)
-                if (signal?.aborted) throw new AgentRunCancelledError()
-                const postTokens = estimateModelRequestTokens([
-                  { role: 'user', content: compacted.summary },
-                  ...preservedMessages,
-                ])
-                const compactModel =
-                  compacted.model !== undefined && compacted.model.trim() !== ''
-                    ? compacted.model
-                    : provider.model
-                const meaningfulUsage = hasNonZeroUsage(compacted.usage)
-                if (
-                  meaningfulUsage &&
-                  (compactModel === undefined || compactModel.trim() === '')
+              const activeNativeLease = nativeLease
+              if (!budget) throw new Error('Context budget is unavailable')
+              const historyMessages = activeTurnMessages()
+              if (historyMessages.length === 0)
+                throw new Error('Cannot compact an empty native transcript')
+              if (unresolvedActiveToolCallIds(historyMessages).length > 0)
+                throw new Error(
+                  'Cannot compact a native transcript with unresolved tool calls',
                 )
-                  throw new Error(
-                    'Auto compact usage requires a nonblank model identity',
-                  )
-                const tracker = this.sessionCostTrackers.get(sessionId)
-                if (!tracker)
-                  throw new Error(
-                    `Session cost tracker is not active for session ${sessionId}`,
-                  )
-                let meteringTurnInput: ClaudeSessionTurnInput | undefined
-                if (
-                  meaningfulUsage &&
-                  compactModel !== undefined &&
-                  compactModel.trim() !== ''
-                ) {
-                  const pricing = this.options.pricing?.resolve(compactModel)
-                  const costUsd = pricing
-                    ? usageCostUsd(compacted.usage, pricing)
-                    : undefined
-                  meteringTurnInput = {
-                    model: compactModel,
-                    usage: compacted.usage,
-                    ...(costUsd === undefined ? {} : { costUsd }),
-                    ...(compacted.usage.webSearchRequests === undefined
-                      ? {}
-                      : {
-                          webSearchRequests: compacted.usage.webSearchRequests,
-                        }),
-                  }
-                }
-                let meteringDurationsInput:
-                  ClaudeSessionDurationsInput | undefined
-                if (durationMs > 0 || durationWithoutRetriesMs > 0)
-                  meteringDurationsInput = {
-                    ...(durationMs === 0 ? {} : { apiDurationMs: durationMs }),
-                    apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
-                  }
-                if (
-                  meteringTurnInput !== undefined ||
-                  meteringDurationsInput !== undefined
-                ) {
-                  const preflight = new ClaudeSessionCostTracker({
-                    sessionId,
-                    restored: tracker.snapshot(),
-                  })
-                  if (meteringTurnInput !== undefined)
-                    preflight.recordTurn(meteringTurnInput)
-                  if (meteringDurationsInput !== undefined)
-                    preflight.recordDurations(meteringDurationsInput)
-                }
-                const summaryMessage = {
-                  role: 'user' as const,
-                  content: compacted.summary,
-                }
-                const proposedMessages = [
-                  ...contextMessages,
-                  ...injectTurnContext([
-                    summaryMessage,
-                    ...preservedMessages,
-                    ...pendingMessages,
-                  ]),
-                ]
-                return {
-                  envelope: { messages: proposedMessages, tools: definitions },
-                  commit: async () => {
-                    if (signal?.aborted) throw new AgentRunCancelledError()
-                    const ids = await nativeLease.appendCompaction({
-                      summary: compacted.summary,
-                      trigger: 'auto',
-                      preTokens,
-                      postTokens,
-                      durationMs,
-                      preservedMessages,
-                    })
-                    this.options.eventSink?.({
-                      type: 'compact-boundary',
-                      trigger: 'auto',
-                      preTokens,
-                      uuid: ids.boundaryId,
-                    })
-                    compactionUsage = mergeUsage(
-                      compactionUsage,
-                      compacted.usage,
-                    )
-                    compactionDurationMs =
-                      (compactionDurationMs ?? 0) + durationMs
-                    compactionDurationWithoutRetriesMs =
-                      (compactionDurationWithoutRetriesMs ?? 0) +
-                      durationWithoutRetriesMs
-                    if (meteringTurnInput !== undefined) {
-                      tracker.recordTurn(meteringTurnInput)
-                    }
-                    if (
-                      compactModel !== undefined &&
-                      compactModel.trim() !== ''
-                    ) {
-                      compactionModelUsage = mergeSessionRawModelUsage(
-                        compactionModelUsage,
-                        { [compactModel]: compacted.usage },
-                      )
-                    }
-                    if (meteringDurationsInput !== undefined)
-                      tracker.recordDurations(meteringDurationsInput)
-                  },
-                }
-              }
-              if (!budget) {
-                throw new Error('Context budget is unavailable')
-              }
-              const historyMessages = [
-                ...activeTurnMessages(),
-                ...projectMemoryRecallMessages,
-              ]
               const irreducibleMessages = [
                 ...contextMessages,
                 ...injectTurnContext([
@@ -5786,97 +5149,166 @@ export class ClaudeSessionService {
                   })),
                 ]),
               ]
-              let logicalParentUuid = compactionAnchorUuid
-              if (!logicalParentUuid || historyMessages.length === 0) {
-                throw new Error('Cannot compact an empty Claude transcript')
+              let compactableMessages = historyMessages
+              let preservedMessages: ModelMessage[] = []
+              let compactionLogicalParentId: string | undefined
+              if (preservedUserMessages.length > 0) {
+                let searchFrom = historyMessages.length
+                const matchedIndexes: number[] = []
+                for (
+                  let markerIndex = preservedUserMessages.length - 1;
+                  markerIndex >= 0;
+                  markerIndex -= 1
+                ) {
+                  const marker = preservedUserMessages[markerIndex]
+                  let found = -1
+                  for (let index = searchFrom - 1; index >= 0; index -= 1) {
+                    const message = historyMessages[index]
+                    if (
+                      message?.role === 'user' &&
+                      message.content === marker
+                    ) {
+                      found = index
+                      break
+                    }
+                  }
+                  if (found < 0)
+                    throw new Error(
+                      'Native automatic compaction could not match the current-turn suffix',
+                    )
+                  matchedIndexes.push(found)
+                  searchFrom = found
+                }
+                const earliest = Math.min(...matchedIndexes)
+                const promptContents = new Set(preservedUserMessages)
+                // Preserve the complete current-turn suffix for replay, but
+                // also feed its non-prompt context (hook output, assistant
+                // tool calls, and tool results) to the compactor.
+                preservedMessages = historyMessages.slice(earliest)
+                compactableMessages = [
+                  ...historyMessages.slice(0, earliest),
+                  ...historyMessages
+                    .slice(earliest)
+                    .filter(
+                      (message) =>
+                        message.role !== 'user' ||
+                        !promptContents.has(message.content),
+                    ),
+                ]
+                if (earliest === 0 && preservedUserMessages[0] !== undefined) {
+                  compactionLogicalParentId = activeNativeLease
+                    .activeEvents()
+                    .find(
+                      (event) =>
+                        event.kind === 'messages' &&
+                        event.messages.some(
+                          (message) =>
+                            message.role === 'user' &&
+                            message.content === preservedUserMessages[0],
+                        ),
+                    )?.id
+                }
               }
-              if (findUnresolvedClaudeToolCalls(snapshot.entries).length > 0) {
-                throw new Error(
-                  'Cannot compact a Claude session with unresolved tool calls',
-                )
-              }
-              const preCompact = await this.runAdvisoryHook(
-                sessionId,
-                'PreCompact',
-                { trigger: 'auto', custom_instructions: null },
-                'auto',
-                signal,
-              )
               const memorySelection = sessionMemory
                 ? await this.selectMemoryPreservedCompact(
                     sessionId,
-                    selectClaudeActiveTranscript(snapshot.entries),
-                    { sessionMemoryReady: true },
+                    projectNativeEvents(activeNativeLease.activeEvents()),
                   )
                 : null
-              const compactorMessages: ModelMessage[] = memorySelection
-                ? [
-                    memorySelection.memoryMessage,
-                    ...projectClaudeModelMessages(
-                      memorySelection.compactedEntries,
-                    ),
-                  ]
-                : historyMessages
-              compactorMessages.push(
-                ...successfulHookOutput(preCompact).map((content) => ({
-                  role: 'user' as const,
-                  content: `Additional summarization context: ${content}`,
-                })),
-              )
               if (memorySelection) {
-                logicalParentUuid = memorySelection.logicalParentUuid
+                compactableMessages = [
+                  memorySelection.memoryMessage,
+                  ...projectClaudeModelMessages(
+                    memorySelection.compactedEntries,
+                  ),
+                ]
+                preservedMessages = projectClaudeModelMessages(
+                  memorySelection.preservedEntries,
+                )
+                compactionLogicalParentId = memorySelection.logicalParentUuid
+              }
+              // A completed tool turn can itself exceed the context budget
+              // before a subsequent model request. In that case there is
+              // no prior prefix to preserve, but the completed history is
+              // still a valid compactable set.
+              if (compactableMessages.length === 0) {
+                compactableMessages = historyMessages
+                // Keep user prompts available as the replayable suffix;
+                // tool/assistant payloads remain summarized.
+                preservedMessages = historyMessages.filter(
+                  (message) => message.role === 'user',
+                )
+                const anchor = preservedMessages[0]
+                if (anchor !== undefined) {
+                  compactionLogicalParentId = nativeLease
+                    .activeEvents()
+                    .find(
+                      (event) =>
+                        event.kind === 'messages' &&
+                        event.messages.some(
+                          (message) =>
+                            message.role === 'user' &&
+                            message.content === anchor.content,
+                        ),
+                    )?.id
+                }
               }
               this.options.eventSink?.({ type: 'state', state: 'compacting' })
+              const preTokens = estimateModelRequestTokens(compactableMessages)
               const compactEnvelope = budget.evaluate(
                 [
                   ...irreducibleMessages,
                   {
-                    role: 'user',
+                    role: 'user' as const,
                     content: formatClaudeCompactSummary(''),
                   },
                 ],
                 definitions,
               )
-              let targetTokens = Math.min(
-                8192,
-                compactEnvelope.availableTokens -
-                  compactEnvelope.estimatedTokens,
-              )
-              if (targetTokens < 1) {
-                budget.assertFits(
-                  budget.evaluate(
-                    [
-                      ...irreducibleMessages,
-                      {
-                        role: 'user',
-                        content: formatClaudeCompactSummary('a'),
-                      },
-                    ],
-                    definitions,
-                  ),
-                )
-                targetTokens = 1
-              }
+              budget.assertFits(compactEnvelope)
               const compacted = await (
                 this.options.compactor ?? new ModelCompactor(provider)
               ).compact({
-                messages: compactorMessages,
-                targetTokens,
+                messages: [
+                  ...compactableMessages,
+                  ...successfulHookOutput(
+                    await this.runAdvisoryHook(
+                      sessionId,
+                      'PreCompact',
+                      {
+                        trigger: 'auto',
+                        custom_instructions: null,
+                      },
+                      'auto',
+                      signal,
+                    ),
+                  ).map((content) => ({
+                    role: 'user' as const,
+                    content: `Additional summarization context: ${content}`,
+                  })),
+                ],
+                targetTokens: Math.min(
+                  8192,
+                  Math.max(
+                    1,
+                    compactEnvelope.availableTokens -
+                      compactEnvelope.estimatedTokens,
+                  ),
+                ),
                 contextWindowTokens: budget.contextWindowTokens,
                 ...(signal ? { signal } : {}),
               })
-              const {
-                durationMs: compactedDurationMs,
-                durationWithoutRetriesMs: compactedDurationWithoutRetriesMs,
-              } = requireCompactionDurations(compacted)
+              const { durationMs, durationWithoutRetriesMs } =
+                requireCompactionDurations(compacted)
+              if (signal?.aborted) throw new AgentRunCancelledError()
               const proposedCompactionDurationMs =
-                (compactionDurationMs ?? 0) + compactedDurationMs
+                (compactionDurationMs ?? 0) + durationMs
               if (!Number.isFinite(proposedCompactionDurationMs)) {
                 throw new TypeError('compaction durationMs total overflow')
               }
               const proposedCompactionDurationWithoutRetriesMs =
                 (compactionDurationWithoutRetriesMs ?? 0) +
-                compactedDurationWithoutRetriesMs
+                durationWithoutRetriesMs
               if (
                 !Number.isFinite(proposedCompactionDurationWithoutRetriesMs)
               ) {
@@ -5884,107 +5316,33 @@ export class ClaudeSessionService {
                   'compaction durationWithoutRetriesMs total overflow',
                 )
               }
-              const boundaryUuid = randomUUID()
-              const summaryUuid = randomUUID()
-              const timestamp = new Date().toISOString()
-              const preTokens = budget.evaluate(
-                [...contextMessages, ...injectTurnContext(historyMessages)],
-                definitions,
-              ).estimatedTokens
-              const compactEntries = (postTokens: number) => {
-                const uuids = [boundaryUuid, summaryUuid]
-                return createClaudeCompactEntries({
-                  sessionId,
-                  logicalParentUuid,
-                  summary: compacted.summary,
-                  preTokens,
-                  postTokens,
-                  previousCumulativeDroppedTokens: getCumulativeDroppedTokens(
-                    snapshot.entries,
-                  ),
-                  durationMs: compactedDurationMs,
-                  cwd: this.activeCwd(),
-                  claudeVersion: this.options.claudeVersion,
-                  gitBranch: null,
-                  ...(memorySelection
-                    ? {
-                        preservedUuids:
-                          memorySelection.preservedEntries.flatMap((entry) =>
-                            typeof entry.uuid === 'string' ? [entry.uuid] : [],
-                          ),
-                      }
-                    : {}),
-                  createUuid: () => uuids.shift() ?? randomUUID(),
-                  now: () => timestamp,
-                })
-              }
-              const provisionalEntries = compactEntries(0)
-              const compactSummaryUuid = provisionalEntries.at(-1)?.uuid
-              if (typeof compactSummaryUuid !== 'string') {
-                throw new Error('Could not create Claude compact summary')
-              }
-              const replayUuids = preservedUserMessages.map(() => randomUUID())
-              const replayEntries = translateProviderEvents(
-                preservedUserMessages.map((text, index) =>
-                  index === 0
-                    ? { type: 'user-text' as const, text }
-                    : { type: 'user-text-block' as const, text },
-                ),
-                {
-                  sessionId,
-                  parentUuid: compactSummaryUuid,
-                  cwd: this.activeCwd(),
-                  claudeVersion: this.options.claudeVersion,
-                  gitBranch: null,
-                  history: [...snapshot.entries, ...provisionalEntries],
-                  createUuid: () => replayUuids.shift() ?? randomUUID(),
-                  now: () => timestamp,
-                },
-              )
-              const compactedHistory = [
-                ...projectClaudeModelMessages([
-                  ...snapshot.entries,
-                  ...provisionalEntries,
-                  ...replayEntries,
-                ]),
-                ...projectMemoryRecallMessages,
-              ]
-              const afterHistory = budget.evaluate(
-                [...contextMessages, ...injectTurnContext(compactedHistory)],
-                definitions,
-              )
-              const proposedMessages = [
-                ...contextMessages,
-                ...injectTurnContext([...compactedHistory, ...pendingMessages]),
-              ]
-              const entries = [
-                ...compactEntries(afterHistory.estimatedTokens),
-                ...replayEntries,
-              ]
-              if (signal?.aborted) throw new AgentRunCancelledError()
-              // Construct the exact tracker mutations for this single committed
-              // boundary and preflight them against a clone of the live tracker so
-              // invalid input or cumulative overflow rejects before the compact
-              // boundary is appended rather than after a half-commit.
-              const tracker = this.sessionCostTrackers.get(sessionId)
-              if (!tracker) {
-                throw new Error(
-                  `Session cost tracker is not active for session ${sessionId}`,
-                )
-              }
+              const postTokens = estimateModelRequestTokens([
+                { role: 'user', content: compacted.summary },
+                ...preservedMessages,
+              ])
               const compactModel =
                 compacted.model !== undefined && compacted.model.trim() !== ''
                   ? compacted.model
                   : provider.model
-              const compactModelNonBlank =
-                compactModel !== undefined && compactModel.trim() !== ''
-              if (hasNonZeroUsage(compacted.usage) && !compactModelNonBlank) {
+              const meaningfulUsage = hasNonZeroUsage(compacted.usage)
+              if (
+                meaningfulUsage &&
+                (compactModel === undefined || compactModel.trim() === '')
+              )
                 throw new Error(
                   'Auto compact usage requires a nonblank model identity',
                 )
-              }
+              const tracker = this.sessionCostTrackers.get(sessionId)
+              if (!tracker)
+                throw new Error(
+                  `Session cost tracker is not active for session ${sessionId}`,
+                )
               let meteringTurnInput: ClaudeSessionTurnInput | undefined
-              if (compactModelNonBlank && hasNonZeroUsage(compacted.usage)) {
+              if (
+                meaningfulUsage &&
+                compactModel !== undefined &&
+                compactModel.trim() !== ''
+              ) {
                 const pricing = this.options.pricing?.resolve(compactModel)
                 const costUsd = pricing
                   ? usageCostUsd(compacted.usage, pricing)
@@ -5995,23 +5353,18 @@ export class ClaudeSessionService {
                   ...(costUsd === undefined ? {} : { costUsd }),
                   ...(compacted.usage.webSearchRequests === undefined
                     ? {}
-                    : { webSearchRequests: compacted.usage.webSearchRequests }),
+                    : {
+                        webSearchRequests: compacted.usage.webSearchRequests,
+                      }),
                 }
               }
               let meteringDurationsInput:
                 ClaudeSessionDurationsInput | undefined
-              if (
-                compactedDurationMs > 0 ||
-                compactedDurationWithoutRetriesMs > 0
-              ) {
+              if (durationMs > 0 || durationWithoutRetriesMs > 0)
                 meteringDurationsInput = {
-                  ...(compactedDurationMs === 0
-                    ? {}
-                    : { apiDurationMs: compactedDurationMs }),
-                  apiDurationWithoutRetriesMs:
-                    compactedDurationWithoutRetriesMs,
+                  ...(durationMs === 0 ? {} : { apiDurationMs: durationMs }),
+                  apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
                 }
-              }
               if (
                 meteringTurnInput !== undefined ||
                 meteringDurationsInput !== undefined
@@ -6020,53 +5373,70 @@ export class ClaudeSessionService {
                   sessionId,
                   restored: tracker.snapshot(),
                 })
-                if (meteringTurnInput !== undefined) {
+                if (meteringTurnInput !== undefined)
                   preflight.recordTurn(meteringTurnInput)
-                }
-                if (meteringDurationsInput !== undefined) {
+                if (meteringDurationsInput !== undefined)
                   preflight.recordDurations(meteringDurationsInput)
-                }
               }
+              const summaryMessage = {
+                role: 'user' as const,
+                content: compacted.summary,
+              }
+              let replayMessages = preservedMessages
+              try {
+                const replayReport = budget.evaluate(
+                  [
+                    ...contextMessages,
+                    ...injectTurnContext([
+                      summaryMessage,
+                      ...replayMessages,
+                      ...pendingMessages,
+                    ]),
+                  ],
+                  definitions,
+                )
+                if (replayReport.shouldCompact)
+                  throw new Error('replay overflow')
+              } catch {
+                // A huge completed tool result may be needed in the
+                // compactor input but cannot fit in the next model request.
+                // Drop the tool pair only for replay; the summary already
+                // contains its contents and user prompts remain available.
+                replayMessages = replayMessages.filter(
+                  (message) =>
+                    message.role === 'user' && !Array.isArray(message.content),
+                )
+              }
+              const proposedMessages = [
+                ...contextMessages,
+                ...injectTurnContext([
+                  summaryMessage,
+                  ...replayMessages,
+                  ...pendingMessages,
+                ]),
+              ]
               return {
-                envelope: {
-                  messages: proposedMessages,
-                  tools: definitions,
-                },
+                envelope: { messages: proposedMessages, tools: definitions },
                 commit: async () => {
                   if (signal?.aborted) throw new AgentRunCancelledError()
-                  const appendResult = await lease.appendMany(
-                    snapshot.tail,
-                    entries,
-                  )
-                  if (appendResult.status === 'conflict') {
-                    throw new Error(
-                      `Claude transcript append conflict: ${appendResult.reason}`,
-                    )
-                  }
-                  snapshot = {
-                    entries: [...snapshot.entries, ...entries],
-                    tail: appendResult.tail,
-                  }
-                  const metadataEntries = createClaudeDurableMetadataSnapshot(
-                    snapshot.entries,
-                    sessionId,
-                  )
-                  if (metadataEntries.length > 0) {
-                    const metadataAppend = await lease.appendMany(
-                      snapshot.tail,
-                      metadataEntries,
-                    )
-                    if (metadataAppend.status === 'conflict') {
-                      throw new Error(
-                        `Claude metadata snapshot conflict: ${metadataAppend.reason}`,
-                      )
-                    }
-                    snapshot = {
-                      entries: [...snapshot.entries, ...metadataEntries],
-                      tail: metadataAppend.tail,
-                    }
-                  }
-                  rememberDurableMetadata(snapshot.entries)
+                  const ids = await nativeLease.appendCompaction({
+                    summary: compacted.summary,
+                    trigger: 'auto',
+                    preTokens,
+                    postTokens,
+                    durationMs,
+                    preservedMessages: replayMessages,
+                    ...(compactionLogicalParentId === undefined
+                      ? {}
+                      : { logicalParentId: compactionLogicalParentId }),
+                    ...(memorySelection
+                      ? {
+                          direction: 'from' as const,
+                          messagesSummarized: compactableMessages.length,
+                          preservePrefix: false,
+                        }
+                      : {}),
+                  })
                   await this.runAdvisoryHook(
                     sessionId,
                     'PostCompact',
@@ -6074,10 +5444,6 @@ export class ClaudeSessionService {
                     'auto',
                     signal,
                   )
-                  // The boundary is durable: mirror Claude's full-compact behavior by
-                  // rerunning SessionStart with source compact and refreshing the
-                  // runtime-only context so the next request retains current
-                  // instructions, plan state, session memory, and hook context.
                   if (this.options.hooks) {
                     const outcome = await this.hookLifecycle.refresh(
                       sessionId,
@@ -6090,33 +5456,33 @@ export class ClaudeSessionService {
                     lifecycleId: sessionId,
                     reason: 'compact',
                   })
-                  await refreshRuntimeContext()
+                  await refreshRuntimeContext?.()
                   this.options.eventSink?.({
                     type: 'compact-boundary',
                     trigger: 'auto',
                     preTokens,
-                    uuid: boundaryUuid,
+                    uuid: ids.boundaryId,
                   })
-                  compactionAnchorUuid = compactSummaryUuid
                   compactionUsage = mergeUsage(compactionUsage, compacted.usage)
-                  compactionDurationMs = proposedCompactionDurationMs
+                  compactionDurationMs =
+                    (compactionDurationMs ?? 0) + durationMs
                   compactionDurationWithoutRetriesMs =
-                    proposedCompactionDurationWithoutRetriesMs
-                  if (meteringTurnInput !== undefined) {
-                    compactionModelUsage = mergeSessionRawModelUsage(
-                      compactionModelUsage,
-                      { [meteringTurnInput.model]: compacted.usage },
-                    )
-                  }
-                  // Commit the preflighted mutations once the boundary is durable so a
-                  // later main-provider failure or cancellation cannot lose the
-                  // compactor's usage/cost/API durations.
+                    (compactionDurationWithoutRetriesMs ?? 0) +
+                    durationWithoutRetriesMs
                   if (meteringTurnInput !== undefined) {
                     tracker.recordTurn(meteringTurnInput)
                   }
-                  if (meteringDurationsInput !== undefined) {
-                    tracker.recordDurations(meteringDurationsInput)
+                  if (
+                    compactModel !== undefined &&
+                    compactModel.trim() !== ''
+                  ) {
+                    compactionModelUsage = mergeSessionRawModelUsage(
+                      compactionModelUsage,
+                      { [compactModel]: compacted.usage },
+                    )
                   }
+                  if (meteringDurationsInput !== undefined)
+                    tracker.recordDurations(meteringDurationsInput)
                 },
               }
             },
@@ -6164,7 +5530,7 @@ export class ClaudeSessionService {
               tail: userTail,
             }
             if (nativeLease) {
-              await nativeLease.appendMessages({
+              const nativePromptId = await nativeLease.appendMessages({
                 messages: [
                   {
                     role: 'user',
@@ -6176,6 +5542,9 @@ export class ClaudeSessionService {
                   },
                 ],
               })
+              // File-history snapshots key their metadata to the durable
+              // native event id, not the scratch compatibility projection id.
+              currentPromptId = nativePromptId
             }
           }
 
@@ -6192,6 +5561,16 @@ export class ClaudeSessionService {
             snapshot = {
               entries: [...snapshot.entries, historySnapshot],
               tail: historyTail,
+            }
+            if (nativeLease) {
+              await nativeLease.appendMessages({
+                messages: [
+                  {
+                    role: 'user',
+                    content: `<praxis-file-history>${JSON.stringify(historySnapshot)}</praxis-file-history>`,
+                  },
+                ],
+              })
             }
           }
 
@@ -6280,15 +5659,10 @@ export class ClaudeSessionService {
             if (!inputEntry || !outputEntry) {
               throw new Error('Could not translate shell command result')
             }
-            const shellAppend = await lease.appendMany(snapshot.tail, [
+            const shellAppend = await this.appendProjectionMany(snapshot.tail, [
               inputEntry,
               outputEntry,
             ])
-            if (shellAppend.status === 'conflict') {
-              throw new Error(
-                `Claude transcript append conflict: ${shellAppend.reason}`,
-              )
-            }
             snapshot = {
               entries: [...snapshot.entries, inputEntry, outputEntry],
               tail: shellAppend.tail,
@@ -6365,6 +5739,7 @@ export class ClaudeSessionService {
                   { role: 'user', content: recalled.content },
                 ]
               }
+              await refreshRuntimeContext?.()
               await contextEngine.prepare(
                 contextTransitionPort([], currentTurnUserMessages ?? []),
                 signal,
@@ -6424,7 +5799,9 @@ export class ClaudeSessionService {
                             notification: BackgroundAgentNotificationIdentity,
                           ) =>
                             transcriptContainsBackgroundAgentNotification(
-                              snapshot.entries,
+                              nativeLease
+                                ? nativeLease.activeMessages()
+                                : snapshot.entries,
                               notification,
                             )
                           return this.hostedSubagents.has(executor)
@@ -6444,7 +5821,18 @@ export class ClaudeSessionService {
                       sessionId,
                       subagentExecutor ?? undefined,
                     )
-                    if (background) messages.push(...background.messages)
+                    if (background) {
+                      if (nativeLease) {
+                        for (const message of background.messages) {
+                          await this.appendBackgroundNotification(
+                            sessionId,
+                            message,
+                            nativeLease,
+                          )
+                        }
+                      }
+                      messages.push(...background.messages)
+                    }
                     const workflow =
                       await this.workflowManager?.notifications(true)
                     if (workflow) messages.push(...workflow.messages)
@@ -6630,7 +6018,6 @@ export class ClaudeSessionService {
               tail,
             }
           }
-          rememberDurableMetadata(snapshot.entries)
           const totalUsage = mergeUsage(
             mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
             result.usage,
@@ -6738,6 +6125,9 @@ export class ClaudeSessionService {
             })
           }
           const memorySnapshot = activeTurnMessages()
+          const nativeMemoryMessageId = nativeLease
+            ? projectNativeEvents(nativeLease.activeEvents()).at(-1)?.uuid
+            : undefined
           const providerVisibleMessages = [
             ...contextMessages,
             ...injectTurnContext(memorySnapshot),
@@ -6749,12 +6139,30 @@ export class ClaudeSessionService {
             })?.occupancyTokens ??
             estimateModelRequestTokens(providerVisibleMessages, definitions)
           await turnMemory.observeSuccess({
-            ...(finalLeafUuid ? { messageId: finalLeafUuid } : {}),
+            ...(finalLeafUuid
+              ? {
+                  messageId:
+                    typeof nativeMemoryMessageId === 'string'
+                      ? nativeMemoryMessageId
+                      : finalLeafUuid,
+                }
+              : {}),
             occupancyTokens: currentContextTokens,
             toolCalls: currentTurnToolCalls,
             messages: memorySnapshot,
             projectMessages: nativeLease
-              ? []
+              ? memorySnapshot.flatMap((message, index) =>
+                  (message.role === 'user' || message.role === 'assistant') &&
+                  message.content.trim().length > 0
+                    ? [
+                        {
+                          id: `${finalLeafUuid ?? sessionId}:${index}`,
+                          role: message.role,
+                          content: message.content,
+                        },
+                      ]
+                    : [],
+                )
               : projectMemoryMessages(snapshot.entries),
             directMaintenance: projectMemoryMaintained,
           })
@@ -6782,11 +6190,22 @@ export class ClaudeSessionService {
         }
       }
       let result: SessionRunResult
-      if (this.nativeTranscriptWritesEnabled()) {
-        const nativeStore = new NativeTranscriptStore({
-          transcriptFile: sessionPaths.sessionFile,
-          lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
-        })
+      {
+        let nativeStore: NativeTranscriptStore | InMemoryTranscriptStore
+        if (this.options.sessionPersistence === false) {
+          nativeStore =
+            this.inMemoryStores.get(sessionId) ?? new InMemoryTranscriptStore()
+          this.inMemoryStores.set(sessionId, nativeStore)
+        } else {
+          nativeStore = new NativeTranscriptStore({
+            transcriptFile: sessionPaths.sessionFile,
+            lockFile: join(
+              sessionPaths.praxisRoot,
+              'locks',
+              `${sessionId}.lock`,
+            ),
+          })
+        }
         const nativeTranscript = new NativeSessionTranscript({
           sessionId,
           store: nativeStore,
@@ -6811,17 +6230,6 @@ export class ClaudeSessionService {
             return scratchResult.value
           },
         )
-      } else {
-        const store = this.turnStore(sessionId)
-        const leaseResult = await store.withLease((lease) =>
-          runUnderLease(lease),
-        )
-        if (leaseResult.status === 'conflict') {
-          throw new Error(
-            `Claude transcript append conflict: ${leaseResult.reason}`,
-          )
-        }
-        result = leaseResult.value
       }
       controller.complete()
       return result
@@ -6863,7 +6271,13 @@ export class ClaudeSessionService {
     }
   }
 
-  private translationContext(sessionId: string, snapshot: TranscriptSnapshot) {
+  private translationContext(
+    sessionId: string,
+    snapshot: {
+      tail: NativeTranscriptTail
+      entries: readonly NativeTranscriptEntry[]
+    },
+  ) {
     return {
       sessionId,
       parentUuid: this.logicalTailUuid(snapshot.tail),
@@ -6878,7 +6292,7 @@ export class ClaudeSessionService {
   }
 
   private attachedRulePaths(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
   ): Set<string> {
     const paths = new Set<string>()
     for (const entry of entries) {
@@ -6900,7 +6314,7 @@ export class ClaudeSessionService {
   private sessionNameEntries(
     sessionId: string,
     name: string,
-  ): ClaudeTranscriptEntry[] {
+  ): NativeTranscriptEntry[] {
     return [
       { type: 'custom-title', customTitle: name, sessionId },
       { type: 'agent-name', agentName: name, sessionId },
@@ -6908,14 +6322,14 @@ export class ClaudeSessionService {
   }
 
   private hasSessionName(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
     name: string,
   ): boolean {
     return this.sessionName(entries) === name
   }
 
   private sessionName(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
   ): string | null {
     let customTitle: unknown
     let agentName: unknown
@@ -6945,7 +6359,7 @@ export class ClaudeSessionService {
    *  projection). */
   private async selectMemoryPreservedCompact(
     sessionId: string,
-    activeEntries: readonly ClaudeTranscriptEntry[],
+    activeEntries: readonly NativeTranscriptEntry[],
     options: { sessionMemoryReady?: boolean } = {},
   ): Promise<MemoryPreservedCompactSelection | null> {
     const controller = this.sessionMemoryController(sessionId)
@@ -6971,12 +6385,18 @@ export class ClaudeSessionService {
     if (watermarkIndex < 0) return null
 
     const suffixStart = memoryPreservedSuffixStart(activeEntries)
-    if (suffixStart <= 0 || suffixStart <= watermarkIndex + 1) return null
+    if (suffixStart <= 0) return null
 
-    const compactedEntries = activeEntries.slice(
-      watermarkIndex + 1,
-      suffixStart,
-    )
+    // A watermark can legitimately point at the last completed message event
+    // before a newly appended prompt. There is no post-watermark range in
+    // that shape, so retain the newest prompt as suffix and compact the
+    // preceding conversation (the first prompt is already represented by the
+    // durable memory artifact).
+    const compactStart =
+      suffixStart <= watermarkIndex + 1
+        ? Math.min(1, Math.max(0, suffixStart - 1))
+        : watermarkIndex + 1
+    const compactedEntries = activeEntries.slice(compactStart, suffixStart)
     const preservedEntries = activeEntries.slice(suffixStart)
     const preservedMessages = projectClaudeModelMessages(preservedEntries)
     if (projectClaudeModelMessages(compactedEntries).length === 0) return null
@@ -7009,7 +6429,7 @@ export class ClaudeSessionService {
   }
 
   private lastMessageUuid(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
   ): string | null {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index]
@@ -7027,11 +6447,11 @@ export class ClaudeSessionService {
   }
 
   private promptIdForToolCall(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
     callId: string,
   ): string | null {
-    const byUuid = new Map<string, ClaudeTranscriptEntry>()
-    let source: ClaudeTranscriptEntry | undefined
+    const byUuid = new Map<string, NativeTranscriptEntry>()
+    let source: NativeTranscriptEntry | undefined
     for (const entry of entries) {
       if (typeof entry.uuid === 'string') byUuid.set(entry.uuid, entry)
       if (
@@ -7082,7 +6502,7 @@ export class ClaudeSessionService {
   }
 
   private assistantIdForToolCall(
-    entries: readonly ClaudeTranscriptEntry[],
+    entries: readonly NativeTranscriptEntry[],
     callId: string,
   ): string | null {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -7122,7 +6542,7 @@ export class ClaudeSessionService {
     return this.options.workspace?.cwd() ?? this.runtimeCwd
   }
 
-  private restoreWorktree(entries: readonly ClaudeTranscriptEntry[]): void {
+  private restoreWorktree(entries: readonly NativeTranscriptEntry[]): void {
     const latest = [...entries]
       .reverse()
       .find((entry) => entry.type === 'worktree-state')
@@ -7145,113 +6565,20 @@ export class ClaudeSessionService {
         sessionFile: explicitSessionFile,
       }
     }
-    if (this.options.dataPlane === 'native') return exact
-    const discovered = this.discoveredProjectRoots.get(sessionId)
-    if (discovered === undefined) return exact
-    return {
-      ...exact,
-      projectRoot: discovered,
-      sessionFile: resolve(discovered, `${sessionId}.jsonl`),
-    }
-  }
-
-  private async discoverProjectRoot(sessionId: string): Promise<void> {
-    if (this.options.dataPlane === 'native') return
-    if (this.discoveredProjectRoots.has(sessionId)) return
-    const discovered = await discoverClaudeProjectRoot({
-      configRoot: this.options.configRoot,
-      cwd: this.sessionCwds.get(sessionId) ?? this.activeCwd(),
-      sessionId,
-    })
-    if (discovered !== undefined) {
-      this.discoveredProjectRoots.set(sessionId, discovered)
-    }
+    return exact
   }
 
   private pathsForCwd(sessionId: string, cwd: string) {
-    if (this.options.dataPlane === 'native') {
-      return resolveDataPlanePaths({
-        dataPlane: 'native',
-        root: this.options.configRoot,
-        cwd,
-        sessionId,
-      })
-    }
-    return resolveClaudePaths({
-      configDir: this.options.configRoot,
+    return resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: this.options.configRoot,
       cwd,
       sessionId,
     })
   }
 
   private async appendCdCommand(sessionId: string, cwd: string): Promise<void> {
-    const result = await this.store(sessionId).withLease(async (lease) => {
-      const snapshot = await lease.load()
-      if (snapshot.entries.length === 0) {
-        throw new Error(`Claude session not found: ${sessionId}`)
-      }
-      const appendResult = await lease.appendMany(
-        snapshot.tail,
-        this.cdCommandEntries(
-          sessionId,
-          cwd,
-          this.logicalTailUuid(snapshot.tail),
-        ),
-      )
-      if (appendResult.status === 'conflict') {
-        throw new Error(
-          `Claude local command append conflict: ${appendResult.reason}`,
-        )
-      }
-    })
-    if (result.status === 'conflict') {
-      throw new Error(`Claude local command conflict: ${result.reason}`)
-    }
-  }
-
-  private async appendAgentColorUsage(
-    sessionId: string,
-    display: string,
-    output: string,
-    agentColor: AgentColorValue | undefined,
-  ): Promise<void> {
-    const args = display.replace(/^\/color\s*/u, '').trim()
-    while (true) {
-      const result = await this.turnStore(sessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${sessionId}`)
-          }
-          const appended = await lease.appendMany(snapshot.tail, [
-            ...(agentColor === undefined
-              ? []
-              : [
-                  {
-                    type: 'agent-color',
-                    agentColor,
-                    sessionId,
-                  } as const,
-                ]),
-            ...this.localCommandEntries(
-              sessionId,
-              this.activeCwd(),
-              this.logicalTailUuid(snapshot.tail),
-              'color',
-              args,
-              output,
-            ),
-          ])
-          if (appended.status === 'conflict') {
-            throw new Error(
-              `Claude color local command append conflict: ${appended.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
-    }
+    await this.appendNativeCommand(sessionId, `/cd ${cwd}`)
   }
 
   private async appendSystemLocalCommand(
@@ -7260,33 +6587,33 @@ export class ClaudeSessionService {
     args: string,
     output: string,
   ): Promise<void> {
-    while (true) {
-      const result = await this.turnStore(sessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${sessionId}`)
-          }
-          const appendResult = await lease.appendMany(
-            snapshot.tail,
-            this.localCommandEntries(
-              sessionId,
-              this.activeCwd(),
-              this.logicalTailUuid(snapshot.tail),
-              command,
-              args,
-              output,
-            ),
-          )
-          if (appendResult.status === 'conflict') {
-            throw new Error(
-              `Claude local command append conflict: ${appendResult.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.nativeStore(sessionId),
+    })
+    while (!this.closing) {
+      try {
+        await transcript.withLease({ kind: 'resume' }, async (lease) => {
+          if (lease.activeMessages().length === 0)
+            throw new Error(`Native session not found: ${sessionId}`)
+          await lease.appendMessages({
+            messages: [
+              {
+                role: 'user',
+                content: `<local-command-${command}>${args}</local-command-${command}>${output}`,
+              },
+            ],
+          })
+        })
+        return
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !error.message.startsWith('native transcript lease conflict:')
+        )
+          throw error
+        await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      }
     }
   }
 
@@ -7299,36 +6626,32 @@ export class ClaudeSessionService {
     if (sessionId !== undefined && !createExplicit) return sessionId
     this.assertWritable()
     const createdSessionId = sessionId ?? randomUUID()
-    const store = this.turnStore(createdSessionId)
-    const created = await store.create([
-      ...(agentColor === undefined
-        ? []
-        : [
-            {
-              type: 'agent-color',
-              agentColor,
-              sessionId: createdSessionId,
-            } as const,
-          ]),
-      { type: 'mode', mode: 'normal', sessionId: createdSessionId },
-      {
-        type: 'permission-mode',
-        permissionMode,
-        sessionId: createdSessionId,
-      },
-    ])
-    if (created.status === 'conflict') {
-      throw new Error(`Session ID ${createdSessionId} is already in use`)
-    }
+    const nativeStore =
+      this.options.sessionPersistence === false
+        ? (this.inMemoryStores.get(createdSessionId) ??
+          (() => {
+            const store = new InMemoryTranscriptStore()
+            this.inMemoryStores.set(createdSessionId, store)
+            return store
+          })())
+        : this.store(createdSessionId)
+    const transcript = new NativeSessionTranscript({
+      sessionId: createdSessionId,
+      store: nativeStore,
+    })
+    await transcript.withLease({ kind: 'start' }, (lease) =>
+      lease.appendMessages({
+        messages: [
+          {
+            role: 'user',
+            content: agentColor
+              ? `session color: ${agentColor}`
+              : 'session start',
+          },
+        ],
+      }),
+    )
     this.sessionCwds.set(createdSessionId, this.activeCwd())
-    this.options.interactiveTools?.restore(createdSessionId, [
-      { type: 'mode', mode: 'normal', sessionId: createdSessionId },
-      {
-        type: 'permission-mode',
-        permissionMode,
-        sessionId: createdSessionId,
-      },
-    ])
     return createdSessionId
   }
 
@@ -7350,6 +6673,21 @@ export class ClaudeSessionService {
     )
   }
 
+  private async appendNativeCommand(
+    sessionId: string,
+    command: string,
+  ): Promise<void> {
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.nativeStore(sessionId),
+    })
+    await transcript.withLease({ kind: 'resume' }, (lease) =>
+      lease.appendMessages({
+        messages: [{ role: 'user', content: command }],
+      }),
+    )
+  }
+
   private async appendPermissionGrant(
     sessionId: string,
     display: string,
@@ -7358,180 +6696,61 @@ export class ClaudeSessionService {
     this.assertWritable()
     const normalized = display.trim()
     if (!normalized) throw new Error('Permission action must not be empty')
-    while (true) {
-      const result = await this.turnStore(sessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${sessionId}`)
-          }
-          const timestamp = new Date().toISOString()
-          const promptId = randomUUID()
-          const commandUuid = randomUUID()
-          const common = {
-            isSidechain: false,
-            promptId,
-            timestamp,
-            userType: 'external',
-            entrypoint: 'cli',
-            cwd: this.activeCwd(),
-            sessionId,
-            version: this.options.claudeVersion,
-            gitBranch: null,
-          }
-          let parentUuid = this.logicalTailUuid(snapshot.tail)
-          const entries: ClaudeTranscriptEntry[] = []
-          if (
-            this.options.fileCheckpointing &&
-            this.options.sessionPersistence !== false
-          ) {
-            const fileHistory = new ClaudeFileHistory(
-              this.options.configRoot,
-              sessionId,
-              [this.activeCwd(), ...(this.options.fileRewindRoots ?? [])],
-            )
-            entries.push(
-              await fileHistory.snapshot(snapshot.entries, commandUuid),
-            )
-          }
-          if (retry) {
-            const retryUuid = randomUUID()
-            entries.push({
-              parentUuid,
-              isSidechain: false,
-              type: 'system',
-              subtype: 'permission_retry',
-              content: `Allowed ${normalized}`,
-              commands: [normalized],
-              level: 'info',
-              isMeta: false,
-              timestamp,
-              uuid: retryUuid,
-              userType: 'external',
-              entrypoint: 'cli',
-              cwd: this.activeCwd(),
-              sessionId,
-              version: this.options.claudeVersion,
-              gitBranch: null,
-            })
-            parentUuid = retryUuid
-          } else {
-            const caveatUuid = randomUUID()
-            entries.push({
-              ...common,
-              parentUuid,
-              type: 'user',
-              message: {
-                role: 'user',
-                content:
-                  '<local-command-caveat>Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.</local-command-caveat>',
-              },
-              isMeta: true,
-              uuid: caveatUuid,
-            })
-            parentUuid = caveatUuid
-          }
-          entries.push({
-            ...common,
-            parentUuid,
-            type: 'user',
-            message: {
-              role: 'user',
-              content:
-                '<command-name>/permissions</command-name>\n            <command-message>permissions</command-message>\n            <command-args></command-args>',
-            },
-            uuid: commandUuid,
-          })
-          const outputUuid = randomUUID()
-          entries.push({
-            ...common,
-            parentUuid: commandUuid,
-            type: 'user',
-            message: {
-              role: 'user',
-              content: `<local-command-stdout>${retry ? '(no content)' : `Approved ${normalized}`}</local-command-stdout>`,
-            },
-            uuid: outputUuid,
-          })
-          entries.push({
-            ...common,
-            parentUuid: outputUuid,
-            type: 'user',
-            message: {
-              role: 'user',
-              content: `Permission granted for: ${normalized}. You may now retry this command if you would like.`,
-            },
-            isMeta: true,
-            uuid: randomUUID(),
-          })
-          const appended = await lease.appendMany(snapshot.tail, entries)
-          if (appended.status === 'conflict') {
-            throw new Error(
-              `Claude permission grant append conflict: ${appended.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
-    }
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.nativeStore(sessionId),
+    })
+    await transcript.withLease({ kind: 'resume' }, async (lease) => {
+      if (lease.activeMessages().length === 0)
+        throw new Error(`Native session not found: ${sessionId}`)
+      const content = retry
+        ? `Permission retry approved for: ${normalized}`
+        : `Permission granted for: ${normalized}`
+      await lease.appendMessages({
+        messages: [{ role: 'user', content }],
+      })
+    })
   }
 
   private async appendBackgroundNotification(
     sessionId: string,
     content: string,
+    nativeLease?: NativeSessionTranscriptLease,
   ): Promise<boolean> {
+    if (nativeLease) {
+      if (nativeLease.activeMessages().length === 0) {
+        throw new Error(`Native session not found: ${sessionId}`)
+      }
+      await nativeLease.appendMessages({
+        messages: [{ role: 'user', content }],
+      })
+      return true
+    }
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store: this.nativeStore(sessionId),
+    })
     while (!this.closing) {
-      const result = await this.turnStore(sessionId).withLease(
-        async (lease) => {
-          const snapshot = await lease.load()
-          if (snapshot.entries.length === 0) {
-            throw new Error(`Claude session not found: ${sessionId}`)
-          }
-          const timestamp = new Date().toISOString()
-          const entries: ClaudeTranscriptEntry[] = [
-            {
-              type: 'queue-operation',
-              operation: 'enqueue',
-              timestamp,
-              sessionId,
-              content,
-            },
-            {
-              type: 'queue-operation',
-              operation: 'dequeue',
-              timestamp,
-              sessionId,
-            },
-            {
-              parentUuid: this.logicalTailUuid(snapshot.tail),
-              isSidechain: false,
-              promptId: randomUUID(),
-              type: 'user',
-              message: { role: 'user', content },
-              uuid: randomUUID(),
-              timestamp,
-              permissionMode: 'default',
-              origin: { kind: 'task-notification' },
-              promptSource: 'system',
-              userType: 'external',
-              entrypoint: 'cli',
-              cwd: this.activeCwd(),
-              sessionId,
-              version: this.options.claudeVersion,
-              gitBranch: null,
-            },
-          ]
-          const appended = await lease.appendMany(snapshot.tail, entries)
-          if (appended.status === 'conflict') {
-            throw new Error(
-              `Claude background notification append conflict: ${appended.reason}`,
-            )
-          }
-        },
-      )
-      if (result.status === 'completed') return true
-      await new Promise<void>((resolve) => setTimeout(resolve, 25))
+      try {
+        return await transcript.withLease({ kind: 'resume' }, async (lease) => {
+          if (lease.activeMessages().length === 0)
+            throw new Error(`Native session not found: ${sessionId}`)
+          await lease.appendMessages({
+            messages: [{ role: 'user', content }],
+          })
+          return true
+        })
+      } catch (error) {
+        if (this.closing) return false
+        if (
+          error instanceof Error &&
+          error.message.includes('native transcript lease conflict')
+        ) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 25))
+          continue
+        }
+        throw error
+      }
     }
     return false
   }
@@ -7540,13 +6759,20 @@ export class ClaudeSessionService {
     sessionId: string,
     messages: readonly string[],
     onAppended?: (message: string) => Promise<void>,
+    nativeLease?: NativeSessionTranscriptLease,
   ): Promise<boolean> {
     const previous = this.backgroundNotificationWrites.get(sessionId)
     const queued = (previous ?? Promise.resolve(true)).then(
       async (previousCompleted) => {
         if (!previousCompleted || this.closing) return false
         for (const message of messages) {
-          if (!(await this.appendBackgroundNotification(sessionId, message))) {
+          if (
+            !(await this.appendBackgroundNotification(
+              sessionId,
+              message,
+              nativeLease,
+            ))
+          ) {
             return false
           }
           await onAppended?.(message)
@@ -7563,172 +6789,22 @@ export class ClaudeSessionService {
     return queued
   }
 
-  private cdCommandEntries(
-    sessionId: string,
-    cwd: string,
-    parentUuid: string | null,
-  ): ClaudeTranscriptEntry[] {
-    const timestamp = new Date().toISOString()
-    const common = {
-      isSidechain: false,
-      timestamp,
-      userType: 'external',
-      entrypoint: 'cli',
-      cwd,
-      sessionId,
-      version: this.options.claudeVersion,
-      gitBranch: null,
-    }
-    const localCommands = this.localCommandEntries(
-      sessionId,
-      cwd,
-      parentUuid,
-      'cd',
-      cwd,
-      `Moved to ${cwd}`,
-      timestamp,
-    )
-    const secondUuid = localCommands[1]?.uuid
-    if (typeof secondUuid !== 'string') {
-      throw new Error('Claude cd local command pair is incomplete')
-    }
-    return [
-      ...localCommands,
-      {
-        ...common,
-        parentUuid: secondUuid,
-        promptId: randomUUID(),
-        type: 'user',
-        message: {
-          role: 'user',
-          content: `<system-reminder>\nThe session's working directory has changed to ${cwd} (via /cd). The environment block at the start of this conversation still names the previous directory — that information is stale. All tool calls and relative paths now resolve from ${cwd}.\n</system-reminder>`,
-        },
-        isMeta: true,
-        uuid: randomUUID(),
-      },
-    ]
-  }
-
-  private localCommandEntries(
-    sessionId: string,
-    cwd: string,
-    parentUuid: string | null,
-    command: string,
-    args: string,
-    output: string,
-    timestamp: string = new Date().toISOString(),
-  ): ClaudeTranscriptEntry[] {
-    const firstUuid = randomUUID()
-    return [
-      {
-        parentUuid,
-        isSidechain: false,
-        type: 'system',
-        subtype: 'local_command',
-        content: `<command-name>/${command}</command-name>\n            <command-message>${command}</command-message>\n            <command-args>${args}</command-args>`,
-        level: 'info',
-        timestamp,
-        uuid: firstUuid,
-        isMeta: false,
-        userType: 'external',
-        entrypoint: 'cli',
-        cwd,
-        sessionId,
-        version: this.options.claudeVersion,
-        gitBranch: null,
-      },
-      {
-        parentUuid: firstUuid,
-        isSidechain: false,
-        type: 'system',
-        subtype: 'local_command',
-        content: `<local-command-stdout>${output}</local-command-stdout>`,
-        level: 'info',
-        timestamp,
-        uuid: randomUUID(),
-        isMeta: false,
-        userType: 'external',
-        entrypoint: 'cli',
-        cwd,
-        sessionId,
-        version: this.options.claudeVersion,
-        gitBranch: null,
-      },
-    ]
-  }
-
-  private store(sessionId: string): ClaudeTranscriptStore {
+  private store(sessionId: string): NativeTranscriptStore {
     const paths = this.paths(sessionId)
-    return new ClaudeTranscriptStore({
-      sessionFile: paths.sessionFile,
+    return new NativeTranscriptStore({
+      transcriptFile: paths.sessionFile,
       lockFile: join(paths.praxisRoot, 'locks', `${sessionId}.lock`),
-      schema: this.schema,
     })
   }
-
-  /**
-   * Refreshes metadata under the transcript lease before writing a compact
-   * tail snapshot. This prevents a long-lived process from overwriting a
-   * newer title or tag appended by another writer.
-   */
-  private async reappendDurableMetadata(sessionId: string): Promise<void> {
-    if (this.options.sessionPersistence === false) return
-    await this.discoverProjectRoot(sessionId)
-    let result
-    try {
-      result = await this.store(sessionId).withLease(async (lease) => {
-        const snapshot = await lease.loadIndex?.()
-        if (snapshot === undefined) return
-        if (snapshot.entries.length === 0) return
-        const entries = mergeClaudeDurableMetadataSnapshot(
-          this.durableMetadataSnapshots.get(sessionId) ?? [],
-          snapshot.tailEntries,
-          sessionId,
-        ).filter((entry) => entry.type !== 'worktree-state')
-        if (entries.length === 0) return
-        const appended = await lease.appendMetadataSnapshot(
-          snapshot.tail,
-          entries,
-        )
-        if (appended.status === 'conflict') {
-          throw new Error(
-            `Claude metadata snapshot conflict: ${appended.reason}`,
-          )
-        }
-      })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-      throw error
+  private nativeStore(sessionId: string): NativeSessionTranscriptStore {
+    if (this.options.sessionPersistence === false) {
+      const existing = this.inMemoryStores.get(sessionId)
+      if (existing !== undefined) return existing
+      const created = new InMemoryTranscriptStore()
+      this.inMemoryStores.set(sessionId, created)
+      return created
     }
-    if (result.status === 'conflict') {
-      throw new Error(`Claude metadata snapshot conflict: ${result.reason}`)
-    }
-  }
-
-  private turnStore(
-    sessionId: string,
-  ): ClaudeTranscriptStore | InMemoryTranscriptStore {
-    if (this.options.sessionPersistence !== false) return this.store(sessionId)
-    let store = this.inMemoryStores.get(sessionId)
-    if (!store) {
-      store = new InMemoryTranscriptStore()
-      this.inMemoryStores.set(sessionId, store)
-    }
-    return store
-  }
-
-  private rememberDurableMetadata(
-    sessionId: string,
-    observed: readonly ClaudeTranscriptEntry[],
-  ): void {
-    const snapshot = mergeClaudeDurableMetadataSnapshot(
-      this.durableMetadataSnapshots.get(sessionId) ?? [],
-      observed,
-      sessionId,
-    )
-    if (snapshot.length > 0) {
-      this.durableMetadataSnapshots.set(sessionId, snapshot)
-    }
+    return this.store(sessionId)
   }
 
   private assertSessionPersistence(): void {
@@ -7738,9 +6814,6 @@ export class ClaudeSessionService {
   }
 
   private assertWritable(): void {
-    if (this.nativeTranscriptWritesEnabled()) {
-      throw new Error('experimental native operational writes are not enabled')
-    }
     if (this.schema.writeMode !== 'read-write') {
       throw new Error(
         `Claude ${this.options.claudeVersion} session is read-only`,
@@ -7749,16 +6822,7 @@ export class ClaudeSessionService {
   }
 
   private assertTurnWritable(): void {
-    if (this.nativeTranscriptWritesEnabled()) return
     this.assertWritable()
-  }
-
-  private sessionStatus(
-    issue: TranscriptParseIssue | null,
-    entryCount: number,
-  ): SessionStatus {
-    if (issue || entryCount === 0) return 'corrupt'
-    return this.schema.writeMode === 'read-write' ? 'ready' : 'read-only'
   }
 
   private nativeSessionStatus(
@@ -7767,19 +6831,11 @@ export class ClaudeSessionService {
   ): SessionStatus {
     if (issue?.kind === 'unsupported-version') return 'read-only'
     if (entryCount === 0 || issue) return 'corrupt'
-    return this.nativeTranscriptWritesEnabled() ? 'ready' : 'read-only'
-  }
-
-  private nativeTranscriptWritesEnabled(): boolean {
-    return this.options.experimentalNativeTranscriptWrites === true
+    return 'ready'
   }
 
   private assertNativeTranscriptOptions(): void {
-    if (!this.nativeTranscriptWritesEnabled()) return
-    if (this.options.dataPlane !== 'native')
-      throw new Error(
-        'experimental native transcript writes require dataPlane native',
-      )
+    if (this.options.experimentalNativeTranscriptWrites !== true) return
     if (this.options.sessionPersistence === false)
       throw new Error(
         'experimental native transcript writes require sessionPersistence',
@@ -7831,40 +6887,11 @@ export class ClaudeSessionService {
       )
   }
 
-  private claudeSessionSummary(
-    sessionId: string,
-    index: ClaudeSessionIndex,
-  ): SessionSummary {
-    const metadata = reduceClaudeSessionMetadata(index.entries, sessionId)
-    return {
-      sessionId,
-      ...sessionMetadataFields(metadata, { agentNameFallback: true }),
-      lastPrompt: metadata.lastPrompt ?? null,
-      updatedAt: index.updatedAt,
-      status: this.sessionStatus(index.issue, index.entries.length),
-      issue: index.issue,
-    }
-  }
-
   private provider(): ModelProvider {
     if (!this.options.provider) {
       throw new Error('A model provider is required for run and resume')
     }
     return this.options.provider
-  }
-
-  private async assertNativeWriteTargetIsLegacy(
-    sessionId: string,
-  ): Promise<void> {
-    if (this.nativeTranscriptWritesEnabled()) return
-    if (this.options.dataPlane !== 'native') return
-    const existing = await readNativeTranscript(
-      this.paths(sessionId).sessionFile,
-    )
-    if (existing.format === 'native')
-      throw new Error(
-        'native transcript is read-only until native writes are enabled',
-      )
   }
 
   model(): string | undefined {
@@ -7909,7 +6936,7 @@ export class ClaudeSessionService {
       this.options.configRoot,
       this.activeCwd(),
       agent,
-      this.options.dataPlane ?? 'claude',
+      'native',
     )
     const system = memory ? `${agent.body}\n\n${memory}` : agent.body
     return system.trim() ? system : null
@@ -8154,30 +7181,47 @@ export class ClaudeSessionService {
         'Team lead operations require a Team lead tool registry factory',
       )
     }
-    return factory(
-      base,
-      operations,
-      sessionId,
-      enabledTools,
-      this.options.teamLeadCompatibilityPort,
-    )
+    return factory(base, operations, sessionId, enabledTools)
   }
 
   private async append(
-    lease: ClaudeTranscriptLease,
-    tail: TranscriptTail,
-    entry: ClaudeTranscriptEntry,
-  ): Promise<TranscriptTail> {
-    const result = await lease.append(tail, entry)
-    if (result.status === 'conflict') {
-      throw new Error(`Claude transcript append conflict: ${result.reason}`)
-    }
-    return result.tail
+    lease: NativeTranscriptLease,
+    tail: NativeTranscriptTail,
+    entry: NativeTranscriptEntry,
+  ): Promise<NativeTranscriptTail> {
+    void lease
+    return this.appendProjectionMany(tail, [entry]).then(
+      (result) => result.tail,
+    )
   }
 
-  private logicalTailUuid(tail: TranscriptTail): string | null {
-    return 'branchParentUuid' in tail
-      ? (tail.branchParentUuid ?? null)
-      : tail.lastUuid
+  /**
+   * Update the in-memory compatibility projection used by the turn pipeline.
+   * Authoritative native persistence is performed by NativeSessionTranscript;
+   * these entries are never written to the native event store.
+   */
+  private async appendProjectionMany(
+    tail: NativeTranscriptTail,
+    entries: readonly NativeTranscriptEntry[],
+  ): Promise<{ status: 'appended'; tail: NativeTranscriptTail }> {
+    if (entries.length === 0)
+      throw new Error('Cannot append an empty projection')
+    const lastUuid = [...entries]
+      .reverse()
+      .find((entry) => typeof entry.uuid === 'string')?.uuid
+    return {
+      status: 'appended',
+      tail: {
+        ...tail,
+        byteLength: tail.byteLength + entries.length,
+        lastLineHash: `projection:${tail.byteLength + entries.length}`,
+        lastEventId: typeof lastUuid === 'string' ? lastUuid : tail.lastEventId,
+        ...(tail.branchParentId === undefined ? {} : { branchParentId: null }),
+      },
+    }
+  }
+
+  private logicalTailUuid(tail: SessionTail): string | null {
+    return tail.branchParentId ?? tail.lastEventId
   }
 }

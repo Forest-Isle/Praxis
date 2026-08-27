@@ -137,7 +137,7 @@ async function fixture(bytes = bundle()): Promise<{
   const pluginRoot = join(root, 'plugin')
   const source = join(pluginRoot, 'fixture.mcpb')
   const pluginData = join(root, 'data')
-  vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, 'config'))
+  vi.stubEnv('PRAXIS_HOME', join(root, 'config'))
   vi.stubEnv('PRAXIS_HOME', join(root, 'native-config'))
   await mkdir(pluginRoot, { recursive: true })
   await writeFile(source, bytes)

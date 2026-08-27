@@ -1,12 +1,11 @@
 import { realpath } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 
-import type { ProjectMemoryDataPlane } from '../core/project-memory.js'
 import { resolveProjectIdentity } from './project-identity.js'
 import { sanitizeProjectPath } from './project-path-key.js'
 
 export interface ResolveProjectMemoryDirectoryOptions {
-  dataPlane: ProjectMemoryDataPlane
+  dataPlane?: 'native'
   configRoot: string
   cwd: string
 }
@@ -21,28 +20,27 @@ async function canonicalPath(path: string): Promise<string> {
 }
 
 export async function resolveProjectMemoryDirectory({
-  dataPlane,
+  dataPlane: _dataPlane,
   configRoot,
   cwd,
 }: ResolveProjectMemoryDirectoryOptions): Promise<string> {
+  void _dataPlane
   const [root, identity] = await Promise.all([
     canonicalPath(configRoot),
     resolveProjectIdentity(cwd),
   ])
   const key = sanitizeProjectPath(identity)
-  return dataPlane === 'native'
-    ? join(root, 'memory', key)
-    : join(root, 'projects', key, 'memory')
+  return join(root, 'memory', key)
 }
 
 export function resolveProjectMemoryStatePath(options: {
-  dataPlane: ProjectMemoryDataPlane
+  dataPlane: 'native'
   configRoot: string
   memoryDirectory: string
 }): string {
   return join(
     resolve(options.configRoot),
-    options.dataPlane === 'native' ? 'state' : 'praxis',
+    'state',
     'project-memory',
     basename(options.memoryDirectory),
     'cursor.json',

@@ -6,22 +6,18 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises'
-import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ModelProvider, ModelToolCall } from './core/runtime.js'
 import { parseTeamSnapshot } from './core/team-ownership.js'
-import { createClaudeTranscriptCodec } from './compatibility/claude/transcript-codec.js'
-import type { AgentColorSelection } from './compatibility/claude/agent-color.js'
+import type { AgentColorSelection } from './core/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
 import type { ClaudeSessionCostSnapshot } from './application/session-cost-tracker.js'
 import { ClaudeSessionService } from './application/session-service.js'
-import { resolveClaudePaths } from './compatibility/claude/paths.js'
-import { resolveProjectMemoryDirectory } from './platform/project-memory-paths.js'
 import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
   createBackgroundWorkerRuntime,
@@ -33,12 +29,9 @@ import {
 } from './cli.js'
 import { DEFAULT_CLI_CONTROLS } from './cli/controls.js'
 import type { CliControls } from './cli/protocol.js'
-import type { DataPlane } from './persistence/data-plane.js'
 import {
   createDefaultDependencies,
   createSessionMemoryProviderFactory,
-  resolveInteractiveRuntimeSettingsLocation,
-  resolveUnknownCostSidecarPath,
   resolveRuntimeModel,
 } from './cli-runtime.js'
 import { projectRuntimeSettings } from './cli/tui/runtime-settings.js'
@@ -415,196 +408,6 @@ describe('Praxis CLI', () => {
       }),
     ).resolves.toBe(0)
     expect(disabled.stdout.join('')).toBe('answer:/release-notes\n')
-  })
-
-  it('uses the selected data plane for release notes and fallback runtime info', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-data-plane-info-'))
-    const praxisRoot = join(root, 'praxis')
-    const claudeRoot = join(root, 'claude')
-    const previousPraxisHome = process.env.PRAXIS_HOME
-    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
-    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
-    const previousModel = process.env.PRAXIS_MODEL
-    await mkdir(praxisRoot, { recursive: true })
-    await mkdir(claudeRoot, { recursive: true })
-    await writeFile(
-      join(praxisRoot, 'settings.json'),
-      JSON.stringify({ model: 'native-settings-model' }),
-    )
-    await writeFile(
-      join(claudeRoot, 'settings.json'),
-      JSON.stringify({ model: 'claude-settings-model' }),
-    )
-    process.env.PRAXIS_HOME = praxisRoot
-    process.env.CLAUDE_CONFIG_DIR = claudeRoot
-    delete process.env.PRAXIS_DATA_PLANE
-    delete process.env.PRAXIS_MODEL
-    try {
-      const loadedRoots: string[] = []
-      const localDependencies: CliDependencies = {
-        async createService() {
-          throw new Error('release notes must not create a model service')
-        },
-        async loadReleaseNotes(configRoot) {
-          loadedRoots.push(configRoot)
-          return 'fixture notes'
-        },
-      }
-      const native = captureIO()
-      await expect(
-        run(
-          ['-p', '--output-format', 'json', '/release-notes'],
-          native.io,
-          localDependencies,
-        ),
-      ).resolves.toBe(0)
-      const claude = captureIO()
-      await expect(
-        run(
-          [
-            '-p',
-            '--data-plane',
-            'claude',
-            '--output-format',
-            'json',
-            '/release-notes',
-          ],
-          claude.io,
-          localDependencies,
-        ),
-      ).resolves.toBe(0)
-
-      expect(loadedRoots).toEqual([praxisRoot, claudeRoot])
-      expect(
-        Object.keys(JSON.parse(native.stdout.join('')).modelUsage),
-      ).toEqual(['native-settings-model'])
-      expect(
-        Object.keys(JSON.parse(claude.stdout.join('')).modelUsage),
-      ).toEqual(['claude-settings-model'])
-    } finally {
-      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousPraxisHome
-      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
-      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
-      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
-      if (previousModel === undefined) delete process.env.PRAXIS_MODEL
-      else process.env.PRAXIS_MODEL = previousModel
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('loads auto-mode settings only from the selected data plane', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-plane-'))
-    const praxisRoot = join(root, 'praxis')
-    const claudeRoot = join(root, 'claude')
-    const previousPraxisHome = process.env.PRAXIS_HOME
-    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
-    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
-    await mkdir(praxisRoot, { recursive: true })
-    await mkdir(claudeRoot, { recursive: true })
-    const settings = (label: string) =>
-      JSON.stringify({
-        autoMode: {
-          allow: [label],
-          soft_deny: [],
-          hard_deny: [],
-          environment: [],
-        },
-      })
-    await writeFile(join(praxisRoot, 'settings.json'), settings('native-rule'))
-    await writeFile(join(claudeRoot, 'settings.json'), settings('claude-rule'))
-    process.env.PRAXIS_HOME = praxisRoot
-    process.env.CLAUDE_CONFIG_DIR = claudeRoot
-    delete process.env.PRAXIS_DATA_PLANE
-    try {
-      const unavailable: CliDependencies = {
-        async createService() {
-          throw new Error('service must not be created for auto-mode config')
-        },
-      }
-      const native = captureIO()
-      await expect(
-        run(['auto-mode', 'config'], native.io, unavailable),
-      ).resolves.toBe(0)
-      const claude = captureIO()
-      await expect(
-        run(
-          ['auto-mode', 'config', '--data-plane', 'claude'],
-          claude.io,
-          unavailable,
-        ),
-      ).resolves.toBe(0)
-
-      expect(JSON.parse(native.stdout.join('')).allow).toEqual(['native-rule'])
-      expect(JSON.parse(claude.stdout.join('')).allow).toEqual(['claude-rule'])
-    } finally {
-      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousPraxisHome
-      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
-      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
-      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('resets auto-mode settings only in the selected data plane', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-reset-'))
-    const praxisRoot = join(root, 'praxis')
-    const claudeRoot = join(root, 'claude')
-    const previousPraxisHome = process.env.PRAXIS_HOME
-    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
-    await mkdir(praxisRoot, { recursive: true })
-    await mkdir(claudeRoot, { recursive: true })
-    const settings = JSON.stringify({
-      theme: 'dark',
-      autoMode: { allow: ['custom-rule'] },
-    })
-    await writeFile(join(praxisRoot, 'settings.json'), settings)
-    await writeFile(join(claudeRoot, 'settings.json'), settings)
-    process.env.PRAXIS_HOME = praxisRoot
-    process.env.CLAUDE_CONFIG_DIR = claudeRoot
-    try {
-      let serviceCreations = 0
-      const unavailable: CliDependencies = {
-        async createService() {
-          serviceCreations += 1
-          throw new Error('service must not be created for auto-mode reset')
-        },
-      }
-      const native = captureIO()
-      await expect(
-        run(['auto-mode', 'reset', '--yes'], native.io, unavailable),
-      ).resolves.toBe(0)
-      expect(
-        JSON.parse(await readFile(join(praxisRoot, 'settings.json'), 'utf8')),
-      ).toEqual({ theme: 'dark' })
-      expect(
-        JSON.parse(await readFile(join(claudeRoot, 'settings.json'), 'utf8')),
-      ).toHaveProperty('autoMode')
-
-      const claude = captureIO()
-      await expect(
-        run(
-          ['auto-mode', 'reset', '--data-plane', 'claude', '--yes'],
-          claude.io,
-          unavailable,
-        ),
-      ).resolves.toBe(0)
-      expect(
-        JSON.parse(await readFile(join(claudeRoot, 'settings.json'), 'utf8')),
-      ).toEqual({ theme: 'dark' })
-      expect(native.stdout.join('')).toContain('autoMode section removed')
-      expect(claude.stdout.join('')).toContain('autoMode section removed')
-      expect(serviceCreations).toBe(0)
-    } finally {
-      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousPraxisHome
-      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
-      await rm(root, { recursive: true, force: true })
-    }
   })
 
   it('runs /color provider-free in text mode with a local session', async () => {
@@ -1518,6 +1321,7 @@ describe('Praxis CLI', () => {
   })
 
   it('routes install, update, and upgrade without constructing a session', async () => {
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'native')
     const requested: unknown[] = []
     const cliDependencies = dependencies()
     cliDependencies.selfUpdate = async (options) => {
@@ -1549,13 +1353,7 @@ describe('Praxis CLI', () => {
     })
 
     const updated = captureIO()
-    await expect(
-      run(
-        ['--debug', '--data-plane', 'native', 'update'],
-        updated.io,
-        cliDependencies,
-      ),
-    ).resolves.toBe(0)
+    await expect(run(['update'], updated.io, cliDependencies)).resolves.toBe(0)
     expect(updated.stdout.join('')).toContain('Praxis update completed')
     const upgraded = captureIO()
     await expect(
@@ -1566,67 +1364,6 @@ describe('Praxis CLI', () => {
       { operation: 'update' },
       { operation: 'update' },
     ])
-  })
-
-  it('loads self-update channel settings from the selected data plane', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-update-plane-'))
-    const praxisRoot = join(root, 'praxis')
-    const claudeRoot = join(root, 'claude')
-    const previousPraxisHome = process.env.PRAXIS_HOME
-    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
-    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
-    await mkdir(praxisRoot, { recursive: true })
-    await mkdir(claudeRoot, { recursive: true })
-    await writeFile(
-      join(praxisRoot, 'settings.json'),
-      JSON.stringify({ autoUpdatesChannel: 'stable' }),
-    )
-    await writeFile(
-      join(claudeRoot, 'settings.json'),
-      JSON.stringify({ autoUpdatesChannel: 'latest' }),
-    )
-    process.env.PRAXIS_HOME = praxisRoot
-    process.env.CLAUDE_CONFIG_DIR = claudeRoot
-    delete process.env.PRAXIS_DATA_PLANE
-    try {
-      const requested: unknown[] = []
-      const cliDependencies = dependencies()
-      cliDependencies.selfUpdate = async (options) => {
-        requested.push(options)
-        return {
-          type: 'self-update',
-          operation: options.operation,
-          package: 'praxis-agent',
-          target: options.target ?? 'latest',
-          force: false,
-          command: ['npm'],
-          output: 'fixture complete',
-        }
-      }
-
-      await expect(
-        run(['update'], captureIO().io, cliDependencies),
-      ).resolves.toBe(0)
-      await expect(
-        run(
-          ['update', '--data-plane', 'claude'],
-          captureIO().io,
-          cliDependencies,
-        ),
-      ).resolves.toBe(0)
-      expect(requested).toEqual([
-        { operation: 'update', target: 'stable' },
-        { operation: 'update' },
-      ])
-    } finally {
-      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousPraxisHome
-      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
-      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
-      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
-      await rm(root, { recursive: true, force: true })
-    }
   })
 
   it('validates self-update operands and exposes command help', async () => {
@@ -1965,49 +1702,6 @@ describe('Praxis CLI', () => {
     expect(constructions).toBe(0)
   })
 
-  it('dispatches migrate as a known command from a TTY', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-migrate-cli-'))
-    const source = join(root, 'claude')
-    const destination = join(root, 'praxis')
-    const previousClaudeRoot = process.env.CLAUDE_CONFIG_DIR
-    const previousPraxisRoot = process.env.PRAXIS_HOME
-    await mkdir(join(source, 'projects', 'project'), { recursive: true })
-    await writeFile(join(source, 'projects', 'project', 'session.jsonl'), '{}')
-    process.env.CLAUDE_CONFIG_DIR = source
-    process.env.PRAXIS_HOME = destination
-    try {
-      const capture = captureIO()
-      capture.io.isTTY = true
-      let interactiveCalls = 0
-      const unavailable: CliDependencies = {
-        async createService() {
-          throw new Error('migrate must not construct a service')
-        },
-        async runInteractive() {
-          interactiveCalls += 1
-          return 0
-        },
-      }
-
-      await expect(
-        run(['migrate', 'from-claude'], capture.io, unavailable),
-      ).resolves.toBe(0)
-      await expect(
-        readFile(
-          join(destination, 'sessions', 'project', 'session.jsonl'),
-          'utf8',
-        ),
-      ).resolves.toBe('{}')
-      expect(interactiveCalls).toBe(0)
-    } finally {
-      if (previousClaudeRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousClaudeRoot
-      if (previousPraxisRoot === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousPraxisRoot
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   it('routes plugins alias through existing plugin commands', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plugins-alias-'))
     const configRoot = join(root, 'config')
@@ -2047,9 +1741,9 @@ describe('Praxis CLI', () => {
   it('guides critique users without custom rules before constructing a provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-cli-'))
     const configRoot = join(root, 'config')
-    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousConfigRoot = process.env.PRAXIS_HOME
     await mkdir(configRoot, { recursive: true })
-    process.env.CLAUDE_CONFIG_DIR = configRoot
+    process.env.PRAXIS_HOME = configRoot
     try {
       let criticCalls = 0
       const capture = captureIO()
@@ -2073,8 +1767,8 @@ describe('Praxis CLI', () => {
       expect(capture.stderr).toEqual([])
       expect(criticCalls).toBe(0)
     } finally {
-      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      if (previousConfigRoot === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousConfigRoot
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -2114,7 +1808,8 @@ describe('Praxis CLI', () => {
   it('streams provider-backed auto-mode critiques and propagates --model', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-cli-'))
     const configRoot = join(root, 'config')
-    const previousConfigRoot = process.env.CLAUDE_CONFIG_DIR
+    const previousConfigRoot = process.env.PRAXIS_HOME
+    const previousPraxisHome = process.env.PRAXIS_HOME
     await mkdir(configRoot, { recursive: true })
     await writeFile(
       join(configRoot, 'settings.json'),
@@ -2127,7 +1822,8 @@ describe('Praxis CLI', () => {
         },
       }),
     )
-    process.env.CLAUDE_CONFIG_DIR = configRoot
+    process.env.PRAXIS_HOME = configRoot
+    process.env.PRAXIS_HOME = configRoot
     try {
       const models: Array<string | undefined> = []
       const requests: Parameters<ModelProvider['complete']>[0][] = []
@@ -2152,14 +1848,7 @@ describe('Praxis CLI', () => {
 
       await expect(
         run(
-          [
-            'auto-mode',
-            'critique',
-            '--model',
-            'fixture-haiku',
-            '--data-plane',
-            'claude',
-          ],
+          ['auto-mode', 'critique', '--model', 'fixture-haiku'],
           capture.io,
           dependencies,
         ),
@@ -2176,8 +1865,10 @@ describe('Praxis CLI', () => {
       expect(capture.stdout.join('')).toContain('Clarify remote-push approval.')
       expect(capture.stderr).toEqual([])
     } finally {
-      if (previousConfigRoot === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousConfigRoot
+      if (previousConfigRoot === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousConfigRoot
+      if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousPraxisHome
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -2572,57 +2263,6 @@ describe('Praxis CLI', () => {
     expect(calls).toContain('attach:abcd1234')
   })
 
-  it('selects top-level agent storage from the invocation over the environment', async () => {
-    const selected: DataPlane[] = []
-    const previousDataPlane = process.env.PRAXIS_DATA_PLANE
-    process.env.PRAXIS_DATA_PLANE = 'native'
-    const managed: CliDependencies = {
-      async createService() {
-        throw new Error('provider must not be created')
-      },
-      createTopLevelAgents(dataPlane) {
-        selected.push(dataPlane)
-        return {
-          async launch() {
-            return {
-              id: 'abcd1234',
-              sessionId: 'abcd1234-1111-4111-8111-111111111111',
-            }
-          },
-          async list() {
-            return []
-          },
-          async logs() {
-            return ''
-          },
-          async stop() {},
-          async attach() {},
-        }
-      },
-    }
-
-    try {
-      await expect(
-        run(
-          ['agents', '--json', '--data-plane', 'claude'],
-          captureIO().io,
-          managed,
-        ),
-      ).resolves.toBe(0)
-      await expect(
-        run(
-          ['--data-plane', 'claude', '--bg', 'finish task'],
-          captureIO().io,
-          managed,
-        ),
-      ).resolves.toBe(0)
-      expect(selected).toEqual(['claude', 'claude'])
-    } finally {
-      if (previousDataPlane === undefined) delete process.env.PRAXIS_DATA_PLANE
-      else process.env.PRAXIS_DATA_PLANE = previousDataPlane
-    }
-  })
-
   it('requires a TTY for the agents dashboard unless JSON was requested', async () => {
     const capture = captureIO()
 
@@ -2829,7 +2469,7 @@ describe('Praxis CLI', () => {
       // Provider construction and status display report the same resolved
       // model for every source that can supply one.
       const baseEnvironment = {
-        CLAUDE_CONFIG_DIR: configRoot,
+        PRAXIS_HOME: configRoot,
         PRAXIS_API_KEY: 'test-key',
         PRAXIS_PROVIDER: 'anthropic',
       }
@@ -2903,33 +2543,6 @@ describe('Praxis CLI', () => {
     ).toBeUndefined()
   })
 
-  it('uses native interactive settings state by default and preserves Claude state in compat mode', () => {
-    expect(
-      resolveInteractiveRuntimeSettingsLocation('native', {
-        PRAXIS_HOME: '/tmp/praxis-home',
-        CLAUDE_CONFIG_DIR: '/tmp/claude-config',
-      }),
-    ).toEqual({
-      configRoot: '/tmp/praxis-home',
-      statePath: '/tmp/praxis-home/state.json',
-    })
-    expect(
-      resolveInteractiveRuntimeSettingsLocation('claude', {
-        PRAXIS_HOME: '/tmp/praxis-home',
-        CLAUDE_CONFIG_DIR: '/tmp/claude-config',
-      }),
-    ).toEqual({
-      configRoot: '/tmp/claude-config',
-      statePath: '/tmp/claude-config/.claude.json',
-    })
-    expect(resolveUnknownCostSidecarPath('native', '/tmp/praxis-home')).toBe(
-      '/tmp/praxis-home/state/unknown-cost-sidecar.json',
-    )
-    expect(resolveUnknownCostSidecarPath('claude', '/tmp/claude-config')).toBe(
-      '/tmp/claude-config/praxis/unknown-cost-sidecar.json',
-    )
-  })
-
   it('derives simple mode from CLAUDE_CODE_SIMPLE truthy values like --bare', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-simple-mode-'))
     const configRoot = join(root, '.claude')
@@ -2967,754 +2580,6 @@ describe('Praxis CLI', () => {
         )
       }
       expect(await toolNames({})).toContain('Write')
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('keeps the experimental Team gate default-off, lazy, and on the native root', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-team-capability-'))
-    const claudeRoot = join(root, 'claude')
-    const nativeRoot = join(root, 'native')
-    await mkdir(claudeRoot, { recursive: true })
-    await writeFile(join(claudeRoot, '.claude.json'), '{}')
-    try {
-      const create = async (
-        gate: string | undefined,
-        controlOverrides: Partial<typeof DEFAULT_CLI_CONTROLS> = {},
-      ) =>
-        createDefaultDependencies().createService({
-          eventSink: () => undefined,
-          requireProvider: false,
-          exposeToolRegistry: true,
-          cwd: root,
-          configRoot: claudeRoot,
-          providerEnvironment: {
-            CLAUDE_CONFIG_DIR: claudeRoot,
-            PRAXIS_HOME: nativeRoot,
-            PRAXIS_DATA_PLANE: 'claude',
-            ...(gate === undefined ? {} : { PRAXIS_ENABLE_TEAMS: gate }),
-          },
-          controls: {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'claude',
-            ...controlOverrides,
-          },
-        })
-
-      for (const gate of [undefined, 'false', 'sometimes']) {
-        const service = await create(gate)
-        try {
-          expect(service.teamLeadOperations).toBeUndefined()
-          expect(
-            service.toolRegistry?.definitions().map(({ name }) => name),
-          ).not.toEqual(
-            expect.arrayContaining([
-              'TeamCreate',
-              'TeamResume',
-              'TeamList',
-              'TeamAccept',
-              'TeamStop',
-            ]),
-          )
-          await expect(
-            access(join(nativeRoot, 'state', 'teams')),
-          ).rejects.toMatchObject({
-            code: 'ENOENT',
-          })
-        } finally {
-          await service.close?.()
-        }
-      }
-
-      const enabled = await create('true')
-      try {
-        expect(enabled.teamLeadOperations).toBeDefined()
-        expect(
-          enabled.toolRegistry?.definitions().map(({ name }) => name),
-        ).toEqual(
-          expect.arrayContaining([
-            'TeamCreate',
-            'TeamResume',
-            'TeamList',
-            'TeamAccept',
-            'TeamStop',
-          ]),
-        )
-        await expect(
-          access(join(nativeRoot, 'state', 'teams')),
-        ).rejects.toMatchObject({
-          code: 'ENOENT',
-        })
-        const operations = enabled.teamLeadOperations
-        if (!operations) throw new Error('missing Team lead operations')
-        const list = vi.spyOn(operations, 'list').mockResolvedValue([])
-        await enabled.toolRegistry?.execute(
-          { id: 'team-list', name: 'TeamList', input: {} },
-          { cwd: root },
-        )
-        expect(list).toHaveBeenCalledOnce()
-      } finally {
-        await enabled.close?.()
-      }
-
-      const selected = await create('true', { tools: ['TeamList'] })
-      try {
-        const definitions =
-          selected.toolRegistry?.definitions().map(({ name }) => name) ?? []
-        expect(definitions).toContain('TeamList')
-        expect(definitions).not.toEqual(
-          expect.arrayContaining([
-            'TeamCreate',
-            'TeamResume',
-            'TeamAccept',
-            'TeamStop',
-          ]),
-        )
-      } finally {
-        await selected.close?.()
-      }
-
-      const disallowed = await create('true', {
-        disallowedTools: ['TeamStop'],
-      })
-      try {
-        const definitions =
-          disallowed.toolRegistry?.definitions().map(({ name }) => name) ?? []
-        expect(definitions).toEqual(
-          expect.arrayContaining([
-            'TeamCreate',
-            'TeamResume',
-            'TeamList',
-            'TeamAccept',
-          ]),
-        )
-        expect(definitions).not.toContain('TeamStop')
-      } finally {
-        await disallowed.close?.()
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('omits Team tools, guidance, operations, and state from a disabled provider turn', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-team-disabled-turn-'))
-    const claudeRoot = join(root, 'claude')
-    const nativeRoot = join(root, 'native')
-    const cwd = join(root, 'project')
-    await mkdir(claudeRoot, { recursive: true })
-    await mkdir(cwd, { recursive: true })
-    await writeFile(join(claudeRoot, '.claude.json'), '{}')
-    let requestBody: Record<string, unknown> | undefined
-    const server = createServer(async (request, response) => {
-      const chunks: Buffer[] = []
-      for await (const chunk of request) chunks.push(Buffer.from(chunk))
-      requestBody = JSON.parse(Buffer.concat(chunks).toString())
-      response.writeHead(200, { 'content-type': 'text/event-stream' })
-      response.end(
-        [
-          `data: ${JSON.stringify({ id: 'disabled-team-turn', choices: [{ index: 0, delta: { content: 'done' }, finish_reason: null }] })}`,
-          `data: ${JSON.stringify({ id: 'disabled-team-turn', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
-          'data: [DONE]',
-          '',
-        ].join('\n\n'),
-      )
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    try {
-      const address = server.address()
-      if (!address || typeof address === 'string')
-        throw new Error('server did not bind')
-      const service = await createDefaultDependencies().createService({
-        eventSink: () => undefined,
-        requireProvider: true,
-        cwd,
-        configRoot: claudeRoot,
-        providerEnvironment: {
-          CLAUDE_CONFIG_DIR: claudeRoot,
-          PRAXIS_HOME: nativeRoot,
-          PRAXIS_DATA_PLANE: 'claude',
-          PRAXIS_PROVIDER: 'openai',
-          PRAXIS_API_KEY: 'fixture-key',
-          PRAXIS_MODEL: 'fixture-model',
-          PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-        },
-        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude' },
-      })
-      try {
-        expect(service.teamLeadOperations).toBeUndefined()
-        await service.run(
-          'complete without Teams',
-          undefined,
-          '10101010-1010-4010-8010-101010101010',
-        )
-      } finally {
-        await service.close?.()
-      }
-
-      const tools = Array.isArray(requestBody?.tools) ? requestBody.tools : []
-      expect(
-        tools.map((tool) =>
-          String(
-            (tool as { function?: { name?: unknown } }).function?.name ?? '',
-          ),
-        ),
-      ).not.toEqual(expect.arrayContaining(['TeamCreate']))
-      const serializedMessages = JSON.stringify(requestBody?.messages ?? [])
-      for (const name of [
-        'TeamCreate',
-        'TeamResume',
-        'TeamList',
-        'TeamAccept',
-        'TeamStop',
-        'TeamSend',
-      ]) {
-        expect(serializedMessages).not.toContain(name)
-      }
-      await expect(
-        access(join(nativeRoot, 'state', 'teams')),
-      ).rejects.toMatchObject({ code: 'ENOENT' })
-    } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      )
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('routes an enabled Team ask through the shared CLI approver', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-team-cli-approval-'))
-    const claudeRoot = join(root, 'claude')
-    const nativeRoot = join(root, 'native')
-    const cwd = join(root, 'project')
-    await mkdir(claudeRoot, { recursive: true })
-    await mkdir(join(cwd, '.claude'), { recursive: true })
-    await writeFile(join(claudeRoot, '.claude.json'), '{}')
-    await writeFile(
-      join(cwd, '.claude', 'settings.local.json'),
-      JSON.stringify({ permissions: { ask: ['Bash(pwd)'] } }),
-    )
-    let providerTurns = 0
-    const providerRequests: Array<Record<string, unknown>> = []
-    const server = createServer(async (request, response) => {
-      const chunks: Buffer[] = []
-      for await (const chunk of request) chunks.push(Buffer.from(chunk))
-      providerRequests.push(JSON.parse(Buffer.concat(chunks).toString()))
-      providerTurns += 1
-      response.writeHead(200, { 'content-type': 'text/event-stream' })
-      if (providerTurns === 1) {
-        response.end(
-          [
-            `data: ${JSON.stringify({
-              id: 'team-approval-tool',
-              choices: [
-                {
-                  index: 0,
-                  delta: {
-                    tool_calls: [
-                      {
-                        index: 0,
-                        id: 'team_bash',
-                        type: 'function',
-                        function: {
-                          name: 'Bash',
-                          arguments: JSON.stringify({ command: 'pwd' }),
-                        },
-                      },
-                    ],
-                  },
-                  finish_reason: 'tool_calls',
-                },
-              ],
-              usage: {
-                prompt_tokens: 1,
-                completion_tokens: 1,
-                total_tokens: 2,
-              },
-            })}`,
-            'data: [DONE]',
-            '',
-          ].join('\n\n'),
-        )
-        return
-      }
-      response.end(
-        [
-          `data: ${JSON.stringify({ id: 'team-approval-done', choices: [{ index: 0, delta: { content: 'permission handled' }, finish_reason: null }] })}`,
-          `data: ${JSON.stringify({ id: 'team-approval-done', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
-          'data: [DONE]',
-          '',
-        ].join('\n\n'),
-      )
-    })
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const approvals: Array<{
-      call: ModelToolCall
-      originalCall: ModelToolCall | undefined
-      decision: unknown
-    }> = []
-    try {
-      const address = server.address()
-      if (!address || typeof address === 'string')
-        throw new Error('server did not bind')
-      const service = await createDefaultDependencies().createService({
-        eventSink: () => undefined,
-        requireProvider: true,
-        cwd,
-        configRoot: claudeRoot,
-        providerEnvironment: {
-          CLAUDE_CONFIG_DIR: claudeRoot,
-          PRAXIS_HOME: nativeRoot,
-          PRAXIS_DATA_PLANE: 'claude',
-          PRAXIS_PROVIDER: 'openai',
-          PRAXIS_API_KEY: 'fixture-key',
-          PRAXIS_MODEL: 'fixture-model',
-          PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-          PRAXIS_ENABLE_TEAMS: 'true',
-        },
-        controls: {
-          ...DEFAULT_CLI_CONTROLS,
-          dataPlane: 'claude',
-          permissionMode: 'manual',
-        },
-        approveTool: (call, originalCall, decision) => {
-          approvals.push({ call, originalCall, decision })
-          return { behavior: 'deny', message: 'Lead denied fixture command' }
-        },
-      })
-      try {
-        const operations = service.teamLeadOperations
-        if (!operations) throw new Error('missing Team lead operations')
-        await operations.create(
-          {
-            teamId: 'team-approval',
-            name: 'Approval Team',
-            roster: [
-              {
-                name: 'worker',
-                agentType: 'general-purpose',
-                access: 'read-only',
-              },
-            ],
-            tasks: [
-              {
-                id: 'permission-task',
-                description: 'Request one denied Bash command.',
-                assignee: 'worker',
-                blockedBy: [],
-                claims: {
-                  files: [],
-                  publicContracts: [],
-                  generatedArtifacts: [],
-                  migrations: [],
-                  mergeTargets: [],
-                },
-              },
-            ],
-          },
-          'lead-session',
-        )
-        const snapshot = await operations.waitForIdle(
-          'team-approval',
-          'lead-session',
-        )
-        expect(snapshot.tasks[0]?.execution?.state).toBe('completed')
-        await operations.stop({ teamId: 'team-approval' }, 'lead-session')
-      } finally {
-        await service.close?.()
-      }
-
-      expect(providerTurns).toBe(2)
-      expect(approvals).toHaveLength(1)
-      expect(approvals[0]?.call).toMatchObject({
-        id: 'team_bash',
-        name: 'Bash',
-      })
-      expect(approvals[0]?.originalCall).toMatchObject({ id: 'team_bash' })
-      expect(approvals[0]?.decision).toMatchObject({
-        behavior: 'ask',
-        metadata: {
-          teamId: 'team-approval',
-          member: 'worker',
-          taskId: 'permission-task',
-          generation: 1,
-        },
-      })
-      expect((approvals[0]?.decision as { reason?: string }).reason).toContain(
-        '[team=team-approval member=worker task=permission-task generation=1]',
-      )
-      expect(JSON.stringify(providerRequests[1]?.messages)).toContain(
-        'Lead denied fixture command',
-      )
-    } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      )
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('activates canonical native transcript writes only for the reduced profile', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-native-activation-'))
-    const configRoot = join(root, 'native')
-    const cwd = join(root, 'project')
-    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    await mkdir(cwd, { recursive: true })
-    const environment = {
-      PRAXIS_API_KEY: 'test-key',
-      PRAXIS_PROVIDER: 'openai',
-      PRAXIS_MODEL: 'fixture-model',
-    }
-    const makeService = async (
-      gate: string | undefined,
-      controls: CliControls = {
-        ...DEFAULT_CLI_CONTROLS,
-        dataPlane: 'native',
-        bare: true,
-      },
-      extra: Partial<Parameters<CliDependencies['createService']>[0]> = {},
-    ) =>
-      createDefaultDependencies().createService({
-        eventSink: () => undefined,
-        requireProvider: false,
-        cwd,
-        configRoot,
-        providerEnvironment: {
-          ...environment,
-          ...(gate === undefined
-            ? {}
-            : { PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: gate }),
-        },
-        controls,
-        ...extra,
-      })
-    const canonicalSource = `${JSON.stringify({
-      schema: 'praxis.transcript',
-      version: 1,
-      event: {
-        kind: 'messages',
-        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        parentId: null,
-        sessionId,
-        timestamp: '2026-08-23T00:00:00.000Z',
-        messages: [{ role: 'user', content: 'hello' }],
-      },
-    })}\n`
-    try {
-      const paths = resolveDataPlanePaths({
-        dataPlane: 'native',
-        root: configRoot,
-        cwd,
-        sessionId,
-      })
-      await mkdir(paths.projectRoot, { recursive: true })
-      await writeFile(paths.sessionFile, canonicalSource)
-      for (const value of [undefined, '', '0', 'false', 'off', 'arbitrary']) {
-        const service = await makeService(value)
-        try {
-          expect(
-            (await service.sessions()).find((s) => s.sessionId === sessionId)
-              ?.status,
-          ).toBe('read-only')
-        } finally {
-          await service.close?.()
-        }
-      }
-      for (const value of ['1', 'true', 'yes', 'on', ' TRUE ', ' On ']) {
-        const service = await makeService(value)
-        try {
-          expect(
-            (await service.sessions()).find((s) => s.sessionId === sessionId)
-              ?.status,
-          ).toBe('ready')
-        } finally {
-          await service.close?.()
-        }
-      }
-
-      const unsupported: Array<
-        [
-          string,
-          CliControls,
-          Partial<Parameters<CliDependencies['createService']>[0]>,
-        ]
-      > = [
-        [
-          'dataPlane',
-          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude', bare: true },
-          {},
-        ],
-        [
-          'sessionPersistence',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            sessionPersistence: false,
-          },
-          {},
-        ],
-        [
-          'interactive',
-          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
-          { interactive: true },
-        ],
-        ['simpleMode', { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' }, {}],
-        [
-          'sessionKind',
-          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
-          { sessionKind: 'bg' },
-        ],
-        [
-          'name',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            name: 'named',
-          },
-          {},
-        ],
-        [
-          'worktree',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            worktreeRequested: true,
-          },
-          {},
-        ],
-        [
-          'addDirectories',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            addDirectories: [cwd],
-          },
-          {},
-        ],
-        [
-          'fileResources',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            fileResources: ['file-id:fixture.txt'],
-          },
-          {},
-        ],
-        [
-          'settings',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            settings: '{}',
-          },
-          {},
-        ],
-        [
-          'settingSources',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            settingSources: ['project'],
-          },
-          {},
-        ],
-        [
-          'pluginDirectories',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            pluginDirectories: [root],
-          },
-          {},
-        ],
-        [
-          'pluginUrls',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            pluginUrls: ['https://example.test/plugin'],
-          },
-          {},
-        ],
-        [
-          'agent',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            agentDefinitions: JSON.stringify({
-              reviewer: { prompt: 'review' },
-            }),
-          },
-          {},
-        ],
-        [
-          'agent',
-          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
-          { agent: 'reviewer' },
-        ],
-        [
-          'mcp',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            mcpConfigs: [JSON.stringify({ mcpServers: {} })],
-          },
-          {},
-        ],
-        [
-          'mcp',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            strictMcpConfig: true,
-          },
-          {},
-        ],
-        [
-          'checkpointing',
-          {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-            rewindFiles: 'checkpoint',
-          },
-          {},
-        ],
-        [
-          'teams',
-          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', bare: true },
-          {
-            providerEnvironment: {
-              ...environment,
-              PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: 'true',
-              PRAXIS_ENABLE_TEAMS: 'true',
-            },
-          },
-        ],
-      ]
-      for (const [surface, controls, extra] of unsupported) {
-        await expect(makeService('true', controls, extra)).rejects.toThrow(
-          surface,
-        )
-      }
-
-      const server = createServer((_request, response) => {
-        response.writeHead(200, { 'content-type': 'text/event-stream' })
-        response.end(
-          [
-            `data: ${JSON.stringify({ id: 'completion', choices: [{ index: 0, delta: { content: 'answer' }, finish_reason: null }] })}`,
-            `data: ${JSON.stringify({ id: 'completion', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}`,
-            'data: [DONE]',
-            '',
-          ].join('\n\n'),
-        )
-      })
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve),
-      )
-      try {
-        const address = server.address()
-        if (!address || typeof address === 'string')
-          throw new Error('server did not bind')
-        const service = await createDefaultDependencies().createService({
-          eventSink: () => undefined,
-          requireProvider: true,
-          cwd,
-          configRoot,
-          providerEnvironment: {
-            ...environment,
-            PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}/v1`,
-            PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES: 'yes',
-          },
-          controls: {
-            ...DEFAULT_CLI_CONTROLS,
-            dataPlane: 'native',
-            bare: true,
-          },
-        })
-        try {
-          await service.run(
-            'new prompt',
-            undefined,
-            'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-          )
-        } finally {
-          await service.close?.()
-        }
-        const createdPaths = resolveDataPlanePaths({
-          dataPlane: 'native',
-          root: configRoot,
-          cwd,
-          sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        })
-        const created = await readFile(createdPaths.sessionFile, 'utf8')
-        expect(created).toContain('"schema":"praxis.transcript"')
-        expect(created).not.toMatch(/"(?:type|uuid|parentUuid|isSidechain)"/u)
-        const legacyPath = resolveClaudePaths({
-          cwd,
-          sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-          configDir: configRoot,
-        }).sessionFile
-        await expect(access(legacyPath)).rejects.toMatchObject({
-          code: 'ENOENT',
-        })
-      } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()))
-      }
-
-      const legacyId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
-      const legacyProvider: ModelProvider = {
-        capabilities: { streaming: true, usage: true, tools: false },
-        async *complete() {
-          yield { type: 'text-delta', delta: 'legacy' }
-          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
-        },
-      }
-      const legacy = new ClaudeSessionService({
-        configRoot,
-        dataPlane: 'native',
-        cwd,
-        claudeVersion: '2.1.208',
-        provider: legacyProvider,
-      })
-      await legacy.run('legacy prompt', undefined, legacyId)
-      await legacy.close()
-      const legacyPaths = resolveDataPlanePaths({
-        dataPlane: 'native',
-        root: configRoot,
-        cwd,
-        sessionId: legacyId,
-      })
-      const before = await readFile(legacyPaths.sessionFile)
-      const gateOn = await makeService('true')
-      try {
-        await expect(gateOn.resume(legacyId, 'must reject')).rejects.toThrow()
-      } finally {
-        await gateOn.close?.()
-      }
-      expect(await readFile(legacyPaths.sessionFile)).toEqual(before)
-      const gateOff = await makeService(undefined)
-      try {
-        expect(
-          (await gateOff.sessions()).find((s) => s.sessionId === legacyId)
-            ?.status,
-        ).toBe('ready')
-      } finally {
-        await gateOff.close?.()
-      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -3821,109 +2686,6 @@ describe('Praxis CLI', () => {
         } finally {
           await service.close?.()
         }
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('removes Project-memory reads, creation, and tool access through each data-plane disable switch', async () => {
-    for (const dataPlane of ['native', 'claude'] as const) {
-      const root = await mkdtemp(
-        join(tmpdir(), `praxis-${dataPlane}-memory-off-`),
-      )
-      const configRoot = join(root, 'config')
-      const cwd = join(root, 'project')
-      await mkdir(cwd, { recursive: true })
-      const memoryDirectory = await resolveProjectMemoryDirectory({
-        dataPlane,
-        configRoot,
-        cwd,
-      })
-      try {
-        const service = await createDefaultDependencies().createService({
-          eventSink: () => undefined,
-          requireProvider: false,
-          exposeToolRegistry: true,
-          cwd,
-          configRoot,
-          providerEnvironment:
-            dataPlane === 'native'
-              ? { PRAXIS_DISABLE_AUTO_MEMORY: '1' }
-              : { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' },
-          controls: { ...DEFAULT_CLI_CONTROLS, dataPlane },
-        })
-        try {
-          await expect(access(memoryDirectory)).rejects.toMatchObject({
-            code: 'ENOENT',
-          })
-          const registry = service.toolRegistry
-          if (!registry) throw new Error('tool registry unavailable')
-          await expect(
-            registry.prepare(
-              {
-                id: 'write-disabled-memory',
-                name: 'Write',
-                input: {
-                  file_path: join(memoryDirectory, 'MEMORY.md'),
-                  content: 'must not write',
-                },
-              },
-              { cwd },
-            ),
-          ).rejects.toThrow()
-        } finally {
-          await service.close?.()
-        }
-      } finally {
-        await rm(root, { recursive: true, force: true })
-      }
-    }
-  })
-
-  it('executes each Claude compatibility hook setting once', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-compat-hooks-'))
-    const configRoot = join(root, 'config')
-    await mkdir(configRoot, { recursive: true })
-    await writeFile(
-      join(configRoot, 'settings.json'),
-      JSON.stringify({
-        hooks: {
-          Setup: [
-            {
-              hooks: [
-                {
-                  type: 'command',
-                  command: 'printf blocked >&2; exit 2',
-                },
-              ],
-            },
-          ],
-        },
-      }),
-    )
-    const hookEvents: Array<{ type: string }> = []
-    try {
-      const service = await createDefaultDependencies().createService({
-        eventSink: (event) => {
-          if (event.type === 'hook') hookEvents.push(event.event)
-        },
-        requireProvider: false,
-        exposeToolRegistry: true,
-        cwd: root,
-        configRoot,
-        providerEnvironment: {},
-        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'claude' },
-      })
-      try {
-        await expect(service.lifecycle?.('init')).rejects.toThrow(
-          'Setup hook error: blocked',
-        )
-        expect(
-          hookEvents.filter((event) => event.type === 'started'),
-        ).toHaveLength(1)
-      } finally {
-        await service.close?.()
       }
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -4590,10 +3352,10 @@ describe('Praxis CLI', () => {
     const capture = captureIO()
     const configDir = await mkdtemp(join(tmpdir(), 'praxis-cli-sessions-'))
     const missingBinary = join(configDir, 'missing-claude')
-    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    const previousConfigDir = process.env.PRAXIS_HOME
     const previousPraxisHome = process.env.PRAXIS_HOME
     const previousBinary = process.env.PRAXIS_CLAUDE_BINARY
-    process.env.CLAUDE_CONFIG_DIR = configDir
+    process.env.PRAXIS_HOME = configDir
     process.env.PRAXIS_HOME = configDir
     process.env.PRAXIS_CLAUDE_BINARY = missingBinary
     try {
@@ -4602,8 +3364,8 @@ describe('Praxis CLI', () => {
       expect(capture.stderr.join('')).not.toContain(missingBinary)
       expect(capture.stderr.join('')).not.toContain('--version')
     } finally {
-      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      if (previousConfigDir === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousConfigDir
       if (previousPraxisHome === undefined) delete process.env.PRAXIS_HOME
       else process.env.PRAXIS_HOME = previousPraxisHome
       if (previousBinary === undefined) delete process.env.PRAXIS_CLAUDE_BINARY
@@ -5484,12 +4246,11 @@ describe('Praxis CLI', () => {
     expect(forked.stdout).toEqual(['22222222-2222-4222-8222-222222222222\n'])
   })
 
-  it('routes native list, inspect, export, and legacy resume selection through the real service', async () => {
+  it('routes native list, inspect, and export through the real service', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-reads-'))
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const nativeId = '91919191-9191-4191-8191-919191919191'
-    const legacyId = '92929292-9292-4292-8292-929292929292'
     const textProvider = (text: string): ModelProvider => ({
       capabilities: { streaming: true, usage: true, tools: false },
       async *complete() {
@@ -5498,15 +4259,8 @@ describe('Praxis CLI', () => {
       },
     })
     try {
-      const writer = new ClaudeSessionService({
-        configRoot,
-        dataPlane: 'native',
-        cwd,
-        claudeVersion: '2.1.208',
-        provider: textProvider('legacy answer'),
-      })
-      await writer.run('legacy cli prompt', undefined, legacyId, 'legacy cli')
-      await writer.close()
+      vi.stubEnv('PRAXIS_HOME', configRoot)
+      vi.stubEnv('PRAXIS_DATA_PLANE', 'native')
       const paths = resolveDataPlanePaths({
         dataPlane: 'native',
         root: configRoot,
@@ -5544,7 +4298,6 @@ describe('Praxis CLI', () => {
       const listed = captureIO()
       const inspected = captureIO()
       const exported = captureIO()
-      const resumed = captureIO()
 
       await expect(
         run(['sessions', '--json'], listed.io, nativeDependencies),
@@ -5555,24 +4308,12 @@ describe('Praxis CLI', () => {
       await expect(
         run(['export', nativeId], exported.io, nativeDependencies),
       ).resolves.toBe(0)
-      await expect(
-        run(
-          ['-p', '--resume=legacy cli', '--', 'continue'],
-          resumed.io,
-          nativeDependencies,
-        ),
-      ).resolves.toBe(0)
 
       const sessionResult = JSON.parse(listed.stdout.join(''))
       expect(sessionResult.sessions).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             sessionId: nativeId,
-            status: 'read-only',
-          }),
-          expect.objectContaining({
-            sessionId: legacyId,
-            name: 'legacy cli',
             status: 'ready',
           }),
         ]),
@@ -5581,13 +4322,12 @@ describe('Praxis CLI', () => {
         type: 'session',
         session: {
           sessionId: nativeId,
-          status: 'read-only',
+          status: 'ready',
           writeMode: 'read-only',
           lastPrompt: 'native cli prompt',
         },
       })
       expect(Buffer.concat(exported.stdoutBytes)).toEqual(nativeSource)
-      expect(resumed.stdout.join('')).toBe('legacy resumed through cli\n')
       expect(await readFile(paths.sessionFile)).toEqual(nativeSource)
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -6183,135 +4923,6 @@ describe('Praxis CLI', () => {
       if (oldGate === undefined) delete process.env.PRAXIS_ENABLE_TEAMS
       else process.env.PRAXIS_ENABLE_TEAMS = oldGate
       await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('runs native transcript migration in dry-run JSON mode without a service', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-migration-'))
-    const sessionId = '11111111-1111-4111-8111-111111111111'
-    const previousHome = process.env.PRAXIS_HOME
-    process.env.PRAXIS_HOME = root
-    try {
-      const path = resolveDataPlanePaths({
-        dataPlane: 'native',
-        cwd: process.cwd(),
-        sessionId,
-      }).sessionFile
-      await mkdir(dirname(path), { recursive: true })
-      const codec = createClaudeTranscriptCodec({
-        version: '2.1.208',
-        cwd: process.cwd(),
-        entrypoint: 'cli',
-      })
-      const encoded = codec.encodeLine({
-        kind: 'messages',
-        id: 'event-1',
-        parentId: null,
-        sessionId,
-        timestamp: '2026-08-25T00:00:00.000Z',
-        messages: [{ role: 'user', content: 'dry run' }],
-      })
-      if (!encoded.ok) throw new Error(encoded.issue.message)
-      await writeFile(path, `${encoded.line}\n`)
-      const capture = captureIO()
-      await expect(
-        run(
-          ['migrate', 'native-transcript', sessionId, '--dry-run', '--json'],
-          capture.io,
-          dependencies(),
-        ),
-      ).resolves.toBe(0)
-      expect(JSON.parse(capture.stdout.join(''))).toMatchObject({
-        migrations: [{ sessionId, status: 'convertible' }],
-      })
-      expect(capture.stderr).toEqual([])
-    } finally {
-      if (previousHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousHome
-      await rm(root, { recursive: true })
-    }
-  })
-
-  it('rejects mutually exclusive native migration modes before service creation', async () => {
-    const capture = captureIO()
-    await expect(
-      run(
-        [
-          'migrate',
-          'native-transcript',
-          '11111111-1111-4111-8111-111111111111',
-          '--dry-run',
-          '--rollback',
-        ],
-        capture.io,
-        dependencies(),
-      ),
-    ).resolves.toBe(1)
-    expect(capture.stderr.join('')).toContain(
-      '--dry-run and --rollback are mutually exclusive',
-    )
-  })
-
-  it('reports mixed all-session migration outcomes deterministically', async () => {
-    const root = await mkdtemp(
-      join(tmpdir(), 'praxis-cli-native-migration-all-'),
-    )
-    const previousHome = process.env.PRAXIS_HOME
-    process.env.PRAXIS_HOME = root
-    const validId = '11111111-1111-4111-8111-111111111111'
-    const corruptId = '22222222-2222-4222-8222-222222222222'
-    try {
-      const validPath = resolveDataPlanePaths({
-        dataPlane: 'native',
-        cwd: process.cwd(),
-        sessionId: validId,
-      }).sessionFile
-      const corruptPath = resolveDataPlanePaths({
-        dataPlane: 'native',
-        cwd: process.cwd(),
-        sessionId: corruptId,
-      }).sessionFile
-      await mkdir(dirname(validPath), { recursive: true })
-      const codec = createClaudeTranscriptCodec({
-        version: '2.1.208',
-        cwd: process.cwd(),
-        entrypoint: 'cli',
-      })
-      const encoded = codec.encodeLine({
-        kind: 'messages',
-        id: 'event-1',
-        parentId: null,
-        sessionId: validId,
-        timestamp: '2026-08-25T00:00:00.000Z',
-        messages: [{ role: 'user', content: 'all' }],
-      })
-      if (!encoded.ok) throw new Error(encoded.issue.message)
-      await writeFile(validPath, `${encoded.line}\n`)
-      await writeFile(corruptPath, '{not-json\n')
-      const capture = captureIO()
-      await expect(
-        run(
-          ['migrate', 'native-transcript', '--all', '--json'],
-          capture.io,
-          dependencies(),
-        ),
-      ).resolves.toBe(0)
-      const result = JSON.parse(capture.stdout.join(''))
-      expect(result.atomicity).toBe('per-session')
-      expect(
-        result.migrations.map(
-          (migration: { sessionId: string }) => migration.sessionId,
-        ),
-      ).toEqual([validId, corruptId])
-      expect(
-        result.migrations.map(
-          (migration: { status: string }) => migration.status,
-        ),
-      ).toEqual(['migrated', 'corrupt'])
-    } finally {
-      if (previousHome === undefined) delete process.env.PRAXIS_HOME
-      else process.env.PRAXIS_HOME = previousHome
-      await rm(root, { recursive: true })
     }
   })
 })

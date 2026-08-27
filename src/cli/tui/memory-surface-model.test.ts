@@ -18,7 +18,7 @@ describe('projectTuiMemorySurface', () => {
       entries,
       selectedIndex: 0,
       openedIndex: null,
-      dataPlane: 'claude',
+      dataPlane: 'native',
     })
 
     expect(surface).toEqual({
@@ -28,7 +28,7 @@ describe('projectTuiMemorySurface', () => {
       selectedIndex: 0,
       openedIndex: null,
       loading: false,
-      dataPlane: 'claude',
+      dataPlane: 'native',
     })
     expect(surface.entries).toBe(entries)
   })
