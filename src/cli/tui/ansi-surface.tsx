@@ -93,6 +93,15 @@ function surfaceRows(screen: TuiScreenModel<any>): TuiRow[] {
   return []
 }
 
+/** ANSI mode is intentionally limited to the plain conversation surface. */
+export function supportsAnsiSurface(screen: TuiScreenModel<any>): boolean {
+  if (screen.body.kind !== 'conversation') return false
+  return (
+    screen.body.foreground.kind === 'compose' &&
+    screen.body.foreground.overlays.length === 0
+  )
+}
+
 export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
   const body = props.screen.body
   const lines: TuiRow[] = [...surfaceRows(props.screen)]

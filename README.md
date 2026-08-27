@@ -113,6 +113,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   and an independent ANSI fullscreen frame renderer with alternate-screen
   lifecycle, synchronized output, and dirty-row diffing,
   opt-in TTY wiring with automatic Ink fallback on renderer failure,
+  with complex overlays and dialogs intentionally remaining on the mature Ink
+  surface until their semantic ANSI projections are complete,
   and a pure FocusStack that centralizes overlay/dialog precedence and Esc
   cancellation routing,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,

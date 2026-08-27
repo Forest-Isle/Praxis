@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { projectAnsiSurfaceFrame } from './ansi-surface.js'
+import { projectAnsiSurfaceFrame, supportsAnsiSurface } from './ansi-surface.js'
 
 function screen(overrides: Record<string, unknown> = {}) {
   return {
@@ -30,6 +30,30 @@ function screen(overrides: Record<string, unknown> = {}) {
 }
 
 describe('projectAnsiSurfaceFrame', () => {
+  it('supports only an unobstructed conversation composer', () => {
+    expect(supportsAnsiSurface(screen())).toBe(true)
+    expect(
+      supportsAnsiSurface(
+        screen({
+          foreground: { kind: 'priority', surface: { title: 'Wait' } },
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      supportsAnsiSurface(
+        screen({
+          foreground: {
+            kind: 'compose',
+            overlays: [{ kind: 'exit-confirmation' }],
+          },
+        }),
+      ),
+    ).toBe(false)
+    expect(
+      supportsAnsiSurface(screen({ kind: 'session-picker', surface: {} })),
+    ).toBe(false)
+  })
+
   it('projects transcript, active stream, composer, and status in order', () => {
     const frame = projectAnsiSurfaceFrame({
       screen: screen(),

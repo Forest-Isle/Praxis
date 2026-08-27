@@ -143,7 +143,7 @@ import {
   type TuiScreenInput,
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
-import { TuiAnsiSurface } from './tui/ansi-surface.js'
+import { supportsAnsiSurface, TuiAnsiSurface } from './tui/ansi-surface.js'
 import {
   projectTuiHelpSurface,
   type TuiHelpSurfaceModel,
@@ -1330,14 +1330,14 @@ export function InteractiveApp({
       projectRuntimeSettings({ settings: {}, state: {} }),
   )
   const [ansiRendererFailed, setAnsiRendererFailed] = useState(false)
-  const ansiActive =
+  const ansiRequested =
     ansiRenderer &&
     !ansiRendererFailed &&
     !axScreenReader &&
     runtimeSettings.tui === 'fullscreen'
   const presentation = useTuiPresentationEnvironment({
     renderer: ansiRenderer
-      ? ansiActive
+      ? ansiRequested
         ? 'fullscreen'
         : 'default'
       : runtimeSettings.tui,
@@ -2487,6 +2487,7 @@ export function InteractiveApp({
       screenSurfaces,
     ],
   )
+  const ansiActive = ansiRequested && supportsAnsiSurface(screen)
   useEffect(() => {
     previousTuiScreenRef.current = screen
   }, [screen])

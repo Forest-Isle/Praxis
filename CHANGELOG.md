@@ -33,6 +33,8 @@ this file from merged Conventional Commit pull requests.
   fallback while preserving screen-reader and non-TTY paths
 * centralize TUI overlay and dialog precedence in a pure FocusStack projection
   without changing existing keybindings or cancellation targets
+* keep complex overlay/dialog surfaces on Ink until a complete semantic ANSI
+  projection is available, avoiding lossy generic summaries
 
 ### Changed
 
