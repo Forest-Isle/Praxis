@@ -39,13 +39,13 @@ async function collectInput(chunks: readonly (string | Uint8Array)[]) {
 }
 
 describe('CLI protocol', () => {
-  it('accepts an explicit data plane', () => {
-    expect(
-      parseCliInvocation(['--data-plane', 'claude', 'hello']),
-    ).toMatchObject({ dataPlane: 'claude', args: ['hello'] })
+  it('rejects the removed data-plane option', () => {
     expect(() =>
-      parseCliInvocation(['--data-plane', 'invalid', 'hello']),
+      parseCliInvocation(['--data-plane', 'claude', 'hello']),
     ).toThrow('--data-plane')
+    expect(() => parseCliInvocation(['--data-plane=invalid', 'hello'])).toThrow(
+      '--data-plane',
+    )
   })
 
   it('normalizes Claude 2.1.237 autocompact window values', () => {

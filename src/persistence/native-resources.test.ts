@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import { sanitizeNativeProjectPath } from '../native/paths.js'
 import {
   loadNativeContextResources,
   loadNativeSharedResources,
@@ -55,6 +55,43 @@ describe('native resource discovery', () => {
     expect(resources.mcp).toHaveLength(1)
   })
 
+  it('parses native conditional rules and keeps unconditional rules in instructions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-native-rules-'))
+    roots.push(root)
+    const cwd = join(root, 'workspace')
+    await mkdir(join(root, 'rules', 'nested'), { recursive: true })
+    await mkdir(join(cwd, '.praxis', 'rules'), { recursive: true })
+    await writeFile(
+      join(root, 'rules', 'nested', 'conditional.md'),
+      '---\npaths: src/**/*.ts\n---\nuser rule',
+    )
+    await writeFile(join(root, 'rules', 'always.md'), 'always user')
+    await writeFile(
+      join(cwd, '.praxis', 'rules', 'project.md'),
+      '---\npaths:\n  - tests/**\n---\nproject rule',
+    )
+
+    const resources = await loadNativeContextResources({ root, cwd })
+    expect(resources.instructions.map(({ content }) => content)).toEqual([
+      'always user',
+    ])
+    expect(resources.conditionalRules).toMatchObject([
+      {
+        scope: 'user',
+        baseDirectory: root,
+        globs: ['src/**/*.ts'],
+        content: 'user rule',
+      },
+      {
+        scope: 'project',
+        baseDirectory: cwd,
+        globs: ['tests/**'],
+        content: 'project rule',
+      },
+    ])
+    expect(resources.conditionalRules[0]?.rawContent).toContain('paths:')
+  })
+
   it('loads one Project-memory index across linked worktrees', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-native-resources-')),
@@ -82,7 +119,7 @@ describe('native resource discovery', () => {
     const directory = join(
       configRoot,
       'memory',
-      sanitizeClaudeProjectPath(mainRepository),
+      sanitizeNativeProjectPath(mainRepository),
     )
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'MEMORY.md'), 'SHARED_NATIVE_MEMORY')
@@ -107,7 +144,7 @@ describe('native resource discovery', () => {
     const memoryDirectory = join(
       configRoot,
       'memory',
-      sanitizeClaudeProjectPath(cwd),
+      sanitizeNativeProjectPath(cwd),
     )
     await Promise.all([
       mkdir(memoryDirectory, { recursive: true }),

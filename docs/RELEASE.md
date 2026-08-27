@@ -41,8 +41,8 @@ memory `Write`, persisted tool-result continuation, final response, and resumed
 turn. It then executes provider-free `praxis fork --json`, verifies the fork
 preserves complete Read/Bash/memory/tool-result history field-for-field under a
 new session ID, and proves the fork creates no provider request. The gate also
-checks the package allowlist, size limits, version, license, and Claude
-write-safety matrix.
+checks the package allowlist, size limits, version, license, and native
+transcript write-safety matrix.
 
 `npm run check` is a prerequisite for packaging. Its security cases run real
 Bash, hook, and MCP children, verify explicit MCP credential grants are usable
@@ -52,25 +52,18 @@ JSONL.
 
 ## Runtime matrix
 
-| Surface                          | Matrix                                   | Expected behavior                                                                                  |
-| -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Node.js                          | 24 and 25                                | clean install and full installed CLI loop                                                          |
-| OS                               | current macOS and Ubuntu GitHub runners  | package and performance gates                                                                      |
-| Provider API                     | OpenAI-compatible and Anthropic Messages | identical installed tool/resume/fork scenario                                                      |
-| Claude Code semver-like versions | structurally validated producer profiles | read-write for supported entry shapes; append/fork fail closed for malformed or unsupported shapes |
-| Non-semver or malformed version  | unverified profile                       | read-only parse/export; append and fork fail closed                                                |
+| Surface                         | Matrix                                   | Expected behavior                                   |
+| ------------------------------- | ---------------------------------------- | --------------------------------------------------- |
+| Node.js                         | 24 and 25                                | clean install and full installed CLI loop           |
+| OS                              | current macOS and Ubuntu GitHub runners  | package and performance gates                       |
+| Provider API                    | OpenAI-compatible and Anthropic Messages | identical installed tool/resume/fork scenario       |
+| Native transcript schema v1     | Praxis-owned `praxis.transcript`         | read-write append/resume/fork for validated events  |
+| Unsupported or malformed format | unverified transcript                    | read-only parse/export; append and fork fail closed |
 
-Stage 53 clean-room evidence: `test:package` and `test:performance` passed in
-all four combinations macOS/Node 24, macOS/Node 25, Linux ARM64/Node 24, and
-Linux ARM64/Node 25. `test:compat:all` passed 34 isolated Claude/Praxis gates on
-macOS/Node 25. The aggregate gate is intentionally separate from package and
-performance runs because Claude Code is a local installation dependency while
-the release matrix must stay provider-fixture based.
-
-Promoting a new Claude version to read-write requires new black-box fixtures,
-an explicit versioned adapter, all unit and compatibility probes, tarball gate,
-and Standards/Spec review. Version proximity is never treated as schema
-compatibility.
+The package and performance gates stay provider-fixture based and do not depend
+on a Claude installation. Native transcript schema changes require focused
+fixtures, the tarball gate, and Standards/Spec review; unsupported formats are
+always read-only and are never migrated.
 
 ## Manual package creation
 
@@ -100,9 +93,8 @@ version pull request, creates an immutable `v<version>` tag and GitHub release,
 then dispatches the isolated `Publish` workflow. No repository workflow writes
 directly to `main`.
 
-`Publish` checks out the immutable tag and repeats quality, credential-free CLI
-surface compatibility, installed-package, performance, and production-audit
-gates. It then creates the
+`Publish` checks out the immutable tag and repeats quality, native CLI surface,
+installed-package, performance, and production-audit gates. It then creates the
 npm tarball, CycloneDX SBOM, and `SHA256SUMS`, records GitHub artifact
 attestations, attaches all files to the GitHub release, and publishes the exact
 same tarball to npm with provenance. Publication is idempotent: rerunning an

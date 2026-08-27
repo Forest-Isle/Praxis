@@ -1,16 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import {
-  loadClaudeSettings,
-  type ClaudeResourceScope,
-} from '../../compatibility/claude/shared-resources.js'
+import type { ResourceScope } from '../../core/resources.js'
 import { writeFileAtomically } from '../../platform/atomic-write.js'
-import {
-  type DataPlane,
-  resolveDataPlane,
-  resolveDataPlaneRoot,
-} from '../../persistence/data-plane.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import { loadNativeSharedResources } from '../../persistence/native-resources.js'
 import type { PermissionUpdate } from '../../core/runtime.js'
 import {
@@ -23,7 +16,7 @@ export type TuiPermissionBehavior = 'allow' | 'ask' | 'deny'
 export interface TuiPermissionRule {
   behavior: TuiPermissionBehavior
   rule: string
-  scope: ClaudeResourceScope
+  scope: ResourceScope
   path: string
 }
 
@@ -38,13 +31,12 @@ function configRootPath(): string {
 function settingsPath(
   configRoot: string,
   cwd: string,
-  scope: ClaudeResourceScope,
-  dataPlane: DataPlane,
+  scope: ResourceScope,
 ): string {
   if (scope === 'user') return join(configRoot, 'settings.json')
   return join(
     cwd,
-    dataPlane === 'native' ? '.praxis' : '.claude',
+    '.praxis',
     scope === 'local' ? 'settings.local.json' : 'settings.json',
   )
 }
@@ -52,15 +44,9 @@ function settingsPath(
 export async function loadTuiPermissionRules(
   cwd: string,
   configRoot?: string,
-  dataPlane: DataPlane = configRoot === undefined
-    ? resolveDataPlane()
-    : 'claude',
 ): Promise<readonly TuiPermissionRule[]> {
   const root = configRoot ?? configRootPath()
-  const settings =
-    dataPlane === 'native'
-      ? (await loadNativeSharedResources({ root, cwd })).settings
-      : await loadClaudeSettings({ configRoot: root, cwd })
+  const settings = (await loadNativeSharedResources({ root, cwd })).settings
   return settings.flatMap((resource) => {
     const value = resource.value
     if (!isRecord(value) || !isRecord(value.permissions)) return []
@@ -114,23 +100,16 @@ export async function addTuiPermissionRule({
   rule,
   scope,
   configRoot,
-  dataPlane = configRoot === undefined ? resolveDataPlane() : 'claude',
 }: {
   cwd: string
   behavior: TuiPermissionBehavior
   rule: string
-  scope: ClaudeResourceScope
+  scope: ResourceScope
   configRoot?: string
-  dataPlane?: DataPlane
 }): Promise<void> {
   if (!/^([A-Za-z][\w-]*)(?:\(.*\))?$/u.test(rule))
     throw new Error(`Invalid permission rule: ${rule}`)
-  const path = settingsPath(
-    configRoot ?? configRootPath(),
-    cwd,
-    scope,
-    dataPlane,
-  )
+  const path = settingsPath(configRoot ?? configRootPath(), cwd, scope)
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const { value: settings, source } = await readSettings(path)
     const permissions = isRecord(settings.permissions)
@@ -191,7 +170,7 @@ export async function removeTuiPermissionRule(
 
 function destinationScope(
   destination: PermissionUpdate['destination'],
-): ClaudeResourceScope | undefined {
+): ResourceScope | undefined {
   return destination === 'userSettings'
     ? 'user'
     : destination === 'projectSettings'
@@ -205,12 +184,10 @@ export async function persistTuiPermissionUpdates({
   cwd,
   updates,
   configRoot,
-  dataPlane = configRoot === undefined ? resolveDataPlane() : 'claude',
 }: {
   cwd: string
   updates: readonly PermissionUpdate[]
   configRoot?: string
-  dataPlane?: DataPlane
 }): Promise<void> {
   const root = configRoot ?? configRootPath()
   for (const update of updates) {
@@ -224,12 +201,11 @@ export async function persistTuiPermissionUpdates({
           rule: permissionRuleValueToString(rule),
           scope,
           configRoot: root,
-          dataPlane,
         })
       }
       continue
     }
-    const path = settingsPath(root, cwd, scope, dataPlane)
+    const path = settingsPath(root, cwd, scope)
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const { value: settings, source } = await readSettings(path)
       const permissions = isRecord(settings.permissions)

@@ -132,7 +132,6 @@ describe('transcript projection', () => {
       'after',
     ])
     expect(projectTranscriptDisplay(events)).toEqual([
-      { kind: 'user', text: 'before compact' },
       { kind: 'compact', summary: 'condensed context' },
       { kind: 'user', text: 'after compact' },
     ])

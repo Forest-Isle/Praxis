@@ -6,8 +6,6 @@ import { promisify } from 'node:util'
 
 import { randomUUID } from 'node:crypto'
 
-import type { DataPlane } from '../persistence/data-plane.js'
-
 const execFileAsync = promisify(execFile)
 
 export interface WorktreeSessionState {
@@ -101,17 +99,13 @@ export class SessionWorktreeManager {
       workspace: WorkspaceContext
       sessionId: string
       baseRef?: 'fresh' | 'head'
-      /** Claude compatibility retains its established project worktree path. */
-      dataPlane?: DataPlane
+      /** @deprecated Native worktrees always use .praxis. */
+      dataPlane?: unknown
     },
   ) {}
 
   private worktreeRoot(repositoryRoot: string): string {
-    return join(
-      repositoryRoot,
-      this.options.dataPlane === 'native' ? '.praxis' : '.claude',
-      'worktrees',
-    )
+    return join(repositoryRoot, '.praxis', 'worktrees')
   }
 
   bindSession(sessionId: string): void {
@@ -232,7 +226,7 @@ export class SessionWorktreeManager {
           ? gitDirectory
           : resolve(worktreePath, gitDirectory)
         await writeFile(
-          join(absoluteGitDirectory, 'CLAUDE_BASE'),
+          join(absoluteGitDirectory, 'PRAXIS_BASE'),
           `${baseCommit}\n`,
         )
       } catch (error) {
@@ -392,9 +386,7 @@ export class SessionWorktreeManager {
     const worktreePath = await realpath(resolve(originalCwd, requestedPath))
     const allowedRoot = this.worktreeRoot(root)
     if (!isWithin(allowedRoot, worktreePath)) {
-      throw new Error(
-        `Worktree path must be inside ${this.options.dataPlane === 'native' ? '.praxis' : '.claude'}/worktrees`,
-      )
+      throw new Error('Worktree path must be inside .praxis/worktrees')
     }
     const worktrees = parseWorktrees(
       await git(root, ['worktree', 'list', '--porcelain']),

@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../core/resources.js'
 import {
   ClaudeHookRunner,
   type ClaudeHookCommandExecutor,
@@ -26,7 +26,7 @@ const input: ClaudeHookInput = {
 }
 
 function settings(value: unknown, scope: 'user' | 'project' | 'local') {
-  return { path: `/${scope}.json`, scope, value } satisfies ClaudeJsonResource
+  return { path: `/${scope}.json`, scope, value } satisfies JsonResource
 }
 
 async function waitForProcessExit(pid: number): Promise<void> {
@@ -191,7 +191,7 @@ describe('ClaudeHookRunner', () => {
       ),
       environment: { CLAUDE_PLUGIN_OPTION_TOKEN: 'plugin-hook-secret' },
       sensitiveValues: ['plugin-hook-secret'],
-    } satisfies ClaudeJsonResource
+    } satisfies JsonResource
     try {
       const runner = new ClaudeHookRunner({ settings: [resource], cwd })
       const outcome = await runner.run({

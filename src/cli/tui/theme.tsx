@@ -1,7 +1,8 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react'
 
-import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
 import type { TuiCustomTheme } from './custom-themes.js'
+import type { AgentColorName } from '../../core/agent-color.js'
+export type { AgentColorName } from '../../core/agent-color.js'
 
 export const TUI_THEMES = [
   'auto',

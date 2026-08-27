@@ -28,7 +28,7 @@ export type CliPermissionMode =
 export type CliMcpScope = 'local' | 'project' | 'user'
 export type CliMcpTransport = 'stdio' | 'sse' | 'http'
 export type CliThinkingMode = 'enabled' | 'adaptive' | 'disabled'
-export type CliDataPlane = 'native' | 'claude'
+export type CliDataPlane = 'native'
 
 export interface CliControls {
   dataPlane?: CliDataPlane
@@ -674,7 +674,6 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let strictMcpConfig = false
   let disableSlashCommands = false
   let settingSources: ('user' | 'project' | 'local')[] | undefined
-  let dataPlane: CliDataPlane | undefined
   let autocompact: 'auto' | number | undefined
   let safeMode = false
   let bare = false
@@ -963,17 +962,6 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--settings may only be specified once')
       settings = selectedSettings.value
       index += selectedSettings.consumed
-      continue
-    }
-    const selectedDataPlane = optionValue(argv, index, '--data-plane')
-    if (selectedDataPlane) {
-      if (dataPlane !== undefined)
-        throw new Error('--data-plane may only be specified once')
-      dataPlane = choice(selectedDataPlane.value, '--data-plane', [
-        'native',
-        'claude',
-      ]) as CliDataPlane
-      index += selectedDataPlane.consumed
       continue
     }
     const selectedPluginConfig = optionValue(argv, index, '--config')
@@ -1723,7 +1711,6 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     throw new Error('Plugin options are only valid with plugin commands')
   }
   return {
-    ...(dataPlane === undefined ? {} : { dataPlane }),
     ...(autocompact === undefined ? {} : { autocompact }),
     command: args[0],
     args,

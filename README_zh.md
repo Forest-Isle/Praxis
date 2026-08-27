@@ -15,10 +15,8 @@ Praxis 是一个本地优先、面向单用户的命令行通用 Agent。
 插件、后台 Agent，以及与提供商无关的 Anthropic/OpenAI 兼容模型访问。
 Praxis 明确不包含账户、组织、计费、托管企业策略、远程控制、IDE 界面和遥测控制平面。
 
-Claude Code 2.1.208 仍是已包含及必需的单用户开发者能力在架构、设计和可观察兼容性方面的基线。
-只有标记为 `required` 的条目会阻塞开发者核心闭环；`deferred` 条目是可选且按需求实现的。
-排除项包括现有企业、认证、托管和客户端界面，以及明确归类为订阅绑定集成、活动、隐藏维护者诊断和构建实验的命令。
-Praxis 中相似的界面不能替代对应的 Claude 命令或运行时契约。
+Claude Code 2.1.208 仅作为开发者 CLI 界面的 clean-room 行为参考，不是运行时依赖或数据源。
+Praxis 只使用一个 native 数据平面，不读取或写入 Claude Code 会话、配置或兼容目录。
 
 ## 要求
 
@@ -27,11 +25,10 @@ Praxis 中相似的界面不能替代对应的 Claude 命令或运行时契约�
 - 用于 Grep 工具的 [`ripgrep`](https://github.com/BurntSushi/ripgrep)（`rg`）
 - Anthropic 或 OpenAI 兼容提供商的 API 密钥和模型 ID
 
-Praxis 不使用 Claude 订阅认证。Claude Code 互操作性涵盖本地会话、配置、权限、记忆、
-技能、钩子、Agent、插件和 MCP 数据。
+Praxis 不使用 Claude 订阅认证。Claude-shaped 消息、工具和 CLI 协议形状在公开界面需要时仍受支持，
+但所有持久化状态都使用 Praxis native 格式。
 
-Claude Team 兼容模式必须显式启用并遵循 fail-closed 语义：支持的删除/发送线协议会路由到原生 Team 操作，
-无法无损表示或尚未支持的 Team 面会被拒绝，不会静默简化。
+Team 操作仅在本地显式启用。无法无损表示或不支持的 Team 负载会被拒绝，不会静默简化。
 
 ## 安装
 
@@ -80,7 +77,7 @@ praxis doctor
 
 请参阅
 [入门指南](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)
-了解提供商设置、共享 Claude 状态、权限、更新和故障排除。
+了解提供商设置、共享 Praxis 状态、权限、更新和故障排除。
 运行 `praxis --help` 获取权威命令界面。
 
 ## Praxis 提供什么
@@ -106,32 +103,18 @@ praxis doctor
 [兼容性矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)，
 而不是本入口 README。
 
-## Claude Code 互操作性
+## Native 数据平面
 
-Praxis 默认使用独立的本地数据平面：
+Praxis 默认使用独立的本地 native 数据平面：
 
 ```text
 Praxis ─── ~/.praxis（或 PRAXIS_HOME）
 ```
 
-需要使用旧版共享 Claude Code 布局（`~/.claude` 或 `CLAUDE_CONFIG_DIR`）时，请运行
-`praxis --data-plane claude`。Praxis 可在该模式下恢复 Claude Code 会话，Claude Code 也可恢复写入其中的兼容会话。
-每个类似 semver 的 Claude Code 生产者版本都会经过结构校验；当条目形状受支持时即可读写兼容。
-schema 适配器依据 transcript 条目结构选择，而不是依据已安装或固定的生产者版本；格式错误或不受支持的形状会在任何写入前安全失败。
-每条 transcript 记录保留其原始生产者版本，因此一个会话可以混合多个版本的受支持形状。
-原生分叉创建是单独且受限的无损复制路径，会保留每条现有源记录的生产者版本，因此可以复制经过黑盒验证的特定外部形状，例如观测到的 Claude Code 2.1.233 记录；
-不受支持的记录形状和未经验证的版本仍会安全失败并保持只读。
-维护者可以通过以下命令证明混合版本 Claude JSONL 互操作性：
-`npm run test:cross-version-session-compat`, `test:cross-version-fork-compat`,
-`test:cross-version-sidechain-compat`, `test:cross-version-compaction-compat`,
-以及 `test:cross-version-resume-at-compat`，覆盖线性恢复、原生分叉、前台旁支、压缩和
-`--resume-session-at` 分支投影。
-每个命令都要求设置 `PRAXIS_CLAUDE_BINARY`（Claude Code 2.1.208）和
-`PRAXIS_CLAUDE_CROSS_VERSION_BINARY`（另一个 Claude Code 版本）。
-
-请参阅
-[兼容性契约](https://github.com/Forest-Isle/Praxis/blob/main/docs/COMPATIBILITY.md)，
-了解准确的共享数据、版本边界、排除项和验证门禁。
+所有会话、记忆、任务、定时任务、资源和私有状态都位于 `~/.praxis`（或 `PRAXIS_HOME`）下。
+权威 transcript 使用 append-only `praxis.transcript` v1 JSONL；旧 Claude transcript、索引、sidechain
+和迁移/恢复路径已删除。`CLAUDE_CONFIG_DIR` 不参与 native 运行，旧目录不会被读取或写入。
+Claude-shaped 消息和工具字段只描述协议形状，不改变 Praxis 的数据归属。
 
 ## 文档
 
@@ -142,7 +125,7 @@ schema 适配器依据 transcript 条目结构选择，而不是依据已安装�
 | 查找全部用户和维护者文档  | [文档索引](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)          |
 | 了解模块和数据流边界      | [架构](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)        |
 | 查看安全假设              | [威胁模型](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)    |
-| 检查 Claude Code 兼容性   | [兼容性矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md) |
+| 检查协议形状和功能状态    | [功能矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)   |
 | 查看交互式 TUI 设计和证据 | [TUI 兼容性](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_PARITY.md)    |
 | 构建、测试和贡献          | [贡献指南](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)         |
 | 验证发布和供应链控制      | [发布契约](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)         |
@@ -174,7 +157,9 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` 会编译当前已实现的 Praxis 核心、提供商适配器、原生 transcript/session 与不含 Claude 兼容适配器的数据平面切片；`npm run test:native:deletion` 会执行产物删除门禁。这些是已实现的 profile 检查，并不表示完整原生包已经 qualified。原生 transcript 迁移仍必须显式执行且可恢复。构建后 CLI smoke gate `npm run verify:native-migration-cli` 会验证全会话 dry-run、发布、文本/JSON 幂等性、回滚及 Claude 数据平面排除；隔离的 active-stream 回归证明可通过 `npm run test:performance:active-stream` 执行，产品 p95 预算仍为 50 ms。
+`npm run build:native` 会编译 Praxis 核心、提供商适配器和 native transcript/session 数据平面；
+`npm run test:native:deletion` 会验证产物不含已删除的 Claude compatibility 模块，并执行 native 会话 smoke gate。
+`npm run test:performance` 运行 native projection scaling/regression 检查，产品 p95 预算仍为 50 ms。
 `npm run check` 还会强制执行对应的源代码依赖方向。
 `npm run test:core-completion` 会运行 #402 的 56 条 user story 审计，并分别报告 implemented、qualified、blocked、deferred 和 out-of-scope；缺少 live 前置条件不会被当作通过。
 

@@ -11,8 +11,8 @@ import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ClaudeJsonResource } from '../../compatibility/claude/shared-resources.js'
-import { loadClaudeSettings } from '../../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../../core/resources.js'
+import { loadNativeSettings } from '../../persistence/native-resources.js'
 import { projectTuiHooks } from './hook-settings.js'
 
 const tempDirectories: string[] = []
@@ -38,9 +38,9 @@ describe('TUI hook settings integration', () => {
     const firstCwd = join(root, 'first')
     const secondCwd = join(root, 'second')
     const userPath = join(configRoot, 'settings.json')
-    const firstProjectPath = join(firstCwd, '.claude', 'settings.json')
-    const firstLocalPath = join(firstCwd, '.claude', 'settings.local.json')
-    const secondProjectPath = join(secondCwd, '.claude', 'settings.json')
+    const firstProjectPath = join(firstCwd, '.praxis', 'settings.json')
+    const firstLocalPath = join(firstCwd, '.praxis', 'settings.local.json')
+    const secondProjectPath = join(secondCwd, '.praxis', 'settings.json')
     const sourcePaths = [
       userPath,
       firstProjectPath,
@@ -85,7 +85,7 @@ describe('TUI hook settings integration', () => {
         ]),
       ),
     )
-    const plugin: ClaudeJsonResource = {
+    const plugin: JsonResource = {
       path: join(root, 'plugin', 'hooks.json'),
       scope: 'user',
       plugin: true,
@@ -101,7 +101,7 @@ describe('TUI hook settings integration', () => {
     }
 
     const first = projectTuiHooks([
-      ...(await loadClaudeSettings({ configRoot, cwd: firstCwd })),
+      ...(await loadNativeSettings({ root: configRoot, cwd: firstCwd })),
       plugin,
     ])
     expect(first.hookCount).toBe(4)
@@ -131,7 +131,7 @@ describe('TUI hook settings integration', () => {
       await readFile(firstProjectPath, 'utf8'),
     )
     const reloaded = projectTuiHooks(
-      await loadClaudeSettings({ configRoot, cwd: firstCwd }),
+      await loadNativeSettings({ root: configRoot, cwd: firstCwd }),
     )
     expect(reloaded.hookCount).toBe(4)
     expect(reloaded.events[0]?.matchers[1]?.hooks).toEqual(
@@ -142,7 +142,7 @@ describe('TUI hook settings integration', () => {
     )
 
     const second = projectTuiHooks(
-      await loadClaudeSettings({ configRoot, cwd: secondCwd }),
+      await loadNativeSettings({ root: configRoot, cwd: secondCwd }),
     )
     expect(second.hookCount).toBe(2)
     expect(

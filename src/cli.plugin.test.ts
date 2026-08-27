@@ -27,11 +27,10 @@ function capture() {
 }
 
 describe('CLI plugin management', () => {
-  it('resolves plugin eval targets from the selected data plane only', async () => {
+  it('resolves plugin eval targets from native storage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-plugin-eval-plane-'))
     roots.push(root)
     const nativeRoot = join(root, 'native')
-    const claudeRoot = join(root, 'claude')
     const plugin = join(root, 'fixture-plugin')
     const evalCase = join(plugin, 'evals', 'native')
     await mkdir(join(plugin, '.claude-plugin'), { recursive: true })
@@ -55,7 +54,6 @@ describe('CLI plugin management', () => {
       }),
     )
     vi.stubEnv('PRAXIS_HOME', nativeRoot)
-    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeRoot)
     const output = capture()
     const models: Array<string | undefined> = []
     const dataPlanes: string[] = []
@@ -82,8 +80,6 @@ describe('CLI plugin management', () => {
     await expect(
       run(
         [
-          '--data-plane',
-          'native',
           '--model',
           'eval-model',
           'plugin',
@@ -104,9 +100,6 @@ describe('CLI plugin management', () => {
     })
     expect(models).toEqual(['eval-model'])
     expect(dataPlanes).toEqual(['native'])
-    await expect(
-      readFile(join(claudeRoot, 'plugins', 'installed.json')),
-    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('validates marketplace manifests and applies strict warning handling', async () => {

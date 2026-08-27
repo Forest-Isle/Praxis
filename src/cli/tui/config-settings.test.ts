@@ -141,7 +141,7 @@ describe('Claude 2.1.208 config settings contract', () => {
       }),
     )
     await writeFile(
-      join(configRoot, '.claude.json'),
+      join(configRoot, 'state.json'),
       JSON.stringify({
         respectGitignore: false,
         workflowSizeGuideline: 'small',
@@ -167,7 +167,7 @@ describe('Claude 2.1.208 config settings contract', () => {
       '{"permissions":{"allow":["Read"]},"unknown":{"keep":true}}\n',
     )
     await writeFile(
-      join(configRoot, '.claude.json'),
+      join(configRoot, 'state.json'),
       '{"projects":{"/work":{"trusted":true}},"unknownState":7}\n',
     )
 
@@ -181,7 +181,7 @@ describe('Claude 2.1.208 config settings contract', () => {
       unknown: { keep: true },
     })
     expect(
-      JSON.parse(await readFile(join(configRoot, '.claude.json'), 'utf8')),
+      JSON.parse(await readFile(join(configRoot, 'state.json'), 'utf8')),
     ).toEqual({
       projects: { '/work': { trusted: true } },
       unknownState: 7,
@@ -253,7 +253,7 @@ describe('Claude 2.1.208 config settings contract', () => {
   it('fails closed on malformed shared files and never replaces them', async () => {
     const configRoot = await root()
     const settingsPath = join(configRoot, 'settings.json')
-    const statePath = join(configRoot, '.claude.json')
+    const statePath = join(configRoot, 'state.json')
     await writeFile(settingsPath, '[]\n')
     await writeFile(statePath, '{')
 
@@ -272,7 +272,7 @@ describe('Claude 2.1.208 config settings contract', () => {
     const configRoot = await root()
     const settingsPath = join(configRoot, 'settings.json')
     await writeFile(settingsPath, '{"unknown":true}\n')
-    await writeFile(join(configRoot, '.claude.json'), '[]\n')
+    await writeFile(join(configRoot, 'state.json'), '[]\n')
 
     await expect(
       saveConfigSetting('autoCompact', false, configRoot),
@@ -297,7 +297,7 @@ describe('Claude 2.1.208 config settings contract', () => {
 
   it('retries when either shared scope changes after validation', async () => {
     const configRoot = await root()
-    const statePath = join(configRoot, '.claude.json')
+    const statePath = join(configRoot, 'state.json')
     await writeFile(join(configRoot, 'settings.json'), '{"existing":true}\n')
     await writeFile(statePath, '{"respectGitignore":true}\n')
     let injected = false
@@ -327,7 +327,7 @@ describe('Claude 2.1.208 config settings contract', () => {
     await writeFile(outsideSettings, '{"keep":"settings"}\n')
     await writeFile(outsideState, '{"keep":"state"}\n')
     await symlink(outsideSettings, join(configRoot, 'settings.json'))
-    await writeFile(join(configRoot, '.claude.json'), '{}\n')
+    await writeFile(join(configRoot, 'state.json'), '{}\n')
 
     await expect(loadConfigSettings(configRoot)).rejects.toThrow(
       'must be a regular file',
@@ -341,8 +341,8 @@ describe('Claude 2.1.208 config settings contract', () => {
 
     await rm(join(configRoot, 'settings.json'))
     await writeFile(join(configRoot, 'settings.json'), '{}\n')
-    await rm(join(configRoot, '.claude.json'))
-    await symlink(outsideState, join(configRoot, '.claude.json'))
+    await rm(join(configRoot, 'state.json'))
+    await symlink(outsideState, join(configRoot, 'state.json'))
     await expect(loadConfigSettings(configRoot)).rejects.toThrow(
       'must be a regular file',
     )

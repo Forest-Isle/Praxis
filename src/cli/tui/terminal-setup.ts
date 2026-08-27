@@ -6,10 +6,7 @@ import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
-import {
-  resolveDataPlane,
-  resolveDataPlaneRoot,
-} from '../../persistence/data-plane.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import type { TuiSlashCommand } from './slash-commands.js'
 
 const execFileAsync = promisify(execFile)
@@ -545,17 +542,11 @@ function appleTerminalPlistPath(options: TuiTerminalSetupOptions): string {
 
 function appleTerminalStatePath(options: TuiTerminalSetupOptions): string {
   const environment = ownEnvironment(options)
-  const dataPlane = resolveDataPlane(environment)
   const root = resolveDataPlaneRoot({
-    dataPlane,
     environment,
     homeDirectory: ownHome(options),
   })
-  return join(
-    root,
-    dataPlane === 'native' ? 'state' : 'praxis',
-    'terminal-setup.json',
-  )
+  return join(root, 'state', 'terminal-setup.json')
 }
 
 function validAppleTerminalProfile(profile: string): boolean {

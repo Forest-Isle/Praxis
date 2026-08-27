@@ -58,7 +58,6 @@ jobs:
           command -v bwrap >/dev/null
           command -v socat >/dev/null
           npm ci
-          npm install --global @anthropic-ai/claude-code@2.1.208
       - name: Validate tag and GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,7 +67,6 @@ jobs:
       - name: Run complete release regression
         run: |
           npm run check
-          npm run test:cli-surface-compat
           npm run test:package
           npm run test:performance
           npm audit --omit=dev

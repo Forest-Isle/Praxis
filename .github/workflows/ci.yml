@@ -58,116 +58,6 @@ jobs:
         run: npm ci
       - name: Run quality gates
         run: npm run check
-      - name: Install pinned Claude baseline for TUI
-        run: npm install --prefix /tmp/praxis-claude-pin-21208 @anthropic-ai/claude-code@2.1.208
-      - name: Verify pinned Claude baseline for TUI
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-        run: test "$("$PRAXIS_CLAUDE_BINARY" --version | awk '{print $1}')" = "2.1.208"
-      - name: Verify interactive TUI
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-        run: npm run test:tui-compat
-      - name: Audit production dependencies
-        run: npm audit --omit=dev
-
-  compatibility:
-    name: Claude CLI contract
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-      - name: Install ripgrep
-        run: |
-          command -v rg >/dev/null || (
-            # GitHub-hosted Ubuntu runners point apt at azure.archive.ubuntu.com,
-            # which is sometimes unreachable. Rewrite the mirror selection to the
-            # canonical archive.ubuntu.com when the runner exposes it, and keep the
-            # runner defaults when the mirror metadata or source file is absent.
-            if [ -f /etc/apt/apt-mirrors.txt ]; then
-              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
-            fi
-            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
-              [ -f "$source" ] || continue
-              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$source"
-            done
-            timeout 180s sudo apt-get update \
-              -o Acquire::Retries=3 \
-              -o Acquire::http::Timeout=30 \
-              -o Acquire::https::Timeout=30 &&
-            timeout 180s sudo apt-get install -y ripgrep
-          )
-      - name: Install dependencies and compatibility baselines
-        run: |
-          npm ci
-          npm install --prefix /tmp/praxis-claude-pin-21208 @anthropic-ai/claude-code@2.1.208
-          npm install --prefix /tmp/praxis-claude-pin-21233 @anthropic-ai/claude-code@2.1.233
-          echo "/tmp/praxis-claude-pin-21208/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Verify pinned Claude baselines
-        run: |
-          test "$(/tmp/praxis-claude-pin-21208/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.208"
-          test "$(/tmp/praxis-claude-pin-21233/node_modules/.bin/claude --version | awk '{print $1}')" = "2.1.233"
-      - name: Verify credential-free Claude CLI contract
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-        run: npm run test:cli-surface-compat
-      - name: Verify interactive background handoff
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-        run: npm run test:background-command-compat
-      - name: Verify pinned memory import contract
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-        run: npm run test:memory-import-compat
-      - name: Verify historical cross-version contracts
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21208/node_modules/.bin/claude
-          PRAXIS_CLAUDE_CROSS_VERSION_BINARY: /tmp/praxis-claude-pin-21233/node_modules/.bin/claude
-        run: |
-          npm run test:cross-version-session-compat
-          npm run test:cross-version-resume-at-compat
-          npm run test:cross-version-fork-compat
-          npm run test:cross-version-sidechain-compat
-          npm run test:cross-version-compaction-compat
-  core-design-drift:
-    name: Claude 2.1.237 core drift
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-      - name: Install dependencies and pinned core baseline
-        run: |
-          npm ci
-          npm install --prefix /tmp/praxis-claude-pin-21237 @anthropic-ai/claude-code@2.1.237
-          echo "/tmp/praxis-claude-pin-21237/node_modules/.bin" >> "$GITHUB_PATH"
-      - name: Verify pinned core baseline
-        run: test "$(claude --version | awk '{print $1}')" = "2.1.237"
-      - name: Verify executable core evidence matrix
-        run: npm run test:core-design-drift
-      - name: Verify pinned session metadata contract
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude
-        run: npm run test:session-metadata-compat
-      - name: Verify pinned background Agent contract
-        env:
-          PRAXIS_CLAUDE_BINARY: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude
-        run: npm run test:background-agent-compat
-      - name: Verify pinned plugin eval contract
-        env:
-          PRAXIS_CLAUDE_2_1_237: /tmp/praxis-claude-pin-21237/node_modules/.bin/claude
-        run: npm run test:plugin-eval-compat
 
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -186,52 +76,21 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - name: Install ripgrep on Linux
-        if: runner.os == 'Linux'
-        run: |
-          command -v rg >/dev/null || (
-            # GitHub-hosted Ubuntu runners point apt at azure.archive.ubuntu.com,
-            # which is sometimes unreachable. Rewrite the mirror selection to the
-            # canonical archive.ubuntu.com when the runner exposes it, and keep the
-            # runner defaults when the mirror metadata or source file is absent.
-            if [ -f /etc/apt/apt-mirrors.txt ]; then
-              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
-            fi
-            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
-              [ -f "$source" ] || continue
-              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$source"
-            done
-            timeout 180s sudo apt-get update \
-              -o Acquire::Retries=3 \
-              -o Acquire::http::Timeout=30 \
-              -o Acquire::https::Timeout=30 &&
-            timeout 180s sudo apt-get install -y ripgrep
-          )
-      - name: Install ripgrep on macOS
-        if: runner.os == 'macOS'
-        run: command -v rg >/dev/null || brew install ripgrep
       - name: Install dependencies
         run: npm ci
       - name: Verify installed release package
         run: npm run test:package
-      - name: Verify performance budgets
-        if: runner.os == 'Linux' && matrix.node == 24 || runner.os == 'macOS' && matrix.node == 25
-        run: npm run test:performance
 
   required:
     name: CI
     if: always()
-    needs: [quality, compatibility, core-design-drift, release-regression]
+    needs: [quality, release-regression]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI lane
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
-          COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
-          CORE_DRIFT_RESULT: ${{ needs.core-design-drift.result }}
           RELEASE_RESULT: ${{ needs.release-regression.result }}
         run: |
           test "$QUALITY_RESULT" = success
-          test "$COMPATIBILITY_RESULT" = success
-          test "$CORE_DRIFT_RESULT" = success
           test "$RELEASE_RESULT" = success

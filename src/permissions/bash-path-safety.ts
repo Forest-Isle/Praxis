@@ -136,9 +136,9 @@ const SENSITIVE_FILES = new Set([
   '.profile',
   '.ripgreprc',
   '.mcp.json',
-  '.claude.json',
+  'state.json',
 ])
-const SENSITIVE_DIRECTORIES = new Set(['.git', '.vscode', '.idea', '.claude'])
+const SENSITIVE_DIRECTORIES = new Set(['.git', '.vscode', '.idea', '.praxis'])
 const GLOB = /[*?[\]{}]/u
 
 function positionalArguments(args: readonly string[]): string[] {
@@ -469,7 +469,6 @@ function sensitivePath(path: string): boolean {
   for (let index = 0; index < segments.length; index += 1) {
     const segment = segments[index] ?? ''
     if (!SENSITIVE_DIRECTORIES.has(segment)) continue
-    if (segment === '.claude' && segments[index + 1] === 'worktrees') continue
     return true
   }
   return SENSITIVE_FILES.has(segments.at(-1) ?? '')

@@ -51,15 +51,14 @@ async function configFixture(): Promise<{
   }
   await mkdir(configRoot, { recursive: true })
   await writeFile(
-    join(configRoot, '.claude.json'),
+    join(configRoot, 'mcp.json'),
     JSON.stringify({
       mcpServers: {
         [server.name]: { type: server.type, url: server.url },
       },
     }),
   )
-  vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
-  vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
+  vi.stubEnv('PRAXIS_HOME', configRoot)
   vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
   return { configRoot, server }
 }
@@ -76,8 +75,7 @@ async function temporaryConfigRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cli-mcp-add-'))
   roots.push(root)
   const configRoot = join(root, 'config')
-  vi.stubEnv('CLAUDE_CONFIG_DIR', configRoot)
-  vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
+  vi.stubEnv('PRAXIS_HOME', configRoot)
   vi.stubEnv('PRAXIS_MCP_OAUTH_STORE', 'file')
   return configRoot
 }
@@ -87,12 +85,8 @@ describe('Praxis MCP CLI commands', () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-cli-native-mcp-'))
     roots.push(root)
     const praxisRoot = join(root, 'praxis')
-    const claudeRoot = join(root, 'claude')
     await mkdir(praxisRoot, { recursive: true })
-    await mkdir(claudeRoot, { recursive: true })
-    await writeFile(join(claudeRoot, '.claude.json'), 'claude-marker\n')
     vi.stubEnv('PRAXIS_HOME', praxisRoot)
-    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeRoot)
     const capture = captureIO()
 
     await expect(
@@ -115,9 +109,6 @@ describe('Praxis MCP CLI commands', () => {
     await expect(
       readFile(join(praxisRoot, 'mcp.json'), 'utf8'),
     ).resolves.toContain('native-fixture')
-    await expect(
-      readFile(join(claudeRoot, '.claude.json'), 'utf8'),
-    ).resolves.toBe('claude-marker\n')
   })
 
   it('adds a stdio server with repeatable environment variables and subprocess arguments', async () => {
@@ -129,6 +120,8 @@ describe('Praxis MCP CLI commands', () => {
         [
           'mcp',
           'add',
+          '--scope',
+          'user',
           'stdio-fixture',
           '-e',
           'ONE=1',
@@ -145,19 +138,16 @@ describe('Praxis MCP CLI commands', () => {
     ).resolves.toBe(0)
 
     const state = JSON.parse(
-      await readFile(join(configRoot, '.claude.json'), 'utf8'),
-    ) as {
-      projects: Record<string, { mcpServers: Record<string, unknown> }>
-    }
-    const project = Object.values(state.projects)[0]
-    expect(project?.mcpServers['stdio-fixture']).toEqual({
+      await readFile(join(configRoot, 'mcp.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> }
+    expect(state.mcpServers['stdio-fixture']).toEqual({
       type: 'stdio',
       command: 'node',
       args: ['server.mjs', '--flag'],
       env: { ONE: '1', TWO: 'two' },
     })
     expect(capture.stdout.join('')).toContain(
-      'Added stdio MCP server stdio-fixture with command: node server.mjs --flag to local config',
+      'Added stdio MCP server stdio-fixture with command: node server.mjs --flag to user config',
     )
   })
 
@@ -209,7 +199,7 @@ describe('Praxis MCP CLI commands', () => {
     ).resolves.toBe(0)
 
     const userState = JSON.parse(
-      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+      await readFile(join(configRoot, 'mcp.json'), 'utf8'),
     ) as { mcpServers: Record<string, unknown> }
     expect(userState.mcpServers['web-fixture']).toEqual({
       type: 'http',
@@ -271,7 +261,7 @@ describe('Praxis MCP CLI commands', () => {
       ),
     ).resolves.toBe(0)
 
-    const shared = await readFile(join(configRoot, '.claude.json'), 'utf8')
+    const shared = await readFile(join(configRoot, 'mcp.json'), 'utf8')
     expect(shared).not.toContain('fixture-json-secret')
     const credentials = JSON.parse(
       await readFile(join(configRoot, '.credentials.json'), 'utf8'),
@@ -295,6 +285,8 @@ describe('Praxis MCP CLI commands', () => {
         [
           'mcp',
           'add',
+          '--scope',
+          'user',
           '-t',
           'http',
           name,
@@ -316,6 +308,8 @@ describe('Praxis MCP CLI commands', () => {
         [
           'mcp',
           'add',
+          '--scope',
+          'user',
           '-t',
           'http',
           'http-extra',
@@ -330,18 +324,25 @@ describe('Praxis MCP CLI commands', () => {
     ).resolves.toBe(0)
     await expect(
       run(
-        ['mcp', 'add', 'stdio-header', 'node', '-H', 'X-Test: yes'],
+        [
+          'mcp',
+          'add',
+          '--scope',
+          'user',
+          'stdio-header',
+          'node',
+          '-H',
+          'X-Test: yes',
+        ],
         capture.io,
         baseDependencies(),
       ),
     ).resolves.toBe(0)
 
     const state = JSON.parse(
-      await readFile(join(configRoot, '.claude.json'), 'utf8'),
-    ) as {
-      projects: Record<string, { mcpServers: Record<string, unknown> }>
-    }
-    const servers = Object.values(state.projects)[0]?.mcpServers ?? {}
+      await readFile(join(configRoot, 'mcp.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> }
+    const servers = state.mcpServers
     expect(servers['callback-alpha']).toEqual({
       type: 'http',
       url: 'https://example.test/mcp',
@@ -389,6 +390,8 @@ describe('Praxis MCP CLI commands', () => {
         [
           'mcp',
           'add',
+          '--scope',
+          'user',
           '-t',
           'http',
           'rollback-fixture',
@@ -404,13 +407,9 @@ describe('Praxis MCP CLI commands', () => {
     persist.mockRestore()
 
     const state = JSON.parse(
-      await readFile(join(configRoot, '.claude.json'), 'utf8'),
-    ) as {
-      projects: Record<string, { mcpServers: Record<string, unknown> }>
-    }
-    expect(
-      Object.values(state.projects)[0]?.mcpServers['rollback-fixture'],
-    ).toBeUndefined()
+      await readFile(join(configRoot, 'mcp.json'), 'utf8'),
+    ) as { mcpServers: Record<string, unknown> }
+    expect(state.mcpServers['rollback-fixture']).toBeUndefined()
     expect(capture.stderr.join('')).toContain('credential write failed')
   })
 
@@ -460,7 +459,7 @@ describe('Praxis MCP CLI commands', () => {
     persist.mockRestore()
 
     const state = JSON.parse(
-      await readFile(join(configRoot, '.claude.json'), 'utf8'),
+      await readFile(join(configRoot, 'mcp.json'), 'utf8'),
     ) as { mcpServers: Record<string, unknown> }
     expect(state.mcpServers['rollback-json']).toEqual({
       type: 'http',
@@ -511,7 +510,7 @@ describe('Praxis MCP CLI commands', () => {
       expect(capture.stderr.join('')).toContain(pattern)
     }
     await expect(
-      readFile(join(configRoot, '.claude.json'), 'utf8'),
+      readFile(join(configRoot, 'mcp.json'), 'utf8'),
     ).rejects.toMatchObject({
       code: 'ENOENT',
     })
@@ -555,16 +554,13 @@ describe('Praxis MCP CLI commands', () => {
   it('passes configured OAuth client credentials and callback port into login', async () => {
     const fixture = await configFixture()
     const state = JSON.parse(
-      await readFile(join(fixture.configRoot, '.claude.json'), 'utf8'),
+      await readFile(join(fixture.configRoot, 'mcp.json'), 'utf8'),
     ) as { mcpServers: Record<string, Record<string, unknown>> }
     state.mcpServers[fixture.server.name] = {
       ...state.mcpServers[fixture.server.name],
       oauth: { clientId: 'fixture-client', callbackPort: 4321 },
     }
-    await writeFile(
-      join(fixture.configRoot, '.claude.json'),
-      JSON.stringify(state),
-    )
+    await writeFile(join(fixture.configRoot, 'mcp.json'), JSON.stringify(state))
     await new ClaudeMcpOAuthStore({
       configRoot: fixture.configRoot,
       useKeychain: false,

@@ -136,8 +136,7 @@ export class ClaudeCostStateStore {
     this.statePath = options.statePath
     this.projectIdentity = options.projectIdentity
     this.lockFile =
-      options.lockFile ??
-      join(dirname(options.statePath), '.praxis-claude-state.lock')
+      options.lockFile ?? join(dirname(options.statePath), '.praxis-state.lock')
     this.lease = new ExclusiveFileLease(this.lockFile)
     this.sidecar =
       options.sidecarPath === undefined

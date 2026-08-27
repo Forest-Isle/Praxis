@@ -5,10 +5,10 @@ import { promisify } from 'node:util'
 import { CronExpressionParser } from 'cron-parser'
 
 import {
-  ClaudeScheduledTaskLimitError,
-  ClaudeScheduledTaskStore,
-  type ClaudeScheduledTask,
-} from '../persistence/claude-scheduled-task-store.js'
+  NativeScheduledTaskLimitError,
+  NativeScheduledTaskStore,
+  type NativeScheduledTask,
+} from '../persistence/native-scheduled-task-store.js'
 
 const execFileAsync = promisify(execFile)
 const RECURRING_LIFETIME_MS = 7 * 24 * 60 * 60 * 1_000
@@ -52,7 +52,7 @@ export interface ScheduledPrompt {
   prompt: string
 }
 
-export interface ListedScheduledPrompt extends ClaudeScheduledTask {
+export interface ListedScheduledPrompt extends NativeScheduledTask {
   durable: boolean
 }
 
@@ -86,7 +86,7 @@ function processAlive(pid: number): boolean {
   }
 }
 
-function scheduledTime(task: ClaudeScheduledTask, after: number): number {
+function scheduledTime(task: NativeScheduledTask, after: number): number {
   const base = nextOccurrence(task.cron, after)
   const fraction = Number.parseInt(task.id, 16) / 0xffffffff
   if (!task.recurring) {
@@ -151,8 +151,8 @@ async function processStart(pid: number): Promise<string | null> {
 }
 
 export class ScheduledPromptManager {
-  private readonly store: ClaudeScheduledTaskStore
-  private readonly sessionTasks = new Map<string, ClaudeScheduledTask>()
+  private readonly store: NativeScheduledTaskStore
+  private readonly sessionTasks = new Map<string, NativeScheduledTask>()
   private readonly dueAt = new Map<string, number>()
   private readonly dueQueue: ScheduledPrompt[] = []
   private readonly pendingConfirmations = new Map<string, ScheduledPrompt>()
@@ -170,7 +170,7 @@ export class ScheduledPromptManager {
   private closed = false
 
   constructor(options: ScheduledPromptManagerOptions) {
-    this.store = new ClaudeScheduledTaskStore({
+    this.store = new NativeScheduledTaskStore({
       filePath: options.filePath,
       lockFile: options.lockFile,
     })
@@ -202,12 +202,12 @@ export class ScheduledPromptManager {
       createdByPid: process.pid,
       createdByProcStart: await this.ownProcessStart,
     }
-    let task: ClaudeScheduledTask
+    let task: NativeScheduledTask
     if (input.durable) {
       try {
         task = await this.store.create(base, { maxJobs: MAX_JOBS })
       } catch (error) {
-        if (error instanceof ClaudeScheduledTaskLimitError) {
+        if (error instanceof NativeScheduledTaskLimitError) {
           throw new ScheduledJobLimitError(MAX_JOBS)
         }
         throw error
@@ -472,7 +472,7 @@ export class ScheduledPromptManager {
     this.dynamicWakeups.clear()
   }
 
-  private async hasLiveOwner(task: ClaudeScheduledTask): Promise<boolean> {
+  private async hasLiveOwner(task: NativeScheduledTask): Promise<boolean> {
     if (task.createdByPid === process.pid) return false
     if (!processAlive(task.createdByPid)) return false
     const started = await this.readProcessStart(task.createdByPid)

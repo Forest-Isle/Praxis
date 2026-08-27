@@ -93,7 +93,6 @@ describe.sequential('native TUI data plane', () => {
     await persistTuiPermissionUpdates({
       configRoot: root,
       cwd,
-      dataPlane: 'native',
       updates: [
         {
           type: 'addRules',
@@ -123,7 +122,6 @@ describe.sequential('native TUI data plane', () => {
     const memory = await loadTuiMemoryFiles({
       configRoot: root,
       cwd,
-      dataPlane: 'native',
     })
     expect(memory.entries.map((entry) => entry.path)).toContain(
       join(cwd, '.praxis', 'PRAXIS.md'),

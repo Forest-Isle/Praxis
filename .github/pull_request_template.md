@@ -9,7 +9,6 @@
 ## Verification
 
 - [ ] `npm run check`
-- [ ] Relevant compatibility gate or `npm run test:compat:all`
 - [ ] Package/performance gates when release behavior is affected
 - [ ] Documentation updated
 - [ ] No credentials, transcripts, generated `dist/`, or tarballs committed

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { resolveClaudePaths } from '../compatibility/claude/paths.js'
+import { resolveNativePaths } from '../native/paths.js'
 import { LocalToolRegistry } from './local-tools.js'
 import { ClaudeTaskToolRegistry } from './claude-task-tools.js'
 import type { ModelProvider, PermissionResolver } from '../core/runtime.js'
@@ -26,7 +26,7 @@ async function createRegistry() {
   await mkdir(cwd)
   const configRoot = join(root, 'config')
   const sessionId = '20202020-2020-4020-8020-202020202020'
-  const paths = resolveClaudePaths({ configDir: configRoot, cwd, sessionId })
+  const paths = resolveNativePaths({ configDir: configRoot, cwd, sessionId })
   return {
     root,
     cwd,
@@ -189,7 +189,7 @@ describe('ClaudeTaskToolRegistry', () => {
 
   it('runs blocking task lifecycle hooks at create and completion boundaries', async () => {
     const fixture = await createRegistry()
-    const paths = resolveClaudePaths({
+    const paths = resolveNativePaths({
       configDir: fixture.configRoot,
       cwd: fixture.cwd,
       sessionId: fixture.sessionId,
@@ -367,7 +367,7 @@ describe('ClaudeTaskToolRegistry', () => {
     }
     const executor = new ClaudeSubagentExecutor({
       configRoot,
-      dataPlane: 'claude',
+      dataPlane: 'native',
       cwd,
       claudeVersion: '2.1.208',
       provider,

@@ -9,16 +9,12 @@ import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
 } from '../platform/exclusive-file-lease.js'
-import {
-  loadClaudeSharedResources,
-  resolveClaudeProjectIdentity,
-  type ClaudeJsonResource,
-  type ClaudeResourceScope,
-} from '../compatibility/claude/shared-resources.js'
+import type { JsonResource, ResourceScope } from '../core/resources.js'
+import { resolveProjectIdentity } from '../platform/project-identity.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 import { loadNativeSharedResources } from '../persistence/native-resources.js'
 
-export type McpScope = ClaudeResourceScope
+export type McpScope = ResourceScope
 export type McpServerConfig = Record<string, unknown>
 
 export interface McpServerRecord {
@@ -46,9 +42,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function filterDisabledMcpResources(
-  resources: readonly ClaudeJsonResource[],
+  resources: readonly JsonResource[],
   disabledNames: readonly string[],
-): readonly ClaudeJsonResource[] {
+): readonly JsonResource[] {
   if (disabledNames.length === 0) return resources
   const disabled = new Set(disabledNames)
   return resources.map((resource) => {
@@ -273,37 +269,21 @@ export class ClaudeMcpManagement {
   private readonly beforeCommit?: McpManagementOptions['beforeCommit']
 
   constructor(options: McpManagementOptions) {
-    this.dataPlane = options.dataPlane ?? 'claude'
-    this.configRoot = resolve(
-      options.configRoot ??
-        process.env.CLAUDE_CONFIG_DIR ??
-        join(homedir(), '.claude'),
-    )
+    this.dataPlane = options.dataPlane ?? 'native'
+    this.configRoot = resolve(options.configRoot ?? join(homedir(), '.praxis'))
     this.statePath = resolve(
-      options.statePath ??
-        join(
-          this.configRoot,
-          this.dataPlane === 'native' ? 'state.json' : '.claude.json',
-        ),
+      options.statePath ?? join(this.configRoot, 'state.json'),
     )
     this.cwd = resolve(options.cwd)
     this.beforeCommit = options.beforeCommit
   }
 
   async list(scope?: McpScope): Promise<McpServerRecord[]> {
-    const resources =
-      this.dataPlane === 'native'
-        ? await loadNativeSharedResources({
-            root: this.configRoot,
-            cwd: this.cwd,
-            includeProjectMemory: false,
-          })
-        : await loadClaudeSharedResources({
-            configRoot: this.configRoot,
-            cwd: this.cwd,
-            settingSources: ['user', 'project', 'local'],
-            includeProjectMemory: false,
-          })
+    const resources = await loadNativeSharedResources({
+      root: this.configRoot,
+      cwd: this.cwd,
+      includeProjectMemory: false,
+    })
     const records = new Map<string, McpServerRecord>()
     for (const resource of resources.mcp) {
       for (const [name, config] of Object.entries(
@@ -383,7 +363,7 @@ export class ClaudeMcpManagement {
 
   async resetProjectChoices(): Promise<void> {
     const path = this.statePath
-    const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
+    const identity = await resolveProjectIdentity(this.cwd)
     await mutateJson(
       path,
       (root) => {
@@ -402,7 +382,7 @@ export class ClaudeMcpManagement {
 
   async disabled(): Promise<readonly string[]> {
     const path = this.statePath
-    const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
+    const identity = await resolveProjectIdentity(this.cwd)
     const root = (await readJsonSource(path, true)).value
     return disabledServerNames(projectState(root, identity, path), path)
   }
@@ -415,7 +395,7 @@ export class ClaudeMcpManagement {
     this.validateName(name)
     await this.get(name, scope)
     const path = this.statePath
-    const identity = await resolveClaudeProjectIdentity({ cwd: this.cwd })
+    const identity = await resolveProjectIdentity(this.cwd)
     await mutateJson(
       path,
       (root) => {
@@ -441,23 +421,14 @@ export class ClaudeMcpManagement {
   }
 
   private async target(scope: McpScope): Promise<McpTarget> {
-    if (this.dataPlane === 'native') {
-      if (scope === 'user') return { path: join(this.configRoot, 'mcp.json') }
-      return {
-        path: join(
-          this.cwd,
-          '.praxis',
-          scope === 'local' ? 'mcp.local.json' : 'mcp.json',
-        ),
-      }
+    if (scope === 'user') return { path: join(this.configRoot, 'mcp.json') }
+    return {
+      path: join(
+        this.cwd,
+        '.praxis',
+        scope === 'local' ? 'mcp.local.json' : 'mcp.json',
+      ),
     }
-    if (scope === 'project') return { path: join(this.cwd, '.mcp.json') }
-    const path = this.statePath
-    if (scope === 'user') return { path }
-    const projectIdentity = await resolveClaudeProjectIdentity({
-      cwd: this.cwd,
-    })
-    return { path, projectIdentity }
   }
 
   private validateName(name: string): void {

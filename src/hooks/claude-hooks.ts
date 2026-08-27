@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { basename, isAbsolute, resolve } from 'node:path'
 
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../core/resources.js'
 import type { PermissionBehavior } from '../core/runtime.js'
 import type { ClaudeSessionEnvironment } from './claude-session-environment.js'
 import {
@@ -138,7 +138,7 @@ export type ClaudeHookCommandExecutor = (
 ) => Promise<ProcessResult>
 
 export interface ClaudeHookRunnerOptions {
-  settings: readonly ClaudeJsonResource[]
+  settings: readonly JsonResource[]
   cwd: string
   maxOutputBytes?: number
   maxTimeoutMs?: number
@@ -197,7 +197,7 @@ function combinedSensitiveValues(
 }
 
 function eventSettings(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
   event: ClaudeHookEventName,
   maxTimeoutMs: number,
 ): HookMatcher[] {
@@ -280,7 +280,7 @@ function eventSettings(
 }
 
 function fileChangedMatcherPaths(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
   cwd: string,
 ): readonly string[] {
   const paths: string[] = []
@@ -307,7 +307,7 @@ function fileChangedMatcherPaths(
 }
 
 export function validateClaudeHooks(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
   maxTimeoutMs = DEFAULT_TIMEOUT_MS,
 ): void {
   if (
@@ -391,7 +391,7 @@ function abortError(): DOMException {
 }
 
 export class ClaudeHookRunner {
-  private readonly settings: readonly ClaudeJsonResource[]
+  private readonly settings: readonly JsonResource[]
   private readonly maxOutputBytes: number
   private readonly maxTimeoutMs: number
   private readonly executeCommand: ClaudeHookCommandExecutor
@@ -414,9 +414,7 @@ export class ClaudeHookRunner {
     this.asynchronousHooks = asynchronousHooks
   }
 
-  withAdditionalSettings(
-    settings: readonly ClaudeJsonResource[],
-  ): ClaudeHookRunner {
+  withAdditionalSettings(settings: readonly JsonResource[]): ClaudeHookRunner {
     return new ClaudeHookRunner(
       {
         settings: [...this.settings, ...settings],

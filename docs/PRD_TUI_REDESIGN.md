@@ -1,5 +1,11 @@
 # Praxis TUI Redesign PRD
 
+> Native-only note: this PRD was drafted before the native-only data-plane
+> decision. The active runtime stores sessions, resources, and operational
+> state under `~/.praxis` (or `PRAXIS_HOME`); Claude-shaped message/tool
+> semantics remain protocol references only, and legacy Claude directories are
+> neither read nor written.
+
 ## Problem Statement
 
 Praxis has a broad, Claude-compatible Ink TUI surface, but the primary
@@ -11,8 +17,8 @@ anchor, and fullscreen/classic/accessibility presentations do not yet share a
 strong enough layout and design system.
 
 The redesign must improve stability, performance, visual quality, and ease of
-use while preserving the lower-level contracts that make Praxis compatible with
-Claude's shared data plane.
+use while preserving the lower-level Claude-shaped message/tool contracts that
+remain part of Praxis's public surface.
 
 ## Solution
 
@@ -66,8 +72,9 @@ around a minimal, low-noise reading model:
     terminal writes so that the interface remains responsive.
 15. As a user with accessibility needs, I want semantic screen-reader output
     without decorative layout or animation being required.
-16. As a Claude-compatible user, I want shared JSONL transcripts, permissions,
-    sessions, and runtime behavior to remain compatible after the redesign.
+16. As a user relying on Claude-shaped CLI semantics, I want native JSONL
+    transcripts, permissions, sessions, and runtime behavior to remain stable
+    after the redesign.
 17. As a maintainer, I want fullscreen, classic, and screen-reader surfaces to
     consume one view model so that behavior does not drift between renderers.
 18. As a maintainer, I want pure projection and rendering seams so that UI
@@ -122,19 +129,19 @@ around a minimal, low-noise reading model:
 - Extend performance coverage for input latency, bounded streaming refreshes,
   long-transcript visible rendering, resize stability, memory retention, and
   terminal write volume.
-- Preserve and rerun existing TUI compatibility and full project gates after
-  each coherent migration slice.
+- Preserve and rerun the native TUI and full project gates after each coherent
+  implementation slice.
 
 ## Out of Scope
 
 - Changes to provider APIs, agent runtime semantics, permission semantics, or
-  Claude-compatible transcript schema.
+  the native transcript event schema and its Claude-shaped message/tool fields.
 - Accounts, organizations, RBAC, billing, telemetry control planes, IDE
   surfaces, or remote-control features.
-- Copying Claude Code source implementation or creating a competing `.claude`
-  session, memory, skill, or project-instruction ecosystem.
+- Copying Claude Code source implementation or creating a competing legacy
+  `.claude` session, memory, skill, or project-instruction ecosystem.
 - Replacing Ink or introducing a browser/GUI frontend.
-- A one-shot rewrite that discards existing behavior before compatibility is
+- A one-shot rewrite that discards existing behavior before native behavior is
   proven.
 
 ## Further Notes

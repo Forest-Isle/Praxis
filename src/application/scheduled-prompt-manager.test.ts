@@ -27,7 +27,7 @@ async function fixture(
 ) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-cron-manager-'))
   roots.push(root)
-  const filePath = join(root, 'work', '.claude', 'scheduled_tasks.json')
+  const filePath = join(root, 'work', '.praxis', 'scheduled', 'project.json')
   return {
     filePath,
     manager: new ScheduledPromptManager({
@@ -45,7 +45,7 @@ async function fixture(
 const sessionId = '20202020-2020-4020-8020-202020202020'
 
 describe('ScheduledPromptManager', () => {
-  it('keeps session tasks in memory and durable tasks in Claude state', async () => {
+  it('keeps session tasks in memory and durable tasks in native state', async () => {
     const now = () => new Date('2026-08-05T14:00:00Z').getTime()
     const { filePath, manager } = await fixture(now)
     const session = await manager.create({
@@ -311,7 +311,7 @@ describe('ScheduledPromptManager', () => {
     })
   })
 
-  it('keeps short wakeups inside Claude cache window when minute alignment overshoots', async () => {
+  it('keeps short wakeups inside the native cache window when minute alignment overshoots', async () => {
     const now = new Date(2026, 0, 1, 0, 0, 10).getTime()
     const { manager } = await fixture(() => now, true)
 
@@ -456,7 +456,7 @@ describe('ScheduledPromptManager', () => {
     await expect(manager.next(controller.signal)).resolves.toBeNull()
   })
 
-  it('validates the five-field Claude cron contract', () => {
+  it('validates the five-field native cron contract', () => {
     expect(() => assertCronExpression('bad cron')).toThrow(
       "Invalid cron expression 'bad cron'. Expected 5 fields: M H DoM Mon DoW.",
     )
@@ -467,7 +467,7 @@ describe('ScheduledPromptManager', () => {
     const now = () => new Date('2026-08-05T14:00:00Z').getTime()
     const root = await mkdtemp(join(tmpdir(), 'praxis-cron-manager-'))
     roots.push(root)
-    const filePath = join(root, 'work', '.claude', 'scheduled_tasks.json')
+    const filePath = join(root, 'work', '.praxis', 'scheduled', 'project.json')
     const options = {
       filePath,
       lockFile: join(root, 'config', 'praxis', 'locks', 'cron.lock'),

@@ -29,6 +29,10 @@ export interface TranscriptContextBoundaryEvent extends TranscriptEventIdentity 
   readonly preTokens: number
   readonly postTokens: number
   readonly durationMs: number
+  /** Range metadata for selective manual compaction. */
+  readonly direction?: 'from' | 'up_to'
+  readonly messagesSummarized?: number
+  readonly preservePrefix?: boolean
 }
 
 export interface TranscriptContextSummaryEvent extends TranscriptEventIdentity {
@@ -260,12 +264,22 @@ export function isTranscriptEvent(value: unknown): value is TranscriptEvent {
         'preTokens',
         'postTokens',
         'durationMs',
+        'direction',
+        'messagesSummarized',
+        'preservePrefix',
       ]) &&
       isNonEmptyString(value.logicalParentId) &&
       (value.trigger === 'auto' || value.trigger === 'manual') &&
       isNonNegativeNumber(value.preTokens) &&
       isNonNegativeNumber(value.postTokens) &&
-      isNonNegativeNumber(value.durationMs)
+      isNonNegativeNumber(value.durationMs) &&
+      (!('direction' in value) ||
+        value.direction === 'from' ||
+        value.direction === 'up_to') &&
+      (!('messagesSummarized' in value) ||
+        isNonNegativeNumber(value.messagesSummarized)) &&
+      (!('preservePrefix' in value) ||
+        typeof value.preservePrefix === 'boolean')
     )
   }
   return (

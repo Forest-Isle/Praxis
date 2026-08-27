@@ -1,7 +1,6 @@
 import { mkdir, readFile, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import type { ClaudeTranscriptEntry } from '../compatibility/claude/schema.js'
 import type {
   ModelToolCall,
   ModelToolDefinition,
@@ -405,9 +404,14 @@ export class ClaudeInteractiveToolManager {
     return new ClaudeInteractiveToolRegistry(base, this, sessionId)
   }
 
-  restore(sessionId: string, entries: readonly ClaudeTranscriptEntry[]): void {
+  restore(sessionId: string, entries: readonly unknown[]): void {
     const modes = entries
-      .filter((entry) => entry.type === 'permission-mode')
+      .filter(
+        (entry): entry is { type: string; permissionMode?: unknown } =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as { type?: unknown }).type === 'permission-mode',
+      )
       .map((entry) => entry.permissionMode)
       .filter((mode): mode is ClaudePermissionMode =>
         [

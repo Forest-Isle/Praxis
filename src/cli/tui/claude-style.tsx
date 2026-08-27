@@ -10,8 +10,6 @@ import {
 import { Box, Text } from 'ink'
 
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
-import type { AgentColorName } from '../../compatibility/claude/agent-color.js'
-import type { DataPlane } from '../../persistence/data-plane.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
 import type { TuiFileEntry } from './file-picker.js'
@@ -48,6 +46,7 @@ import {
   type TuiSemanticTheme,
   type TuiSyntaxToken,
   type TuiTheme,
+  type AgentColorName,
 } from './theme.js'
 const SPINNER = ['✳', '✢', '✣', '✤', '✥'] as const
 
@@ -151,12 +150,10 @@ export function WelcomePanel({
   display,
   width,
   showTips,
-  dataPlane = 'claude',
 }: {
   display: TuiDisplayMetadata
   width: number
   showTips: boolean
-  dataPlane?: DataPlane
 }) {
   const theme = useTuiTheme()
   if (!showTips) return null
@@ -221,16 +218,10 @@ export function WelcomePanel({
           marginTop={wide ? 0 : 1}
         >
           <Text bold>Get started</Text>
-          <Text wrap="truncate-end">
-            /init to create {dataPlane === 'native' ? 'PRAXIS.md' : 'CLAUDE.md'}
-          </Text>
+          <Text wrap="truncate-end">/init to create PRAXIS.md</Text>
           <Text wrap="truncate-end">/config to open settings</Text>
           <Text dimColor> </Text>
-          <Text bold>
-            {dataPlane === 'native'
-              ? 'Stored by Praxis'
-              : 'Shared with Claude Code'}
-          </Text>
+          <Text bold>Stored by Praxis</Text>
           <Text dimColor wrap="truncate-end">
             Sessions · memory · skills
           </Text>
@@ -1830,14 +1821,8 @@ export function MemoryDashboard({
   width: number
   screenReader: boolean
 }) {
-  const {
-    autoMemoryEnabled,
-    entries,
-    selectedIndex,
-    openedIndex,
-    loading,
-    dataPlane,
-  } = surface
+  const { autoMemoryEnabled, entries, selectedIndex, openedIndex, loading } =
+    surface
   const theme = useTuiTheme()
   const panelWidth = Math.min(100, width)
   return (
@@ -1878,13 +1863,6 @@ export function MemoryDashboard({
           ))}
         </>
       )}
-      <Text> </Text>
-      {dataPlane === 'claude' ? (
-        <Text dimColor>
-          {' '}
-          Learn more: https://code.claude.com/docs/en/memory
-        </Text>
-      ) : null}
       <Text> </Text>
       <Text dimColor italic>
         Enter to confirm · Esc to cancel
@@ -2772,7 +2750,7 @@ export function LeafSurface({
       footer={
         surface.kind === 'export'
           ? 'Esc to cancel'
-          : 'Enter to copy · w to write to /tmp/claude · Esc to cancel'
+          : 'Enter to copy · w to write to Praxis state · Esc to cancel'
       }
       width={width}
       screenReader={screenReader}

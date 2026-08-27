@@ -82,7 +82,7 @@ describe('direct process lifecycle', () => {
       childEnv.PRAXIS_MODEL = 'test-model'
       childEnv.PRAXIS_BASE_URL = providerUrl
       childEnv.PRAXIS_CLAUDE_BINARY = join(configDir, 'missing-claude')
-      childEnv.CLAUDE_CONFIG_DIR = join(configDir, 'config')
+      childEnv.PRAXIS_HOME = join(configDir, 'config')
 
       const child = spawn(
         process.execPath,

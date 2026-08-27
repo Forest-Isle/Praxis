@@ -4,8 +4,8 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ClaudeWorkflowPaths } from '../compatibility/claude/workflow.js'
-import { workflowReplayDescriptor } from '../compatibility/claude/workflow-replay.js'
+import type { ClaudeWorkflowPaths } from '../native/workflow.js'
+import { workflowReplayDescriptor } from '../native/workflow-replay.js'
 import { ClaudeWorkflowStore } from './claude-workflow-store.js'
 
 const roots: string[] = []

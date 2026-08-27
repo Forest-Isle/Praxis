@@ -17,7 +17,7 @@ export const BUILTIN_TUI_SLASH_COMMANDS: readonly TuiSlashCommand[] = [
   {
     name: 'agents',
     description:
-      '(removed) Ask Claude to create/manage subagents, or edit .claude/agents/',
+      '(removed) Ask Praxis to create/manage subagents, or edit .praxis/agents/',
     source: 'builtin',
   },
   {

@@ -1,12 +1,9 @@
 import { realpathSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
 
-import type { DataPlane } from '../persistence/data-plane.js'
-
 export interface ProtectedWriteOptions {
   homeDirectory: string
   configRoot: string
-  dataPlane: DataPlane
 }
 
 const SSH_CREDENTIAL_BASENAMES = new Set([
@@ -74,8 +71,7 @@ export function protectedWritePathReason(
   const sshDirectories = pathRepresentations(sshDirectory)
   const awsDirectories = pathRepresentations(awsDirectory)
   const configRoots = pathRepresentations(configRoot)
-  const privateDirectory =
-    options.dataPlane === 'native' ? '.praxis' : '.claude'
+  const privateDirectory = '.praxis'
   const protectedDirectories = new Set(['commands', 'agents', 'skills'])
 
   for (const representation of pathRepresentations(path)) {
@@ -112,7 +108,7 @@ export function protectedWritePathReason(
         basename.endsWith('.jsonl') ||
         protectedDirectories.has(relativeSegments[0] ?? '')
       ) {
-        return `settings, transcripts, and extensions in the ${options.dataPlane} config root are protected`
+        return 'settings, transcripts, and extensions in the native config root are protected'
       }
     }
     const privateDirectoryIndex = segments.lastIndexOf(privateDirectory)

@@ -165,7 +165,7 @@ describe('Claude-style TUI components', () => {
           entries,
           selectedIndex: 1,
           openedIndex: 1,
-          dataPlane: 'claude',
+          dataPlane: 'native',
         })}
         width={100}
         screenReader={false}
@@ -177,7 +177,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('1. User memory')
     expect(frame).toContain('Saved in ~/.claude/CLAUDE.md')
     expect(frame).toContain('2. Open auto-memory folder ✔')
-    expect(frame).toContain('https://code.claude.com/docs/en/memory')
+    expect(frame).not.toContain('https://code.claude.com/docs/en/memory')
     expect(frame.split('\n')[0]).toBe('─'.repeat(100))
 
     const accessible = render(
@@ -187,7 +187,7 @@ describe('Claude-style TUI components', () => {
           entries: entries.slice(0, 1),
           selectedIndex: 0,
           openedIndex: null,
-          dataPlane: 'claude',
+          dataPlane: 'native',
         })}
         width={40}
         screenReader
@@ -204,10 +204,10 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('Welcome to Praxis')
     expect(frame).toContain('test-model · high effort')
     expect(frame).toContain('/Users/test/dev/Praxis')
-    expect(frame).toContain('/init to create CLAUDE.md')
+    expect(frame).toContain('/init to create PRAXIS.md')
     expect(frame).toContain('/config to open settings')
     expect(frame).toContain('Get started')
-    expect(frame).toContain('Shared with Claude Code')
+    expect(frame).toContain('Stored by Praxis')
     expect(frame).toContain('Sessions · memory · skills')
     // Title lives in the top border row, exactly one line wide.
     expect(frame.split('\n')[0]).toContain('╭───Praxis Code v0.1.2')
@@ -225,7 +225,7 @@ describe('Claude-style TUI components', () => {
     expect(frame).toContain('test-model · high effort')
     expect(frame).toContain('/Users/test/dev/Praxis')
     expect(frame).toContain('Get started')
-    expect(frame).toContain('Shared with Claude Code')
+    expect(frame).toContain('Stored by Praxis')
     expect(frame.split('\n').every((line) => line.length <= 40)).toBe(true)
     expect(frame).not.toContain("What's new")
     expect(frame).not.toContain('SendMessage')
@@ -1812,7 +1812,7 @@ describe('Claude-style TUI components', () => {
           ],
           selectedIndex: 0,
           openedIndex: null,
-          dataPlane: 'claude',
+          dataPlane: 'native',
         })}
         width={80}
         screenReader
@@ -1885,7 +1885,7 @@ describe('Claude-style TUI components', () => {
                 ],
                 selectedIndex: 0,
                 openedIndex: null,
-                dataPlane: 'claude',
+                dataPlane: 'native',
               })}
               width={80}
               screenReader={false}

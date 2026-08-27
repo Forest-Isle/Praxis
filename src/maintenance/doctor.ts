@@ -3,14 +3,7 @@ import { access, realpath, stat } from 'node:fs/promises'
 import { arch, platform } from 'node:os'
 import { delimiter, isAbsolute, resolve } from 'node:path'
 
-import {
-  loadClaudeMcpResources,
-  loadClaudeContextResources,
-  loadClaudeSettings,
-  loadClaudeSharedResources,
-  type ClaudeJsonResource,
-} from '../compatibility/claude/shared-resources.js'
-import { selectClaudeSchemaAdapter } from '../compatibility/claude/schema.js'
+import type { JsonResource as ClaudeJsonResource } from '../core/resources.js'
 import { validateClaudeExtensions } from '../extensions/claude-extensions.js'
 import { validateClaudeHooks } from '../hooks/claude-hooks.js'
 import { validateClaudeMcpConfiguration } from '../mcp/claude-mcp-tools.js'
@@ -23,7 +16,6 @@ import {
   readPluginRegistry,
   validateClaudePlugin,
 } from '../plugins/claude-plugin-runtime.js'
-import type { DataPlane } from '../persistence/data-plane.js'
 import {
   loadNativeContextResources,
   loadNativeSettings,
@@ -35,10 +27,10 @@ import {
 } from '../providers/environment.js'
 import { ContextBudget } from '../core/context-budget.js'
 import { ModelPricingRegistry } from '../core/usage.js'
-import {
-  detectInstalledClaudeVersion,
-  type VersionCommand,
-} from '../platform/claude-version.js'
+type VersionCommand = (
+  file: string,
+  args: readonly string[],
+) => Promise<{ stdout: string; stderr: string; status: number }>
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -93,13 +85,13 @@ export type DoctorProgressReport = Omit<DoctorReport, 'updates'> & {
 export type DoctorProgressListener = (report: DoctorProgressReport) => void
 
 export interface DoctorOptions {
-  dataPlane?: DataPlane
+  dataPlane?: unknown
   version: string
   executablePath: string
   nodeExecutablePath?: string
   nodeVersion?: string
   configRoot: string
-  claudeStatePath: string
+  claudeStatePath?: string
   cwd: string
   environment: NodeJS.ProcessEnv
   detectClaudeVersion?: (execute?: VersionCommand) => Promise<string>
@@ -242,7 +234,6 @@ async function capture(
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configRoot = resolve(options.configRoot)
   const cwd = resolve(options.cwd)
-  const dataPlane = options.dataPlane ?? 'claude'
   const sensitiveValues = sensitiveEnvironmentValues(options.environment)
   const diagnosticOptions: DoctorDiagnosticOptions = {
     version: options.version,
@@ -263,28 +254,16 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   let nativeResources:
     Awaited<ReturnType<typeof loadNativeSharedResources>> | undefined
   const settingsResources = async () => {
-    settings ??=
-      dataPlane === 'claude'
-        ? await loadClaudeSettings({ configRoot, cwd })
-        : await loadNativeSettings({ root: configRoot, cwd })
+    settings ??= await loadNativeSettings({ root: configRoot, cwd })
     return settings
   }
   const projectMemoryEnabled = async () =>
     resolveProjectMemoryPolicy({
-      dataPlane,
       settings: await settingsResources(),
       environment: options.environment,
     }).enabled
   const sharedResources = async () => {
     const includeProjectMemory = await projectMemoryEnabled()
-    if (dataPlane === 'claude') {
-      return loadClaudeSharedResources({
-        configRoot,
-        cwd,
-        claudeStatePath: options.claudeStatePath,
-        includeProjectMemory,
-      })
-    }
     nativeResources ??= await loadNativeSharedResources({
       root: configRoot,
       cwd,
@@ -332,25 +311,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('claude-runtime', async () => {
-      if (dataPlane === 'native') {
-        return {
-          summary: 'Claude Code runtime is not required in native mode',
-          details: { dataPlane },
-        }
-      }
-      const detect = options.detectClaudeVersion ?? detectInstalledClaudeVersion
-      const version = await detect(options.executeVersion)
-      const adapter = selectClaudeSchemaAdapter(version)
-      if (adapter.writeMode !== 'read-write') {
-        return {
-          status: 'warn',
-          summary: `Claude Code ${version} is available in read-only compatibility mode`,
-          details: { version, writeMode: adapter.writeMode },
-        }
-      }
       return {
-        summary: `Claude Code ${version} supports shared read-write state`,
-        details: { version, writeMode: adapter.writeMode },
+        summary: 'Claude Code runtime is not required in native mode',
       }
     }),
   )
@@ -406,11 +368,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         throw new Error(`Config root is not a directory: ${configRoot}`)
       }
       await access(configRoot, constants.R_OK | constants.W_OK)
-      for (const directory of [
-        dataPlane === 'native' ? 'sessions' : 'projects',
-        'tasks',
-        dataPlane === 'native' ? 'state' : 'praxis',
-      ]) {
+      for (const directory of ['sessions', 'tasks', 'state']) {
         const path = resolve(configRoot, directory)
         try {
           await access(path, constants.R_OK | constants.W_OK)
@@ -469,14 +427,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('mcp', async () => {
-      const resources =
-        dataPlane === 'claude'
-          ? await loadClaudeMcpResources({
-              configRoot,
-              cwd,
-              claudeStatePath: options.claudeStatePath,
-            })
-          : (await sharedResources()).mcp
+      const resources = (await sharedResources()).mcp
       const report = validateClaudeMcpConfiguration(resources)
       for (const server of report.servers) {
         if (server.transport !== 'stdio' || !server.command) continue
@@ -507,20 +458,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     await capture('resources', async () => {
       const resources = await sharedResources()
       const includeProjectMemory = await projectMemoryEnabled()
-      if (dataPlane === 'native') {
-        await loadNativeContextResources({
-          root: configRoot,
-          cwd,
-          environment: options.environment,
-          includeProjectMemory,
-        })
-      } else {
-        await loadClaudeContextResources({
-          configRoot,
-          cwd,
-          includeProjectMemory,
-        })
-      }
+      await loadNativeContextResources({
+        root: configRoot,
+        cwd,
+        environment: options.environment,
+        includeProjectMemory,
+      })
       validateClaudeExtensions([
         ...resources.commands,
         ...resources.skills,
@@ -615,7 +558,6 @@ export function formatDoctorReport(report: DoctorReport): string {
   }
   lines.push(`  Path: ${diagnostic.installationPath}`)
   lines.push(`  Invoked: ${diagnostic.invokedBinary}`)
-  lines.push(`  Config install method: ${diagnostic.configInstallMethod}`)
   lines.push(
     `  Search: ${
       diagnostic.search.working

@@ -1,4 +1,4 @@
-import type { ClaudeJsonResource } from '../../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../../core/resources.js'
 import {
   HOOK_EVENTS,
   type ClaudeHookEventName,
@@ -172,7 +172,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function scope(resource: ClaudeJsonResource): {
+function scope(resource: JsonResource): {
   short: string
   long: string
 } {
@@ -207,7 +207,7 @@ const HOOK_SCOPE_ORDER: Record<string, number> = {
 }
 
 export function projectTuiHooks(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
 ): TuiHookConfiguration {
   let hookCount = 0
   const events = TUI_HOOK_EVENTS.map((definition): TuiHookEvent => {

@@ -2,9 +2,9 @@
 
 ## Scope
 
-This contract defines the runtime Praxis may implement after compatibility
-Sprint 0 passes. It preserves Claude Code's proven CLI agent semantics while
-keeping the domain provider-neutral and single-user.
+This contract defines the native Praxis runtime. It preserves the observed
+developer-facing CLI semantics while keeping the domain provider-neutral and
+single-user.
 
 ## Execution state machine
 
@@ -30,8 +30,8 @@ Rules:
 5. Cancellation propagates from CLI to model stream and child processes.
 6. Completed user, assistant, and tool-result events append immediately to the
    shared transcript; transcript history is never rewritten.
-7. Compaction appends Claude-native summary metadata only after a compatibility
-   adapter proves the active Claude version accepts it.
+7. Compaction appends summary metadata supported by the native transcript
+   schema.
 8. Shared command hooks run at their lifecycle seam with bounded output,
    timeout, and cancellation. The local single-user surface covers setup,
    session/turn, tool/permission, notification/failure, subagent, compaction,
@@ -40,10 +40,10 @@ Rules:
    bounded local watcher. CwdChanged replaces the dynamic `watchPaths` set;
    FileChanged replaces it when a hook returns a non-empty set. Setup,
    SessionStart, CwdChanged, and FileChanged command hooks receive a per-session
-   `CLAUDE_ENV_FILE`; subsequent Bash tools in that same session receive literal
+   `PRAXIS_ENV_FILE`; subsequent Bash tools in that same session receive literal
    `export NAME=value` entries as environment variables. Praxis ignores shell
    commands and expansions in these files, and stores them under the private
-   native `state/session-env` or Claude-mode `praxis/session-env` sidecar.
+   native `state/session-env` sidecar.
    Successful environment-hook `systemMessage` output is a notice, while
    execution failures remain warnings. PreToolUse changes precede permission checks;
    PermissionDenied observes only final auto-mode classifier denials and its
@@ -170,7 +170,7 @@ The runtime depends on behavior, not SDK or filesystem implementations:
 
 Provider adapters retain native streaming and caching features behind explicit
 capabilities. They do not leak provider payloads into core events or shared
-Claude transcripts.
+Praxis transcripts.
 
 Providers that advertise terminal-reason support emit exactly one final
 `terminal` event for each successful stream. The provider-neutral reasons are
@@ -261,7 +261,7 @@ the main-session fork. Native Claude may use a user, system, or attachment UUID;
 Praxis-generated append metadata remains restricted to assistant leaves.
 
 Opt-in SDK file checkpointing writes non-tail snapshot/delta records plus
-bounded backups in Claude's shared file-history directory. File rewind is a
+bounded backups in the native file-history directory. File rewind is a
 standalone, provider-free resume operation: validate the target user UUID,
 backup metadata, allowed roots, and all backup bytes before atomically restoring
 or deleting any tracked path. It never rewrites the append-only conversation;
@@ -272,8 +272,7 @@ state.
 
 Project memory is durable cross-session context, separate from the append-only
 Transcript and asynchronous Session memory. Native runs store it under the
-Praxis root; explicit Claude compatibility mode alone uses the Claude project
-memory layout. Both key the directory by the canonical main git repository, so
+Praxis root. The directory is keyed by the canonical main git repository, so
 linked worktrees share one `MEMORY.md` index and its Markdown topic files.
 
 The index is injected as background context only and is bounded to its first
@@ -285,9 +284,9 @@ task state, codebase architecture, implementation patterns, git history, or
 fix recipes.
 
 `autoMemoryEnabled: false` is the shared settings switch. Native runs also
-recognize `PRAXIS_DISABLE_AUTO_MEMORY`; Claude compatibility mode recognizes
-`CLAUDE_CODE_DISABLE_AUTO_MEMORY`. Disabling it suppresses index reads and
-injection, maintenance guidance, memory-root tool access, background
+recognize `PRAXIS_DISABLE_AUTO_MEMORY` and the Claude-compatible
+`CLAUDE_CODE_DISABLE_AUTO_MEMORY` alias. Disabling it suppresses index reads
+and injection, maintenance guidance, memory-root tool access, background
 extraction, and selective recall.
 
 The compatible default is bounded index injection plus direct main-agent
@@ -336,7 +335,7 @@ Included:
 - file read/write/edit, search, shell, and MCP tools;
 - PNG, JPEG, GIF, and WebP results from the local `Read` tool;
 - user image/document inputs and ordered MCP media/structured-content results;
-- local permissions, sessions, resume/fork, compaction, CLAUDE.md, auto memory,
+- local permissions, sessions, resume/fork, compaction, PRAXIS.md, auto memory,
   skills, commands, agents, hooks, and MCP compatible subset;
 - text and structured JSON output;
 - top-level persistent background sessions, durable task graphs, and
@@ -350,7 +349,6 @@ Deferred:
 
 - IDE, browser, desktop, or remote-control surfaces;
 - accounts, teams, organization policy, billing, telemetry control planes;
-- transcript migration across unsupported Claude versions;
 
 Stream JSON event contract: runtime/provider events are the sole source for
 machine records. Compaction, tool timing, retry, and task lifecycle records

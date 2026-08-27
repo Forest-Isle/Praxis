@@ -1479,7 +1479,7 @@ describe('LocalToolRegistry', () => {
       cwd,
       homeDirectory: home,
     })
-    const settingsPath = join(home, '.claude', 'settings.json')
+    const settingsPath = join(home, '.praxis', 'settings.json')
     await mkdir(dirname(settingsPath), { recursive: true })
     const settingsWrite = await defaultConfigRegistry.prepare(
       {

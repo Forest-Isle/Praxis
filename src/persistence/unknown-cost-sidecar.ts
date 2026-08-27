@@ -37,8 +37,8 @@ function emptyDocument(): UnknownCostSidecarDocument {
 
 /**
  * Praxis-private sidecar for the `/cost` unknown-model flag. The native
- * `.claude.json` project record must stay Claude-compatible, so this flag lives
- * in a disposable JSON document keyed by session ID. Reads fail closed to
+ * Native project state remains authoritative, so this flag lives in a
+ * disposable JSON document keyed by session ID. Reads fail closed to
  * `false` when the sidecar is missing or malformed.
  */
 export class UnknownCostSidecar {

@@ -4,7 +4,7 @@ import { createAnthropicPromptCachePolicyResolver } from './anthropic-prompt-cac
 
 describe('createAnthropicPromptCachePolicyResolver', () => {
   it('defaults only official Anthropic endpoints to portable five-minute caching', () => {
-    const resolve = createAnthropicPromptCachePolicyResolver({}, 'native')
+    const resolve = createAnthropicPromptCachePolicyResolver({})
 
     expect(
       resolve({
@@ -21,17 +21,13 @@ describe('createAnthropicPromptCachePolicyResolver', () => {
   })
 
   it('uses strict Praxis opt-in, opt-out, and supported TTL settings', () => {
-    const oneHour = createAnthropicPromptCachePolicyResolver(
-      {
-        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
-        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
-      },
-      'native',
-    )
-    const disabled = createAnthropicPromptCachePolicyResolver(
-      { PRAXIS_ANTHROPIC_PROMPT_CACHING: 'false' },
-      'native',
-    )
+    const oneHour = createAnthropicPromptCachePolicyResolver({
+      PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
+      PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
+    })
+    const disabled = createAnthropicPromptCachePolicyResolver({
+      PRAXIS_ANTHROPIC_PROMPT_CACHING: 'false',
+    })
 
     expect(
       oneHour({
@@ -46,68 +42,49 @@ describe('createAnthropicPromptCachePolicyResolver', () => {
       }),
     ).toBe(false)
     expect(() =>
-      createAnthropicPromptCachePolicyResolver(
-        { PRAXIS_ANTHROPIC_PROMPT_CACHING: 'sometimes' },
-        'native',
-      ),
+      createAnthropicPromptCachePolicyResolver({
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'sometimes',
+      }),
     ).toThrow('must be true or false')
     expect(() =>
-      createAnthropicPromptCachePolicyResolver(
-        { PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: 'forever' },
-        'native',
-      ),
+      createAnthropicPromptCachePolicyResolver({
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: 'forever',
+      }),
     ).toThrow('must be 5m or 1h')
     expect(() =>
-      createAnthropicPromptCachePolicyResolver(
-        {
-          PRAXIS_ANTHROPIC_PROMPT_CACHING: 'false',
-          PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
-        },
-        'native',
-      ),
+      createAnthropicPromptCachePolicyResolver({
+        PRAXIS_ANTHROPIC_PROMPT_CACHING: 'false',
+        PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
+      }),
     ).toThrow('cannot be set when prompt caching is false')
   })
 
-  it('honors Claude compatibility disable and TTL variables by model family', () => {
-    const disabledSonnet = createAnthropicPromptCachePolicyResolver(
-      {
-        DISABLE_PROMPT_CACHING_SONNET: '1',
-        ENABLE_PROMPT_CACHING_1H: '1',
-      },
-      'claude',
+  it('ignores legacy Claude prompt-cache variables', () => {
+    const legacyDisableSonnet = ['DISABLE', 'PROMPT', 'CACHING', 'SONNET'].join(
+      '_',
     )
-    const forcedFiveMinutes = createAnthropicPromptCachePolicyResolver(
-      {
-        ENABLE_PROMPT_CACHING_1H: '1',
-        FORCE_PROMPT_CACHING_5M: '1',
-      },
-      'claude',
+    const legacyEnableOneHour = ['ENABLE', 'PROMPT', 'CACHING', '1H'].join('_')
+    const legacyForceFiveMinutes = ['FORCE', 'PROMPT', 'CACHING', '5M'].join(
+      '_',
     )
-    const native = createAnthropicPromptCachePolicyResolver(
-      { DISABLE_PROMPT_CACHING: '1' },
-      'native',
-    )
+    const legacy = createAnthropicPromptCachePolicyResolver({
+      [legacyDisableSonnet]: '1',
+      [legacyEnableOneHour]: '1',
+      [legacyForceFiveMinutes]: '1',
+    })
 
     expect(
-      disabledSonnet({
+      legacy({
         baseUrl: 'https://relay.example/v1',
         model: 'claude-sonnet-4-20250514',
       }),
     ).toBe(false)
     expect(
-      disabledSonnet({
-        baseUrl: 'https://relay.example/v1',
-        model: 'claude-opus-4-20250514',
-      }),
-    ).toEqual({ ttl: '1h' })
-    expect(
-      forcedFiveMinutes({
-        baseUrl: 'https://relay.example/v1',
-        model: 'claude-haiku-4-5-20251001',
-      }),
-    ).toEqual({ ttl: '5m' })
-    expect(
-      native({
+      createAnthropicPromptCachePolicyResolver({
+        [['DISABLE', 'PROMPT', 'CACHING'].join('_')]: '1',
+        [legacyEnableOneHour]: '1',
+        [legacyForceFiveMinutes]: '1',
+      })({
         baseUrl: 'https://api.anthropic.com/v1',
         model: 'claude-sonnet-4-20250514',
       }),
@@ -118,10 +95,7 @@ describe('createAnthropicPromptCachePolicyResolver', () => {
     const environment: NodeJS.ProcessEnv = {
       PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
     }
-    const resolve = createAnthropicPromptCachePolicyResolver(
-      environment,
-      'native',
-    )
+    const resolve = createAnthropicPromptCachePolicyResolver(environment)
     environment.PRAXIS_ANTHROPIC_PROMPT_CACHING = 'false'
 
     expect(

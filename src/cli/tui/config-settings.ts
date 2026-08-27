@@ -1,15 +1,11 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open, realpath } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 
 import { writeFileAtomically } from '../../platform/atomic-write.js'
-import {
-  resolveDataPlane,
-  resolveDataPlaneRoot,
-} from '../../persistence/data-plane.js'
+import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
@@ -407,17 +403,9 @@ export function resolveConfigSettingsLocation(
 ): ConfigSettingsLocation {
   if (typeof target === 'object') return target
   if (typeof target === 'string')
-    return { configRoot: target, statePath: join(target, '.claude.json') }
-  const dataPlane = resolveDataPlane()
-  const configRoot = resolveDataPlaneRoot({ dataPlane })
-  return dataPlane === 'native'
-    ? { configRoot, statePath: join(configRoot, 'state.json') }
-    : {
-        configRoot,
-        statePath: process.env.CLAUDE_CONFIG_DIR
-          ? join(configRoot, '.claude.json')
-          : join(homedir(), '.claude.json'),
-      }
+    return { configRoot: target, statePath: join(target, 'state.json') }
+  const configRoot = resolveDataPlaneRoot()
+  return { configRoot, statePath: join(configRoot, 'state.json') }
 }
 
 function configPath(
@@ -568,7 +556,7 @@ async function acquireLease(
   const lease = new ExclusiveFileLease(
     scope === 'settings'
       ? join(lockParent, '.praxis-settings.lock')
-      : join(lockParent, '.praxis-claude-state.lock'),
+      : join(lockParent, '.praxis-state.lock'),
   )
   for (let attempt = 0; attempt < 400; attempt += 1) {
     const handle = await lease.tryAcquire()

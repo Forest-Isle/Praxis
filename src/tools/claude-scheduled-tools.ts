@@ -22,7 +22,7 @@ For one-shot requests, set recurring to false and pin minute, hour, day-of-month
 
 Avoid :00 and :30 when the requested time is approximate. Use exact round times only when the user explicitly asks for them. The scheduler adds bounded deterministic jitter: recurring jobs fire up to 10% of their period late, capped at 15 minutes; one-shot jobs on :00 or :30 may fire up to 90 seconds early.
 
-By default durable is false: the job exists only in this Praxis process and disappears on exit. Set durable to true only when the user explicitly asks for persistence. Durable jobs use .claude/scheduled_tasks.json, resume on the next launch, and missed one-shot jobs are surfaced for catch-up.
+By default durable is false: the job exists only in this Praxis process and disappears on exit. Set durable to true only when the user explicitly asks for persistence. Durable jobs use ~/.praxis/scheduled/<project>.json, resume on the next launch, and missed one-shot jobs are surfaced for catch-up.
 
 Jobs fire only while the interactive runtime is idle. Returns an ID accepted by CronDelete.`
 
@@ -53,9 +53,8 @@ One short sentence on what you chose and why. Goes to telemetry and is shown bac
 `
 
 function scheduledTaskLocation(dataPlane: DataPlane): string {
-  return dataPlane === 'native'
-    ? '~/.praxis/scheduled/<project>.json'
-    : '.claude/scheduled_tasks.json'
+  void dataPlane
+  return '~/.praxis/scheduled/<project>.json'
 }
 
 function definitions(dataPlane: DataPlane): readonly ModelToolDefinition[] {
@@ -64,7 +63,7 @@ function definitions(dataPlane: DataPlane): readonly ModelToolDefinition[] {
     {
       name: 'CronCreate',
       description: CRON_CREATE_DESCRIPTION.replace(
-        '.claude/scheduled_tasks.json',
+        '~/.praxis/scheduled/<project>.json',
         location,
       ),
       inputSchema: {
@@ -230,7 +229,7 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
   definitions(): readonly ModelToolDefinition[] {
     const base = this.options.base.definitions()
     const existing = new Set(base.map(({ name }) => name))
-    const scheduledDefinitions = definitions(this.options.dataPlane ?? 'claude')
+    const scheduledDefinitions = definitions(this.options.dataPlane ?? 'native')
     return [
       ...base,
       ...scheduledDefinitions.filter(
@@ -326,7 +325,7 @@ export class ClaudeScheduledToolRegistry implements ToolRegistry {
         const schedule = describeCron(task.cron)
         const persistence = task.durable
           ? `Persisted to ${scheduledTaskLocation(
-              this.options.dataPlane ?? 'claude',
+              this.options.dataPlane ?? 'native',
             )}.`
           : 'Session-only (not written to disk, dies when Praxis exits).'
         const content = task.recurring

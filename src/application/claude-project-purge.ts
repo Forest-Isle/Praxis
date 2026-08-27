@@ -10,13 +10,11 @@ import {
   sep,
 } from 'node:path'
 
-import {
-  isClaudeSessionId,
-  sanitizeClaudeProjectPath,
-} from '../compatibility/claude/paths.js'
-import { resolveClaudeProjectIdentity } from '../compatibility/claude/shared-resources.js'
+import { isSessionId } from '../core/session.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import { resolveProjectIdentity } from '../platform/project-identity.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 
 const MAX_ATOMIC_UPDATE_RETRIES = 8
 
@@ -278,9 +276,9 @@ async function discoverSessionIds(projectRoot: string): Promise<string[]> {
   for (const entry of entries) {
     if (entry.isFile() && entry.name.endsWith('.jsonl')) {
       const sessionId = entry.name.slice(0, -'.jsonl'.length)
-      if (isClaudeSessionId(sessionId)) sessionIds.add(sessionId)
+      if (isSessionId(sessionId)) sessionIds.add(sessionId)
     }
-    if (entry.isDirectory() && isClaudeSessionId(entry.name)) {
+    if (entry.isDirectory() && isSessionId(entry.name)) {
       sessionIds.add(entry.name)
     }
   }
@@ -290,12 +288,8 @@ async function discoverSessionIds(projectRoot: string): Promise<string[]> {
 async function discoverProjectRoots(
   configRoot: string,
   targetPaths: readonly string[],
-  dataPlane: DataPlane,
 ): Promise<string[]> {
-  const projectsRoot = join(
-    configRoot,
-    dataPlane === 'native' ? 'sessions' : 'projects',
-  )
+  const projectsRoot = join(configRoot, 'sessions')
   if (!(await pathExists(projectsRoot))) return []
   await assertSafePurgePath(configRoot, projectsRoot)
   let entries
@@ -307,9 +301,8 @@ async function discoverProjectRoots(
     }
     throw error
   }
-  const targetKeys = targetPaths.map(sanitizeClaudeProjectPath)
-  const worktreeSegment =
-    dataPlane === 'native' ? '--praxis-worktrees-' : '--claude-worktrees-'
+  const targetKeys = targetPaths.map(sanitizeProjectPath)
+  const worktreeSegment = '--praxis-worktrees-'
   return entries
     .filter((entry) =>
       targetKeys.some(
@@ -350,43 +343,22 @@ async function addExistingPath(
 export async function planClaudeProjectPurge(
   options: PlanClaudeProjectPurgeOptions,
 ): Promise<ClaudeProjectPurgePlan> {
+  void options.dataPlane
   if (options.all && options.path !== undefined) {
     throw new Error('Cannot specify both a path and --all')
   }
   const configuredRoot =
     options.configRoot ??
-    (process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'))
+    (process.env.PRAXIS_HOME || join(homedir(), '.praxis'))
   const configRoot = await canonicalPath(configuredRoot)
-  const dataPlane = options.dataPlane ?? 'claude'
-  const homeDirectory = options.homeDirectory ?? homedir()
-  const legacyClaudeStatePath = resolve(homeDirectory, '.claude.json')
-  const legacyClaudeConfigRoot = await canonicalPath(
-    resolve(homeDirectory, '.claude'),
-  )
-  const defaultStatePath =
-    dataPlane === 'native'
-      ? join(configRoot, 'state.json')
-      : options.configRoot !== undefined ||
-          Boolean(process.env.CLAUDE_CONFIG_DIR)
-        ? join(configRoot, '.claude.json')
-        : legacyClaudeStatePath
+  const defaultStatePath = join(configRoot, 'state.json')
   const statePath = resolve(options.statePath ?? defaultStatePath)
-  const usesLegacyDefaultClaudeState =
-    dataPlane === 'claude' &&
-    !process.env.CLAUDE_CONFIG_DIR &&
-    configRoot === legacyClaudeConfigRoot &&
-    statePath === legacyClaudeStatePath
   const canonicalStateParent = await canonicalPath(dirname(statePath))
-  if (!usesLegacyDefaultClaudeState) {
-    assertLexicallyContained(
-      configRoot,
-      join(canonicalStateParent, basename(statePath)),
-    )
-  }
-  await assertMutableRegularFile(
-    statePath,
-    usesLegacyDefaultClaudeState ? canonicalStateParent : configRoot,
+  assertLexicallyContained(
+    configRoot,
+    join(canonicalStateParent, basename(statePath)),
   )
+  await assertMutableRegularFile(statePath, configRoot)
   const state = parseState(await readOptionalFile(statePath), statePath)
   const projects = stateProjects(state)
   const items: ClaudeProjectPurgeItem[] = []
@@ -399,32 +371,22 @@ export async function planClaudeProjectPurge(
     }> = [
       {
         kind: 'project',
-        name: dataPlane === 'native' ? 'sessions' : 'projects',
-        description:
-          dataPlane === 'native'
-            ? 'all project transcripts'
-            : 'all project transcripts and memory',
+        name: 'sessions',
+        description: 'all project transcripts',
       },
-      ...(dataPlane === 'native'
-        ? [
-            {
-              kind: 'memory' as const,
-              name: 'memory',
-              description: 'all project memory',
-            },
-            {
-              kind: 'scheduled' as const,
-              name: 'scheduled',
-              description: 'all project scheduled prompts',
-            },
-          ]
-        : []),
       {
         kind: 'memory',
-        name:
-          dataPlane === 'native'
-            ? join('state', 'project-memory')
-            : join('praxis', 'project-memory'),
+        name: 'memory',
+        description: 'all project memory',
+      },
+      {
+        kind: 'scheduled',
+        name: 'scheduled',
+        description: 'all project scheduled prompts',
+      },
+      {
+        kind: 'memory',
+        name: join('state', 'project-memory'),
         description: 'all private Project-memory operational state',
       },
       {
@@ -471,9 +433,6 @@ export async function planClaudeProjectPurge(
       mode: 'all',
       configRoot,
       statePath,
-      ...(usesLegacyDefaultClaudeState
-        ? { allowStateOutsideConfigRoot: true }
-        : {}),
       projectRootPaths: [],
       sessionIds: [],
       items,
@@ -483,14 +442,8 @@ export async function planClaudeProjectPurge(
   const requestedPath = resolve(options.path ?? options.cwd)
   const targetPath = await canonicalPath(requestedPath)
   const targetPaths = [...new Set([requestedPath, targetPath])]
-  const projectIdentity = await resolveClaudeProjectIdentity({
-    cwd: targetPath,
-  })
-  const projectRootPaths = await discoverProjectRoots(
-    configRoot,
-    targetPaths,
-    dataPlane,
-  )
+  const projectIdentity = await resolveProjectIdentity(targetPath)
+  const projectRootPaths = await discoverProjectRoots(configRoot, targetPaths)
   const sessionIdSet = new Set<string>()
   for (const projectRoot of projectRootPaths) {
     await assertSafePurgePath(configRoot, projectRoot)
@@ -529,64 +482,44 @@ export async function planClaudeProjectPurge(
     )
   }
   const projectKeys = new Set([
-    ...targetPaths.map(sanitizeClaudeProjectPath),
+    ...targetPaths.map(sanitizeProjectPath),
     ...projectRootPaths.map((path) => basename(path)),
-    sanitizeClaudeProjectPath(projectIdentity),
+    sanitizeProjectPath(projectIdentity),
   ])
-  if (dataPlane === 'native') {
-    for (const projectKey of projectKeys) {
-      await addExistingPath(
-        items,
-        configRoot,
-        removePathItem(
-          'memory',
-          join(configRoot, 'memory', projectKey),
-          `memory for project ${projectKey}`,
-        ),
-      )
-      await addExistingPath(
-        items,
-        configRoot,
-        removePathItem(
-          'memory',
-          join(configRoot, 'state', 'project-memory', projectKey),
-          `private Project-memory state for project ${projectKey}`,
-        ),
-      )
-      await addExistingPath(
-        items,
-        configRoot,
-        removePathItem(
-          'scheduled',
-          join(configRoot, 'scheduled', `${projectKey}.json`),
-          `scheduled prompts for project ${projectKey}`,
-        ),
-      )
-    }
-  } else {
-    for (const projectKey of projectKeys) {
-      await addExistingPath(
-        items,
-        configRoot,
-        removePathItem(
-          'memory',
-          join(configRoot, 'praxis', 'project-memory', projectKey),
-          `private Project-memory state for project ${projectKey}`,
-        ),
-      )
-    }
+  for (const projectKey of projectKeys) {
+    await addExistingPath(
+      items,
+      configRoot,
+      removePathItem(
+        'memory',
+        join(configRoot, 'memory', projectKey),
+        `memory for project ${projectKey}`,
+      ),
+    )
+    await addExistingPath(
+      items,
+      configRoot,
+      removePathItem(
+        'memory',
+        join(configRoot, 'state', 'project-memory', projectKey),
+        `private Project-memory state for project ${projectKey}`,
+      ),
+    )
+    await addExistingPath(
+      items,
+      configRoot,
+      removePathItem(
+        'scheduled',
+        join(configRoot, 'scheduled', `${projectKey}.json`),
+        `scheduled prompts for project ${projectKey}`,
+      ),
+    )
   }
   for (const projectRoot of projectRootPaths) {
     await addExistingPath(
       items,
       configRoot,
-      removePathItem(
-        'project',
-        projectRoot,
-        dataPlane === 'native'
-          ? 'project transcripts'
-          : 'project transcripts and memory',
-      ),
+      removePathItem('project', projectRoot, 'project transcripts'),
     )
   }
 
@@ -628,9 +561,6 @@ export async function planClaudeProjectPurge(
     mode: 'project',
     configRoot,
     statePath,
-    ...(usesLegacyDefaultClaudeState
-      ? { allowStateOutsideConfigRoot: true }
-      : {}),
     targetPath,
     projectIdentity,
     projectRootPaths,

@@ -17,15 +17,10 @@ Anthropic/OpenAI-compatible model access. Praxis deliberately excludes
 accounts, organizations, billing, managed enterprise policy, remote control,
 IDE surfaces, and telemetry control planes.
 
-Claude Code 2.1.208 remains the architecture, design, and observable
-compatibility baseline for included and required single-user developer
-capabilities. Only entries classified `required` block developer-core
-closure; `deferred` entries are optional and demand-driven. Exclusions cover
-the existing enterprise, authentication, hosted, and client surfaces plus the
-explicitly classified subscription-bound integration, campaign, hidden
-maintainer diagnostic, and build-experimental commands. A similar Praxis
-surface is not a substitute for the corresponding Claude command or runtime
-contract.
+Claude Code 2.1.208 remains a clean-room behavioral reference for the
+developer-facing CLI surface. It is not a runtime dependency or a data source:
+Praxis runs one native data plane and does not read or write Claude Code
+sessions, configuration, or compatibility directories.
 
 ## Requirements
 
@@ -34,13 +29,12 @@ contract.
 - [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep tool
 - an API key and model ID for an Anthropic or OpenAI-compatible provider
 
-Praxis does not use Claude subscription authentication. Claude Code
-interoperability covers local sessions, configuration, permissions, memory,
-skills, hooks, agents, plugins, and MCP data.
+Praxis does not use Claude subscription authentication. Claude-shaped message,
+tool, and CLI protocol forms remain supported where they are part of the
+public surface, while all persisted state is Praxis-native.
 
-Claude Team compatibility is explicit and fail-closed: supported delete/send
-wire shapes route through native Team operations, while lossy or unsupported
-Team surfaces are rejected rather than silently simplified.
+Team operations are local-only and opt-in. Unsupported or lossy Team payloads
+are rejected rather than silently simplified.
 
 ## Install
 
@@ -89,7 +83,7 @@ praxis doctor
 
 See
 [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)
-for provider setup, shared Claude state, permissions, updating, and
+for provider setup, shared Praxis state, permissions, updating, and
 troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
@@ -116,7 +110,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
   editing, shared `/keybindings` creation/editing and supported-action remapping,
-  shared built-in and Claude-compatible custom `/theme` profiles with immediate
+  shared built-in and custom `/theme` profiles with immediate
   semantic recoloring, token editing/reset, deletion, and persisted syntax
   toggles across transcript code and diff views,
   shared runtime preferences for reduced motion, spinner tips, progress and
@@ -174,55 +168,18 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   Lead Decision queue with provenance. Coordinator leads are restricted to
   orchestration, and custom Team agents receive no MCP capability. The native
   CLI also exposes `praxis team status`, `logs`, and `attach` in human or JSON
-  form; durable-local attach does not require tmux. The Claude Team adapter is
-  removable and currently limited to fixture-verified delete/send; Claude create
-  is decoded but rejected when the payload cannot represent native roster/task
-  claims,
-  shutdown, and plan-response shapes; native task, notification, context, and
-  Team resume/inbox seams are implemented, while their Claude-facing zero-skip
-  qualification remains explicitly separate.
-- **Claude-compatible ecosystem** — shared instructions with recursive `@`
+  form; durable-local attach does not require tmux. Native task, notification,
+  context, and Team resume/inbox seams are implemented with fail-closed
+  validation for unsupported payloads.
+- **Native resource ecosystem** — shared Praxis instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
-  plugins, and transcript data.
+  plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`.
 - **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
   streaming adapters with explicit capability checks and metering controls.
 
 Detailed feature status and executable evidence live in the
 [parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md),
 not in this entry-point README.
-
-## Claude Code interoperability
-
-Praxis uses an independent local data plane by default:
-
-```text
-Praxis ─── ~/.praxis (or PRAXIS_HOME)
-```
-
-Use `praxis --data-plane claude` when you need the legacy shared Claude Code
-layout (`~/.claude` or `CLAUDE_CONFIG_DIR`). Praxis can resume Claude Code
-sessions in that mode, and Claude Code can resume compatible sessions written
-there. Every semver-like Claude Code producer version is
-structurally validated and is read/write compatible when its entry shape is
-supported; schema adapters are selected from transcript entry structure rather
-than an installed or fixed producer version, and malformed or unsupported
-shapes fail closed before any write. Each transcript record keeps its original
-producer version, so supported shapes may be mixed across versions in one
-session. Native fork creation is a separate restricted lossless copy path that
-preserves each existing source record's producer version, so it can copy
-specific black-box-verified foreign shapes such as the observed Claude Code
-2.1.233 records; unsupported record shapes and unverified versions still fail
-closed and remain read-only. Maintainers can prove mixed-version Claude JSONL interoperability with
-`npm run test:cross-version-session-compat`, `test:cross-version-fork-compat`,
-`test:cross-version-sidechain-compat`, `test:cross-version-compaction-compat`,
-and `test:cross-version-resume-at-compat`, covering linear resume, native fork,
-foreground sidechain, compaction, and `--resume-session-at` branch projection.
-Each requires `PRAXIS_CLAUDE_BINARY` (Claude Code 2.1.208) and
-`PRAXIS_CLAUDE_CROSS_VERSION_BINARY` (a different Claude Code version).
-
-See the
-[compatibility contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/COMPATIBILITY.md)
-for exact shared data, version boundaries, exclusions, and verification gates.
 
 ## Documentation
 
@@ -268,15 +225,12 @@ npm ci
 npm run check
 ```
 
-`npm run build:native` compiles the implemented Praxis-owned core, provider,
-native transcript, and session profile without the Claude compatibility adapter.
+`npm run build:native` compiles the Praxis-owned core, provider, native
+transcript, and session profile.
 `npm run test:native:deletion` adds an emitted-output deletion gate. These are
 implemented profile checks, not qualification of the full native package.
-Native transcript migration remains explicit and recoverable. The built-CLI
-smoke gate `npm run verify:native-migration-cli` exercises all-session dry-run,
-publication, text/JSON idempotence, rollback, and Claude-data-plane exclusion.
-The isolated active-stream regression proof is available through
-`npm run test:performance:active-stream`; the product p95 budget remains 50 ms.
+`npm run test:performance` runs the native projection scaling and regression
+budgets; the retained-render p95 budget remains 50 ms.
 `npm run check` also enforces the corresponding source dependency direction.
 `npm run test:core-completion` runs the 56-story #402 audit and reports
 implemented, qualified, blocked, deferred, and out-of-scope states separately;

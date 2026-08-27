@@ -1,11 +1,12 @@
-import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { realpath } from 'node:fs/promises'
 
 import type { FsWriteRestrictionConfig } from '@anthropic-ai/sandbox-runtime'
 
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
-import { sanitizeClaudeProjectPath } from '../compatibility/claude/paths.js'
+import type { JsonResource } from '../core/resources.js'
+import { resolveProjectIdentity } from '../platform/project-identity.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   annotateAutoModePermissionOutcome,
   annotatePermissionDecision,
@@ -57,7 +58,7 @@ export interface ClaudePermissionResolverOptions {
   cwdProvider?: () => string
   configRoot?: string
   homeDirectory?: string
-  settings: readonly ClaudeJsonResource[]
+  settings: readonly JsonResource[]
   allowedTools?: readonly string[]
   disallowedTools?: readonly string[]
   permissionMode?: ClaudePermissionMode
@@ -182,7 +183,7 @@ function readRuleStrings(
   })
 }
 
-function loadRules(settings: readonly ClaudeJsonResource[]): PermissionRule[] {
+function loadRules(settings: readonly JsonResource[]): PermissionRule[] {
   return settings.flatMap((resource) => {
     if (!isRecord(resource.value)) return []
     const permissions = resource.value.permissions
@@ -213,7 +214,7 @@ function permissionRuleToString(rule: PermissionRule): string {
 }
 
 export function validateClaudePermissionSettings(
-  settings: readonly ClaudeJsonResource[],
+  settings: readonly JsonResource[],
 ): void {
   for (const resource of settings) {
     if (!isRecord(resource.value)) continue
@@ -414,7 +415,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
   private readonly rules: readonly PermissionRule[]
   private readonly cwd: string
   private readonly cwdProvider: (() => string) | undefined
-  private readonly configRoot: string | undefined
+  private readonly configRoot: string
   private readonly homeDirectory: string
   private readonly permissionMode: ClaudePermissionMode
   private readonly autoClassifier: ClaudeAutoClassifier | undefined
@@ -428,9 +429,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
   constructor(options: ClaudePermissionResolverOptions) {
     this.cwd = resolve(options.cwd)
     this.cwdProvider = options.cwdProvider
-    this.configRoot = options.configRoot
-      ? resolve(options.configRoot)
-      : undefined
+    this.configRoot = resolve(options.configRoot ?? join(homedir(), '.praxis'))
     this.homeDirectory = resolve(options.homeDirectory ?? homedir())
     this.rules = [
       ...loadRules(options.settings),
@@ -471,15 +470,16 @@ export class ClaudePermissionResolver implements PermissionResolver {
     context?: PermissionResolutionContext,
   ): Promise<PermissionDecision> {
     const cwd = resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
-    const projectInternalRoot = this.configRoot
-      ? resolve(this.configRoot, 'projects', sanitizeClaudeProjectPath(cwd))
-      : undefined
-    const internalEditableRoots = projectInternalRoot
-      ? [resolve(projectInternalRoot, 'memory')]
-      : []
+    const projectIdentity = await resolveProjectIdentity(cwd)
+    const projectInternalRoot = resolve(
+      this.configRoot,
+      'memory',
+      sanitizeProjectPath(projectIdentity),
+    )
+    const internalEditableRoots = [projectInternalRoot]
     const internalReadableRoots = [
-      ...(projectInternalRoot ? [projectInternalRoot] : []),
-      ...(this.configRoot ? [resolve(this.configRoot, 'tasks')] : []),
+      projectInternalRoot,
+      resolve(this.configRoot, 'tasks'),
       ...(context?.toolResultDirectory
         ? [resolve(context.toolResultDirectory)]
         : []),

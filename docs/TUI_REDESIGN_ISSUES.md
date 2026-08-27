@@ -1,5 +1,10 @@
 # TUI redesign issue breakdown
 
+> These issues are historical planning notes. The active implementation is
+> native-only and keeps the presentation surface on the Praxis data plane;
+> “compatibility” below refers to Claude-shaped CLI behavior, not Claude data
+> directories or a legacy persistence mode.
+
 These are proposed vertical slices from [PRD_TUI_REDESIGN.md](./PRD_TUI_REDESIGN.md).
 They are intentionally written for review before publishing to an external
 issue tracker.
@@ -67,15 +72,15 @@ Add visible-region rendering, stable row memoization, bounded streaming flushes,
 resize scheduling, and long-transcript memory/write budgets without changing
 observable transcript order or final content.
 
-## 7. Complete compatibility, accessibility, and fallback migration — [#323](https://github.com/Forest-Isle/Praxis/issues/323)
+## 7. Complete native accessibility and fallback behavior — [#323](https://github.com/Forest-Isle/Praxis/issues/323)
 
 **Blocked by:** 4, 5, 6
 
 **Stories:** 9, 10, 11, 12, 15, 16
 
 Exercise fullscreen, classic, non-TTY, screen-reader, color capability, PTY,
-resize, suspend/resume, and existing Claude compatibility paths. Remove old
-presentation paths only after equivalent behavior is covered.
+resize, suspend/resume, and the supported Claude-shaped CLI semantics. Keep the
+presentation surface on the Praxis-native runtime.
 
 ## 8. Final acceptance and old-path contraction — [#324](https://github.com/Forest-Isle/Praxis/issues/324)
 
@@ -83,5 +88,5 @@ presentation paths only after equivalent behavior is covered.
 
 **Stories:** 14, 16, 17, 18
 
-Run the full project and compatibility gates, verify performance budgets,
-review scope and placeholders, and contract temporary migration adapters.
+Run the full project gates, verify performance budgets, and review scope and
+placeholders for the Praxis-native runtime.

@@ -144,17 +144,17 @@ describe('Claude Bash path safety', () => {
       reason: expect.stringContaining('sensitive file'),
     })
     expect(
-      validateBashPathSafety('echo value > .claude/settings.json', {
+      validateBashPathSafety('echo value > .praxis/settings.json', {
         ...base,
         permissionMode: 'acceptEdits',
       }),
     ).toMatchObject({ safe: false, behavior: 'ask' })
     expect(
-      validateBashPathSafety('touch .claude/worktrees/feature/output.txt', {
+      validateBashPathSafety('touch .praxis/worktrees/feature/output.txt', {
         ...base,
         permissionMode: 'acceptEdits',
       }),
-    ).toEqual({ safe: true })
+    ).toMatchObject({ safe: false, behavior: 'ask' })
   })
 
   it('fails closed on path-affecting flags, expansion, and cd compounds', () => {

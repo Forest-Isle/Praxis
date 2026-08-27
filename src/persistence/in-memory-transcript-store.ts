@@ -1,124 +1,94 @@
-import type { ClaudeTranscriptEntry } from '../compatibility/claude/schema.js'
+import type { TranscriptEvent } from '../core/transcript-event.js'
 import type {
-  ClaudeTranscriptLease,
-  TranscriptAppendResult,
-  TranscriptCreateResult,
-  TranscriptLeaseResult,
-  TranscriptReserveResult,
-  TranscriptSnapshot,
-  TranscriptTail,
-} from './claude-transcript-store.js'
-
-function tailsMatch(left: TranscriptTail, right: TranscriptTail): boolean {
-  return (
-    left.byteLength === right.byteLength &&
-    left.lastLineHash === right.lastLineHash &&
-    left.lastUuid === right.lastUuid &&
-    left.newlineTerminated === right.newlineTerminated
-  )
-}
-
-function lastUuid(entries: readonly ClaudeTranscriptEntry[]): string | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]
-    if (typeof entry?.uuid === 'string') return entry.uuid
-    if (typeof entry?.leafUuid === 'string') return entry.leafUuid
-  }
-  return null
-}
+  NativeTranscriptAppendResult,
+  NativeTranscriptCreateResult,
+  NativeTranscriptLease,
+  NativeTranscriptLeaseResult,
+  NativeTranscriptReserveResult,
+  NativeTranscriptSnapshot,
+  NativeTranscriptTail,
+} from './native-transcript-store.js'
+import { projectNativeTranscriptEntries } from './native-transcript-store.js'
 
 export class InMemoryTranscriptStore {
-  private entries: ClaudeTranscriptEntry[] = []
+  private records: { event: TranscriptEvent }[] = []
   private reserved = false
   private locked = false
   private revision = 0
-
   async create(
-    entries: readonly ClaudeTranscriptEntry[],
-  ): Promise<TranscriptCreateResult> {
-    if (entries.length === 0) {
-      throw new Error('Cannot create an empty Claude transcript')
-    }
-    if (this.reserved) {
-      return { status: 'conflict', reason: 'already-exists' }
-    }
+    events: readonly TranscriptEvent[],
+  ): Promise<NativeTranscriptCreateResult> {
+    if (events.length === 0)
+      throw new Error('Cannot create an empty native transcript')
+    if (this.reserved) return { status: 'conflict', reason: 'already-exists' }
     this.reserved = true
-    this.entries = [...entries]
-    this.revision += 1
+    this.records = events.map((event) => ({ event }))
+    this.revision++
     return { status: 'created', tail: this.tail() }
   }
-
-  async reserve(): Promise<TranscriptReserveResult> {
-    if (this.reserved) {
-      return { status: 'conflict', reason: 'already-exists' }
-    }
+  async reserve(): Promise<NativeTranscriptReserveResult> {
+    if (this.reserved) return { status: 'conflict', reason: 'already-exists' }
     this.reserved = true
     return { status: 'reserved' }
   }
-
   async withLease<T>(
-    operation: (lease: ClaudeTranscriptLease) => Promise<T>,
-  ): Promise<TranscriptLeaseResult<T>> {
+    operation: (lease: NativeTranscriptLease) => Promise<T>,
+  ): Promise<NativeTranscriptLeaseResult<T>> {
     if (this.locked) return { status: 'conflict', reason: 'locked' }
     this.locked = true
     try {
       const value = await operation({
-        load: () => this.load(),
-        append: (expectedTail, entry) => this.appendMany(expectedTail, [entry]),
-        appendMany: (expectedTail, entries) =>
-          this.appendMany(expectedTail, entries),
-        appendMetadataSnapshot: (expectedTail, entries) =>
-          this.appendMany(expectedTail, entries),
+        reserve: async () => {
+          if (this.reserved)
+            return { status: 'conflict', reason: 'already-exists' as const }
+          this.reserved = true
+          return { status: 'reserved' as const }
+        },
+        load: async () => this.load(),
+        append: (tail, event) => this.appendMany(tail, [event]),
+        appendMany: (tail, events) => this.appendMany(tail, events),
       })
       return { status: 'completed', value }
     } finally {
       this.locked = false
     }
   }
-
-  private async load(): Promise<TranscriptSnapshot> {
-    return { entries: [...this.entries], tail: this.tail() }
+  async loadReadOnly(): Promise<{
+    records: readonly { event: TranscriptEvent }[]
+    tail: NativeTranscriptTail
+    issue: null
+  }> {
+    return { ...(await this.load()), issue: null }
   }
-
+  private async load(): Promise<NativeTranscriptSnapshot> {
+    const records = this.records.map((record) => ({ event: record.event }))
+    const snapshot = { records, tail: this.tail() }
+    Object.defineProperty(snapshot, 'entries', {
+      value: projectNativeTranscriptEntries(records),
+      enumerable: false,
+    })
+    return snapshot as unknown as NativeTranscriptSnapshot
+  }
   private async appendMany(
-    expectedTail: TranscriptTail,
-    entries: readonly ClaudeTranscriptEntry[],
-  ): Promise<TranscriptAppendResult> {
-    if (entries.length === 0) {
-      throw new Error('Cannot append an empty Claude transcript batch')
-    }
-    if (!tailsMatch(this.tail(), expectedTail)) {
-      return { status: 'conflict', reason: 'tail-changed' }
-    }
-    const branchParentUuid = expectedTail.branchParentUuid
-    const advancedLogicalTail = entries.some(
-      (entry) =>
-        typeof entry.uuid === 'string' &&
-        ![
-          'agent-name',
-          'agent-setting',
-          'custom-title',
-          'pr-link',
-          'worktree-state',
-        ].includes(entry.type),
+    expected: NativeTranscriptTail,
+    events: readonly TranscriptEvent[],
+  ): Promise<NativeTranscriptAppendResult> {
+    if (!events.length)
+      throw new Error('Cannot append an empty native transcript batch')
+    if (
+      expected.byteLength !== this.tail().byteLength ||
+      expected.lastEventId !== this.tail().lastEventId
     )
-    this.entries.push(...entries)
-    this.revision += 1
-    const tail = this.tail()
-    return {
-      status: 'appended',
-      tail:
-        branchParentUuid === undefined || advancedLogicalTail
-          ? tail
-          : { ...tail, branchParentUuid },
-    }
+      return { status: 'conflict', reason: 'tail-changed' }
+    this.records.push(...events.map((event) => ({ event })))
+    this.revision++
+    return { status: 'appended', tail: this.tail() }
   }
-
-  private tail(): TranscriptTail {
+  private tail(): NativeTranscriptTail {
     return {
-      byteLength: this.entries.length,
+      byteLength: this.records.length,
       lastLineHash: this.revision === 0 ? null : `memory:${this.revision}`,
-      lastUuid: lastUuid(this.entries),
+      lastEventId: this.records.at(-1)?.event.id ?? null,
       newlineTerminated: true,
     }
   }

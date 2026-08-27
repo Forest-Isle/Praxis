@@ -32,12 +32,12 @@ export interface NativeTranscriptFullRead extends TranscriptFileFacts {
   writeMode: 'read-only'
   raw: Buffer
 }
-export interface LegacyTranscriptFullRead extends TranscriptFileFacts {
-  format: 'legacy'
+export interface UnsupportedTranscriptFullRead extends TranscriptFileFacts {
+  format: 'unsupported'
   raw: Buffer
 }
 export type TranscriptReadResult =
-  NativeTranscriptFullRead | LegacyTranscriptFullRead
+  NativeTranscriptFullRead | UnsupportedTranscriptFullRead
 export interface NativeTranscriptIndex extends TranscriptFileFacts {
   format: 'native'
   codecId: string
@@ -45,11 +45,11 @@ export interface NativeTranscriptIndex extends TranscriptFileFacts {
   records: readonly DecodedTranscriptRecord[]
   issue: TranscriptCodecDiagnostic | null
 }
-export interface LegacyTranscriptIndex extends TranscriptFileFacts {
-  format: 'legacy'
+export interface UnsupportedTranscriptIndex extends TranscriptFileFacts {
+  format: 'unsupported'
 }
 export type TranscriptIndexResult =
-  NativeTranscriptIndex | LegacyTranscriptIndex
+  NativeTranscriptIndex | UnsupportedTranscriptIndex
 export interface NativeTranscriptIndexRequest {
   sessionId: string
   path: string
@@ -188,7 +188,7 @@ export async function readNativeTranscript(
       metadata.mtime,
       source.length === 0 || source.at(-1) === 0x0a,
     ),
-    format: 'legacy',
+    format: 'unsupported',
     raw: source,
   }
 }
@@ -289,7 +289,7 @@ async function indexOne(path: string): Promise<TranscriptIndexResult> {
     const parsed = first ? declaration(first) : { declared: false }
     const info = parsed.declared ? parsed : canonicalPrefixDeclaration(head)
     const file = facts(size, metadata.mtime, newlineTerminated)
-    if (!info.declared) return { ...file, format: 'legacy' }
+    if (!info.declared) return { ...file, format: 'unsupported' }
     const version = info.version ?? 0
     const codec = createNativeTranscriptCodec(
       typeof version === 'number' ? version : 0,

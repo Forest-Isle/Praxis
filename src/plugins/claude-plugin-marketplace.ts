@@ -222,12 +222,13 @@ function settingsPath(
   configRoot: string,
   cwd: string,
   scope: ClaudePluginScope,
-  dataPlane: DataPlane = 'claude',
+  _dataPlane?: DataPlane,
 ): string {
+  void _dataPlane
   if (scope === 'user') return join(configRoot, 'settings.json')
   return join(
     cwd,
-    dataPlane === 'native' ? '.praxis' : '.claude',
+    '.praxis',
     scope === 'local' ? 'settings.local.json' : 'settings.json',
   )
 }

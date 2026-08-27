@@ -87,7 +87,7 @@ async function fixture() {
     'costs',
     'claude-cost-state.json',
   )
-  const lockFile = join(root, 'config', 'praxis', 'locks', 'claude-state.lock')
+  const lockFile = join(root, 'config', 'praxis', 'locks', 'praxis-state.lock')
   await mkdir(dirname(statePath), { recursive: true })
   await mkdir(dirname(lockFile), { recursive: true })
   const store = new ClaudeCostStateStore({
@@ -660,7 +660,7 @@ describe('ClaudeCostStateStore unknown-cost sidecar', () => {
       'config',
       'praxis',
       'locks',
-      'claude-state.lock',
+      'praxis-state.lock',
     )
     const sidecarLockFile = join(
       root,

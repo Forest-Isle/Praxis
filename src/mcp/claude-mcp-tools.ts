@@ -19,7 +19,7 @@ import type {
 } from '@modelcontextprotocol/sdk/types.js'
 import { Ajv2020 } from 'ajv/dist/2020.js'
 
-import type { ClaudeJsonResource } from '../compatibility/claude/shared-resources.js'
+import type { JsonResource } from '../core/resources.js'
 import type {
   ModelToolCall,
   ModelContentBlock,
@@ -174,7 +174,7 @@ export interface ClaudeMcpConfigurationReport {
 
 export interface ClaudeMcpToolRegistryOptions {
   base: ToolRegistry
-  resources: readonly ClaudeJsonResource[]
+  resources: readonly JsonResource[]
   cwd: string
   configRoot?: string
   onWarning?: (message: string) => void
@@ -185,7 +185,7 @@ export interface ClaudeMcpToolRegistryOptions {
     instructions: readonly ClaudeMcpServerInstruction[],
   ) => void
   authenticateServer?: (name: string) => Promise<void>
-  reloadResources?: () => Promise<readonly ClaudeJsonResource[]>
+  reloadResources?: () => Promise<readonly JsonResource[]>
   onElicitation?: (request: {
     serverName: string
     message: ElicitRequest['params']['message']
@@ -374,7 +374,7 @@ function parseServerConfig(
 }
 
 function configuredServers(
-  resources: readonly ClaudeJsonResource[],
+  resources: readonly JsonResource[],
   onWarning?: (message: string) => void,
 ): ConfiguredServer[] {
   const servers = new Map<string, ConfiguredServer>()
@@ -447,7 +447,7 @@ function mcpServerSignature(value: unknown): string | undefined {
 }
 
 export function validateClaudeMcpConfiguration(
-  resources: readonly ClaudeJsonResource[],
+  resources: readonly JsonResource[],
 ): ClaudeMcpConfigurationReport {
   const warnings: string[] = []
   const servers = configuredServers(resources, (message) =>
@@ -1200,7 +1200,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     cwd: string
     signal?: AbortSignal
   }): Promise<{ tools: ToolRegistry; close(): Promise<void> } | null> {
-    const resources: ClaudeJsonResource[] = []
+    const resources: JsonResource[] = []
     for (const spec of options.specs) {
       if (typeof spec === 'string') {
         if (!this.statuses.has(spec)) {
@@ -1256,7 +1256,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   }
 
   private async configure(
-    resources: readonly ClaudeJsonResource[],
+    resources: readonly JsonResource[],
     warn: (message: string) => void,
   ): Promise<void> {
     for (const server of configuredServers(resources, warn)) {
@@ -1581,10 +1581,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
       DISCOVERY_TIMEOUT_MS,
     )
     try {
-      const configRoot =
-        this.options.configRoot ??
-        process.env.CLAUDE_CONFIG_DIR ??
-        join(homedir(), '.claude')
+      const configRoot = this.options.configRoot ?? join(homedir(), '.praxis')
       await client.connect(
         (await transport(
           serverName,

@@ -1,13 +1,16 @@
+import { execFile as execFileCallback } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
+import { promisify } from 'node:util'
 import { join } from 'node:path'
 
-import { detectClaudeVersion, execFileAsync } from './lib/claude-probe.mjs'
-
-const root = await mkdtemp(join(tmpdir(), 'praxis-prompt-suggestions-'))
+const execFile = promisify(execFileCallback)
+const root = new URL('..', import.meta.url)
+const configDir = await mkdtemp(join(tmpdir(), 'praxis-prompt-suggestions-'))
 const requests = []
 let requestCount = 0
+
 const server = createServer(async (request, response) => {
   let source = ''
   request.setEncoding('utf8')
@@ -64,37 +67,39 @@ await new Promise((resolve, reject) => {
 })
 
 try {
-  await detectClaudeVersion('prompt-suggestions compatibility gate')
   const address = server.address()
   if (!address || typeof address === 'string')
-    throw new Error('no server address')
+    throw new Error('fixture server did not expose an address')
   const env = {
     ...process.env,
-    CLAUDE_CONFIG_DIR: join(root, 'config'),
     PRAXIS_PROVIDER: 'anthropic',
     PRAXIS_API_KEY: 'fixture-key',
     PRAXIS_BASE_URL: `http://127.0.0.1:${address.port}`,
+    PRAXIS_HOME: configDir,
   }
+  for (const key of [
+    'ANTHROPIC_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  ])
+    delete env[key]
+
+  const { stdout: help } = await execFile(
+    process.execPath,
+    ['dist/cli.js', '--help'],
+    { cwd: root, env },
+  )
+  const normalizedHelp = help.replace(/\s+/g, ' ')
+  if (!help.includes('--prompt-suggestions [value]'))
+    throw new Error('Root help omitted optional prompt-suggestions value')
+  if (!normalizedHelp.includes('choices: "true", "false", "1", "0"'))
+    throw new Error('Root help omitted prompt-suggestions choices')
+
   const invalidMessage =
     "option '--prompt-suggestions [value]' argument 'maybe' is invalid. Allowed choices are true, false, 1, 0, yes, no, on, off."
-  const [{ stdout: claudeHelp }, { stdout: praxisHelp }] = await Promise.all([
-    execFileAsync('claude', ['--help']),
-    execFileAsync(process.execPath, ['dist/cli.js', '--help'], {
-      cwd: new URL('..', import.meta.url),
-    }),
-  ])
-  for (const help of [claudeHelp, praxisHelp]) {
-    const normalizedHelp = help.replace(/\s+/g, ' ')
-    if (!help.includes('--prompt-suggestions [value]')) {
-      throw new Error('Root help omitted optional prompt-suggestions value')
-    }
-    if (!normalizedHelp.includes('choices: "true", "false", "1", "0"')) {
-      throw new Error('Root help omitted prompt-suggestions choices')
-    }
-  }
-  for (const [command, args] of [
-    ['claude', ['--prompt-suggestions', 'maybe', '--version']],
-    [
+  try {
+    await execFile(
       process.execPath,
       [
         'dist/cli.js',
@@ -104,42 +109,30 @@ try {
         '--prompt-suggestions',
         'maybe',
       ],
-    ],
-  ]) {
-    try {
-      await execFileAsync(command, args, {
-        cwd: new URL('..', import.meta.url),
-        env,
-      })
-      throw new Error(`${command} accepted invalid prompt suggestions`)
-    } catch (error) {
-      if (!String(error.stderr).includes(invalidMessage)) throw error
-    }
+      { cwd: root, env },
+    )
+    throw new Error('CLI accepted invalid prompt suggestions')
+  } catch (error) {
+    if (!String(error.stderr).includes(invalidMessage)) throw error
   }
-  for (const [command, args] of [
-    ['claude', ['--prompt-suggestions=true', 'mcp', 'get', 'missing']],
-    [
+
+  try {
+    await execFile(
       process.execPath,
       ['dist/cli.js', '--prompt-suggestions=true', 'mcp', 'get', 'missing'],
-    ],
-  ]) {
-    try {
-      await execFileAsync(command, args, {
-        cwd: new URL('..', import.meta.url),
-        env,
-      })
-      throw new Error(`${command} unexpectedly found missing MCP server`)
-    } catch (error) {
-      const stderr = String(error.stderr)
-      if (
-        !stderr.includes('missing') ||
-        stderr.includes('--prompt-suggestions requires')
-      ) {
-        throw error
-      }
-    }
+      { cwd: root, env },
+    )
+    throw new Error('CLI unexpectedly found missing MCP server')
+  } catch (error) {
+    const stderr = String(error.stderr)
+    if (
+      !stderr.includes('missing') ||
+      stderr.includes('--prompt-suggestions requires')
+    )
+      throw error
   }
-  const result = await execFileAsync(
+
+  const result = await execFile(
     process.execPath,
     [
       'dist/cli.js',
@@ -149,36 +142,38 @@ try {
       '--output-format',
       'stream-json',
       '--verbose',
+      '--max-turns',
+      '1',
       '--prompt-suggestions',
       'true',
       '--',
       'suggest next',
     ],
-    { cwd: new URL('..', import.meta.url), env, timeout: 30_000 },
+    { cwd: root, env, timeout: 30_000 },
   )
   const records = result.stdout
     .trim()
     .split('\n')
     .map((line) => JSON.parse(line))
   if (
-    !JSON.stringify(requests[1]?.messages?.at(-1)).includes('[SUGGESTION MODE:')
-  ) {
+    !requests.some((request) =>
+      JSON.stringify(request.messages?.at(-1)).includes('[SUGGESTION MODE:'),
+    )
+  )
     throw new Error(
       'Suggestion instruction was not sent as a temporary user message',
     )
-  }
   if (
     records.at(-2)?.type !== 'result' ||
     records.at(-1)?.type !== 'prompt_suggestion'
-  ) {
+  )
     throw new Error(
       `Unexpected suggestion event order: ${JSON.stringify(records)}`,
     )
-  }
-  if (records.at(-1)?.suggestion !== 'continue the implementation') {
+  if (records.at(-1)?.suggestion !== 'continue the implementation')
     throw new Error('Suggestion text did not survive stream-json output')
-  }
-  const disabled = await execFileAsync(
+
+  const disabled = await execFile(
     process.execPath,
     [
       'dist/cli.js',
@@ -188,20 +183,27 @@ try {
       '--output-format',
       'stream-json',
       '--verbose',
+      '--max-turns',
+      '1',
       '--prompt-suggestions',
       'false',
       '--',
       'no suggestion',
     ],
-    { cwd: new URL('..', import.meta.url), env, timeout: 30_000 },
+    { cwd: root, env, timeout: 30_000 },
   )
-  if (disabled.stdout.includes('"type":"prompt_suggestion"')) {
-    throw new Error('False space value emitted a prompt suggestion')
-  }
-  if (requests.length !== 3)
-    throw new Error(`Expected three provider requests, got ${requests.length}`)
-  console.log('Prompt suggestion compatibility checks passed.')
+  if (disabled.stdout.includes('"type":"prompt_suggestion"'))
+    throw new Error('False prompt-suggestions emitted a prompt suggestion')
+  const countedRequests = requests.filter((request) => {
+    const lastMessage = JSON.stringify(request.messages?.at(-1))
+    return !lastMessage.includes('Conversation so far:')
+  })
+  if (countedRequests.length !== 3)
+    throw new Error(
+      `Expected three prompt provider requests, got ${countedRequests.length}`,
+    )
+  console.log('Native prompt suggestion checks passed.')
 } finally {
   await new Promise((resolve) => server.close(resolve)).catch(() => undefined)
-  await rm(root, { recursive: true, force: true })
+  await rm(configDir, { recursive: true, force: true })
 }

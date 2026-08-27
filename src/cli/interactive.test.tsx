@@ -1,18 +1,17 @@
 import { Console as NodeConsole } from 'node:console'
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setImmediate } from 'node:timers/promises'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  AGENT_COLORS,
-  type AgentColorSelection,
-} from '../compatibility/claude/agent-color.js'
+import { AGENT_COLORS, type AgentColorSelection } from '../core/agent-color.js'
 import type {
   ModelToolCall,
   PermissionApproval,
@@ -37,6 +36,12 @@ import type {
   DoctorProgressListener,
   DoctorReport,
 } from '../maintenance/doctor.js'
+
+const require = createRequire(import.meta.url)
+const vitestEntry = join(
+  dirname(require.resolve('vitest/package.json')),
+  'vitest.mjs',
+)
 
 afterEach(() => {
   cleanup()
@@ -126,7 +131,7 @@ describe('InteractiveApp', () => {
       join(cwd, '.praxis', 'settings.local.json'),
       JSON.stringify({ permissions: { allow: ['Read(./native/**)'] } }),
     )
-    vi.stubEnv('PRAXIS_DATA_PLANE', 'claude')
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'native')
 
     try {
       const app = render(
@@ -419,7 +424,7 @@ describe('InteractiveApp', () => {
     const child = spawnSync(
       process.execPath,
       [
-        resolve('node_modules/vitest/vitest.mjs'),
+        vitestEntry,
         'run',
         'src/cli/interactive.test.tsx',
         '-t',
@@ -429,6 +434,7 @@ describe('InteractiveApp', () => {
         cwd: process.cwd(),
         encoding: 'utf8',
         env: childEnvironment,
+        timeout: 20_000,
       },
     )
     expect(child.status, `${child.stdout}\n${child.stderr}`).toBe(0)
@@ -1263,7 +1269,6 @@ describe('InteractiveApp', () => {
         installationPath:
           '/usr/local/lib/node_modules/praxis-agent/dist/cli.js',
         invokedBinary: '/usr/local/bin/praxis',
-        configInstallMethod: 'default (~/.claude)',
         search: {
           working: true,
           mode: 'system',
@@ -1347,7 +1352,6 @@ describe('InteractiveApp', () => {
       'Path: /usr/local/lib/node_modules/praxis-agent/dist/cli.js',
     )
     expect(frame).toContain('Invoked: /usr/local/bin/praxis')
-    expect(frame).toContain('Config install method: default (~/.claude)')
     expect(frame).toContain('Search: OK (system)')
     expect(frame).toContain('└ /usr/local/bin/rg')
     expect(frame).toContain('Updates')
@@ -3506,7 +3510,9 @@ describe('InteractiveApp', () => {
   })
 
   it('writes the focused /copy candidate with w without using the clipboard', async () => {
-    const path = join(tmpdir(), 'claude', 'copy.praxisstage132')
+    const root = await mkdtemp(join(tmpdir(), 'praxis-copy-state-'))
+    vi.stubEnv('PRAXIS_HOME', root)
+    const path = join(root, 'state', 'copy.praxisstage132')
     const clipboardWriter = vi.fn(async () => undefined)
     try {
       const app = render(
@@ -3532,13 +3538,11 @@ describe('InteractiveApp', () => {
       await flush()
       app.stdin.write('\u001B[B')
       app.stdin.write('w')
-      await waitFor(() =>
-        app.lastFrame()?.includes(`Written to ${path}`) ? true : undefined,
-      )
+      await waitFor(() => (existsSync(path) ? true : undefined))
       expect(await readFile(path, 'utf8')).toBe('write-only candidate')
       expect(clipboardWriter).not.toHaveBeenCalled()
     } finally {
-      await rm(path, { force: true })
+      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -3569,7 +3573,7 @@ describe('InteractiveApp', () => {
         app.lastFrame()?.includes('Preference saved.') ? true : undefined,
       )
       expect(
-        JSON.parse(await readFile(join(root, '.claude.json'), 'utf8')),
+        JSON.parse(await readFile(join(root, 'state.json'), 'utf8')),
       ).toMatchObject({ copyFullResponse: true })
     } finally {
       await rm(root, { recursive: true, force: true })

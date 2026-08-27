@@ -5,18 +5,9 @@ import { join, resolve } from 'node:path'
 import { Box, Text } from 'ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import {
-  isClaudeSessionId,
-  resolveClaudePaths,
-  sanitizeClaudeProjectPath,
-} from '../../compatibility/claude/paths.js'
-import { loadClaudeSettings } from '../../compatibility/claude/shared-resources.js'
-import type { ClaudeResourceScope } from '../../compatibility/claude/shared-resources.js'
+import type { ResourceScope } from '../../core/resources.js'
 import type { ModelUsage } from '../../core/runtime.js'
-import {
-  type DataPlane,
-  resolveDataPlanePaths,
-} from '../../persistence/data-plane.js'
+import type { DataPlane } from '../../persistence/data-plane.js'
 import { loadNativeSharedResources } from '../../persistence/native-resources.js'
 import {
   commandShell,
@@ -76,25 +67,22 @@ function record(value: unknown): Record<string, unknown> | null {
 export async function loadClaudeStatusLineSetting(options: {
   configRoot: string
   cwd: string
-  settingSources?: readonly ClaudeResourceScope[]
+  settingSources?: readonly ResourceScope[]
   dataPlane?: DataPlane
 }): Promise<{
   setting?: ClaudeStatusLineSetting
   disabled: boolean
 }> {
-  const resources =
-    options.dataPlane === 'native'
-      ? (
-          await loadNativeSharedResources({
-            root: options.configRoot,
-            cwd: options.cwd,
-          })
-        ).settings.filter(
-          (resource) =>
-            options.settingSources === undefined ||
-            options.settingSources.includes(resource.scope),
-        )
-      : await loadClaudeSettings(options)
+  const resources = (
+    await loadNativeSharedResources({
+      root: options.configRoot,
+      cwd: options.cwd,
+    })
+  ).settings.filter(
+    (resource) =>
+      options.settingSources === undefined ||
+      options.settingSources.includes(resource.scope),
+  )
   const merged = Object.assign(
     {},
     ...resources.map((resource) => record(resource.value) ?? {}),
@@ -238,25 +226,11 @@ export function createClaudeStatusLineInput(options: {
           ),
         )
   const model = options.model ?? 'default'
-  const transcriptPath = isClaudeSessionId(options.sessionId)
-    ? options.dataPlane === 'native'
-      ? resolveDataPlanePaths({
-          dataPlane: 'native',
-          root: options.configRoot,
-          cwd: options.cwd,
-          sessionId: options.sessionId,
-        }).sessionFile
-      : resolveClaudePaths({
-          configDir: options.configRoot,
-          cwd: options.cwd,
-          sessionId: options.sessionId,
-        }).sessionFile
-    : resolve(
-        options.configRoot,
-        'projects',
-        sanitizeClaudeProjectPath(options.cwd),
-        `${options.sessionId}.jsonl`,
-      )
+  const transcriptPath = resolve(
+    options.configRoot,
+    'sessions',
+    `${options.sessionId}.jsonl`,
+  )
   return {
     session_id: options.sessionId,
     ...(options.sessionName ? { session_name: options.sessionName } : {}),
@@ -308,16 +282,17 @@ export function StatusLine({
   refreshKey,
   width,
   settingSources,
-  dataPlane = 'claude',
+  dataPlane: _dataPlane = 'native',
 }: {
   configRoot: string
   cwd: string
   input: ClaudeStatusLineInput
   refreshKey: string
   width?: number
-  settingSources?: readonly ClaudeResourceScope[]
+  settingSources?: readonly ResourceScope[]
   dataPlane?: DataPlane
 }) {
+  void _dataPlane
   const [text, setText] = useState<string>()
   const [padding, setPadding] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -333,7 +308,6 @@ export function StatusLine({
       const loaded = await loadClaudeStatusLineSetting({
         configRoot,
         cwd,
-        dataPlane,
         ...(settingSources === undefined ? {} : { settingSources }),
       })
       if (current.signal.aborted) return
@@ -355,7 +329,7 @@ export function StatusLine({
     } catch {
       if (!current.signal.aborted) setText(undefined)
     }
-  }, [configRoot, cwd, dataPlane, settingSources, width])
+  }, [configRoot, cwd, settingSources, width])
 
   const schedule = useCallback(() => {
     if (timer.current) clearTimeout(timer.current)
@@ -369,16 +343,8 @@ export function StatusLine({
   useEffect(() => {
     const paths = [
       join(configRoot, 'settings.json'),
-      join(
-        cwd,
-        dataPlane === 'native' ? '.praxis' : '.claude',
-        'settings.json',
-      ),
-      join(
-        cwd,
-        dataPlane === 'native' ? '.praxis' : '.claude',
-        'settings.local.json',
-      ),
+      join(cwd, '.praxis', 'settings.json'),
+      join(cwd, '.praxis', 'settings.local.json'),
     ]
     const changed = () => schedule()
     for (const path of paths) watchFile(path, { interval: 500 }, changed)
@@ -387,7 +353,7 @@ export function StatusLine({
       controller.current?.abort()
       if (timer.current) clearTimeout(timer.current)
     }
-  }, [configRoot, cwd, dataPlane, schedule])
+  }, [configRoot, cwd, schedule])
 
   if (!text) return null
   return (

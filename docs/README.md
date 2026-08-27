@@ -1,6 +1,6 @@
 # Praxis Documentation
 
-This index separates task-oriented user guidance from compatibility contracts,
+This index separates task-oriented user guidance from product guidance,
 architecture references, and maintainer operations. `praxis --help` remains the
 authoritative CLI surface.
 
@@ -13,15 +13,10 @@ authoritative CLI surface.
 - [Support](../SUPPORT.md) — questions, bug reports, feature requests, and
   security-report routing.
 
-## Product and compatibility
+## Product behavior
 
-- [Claude Code Compatibility Contract](COMPATIBILITY.md) — shared local data,
-  versioned write profiles, provider translation, and exclusions.
 - [Single-User CLI Parity Matrix](PARITY_MATRIX.md) — feature-by-feature status
   and executable evidence.
-- [Claude Code 2.1.237 Core Design Drift Audit](CORE_DESIGN_DRIFT_AUDIT.md) —
-  version-pinned runtime, context, memory, scheduling, prompt/cache, hooks,
-  transcript/session, and subagent evidence.
 - [Claude-style TUI Parity](TUI_PARITY.md) — black-box visual rules,
   presentation components, interactions, and verification gates.
 - [Agent Runtime Contract](RUNTIME_CONTRACT.md) — runtime states, ports,
@@ -36,8 +31,8 @@ authoritative CLI surface.
 - [Architecture](ARCHITECTURE.md) — module boundaries and main data flows.
 - [Threat Model](THREAT_MODEL.md) — trust assumptions, threats, and required
   controls.
-- [Compatibility-first ADR](adr/0001-compatibility-first-clean-room.md) — why
-  Praxis uses a clean-room, observable-contract design.
+- [Native-only ADR](adr/0002-native-only-removal.md) — why Praxis uses an
+  independent native data plane and local-only product boundary.
 - [Performance Budgets](PERFORMANCE.md) — release performance limits and gate.
 
 ## Maintainer operations
@@ -68,4 +63,4 @@ authoritative CLI surface.
   design decisions, implementation status, and validation evidence.
 
 These focused records explain implementation decisions. New users normally
-need only Getting Started, CLI Reference, and the compatibility contract.
+need only Getting Started and CLI Reference.

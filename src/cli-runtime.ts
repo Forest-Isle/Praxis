@@ -25,6 +25,7 @@ import type {
   TeamLeadOperations,
   TeamCreateRequest,
 } from './application/team-lead-operations.js'
+import type { JsonResource } from './core/resources.js'
 import type { TeamSnapshot } from './core/team-ownership.js'
 import {
   ProjectMemoryAgentExtractor,
@@ -44,22 +45,20 @@ import {
   parseAgentColorInput,
   type AgentColorName,
   type AgentColorSelection,
-} from './compatibility/claude/agent-color.js'
+} from './core/agent-color.js'
 import type { TranscriptDisplayItem } from './application/transcript-projection.js'
 import {
   ClaudeConditionalRuleResolver,
   ClaudeContextAssembler,
-} from './compatibility/claude/context.js'
-import { loadClaudeDynamicContext } from './compatibility/claude/dynamic-context.js'
+} from './native/context.js'
+import { loadClaudeDynamicContext } from './native/dynamic-context.js'
 import {
   createClaudePrSessionFilter,
   filterClaudePrLinkedSessions,
-} from './compatibility/claude/pr-links.js'
+} from './native/pr-links.js'
+import { isSessionId } from './core/session.js'
 import {
-  isClaudeSessionId,
-  resolveClaudePaths,
-} from './compatibility/claude/paths.js'
-import {
+  assertNativeDataPlane,
   resolveDataPlane,
   resolveDataPlaneRoot,
   resolveDataPlanePaths,
@@ -70,14 +69,7 @@ import {
   loadNativeSettings,
   loadNativeSharedResources,
 } from './persistence/native-resources.js'
-import { migrateClaudeData } from './persistence/claude-migration.js'
-import {
-  loadClaudeContextResources,
-  loadClaudeSettings,
-  loadClaudeSharedResources,
-  resolveClaudeProjectIdentity,
-  type ClaudeJsonResource,
-} from './compatibility/claude/shared-resources.js'
+import { resolveProjectIdentity } from './platform/project-identity.js'
 import {
   AgentRunCancelledError,
   type ModelDocument,
@@ -113,7 +105,6 @@ import {
   PRAXIS_TEAM_TOOLS,
   resolveClaudeToolCapabilities,
 } from './tools/claude-capabilities.js'
-import type { ClaudeTeamCompatibilityPort } from './tools/team-lead-tools.js'
 import {
   applyRuntimeSettingDefaults,
   loadRuntimeSettings,
@@ -155,9 +146,9 @@ import {
   readMcpClientSecret,
 } from './mcp/claude-mcp-oauth.js'
 import { servePraxisMcpStdio } from './mcp/praxis-mcp-server.js'
-import { VERIFIED_CLAUDE_SCHEMA_VERSION } from './compatibility/claude/schema.js'
+const VERIFIED_CLAUDE_SCHEMA_VERSION = 'native'
+const isClaudeSessionId = isSessionId
 import { writeFileAtomically } from './platform/atomic-write.js'
-import { detectInstalledClaudeVersion } from './platform/claude-version.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
@@ -177,7 +168,7 @@ import {
   ClaudeInteractiveToolManager,
   type ClaudeInteractiveToolCallbacks,
 } from './tools/claude-interactive-tools.js'
-import { claudeBackgroundTaskParent } from './application/background-bash-manager.js'
+import { nativeBackgroundTaskParent } from './application/background-bash-manager.js'
 import {
   runTopLevelAgentWorker,
   TopLevelAgentManager,
@@ -189,7 +180,7 @@ import { WorkspaceContext } from './application/session-worktree.js'
 import { launchTmuxWorktree } from './platform/tmux-worktree.js'
 import { claudeSandboxRuntime } from './sandbox/claude-sandbox-runtime.js'
 import {
-  claudeSandboxTempDirectory,
+  nativeSandboxTempDirectory,
   loadClaudeSandboxSettings,
 } from './sandbox/claude-sandbox-settings.js'
 import {
@@ -319,16 +310,13 @@ interface ProviderFactoryOptions {
 function createProviderForModel({
   apiKey,
   environment,
-  dataPlane,
   provider,
   context,
   controls,
   explicitThinkingControls,
 }: ProviderFactoryOptions): (selectedModel: string) => ModelProvider {
-  const resolvePromptCachePolicy = createAnthropicPromptCachePolicyResolver(
-    environment,
-    dataPlane,
-  )
+  const resolvePromptCachePolicy =
+    createAnthropicPromptCachePolicyResolver(environment)
   return (selectedModel) => {
     const providerOptions = {
       apiKey,
@@ -400,8 +388,6 @@ Usage:
   praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|prune|tag|validate|marketplace> ...
   praxis doctor [--json]
   praxis import [options] [source]
-  praxis migrate from-claude
-  praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
   praxis project purge [options] [path]
@@ -449,7 +435,6 @@ Options:
   --strict-mcp-config                  Ignore configured MCP servers
   --disable-slash-commands             Disable skills and slash commands
   --settings <file-or-json>           Load additional settings
-  --data-plane <plane>                native (default) or claude compatibility storage
   --setting-sources <sources>         user, project, local, or an empty list
   --safe-mode                         Disable shared customizations
   --bare                              Use only explicitly supplied context
@@ -781,7 +766,7 @@ Options:
 const PLUGIN_INIT_HELP = `Usage: praxis plugin init|new [options] <name>
 
 Scaffold a plugin at ~/.praxis/skills/<name> by default. In explicit Claude
-compatibility mode, scaffold at ~/.claude/skills/<name>. The legacy
+native mode only; scaffold at ~/.praxis/skills/<name>. The
 plugin init <directory> <name> form remains available without native options.
 
 Options:
@@ -988,7 +973,6 @@ Options:
   --dry-run          List what would be deleted without deleting anything
   -i, --interactive  Prompt for each item before deleting
   --json             Print purge plan and result as JSON
-  --data-plane <p>   native (default) or claude compatibility storage
   -y, --yes          Skip confirmation prompt
   -h, --help         Show help
 
@@ -1301,15 +1285,11 @@ export function resolveInteractiveRuntimeSettingsLocation(
   dataPlane: DataPlane,
   environment: NodeJS.ProcessEnv = process.env,
 ): { configRoot: string; statePath: string } {
-  const configRoot = resolveDataPlaneRoot({ dataPlane, environment })
+  assertNativeDataPlane(dataPlane)
+  const configRoot = resolveDataPlaneRoot({ environment })
   return {
     configRoot,
-    statePath:
-      dataPlane === 'native'
-        ? join(configRoot, 'state.json')
-        : environment.CLAUDE_CONFIG_DIR
-          ? join(configRoot, '.claude.json')
-          : resolve(homedir(), '.claude.json'),
+    statePath: join(configRoot, 'state.json'),
   }
 }
 
@@ -1317,11 +1297,8 @@ export function resolveUnknownCostSidecarPath(
   dataPlane: DataPlane,
   configRoot: string,
 ): string {
-  return join(
-    configRoot,
-    dataPlane === 'native' ? 'state' : 'praxis',
-    'unknown-cost-sidecar.json',
-  )
+  assertNativeDataPlane(dataPlane)
+  return join(configRoot, 'state', 'unknown-cost-sidecar.json')
 }
 
 const createDefaultService: CliDependencies['createService'] = async ({
@@ -1357,22 +1334,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const workspace = new WorkspaceContext(cwd)
   const dataPlane: DataPlane =
     controls.dataPlane ?? resolveDataPlane(runtimeEnvironment)
+  assertNativeDataPlane(dataPlane)
   const experimentalNativeTranscriptWrites = /^(?:1|true|yes|on)$/iu.test(
     (
       runtimeEnvironment.PRAXIS_EXPERIMENTAL_NATIVE_TRANSCRIPT_WRITES ?? ''
     ).trim(),
   )
   const configRoot = resolveDataPlaneRoot({
-    dataPlane,
     ...(requestedConfigRoot === undefined ? {} : { root: requestedConfigRoot }),
     environment: runtimeEnvironment,
   })
-  const claudeStatePath =
-    dataPlane === 'native'
-      ? join(configRoot, 'state.json')
-      : requestedConfigRoot || runtimeEnvironment.CLAUDE_CONFIG_DIR
-        ? join(configRoot, '.claude.json')
-        : resolve(homedir(), '.claude.json')
+  const claudeStatePath = join(configRoot, 'state.json')
   const simpleMode =
     controls.bare ||
     /^(?:1|true|yes|on)$/iu.test(
@@ -1396,7 +1368,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
   )
   if (experimentalNativeTranscriptWrites) {
     const incompatible: Array<[string, boolean]> = [
-      ['dataPlane', dataPlane !== 'native'],
       ['sessionPersistence', cli.sessionPersistence === false],
       ['interactive', interactive],
       ['simpleMode', !simpleMode],
@@ -1509,7 +1480,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
 
   const costStateStore = new ClaudeCostStateStore({
     statePath: claudeStatePath,
-    projectIdentity: await resolveClaudeProjectIdentity({ cwd }),
+    projectIdentity: await resolveProjectIdentity(cwd),
     sidecarPath: resolveUnknownCostSidecarPath(dataPlane, configRoot),
   })
   const sessionMemoryProviderFactory = createSessionMemoryProviderFactory(
@@ -1585,43 +1556,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
       : {}),
   }
   const hookConfiguration = async () => {
-    if (dataPlane === 'native') {
-      const [settings, pluginResources] = await Promise.all([
-        cli.safeMode || simpleMode
-          ? []
-          : loadNativeSettings({ root: configRoot, cwd }),
-        loadClaudePlugins({
-          configRoot,
-          dataPlane,
-          cwd,
-          pluginDirectories: cli.pluginDirectories,
-          pluginUrls: cli.pluginUrls,
-          strictPluginDirectories:
-            cli.pluginDirectories.length + cli.pluginUrls.length > 0,
-          loadInstalled: !cli.safeMode && !simpleMode,
-          readOnlyHooks: true,
-          environment: runtimeEnvironment,
-        }),
-      ])
-      return projectTuiHooks([
-        ...settings,
-        ...pluginResources.settings,
-        ...(cli.additionalSettings ? [cli.additionalSettings] : []),
-      ])
-    }
     const [settings, pluginResources] = await Promise.all([
-      loadClaudeSettings({
-        configRoot,
-        cwd,
-        ...(simpleMode
-          ? { settingSources: [] }
-          : cli.settingSources === undefined
-            ? {}
-            : { settingSources: cli.settingSources }),
-      }),
+      cli.safeMode || simpleMode
+        ? []
+        : loadNativeSettings({ root: configRoot, cwd }),
       loadClaudePlugins({
         configRoot,
-        dataPlane,
         cwd,
         pluginDirectories: cli.pluginDirectories,
         pluginUrls: cli.pluginUrls,
@@ -1678,24 +1618,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : toolProvider
 
-  const automaticSettingSources =
-    cli.safeMode || simpleMode ? [] : cli.settingSources
   const nativeSharedResourcesEnabled = !cli.safeMode && !simpleMode
-  const baseSettings =
-    dataPlane === 'native'
-      ? nativeSharedResourcesEnabled
-        ? await loadNativeSettings({ root: configRoot, cwd })
-        : []
-      : await loadClaudeSettings({
-          configRoot,
-          cwd,
-          ...(automaticSettingSources === undefined
-            ? {}
-            : { settingSources: automaticSettingSources }),
-        })
+  const baseSettings = nativeSharedResourcesEnabled
+    ? await loadNativeSettings({ root: configRoot, cwd })
+    : []
   const pluginResources = await loadClaudePlugins({
     configRoot,
-    dataPlane,
     cwd,
     pluginDirectories: cli.pluginDirectories,
     pluginUrls: cli.pluginUrls,
@@ -1718,33 +1646,22 @@ const createDefaultService: CliDependencies['createService'] = async ({
         })
   const includeProjectMemory =
     projectMemoryPolicy.enabled && !projectMemoryPolicy.recall
-  const loadedResources =
-    dataPlane === 'native'
-      ? nativeSharedResourcesEnabled
-        ? await loadNativeSharedResources({
-            root: configRoot,
-            cwd,
-            environment: runtimeEnvironment,
-            includeProjectMemory,
-          })
-        : {
-            instructions: [],
-            memory: [],
-            skills: [],
-            commands: [],
-            agents: [],
-            settings: [],
-            mcp: [],
-          }
-      : await loadClaudeSharedResources({
-          configRoot,
-          cwd,
-          claudeStatePath,
-          includeProjectMemory,
-          ...(automaticSettingSources === undefined
-            ? {}
-            : { settingSources: automaticSettingSources }),
-        })
+  const loadedResources = nativeSharedResourcesEnabled
+    ? await loadNativeSharedResources({
+        root: configRoot,
+        cwd,
+        environment: runtimeEnvironment,
+        includeProjectMemory,
+      })
+    : {
+        instructions: [],
+        memory: [],
+        skills: [],
+        commands: [],
+        agents: [],
+        settings: [],
+        mcp: [],
+      }
   const settings = [
     ...loadedResources.settings,
     ...pluginResources.settings,
@@ -1832,26 +1749,17 @@ const createDefaultService: CliDependencies['createService'] = async ({
         })
       : undefined
   const loadContextResources = (runtimeCwd = workspace.cwd()) =>
-    dataPlane === 'native'
-      ? nativeSharedResourcesEnabled
-        ? loadNativeContextResources({
-            root: configRoot,
-            cwd: runtimeCwd,
-            environment: runtimeEnvironment,
-            includeProjectMemory,
-          })
-        : Promise.resolve({
-            instructions: [],
-            conditionalRules: [],
-            memoryIndex: null,
-          })
-      : loadClaudeContextResources({
-          configRoot,
+    nativeSharedResourcesEnabled
+      ? loadNativeContextResources({
+          root: configRoot,
           cwd: runtimeCwd,
+          environment: runtimeEnvironment,
           includeProjectMemory,
-          ...(automaticSettingSources === undefined
-            ? {}
-            : { settingSources: automaticSettingSources }),
+        })
+      : Promise.resolve({
+          instructions: [],
+          conditionalRules: [],
+          memoryIndex: null,
         })
   const exposePlanDirectory =
     interactive &&
@@ -1877,7 +1785,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     homeDirectory:
       sandboxEnvironment.HOME ?? sandboxEnvironment.USERPROFILE ?? homedir(),
     additionalDirectories: initialAdditionalDirectories,
-    tempDirectory: claudeSandboxTempDirectory(sandboxEnvironment),
+    tempDirectory: nativeSandboxTempDirectory(sandboxEnvironment),
   })
   await claudeSandboxRuntime.initialize(sandboxSettings)
   const sandboxUnavailableReason = claudeSandboxRuntime.unavailableReason()
@@ -1891,7 +1799,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...(memoryDirectory ? [memoryDirectory] : []),
     ]),
   ]
-  const initialAdditionalReadDirectories = [claudeBackgroundTaskParent(cwd)]
+  const initialAdditionalReadDirectories = [nativeBackgroundTaskParent(cwd)]
   const permissionResolverForMode = (permissionMode: ClaudePermissionMode) =>
     new ClaudeExtensionPermissionResolver(
       new ClaudePermissionResolver({
@@ -1943,9 +1851,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       hookSessionEnvironment.environment(sessionId),
     ...(environment ? { environment } : {}),
   })
-  const runtimeMcpResources = async (
-    candidates: readonly ClaudeJsonResource[],
-  ) => {
+  const runtimeMcpResources = async (candidates: readonly JsonResource[]) => {
     const management = new ClaudeMcpManagement({
       dataPlane,
       configRoot,
@@ -1965,33 +1871,22 @@ const createDefaultService: CliDependencies['createService'] = async ({
     resources: await runtimeMcpResources(resources.mcp),
     reloadResources: async () => {
       if (cli.strictMcpConfig) return runtimeMcpResources(cli.mcpResources)
-      const refreshed =
-        dataPlane === 'native'
-          ? nativeSharedResourcesEnabled
-            ? await loadNativeSharedResources({
-                root: configRoot,
-                cwd: workspace.cwd(),
-                environment: runtimeEnvironment,
-                includeProjectMemory,
-              })
-            : {
-                instructions: [],
-                memory: [],
-                skills: [],
-                commands: [],
-                agents: [],
-                settings: [],
-                mcp: [],
-              }
-          : await loadClaudeSharedResources({
-              configRoot,
-              cwd: workspace.cwd(),
-              claudeStatePath,
-              includeProjectMemory,
-              ...(automaticSettingSources === undefined
-                ? {}
-                : { settingSources: automaticSettingSources }),
-            })
+      const refreshed = nativeSharedResourcesEnabled
+        ? await loadNativeSharedResources({
+            root: configRoot,
+            cwd: workspace.cwd(),
+            environment: runtimeEnvironment,
+            includeProjectMemory,
+          })
+        : {
+            instructions: [],
+            memory: [],
+            skills: [],
+            commands: [],
+            agents: [],
+            settings: [],
+            mcp: [],
+          }
       return runtimeMcpResources([
         ...refreshed.mcp,
         ...pluginResources.mcp,
@@ -2072,16 +1967,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ] as const
     const workflowToolNames = ['Workflow'] as const
     const teamToolNames = PRAXIS_TEAM_TOOLS
-    const claudeTeamCompatibilityEnabled =
-      dataPlane === 'claude' &&
-      /^(?:1|true|yes|on)$/iu.test(
-        (runtimeEnvironment.PRAXIS_CLAUDE_TEAM_COMPAT ?? '').trim(),
-      )
-    const claudeTeamCompatibilityToolNames = [
-      'ClaudeTeamCreate',
-      'ClaudeTeamDelete',
-      'ClaudeSendMessage',
-    ] as const
     const worktreeToolNames = ['EnterWorktree', 'ExitWorktree'] as const
     const interactiveToolNames = [
       'AskUserQuestion',
@@ -2138,16 +2023,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
             cli.tools.includes(name)) &&
           !cli.disallowedTools.includes(name),
       ),
-      ...(claudeTeamCompatibilityEnabled &&
-      (cli.tools === undefined || cli.tools.includes('default')
-        ? true
-        : claudeTeamCompatibilityToolNames.some((name) =>
-            cli.tools?.includes(name),
-          ))
-        ? claudeTeamCompatibilityToolNames.filter(
-            (name) => !cli.disallowedTools.includes(name),
-          )
-        : []),
     ]
     const selectedWorktreeTools = worktreeToolNames.filter(
       (name) =>
@@ -2296,7 +2171,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         : {}),
       ...(simpleMode ? { bare: true } : {}),
     })
-    const teamRuntimeEnabled = teamEnabled || claudeTeamCompatibilityEnabled
+    const teamRuntimeEnabled = teamEnabled
     const teamModules = teamRuntimeEnabled
       ? await Promise.all([
           import('./application/team-capability.js'),
@@ -2315,7 +2190,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const teamCapability = teamModules
       ? new teamModules[0].LocalTeamCapability({
           nativeRoot: resolveDataPlaneRoot({
-            dataPlane: 'native',
             environment: runtimeEnvironment,
           }),
           cwd: () => workspace.cwd(),
@@ -2325,7 +2199,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
           createRuntime: () =>
             new teamModules[1].ClaudeTeamAgentRuntime({
               nativeRoot: resolveDataPlaneRoot({
-                dataPlane: 'native',
                 environment: runtimeEnvironment,
               }),
               configRoot,
@@ -2347,26 +2220,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
       teamCapability && teamModules
         ? new teamModules[3].TeamLeadOperations(teamCapability)
         : undefined
-    const claudeTeamCompatibilityPort: ClaudeTeamCompatibilityPort | undefined =
-      claudeTeamCompatibilityEnabled
-        ? new (
-            await import('./compatibility/claude/team.js')
-          ).ClaudeTeamCompatibilityAdapter()
-        : undefined
     const teamLeadToolRegistryFactory = teamModules
       ? (
           base: ToolRegistry,
           operations: TeamLeadOperations,
           sessionId: string,
           names: readonly string[],
-          compatibilityPort?: ClaudeTeamCompatibilityPort,
         ) =>
           new teamModules[4].TeamLeadToolRegistry(
             base,
             operations,
             sessionId,
             names,
-            compatibilityPort,
           )
       : undefined
     const service = new ClaudeSessionService({
@@ -2386,7 +2251,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
         persistTuiPermissionUpdates({
           cwd: workspace.cwd(),
           configRoot,
-          dataPlane,
           updates,
         }),
       ...(experimentalNativeTranscriptWrites
@@ -2454,9 +2318,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
             teamLeadOperations,
             ...(teamLeadToolRegistryFactory
               ? { teamLeadToolRegistryFactory }
-              : {}),
-            ...(claudeTeamCompatibilityPort
-              ? { teamLeadCompatibilityPort: claudeTeamCompatibilityPort }
               : {}),
           }
         : {}),
@@ -2612,19 +2473,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
         if (!hooks) return
         const sessionId = lifecycleOptions.sessionId ?? randomUUID()
         const runtimeCwd = workspace.cwd()
-        const transcriptPath =
-          dataPlane === 'native'
-            ? resolveDataPlanePaths({
-                dataPlane: 'native',
-                root: configRoot,
-                cwd: runtimeCwd,
-                sessionId,
-              }).sessionFile
-            : resolveClaudePaths({
-                cwd: runtimeCwd,
-                sessionId,
-                configDir: configRoot,
-              }).sessionFile
+        const transcriptPath = resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: configRoot,
+          cwd: runtimeCwd,
+          sessionId,
+        }).sessionFile
         const hookSession = {
           session_id: sessionId,
           transcript_path: transcriptPath,
@@ -2825,19 +2679,12 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
         }
         if (!historySessionId)
           throw new Error('history_file must contain a Claude sessionId')
-        const sessionFile =
-          options.dataPlane === 'native'
-            ? resolveDataPlanePaths({
-                dataPlane: 'native',
-                root: options.configRoot,
-                cwd: options.cwd,
-                sessionId: historySessionId,
-              }).sessionFile
-            : resolveClaudePaths({
-                cwd: options.cwd,
-                sessionId: historySessionId,
-                configDir: options.configRoot,
-              }).sessionFile
+        const sessionFile = resolveDataPlanePaths({
+          dataPlane: 'native',
+          root: options.configRoot,
+          cwd: options.cwd,
+          sessionId: historySessionId,
+        }).sessionFile
         await mkdir(dirname(sessionFile), { recursive: true })
         await copyFile(options.historyFile, sessionFile)
       }
@@ -3128,7 +2975,7 @@ export function createDefaultDependencies(
     },
     createTopLevelAgents: (dataPlane) =>
       new TopLevelAgentManager({
-        configRoot: resolveDataPlaneRoot({ dataPlane }),
+        configRoot: resolveDataPlaneRoot(),
         dataPlane,
         cwd: process.cwd(),
         cliPath: entrypoint,
@@ -3160,7 +3007,7 @@ export async function createBackgroundWorkerRuntime(
 
 async function runBackgroundWorker(id: string): Promise<void> {
   const dataPlane = resolveDataPlane()
-  const configRoot = resolveDataPlaneRoot({ dataPlane })
+  const configRoot = resolveDataPlaneRoot()
   await runTopLevelAgentWorker({
     configRoot,
     dataPlane,
@@ -3601,9 +3448,7 @@ async function executeAutoModeCommand(
   const { configRoot, statePath } =
     resolveInteractiveRuntimeSettingsLocation(dataPlane)
   const loadSettings = async () =>
-    dataPlane === 'native'
-      ? loadNativeSettings({ root: configRoot, cwd: process.cwd() })
-      : loadClaudeSettings({ configRoot, cwd: process.cwd() })
+    loadNativeSettings({ root: configRoot, cwd: process.cwd() })
   const action = args[1]
   if (!action || action === 'help') {
     io.stdout(AUTO_MODE_HELP)
@@ -3731,13 +3576,11 @@ async function executeDoctorCommand(
     runtimeSettings,
   )
   const report = await runDoctor({
-    dataPlane,
     version: VERSION,
     executablePath: fileURLToPath(import.meta.url),
     nodeExecutablePath: process.execPath,
     nodeVersion: process.version,
     configRoot,
-    claudeStatePath,
     cwd: process.cwd(),
     environment:
       effectiveModel === undefined
@@ -3767,33 +3610,9 @@ async function executeSelfUpdateCommand(
 ): Promise<number> {
   const command = argv[0]
   const values: string[] = []
-  let selectedDataPlane: DataPlane | undefined
   for (let index = 1; index < argv.length; index += 1) {
     const value = argv[index]
     if (value === undefined) continue
-    if (value === '--data-plane') {
-      if (selectedDataPlane !== undefined) {
-        throw new Error('--data-plane may only be specified once')
-      }
-      const choice = argv[index + 1]
-      if (choice !== 'native' && choice !== 'claude') {
-        throw new Error('--data-plane must be "native" or "claude"')
-      }
-      selectedDataPlane = choice
-      index += 1
-      continue
-    }
-    if (value.startsWith('--data-plane=')) {
-      if (selectedDataPlane !== undefined) {
-        throw new Error('--data-plane may only be specified once')
-      }
-      const choice = value.slice('--data-plane='.length)
-      if (choice !== 'native' && choice !== 'claude') {
-        throw new Error('--data-plane must be "native" or "claude"')
-      }
-      selectedDataPlane = choice
-      continue
-    }
     values.push(value)
   }
   if (values.includes('--help') || values.includes('-h')) {
@@ -3806,7 +3625,7 @@ async function executeSelfUpdateCommand(
     if (operands.length > 0) {
       throw new Error(`${command} takes no operands`)
     }
-    const dataPlane = selectedDataPlane ?? resolveDataPlane()
+    const dataPlane = resolveDataPlane()
     const { configRoot, statePath } =
       resolveInteractiveRuntimeSettingsLocation(dataPlane)
     const runtimeSettings = await loadRuntimeSettings({ configRoot, statePath })
@@ -3849,7 +3668,6 @@ async function executeProjectPurgeCommand(
   let yes = false
   let help = false
   let json = false
-  let selectedDataPlane: DataPlane | undefined
   const passthrough: string[] = []
   let path: string | undefined
   let optionsEnded = false
@@ -3880,29 +3698,6 @@ async function executeProjectPurgeCommand(
       json = true
       continue
     }
-    if (!optionsEnded && value === '--data-plane') {
-      if (selectedDataPlane !== undefined) {
-        throw new Error('--data-plane may only be specified once')
-      }
-      const choice = argv[index + 1]
-      if (choice !== 'native' && choice !== 'claude') {
-        throw new Error('--data-plane must be "native" or "claude"')
-      }
-      selectedDataPlane = choice
-      index += 1
-      continue
-    }
-    if (!optionsEnded && value.startsWith('--data-plane=')) {
-      if (selectedDataPlane !== undefined) {
-        throw new Error('--data-plane may only be specified once')
-      }
-      const choice = value.slice('--data-plane='.length)
-      if (choice !== 'native' && choice !== 'claude') {
-        throw new Error('--data-plane must be "native" or "claude"')
-      }
-      selectedDataPlane = choice
-      continue
-    }
     if (value === '-h' || value === '--help') {
       help = true
       continue
@@ -3927,7 +3722,7 @@ async function executeProjectPurgeCommand(
   if (interactive && yes) {
     throw new Error('--interactive cannot be combined with --yes')
   }
-  const dataPlane = selectedDataPlane ?? resolveDataPlane()
+  const dataPlane = resolveDataPlane()
   const { configRoot, statePath } =
     resolveInteractiveRuntimeSettingsLocation(dataPlane)
   const plan = await planClaudeProjectPurge({
@@ -4328,7 +4123,7 @@ async function executePluginCommand(
           : requestedAction
   const cwd = process.cwd()
   const dataPlane = invocation.dataPlane ?? resolveDataPlane()
-  const configRoot = resolveDataPlaneRoot({ dataPlane })
+  const configRoot = resolveDataPlaneRoot()
   const requestedScope = invocation.mcpScope as ClaudePluginScope | undefined
   const installScope = requestedScope ?? 'user'
   if (!action || action === 'help') {
@@ -5187,9 +4982,6 @@ function agentDashboardWorkerArgv(
   invocation: CliControls & { agent: string | undefined },
 ): string[] {
   const argv: string[] = []
-  if (invocation.dataPlane !== undefined) {
-    argv.push('--data-plane', invocation.dataPlane)
-  }
   if (invocation.model !== undefined) argv.push('--model', invocation.model)
   if (invocation.effort !== undefined) argv.push('--effort', invocation.effort)
   if (invocation.permissionMode !== 'default') {
@@ -5243,7 +5035,6 @@ function assertAgentsOptionAllowlist(argv: readonly string[]): void {
     '--add-dir',
     '--agent',
     '--cwd',
-    '--data-plane',
     '--effort',
     '--mcp-config',
     '--model',
@@ -5754,7 +5545,7 @@ async function executeTeamCommand(
     ),
     exposeToolRegistry: true,
     controls: nativeControls,
-    configRoot: resolveDataPlaneRoot({ dataPlane: 'native' }),
+    configRoot: resolveDataPlaneRoot(),
     providerEnvironment: process.env,
     ...(signal ? { signal } : {}),
   })
@@ -5777,7 +5568,7 @@ async function executeTeamCommand(
         (team) => team.teamId === parsed.teamId,
       )
       if (!snapshot) throw new Error(`Missing Team: ${parsed.teamId}`)
-      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
+      const nativeRoot = resolveDataPlaneRoot()
       const [mailbox, worktrees] = await Promise.all([
         readTeamMailboxAudit({ nativeRoot, snapshot }),
         readTeamWorktreeEvidence({ nativeRoot, snapshot }),
@@ -5850,34 +5641,6 @@ async function executeTeamCommand(
   } finally {
     await service.close?.()
   }
-}
-
-function extractSpecialDataPlane(argv: readonly string[]): {
-  args: string[]
-  dataPlane?: DataPlane
-} {
-  const args: string[] = []
-  let dataPlane: DataPlane | undefined
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index] as string
-    if (value === '--data-plane') {
-      if (dataPlane !== undefined)
-        throw new Error('--data-plane may only be specified once')
-      const choice = argv[index + 1]
-      if (choice !== 'native' && choice !== 'claude')
-        throw new Error('--data-plane must be "native" or "claude"')
-      dataPlane = choice
-      index += 1
-    } else if (value.startsWith('--data-plane=')) {
-      if (dataPlane !== undefined)
-        throw new Error('--data-plane may only be specified once')
-      const choice = value.slice('--data-plane='.length)
-      if (choice !== 'native' && choice !== 'claude')
-        throw new Error('--data-plane must be "native" or "claude"')
-      dataPlane = choice
-    } else args.push(value)
-  }
-  return { args, ...(dataPlane === undefined ? {} : { dataPlane }) }
 }
 
 function specialCommandIndex(argv: readonly string[]): number {
@@ -5966,15 +5729,10 @@ async function execute(
     (argv[commandIndex] === 'plugin' || argv[commandIndex] === 'plugins')
       ? parseCliInvocation([...argv.slice(0, commandIndex), '__probe__'])
       : undefined
-  const selectedDataPlane =
-    commandIndex >= 0 ? extractSpecialDataPlane(argv).dataPlane : undefined
   const special =
     commandIndex >= 0
       ? {
-          args: extractSpecialDataPlane(argv.slice(commandIndex)).args,
-          ...(selectedDataPlane === undefined
-            ? {}
-            : { dataPlane: selectedDataPlane }),
+          args: argv.slice(commandIndex),
         }
       : { args: [...argv] }
   if (
@@ -5982,12 +5740,6 @@ async function execute(
     special.args[1] === 'eval'
   ) {
     if (!dependencies.pluginEval) throw new Error('Plugin eval unavailable')
-    const pluginEvalDependencies = dependencies.pluginEval.claudeVersion
-      ? dependencies.pluginEval
-      : {
-          ...dependencies.pluginEval,
-          claudeVersion: await detectInstalledClaudeVersion(),
-        }
     return executeClaudePluginEvalCommand(
       [
         ...(specialPrefix?.model === undefined
@@ -5996,12 +5748,10 @@ async function execute(
         ...special.args.slice(2),
       ],
       io,
-      pluginEvalDependencies,
-      resolveDataPlaneRoot({
-        dataPlane: special.dataPlane ?? resolveDataPlane(),
-      }),
+      dependencies.pluginEval,
+      resolveDataPlaneRoot(),
       signal,
-      special.dataPlane ?? resolveDataPlane(),
+      resolveDataPlane(),
     )
   }
   if (special.args[0] === 'project' && special.args[1] === 'purge') {
@@ -6010,23 +5760,13 @@ async function execute(
       PROJECT_PURGE_PREFIX_FLAGS.has(value),
     )
     return executeProjectPurgeCommand(
-      [
-        'project',
-        'purge',
-        ...prefixedPurgeOptions,
-        ...special.args.slice(2),
-        ...(special.dataPlane ? ['--data-plane', special.dataPlane] : []),
-      ],
+      ['project', 'purge', ...prefixedPurgeOptions, ...special.args.slice(2)],
       io,
     )
   }
   if (['install', 'update', 'upgrade'].includes(special.args[0] ?? '')) {
     return executeSelfUpdateCommand(
-      [
-        special.args[0] as string,
-        ...special.args.slice(1),
-        ...(special.dataPlane ? ['--data-plane', special.dataPlane] : []),
-      ],
+      [special.args[0] as string, ...special.args.slice(1)],
       io,
       dependencies,
     )
@@ -6056,18 +5796,7 @@ async function execute(
     return 0
   }
 
-  const nativeMigrationCommand =
-    argv[0] === 'migrate' && argv[1] === 'native-transcript'
-  const invocation = parseCliInvocation(
-    nativeMigrationCommand
-      ? argv.filter(
-          (value) =>
-            value !== '--all' &&
-            value !== '--dry-run' &&
-            value !== '--rollback',
-        )
-      : argv,
-  )
+  const invocation = parseCliInvocation(argv)
   const { agent, args, outputFormat, inputFormat, includePartialMessages } =
     invocation
   const command = args[0]
@@ -6092,7 +5821,6 @@ async function execute(
     'upgrade',
     'project',
     'import',
-    'migrate',
   ].includes(command ?? '')
   if (args[0] === 'agents') assertAgentsOptionAllowlist(argv)
   const interactiveResume =
@@ -6308,99 +6036,6 @@ async function execute(
     throw new Error(
       'Praxis import does not yet support Codex or Gemini configuration; no files were changed',
     )
-  }
-  if (command === 'migrate') {
-    if (args[1] === 'native-transcript') {
-      const {
-        discoverNativeTranscriptSessions,
-        migrateNativeTranscript,
-        rollbackNativeTranscript,
-      } = await import('./persistence/native-transcript-migration.js')
-      const { createClaudeTranscriptCodec } =
-        await import('./compatibility/claude/transcript-codec.js')
-      const legacyCodec = createClaudeTranscriptCodec({
-        version: '2.1.0',
-        cwd: process.cwd(),
-        entrypoint: 'praxis-migration',
-      })
-      const legacyDecoder = (source: string) =>
-        legacyCodec.decodeDocument(source)
-      const values = argv.slice(2)
-      const all = values.includes('--all')
-      const dryRun = values.includes('--dry-run')
-      const rollback = values.includes('--rollback')
-      const json = values.includes('--json') || invocation.legacyJson
-      if (dryRun && rollback)
-        throw new Error('--dry-run and --rollback are mutually exclusive')
-      const sessionId = values.find((value) => !value.startsWith('--'))
-      if (!all && !sessionId)
-        throw new Error(
-          'Usage: praxis migrate native-transcript [session-id] [--all] [--dry-run] [--rollback] [--json]',
-        )
-      if (all && sessionId)
-        throw new Error('Specify either a session ID or --all')
-      const nativeRoot = resolveDataPlaneRoot({ dataPlane: 'native' })
-      const sessions = all
-        ? await discoverNativeTranscriptSessions(nativeRoot)
-        : [
-            {
-              sessionId: sessionId as string,
-              path: resolveDataPlanePaths({
-                dataPlane: 'native',
-                cwd: process.cwd(),
-                sessionId: sessionId as string,
-              }).sessionFile,
-            },
-          ]
-      const migrations = []
-      for (const { sessionId: id, path } of sessions) {
-        try {
-          migrations.push(
-            await (rollback
-              ? rollbackNativeTranscript({ sourcePath: path, sessionId: id })
-              : migrateNativeTranscript({
-                  sourcePath: path,
-                  sessionId: id,
-                  legacyDecoder,
-                  dryRun,
-                })),
-          )
-        } catch (error) {
-          migrations.push({
-            sessionId: id,
-            sourcePath: path,
-            status: 'blocked',
-            eventCount: 0,
-            validPrefixByteLength: 0,
-            issue: error instanceof Error ? error.message : String(error),
-          })
-        }
-      }
-      if (json)
-        writeJson(
-          io,
-          all ? { atomicity: 'per-session', migrations } : { migrations },
-        )
-      else
-        for (const migration of migrations)
-          io.stdout(
-            `${migration.sessionId}: ${migration.status} (${migration.sourcePath})\n`,
-          )
-      return migrations.some((migration) => migration.status === 'blocked')
-        ? 1
-        : 0
-    }
-    if (args[1] !== 'from-claude' || args[2] !== undefined) {
-      throw new Error('Usage: praxis migrate from-claude')
-    }
-    const copied = await migrateClaudeData({
-      sourceRoot: resolve(
-        process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
-      ),
-      destinationRoot: resolveDataPlaneRoot({ dataPlane: 'native' }),
-    })
-    io.stdout(`Migrated: ${copied.join(', ') || 'no supported data'}\n`)
-    return 0
   }
   const expectedOperands =
     command === 'sessions' || command === 'agents' ? 1 : 2

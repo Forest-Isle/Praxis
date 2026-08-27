@@ -16,8 +16,8 @@ import type { RuntimeEvent } from '../core/runtime.js'
 
 import {
   BackgroundBashManager,
-  claudeBackgroundTaskParent,
-  claudeBackgroundTaskRoot,
+  nativeBackgroundTaskParent,
+  nativeBackgroundTaskRoot,
 } from './background-bash-manager.js'
 
 const roots: string[] = []
@@ -33,7 +33,7 @@ async function createManager(options: { maxOutputBytes?: number } = {}) {
   roots.push(root)
   const cwd = join(root, 'work')
   await mkdir(cwd)
-  roots.push(claudeBackgroundTaskParent(cwd))
+  roots.push(nativeBackgroundTaskParent(cwd))
   const stateRoot = join(root, 'config', 'praxis', 'background-tasks')
   const sessionId = '20202020-2020-4020-8020-202020202020'
   const events: RuntimeEvent[] = []
@@ -318,7 +318,7 @@ describe('BackgroundBashManager', () => {
     const sessionStateRoot = join(stateRoot, sessionId)
     const stateFile = join(sessionStateRoot, `${taskId}.json`)
     const outputFile = join(
-      claudeBackgroundTaskRoot(cwd, sessionId),
+      nativeBackgroundTaskRoot(cwd, sessionId),
       `${taskId}.output`,
     )
     await mkdir(sessionStateRoot, { recursive: true })

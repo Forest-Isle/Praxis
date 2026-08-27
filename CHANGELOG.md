@@ -14,30 +14,34 @@ this file from merged Conventional Commit pull requests.
 
 ### Changed
 
+* make the Praxis data plane native-only: sessions, resources, permissions,
+  hooks, MCP, scheduled prompts, and operational state now use `~/.praxis`
+  and native project roots; Claude Code directories are never read or written
+* rename scheduled-task persistence to `NativeScheduledTaskStore` and keep the
+  established JSON task fields and atomic mutation behavior unchanged
+* normalize conditional-rule paths through `realpath` so macOS symlink aliases
+  match the same native rule glob
 * align the WebFetch compatibility description with Claude 2.1.208 and keep
   the agents dashboard light-ANSI accent assertion aligned with the persisted
   theme palette
-* make native transcript migration recoverable across every publication
-  checkpoint, including a crash before the first rename, with deterministic
-  fault-injection coverage
 * extend the native deletion gate through the built CLI sessions/inspect/export
   and fork lifecycle while preserving native-only data-plane isolation
-* route explicitly requested Claude Team delete/send compatibility calls through
-  the native lead-operation seam, while rejecting lossy create and unsupported
-  task/notification/context/session-resume shapes
 * stream Team mailbox audits with bounded retained tails instead of loading the
   complete mailbox into memory
 * complete the TUI semantic screen projection across selectable surfaces and
   add deterministic resize-aware URL/form elicitation rendering
 * extend the implemented native build profile with transcript/session closure
-  and an emitted-output Claude deletion gate; the full native package remains
-  unqualified and transcript migration remains explicit and recoverable
+  and an emitted-output deletion gate; non-native transcript files fail closed
+  without migration
 * add an executable #402 core-completion audit covering all 56 PRD stories and
   separating implemented, qualified, and blocked evidence
 * keep disabled Team startup free of observability/mailbox module loading, and
   expose durable-local `team status`, `team logs`, and `team attach` projections
-* add a removable, fail-closed Claude Team adapter for fixture-verified
-  delete/send, shutdown, and plan-response shapes; create rejects lossy input
+
+### Removed
+
+* remove the Claude compatibility runtime, transcript/index/sidechain stores,
+  migration helpers, and compatibility qualification/probe scripts
 
 ## [0.37.0](https://github.com/Forest-Isle/Praxis/compare/v0.36.1...v0.37.0) (2026-08-24)
 

@@ -21,8 +21,8 @@ continues to resolve through the Git common directory.
 
 ## Observable contract
 
-- Native worktrees live at `<repo>/.praxis/worktrees/<name>`; explicit Claude
-  compatibility mode retains `<repo>/.claude/worktrees/<name>`.
+- Native worktrees live at `<repo>/.praxis/worktrees/<name>`. Praxis has one
+  worktree layout; there is no alternate Claude data-plane location.
 - Created branches use `worktree-<name>` with `/` normalized to `-`.
 - Names are at most 64 characters and contain slash-separated segments made of
   letters, digits, dots, underscores, and dashes.

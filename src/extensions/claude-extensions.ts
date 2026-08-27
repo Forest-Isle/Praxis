@@ -4,11 +4,7 @@ import { parse as parseYaml } from 'yaml'
 
 import type { ModelContentBlock, ModelImage } from '../core/runtime.js'
 import type { ClaudeMcpPromptDefinition } from '../mcp/claude-mcp-tools.js'
-import type { DataPlane } from '../persistence/data-plane.js'
-import type {
-  ClaudeSharedResources,
-  ClaudeTextResource,
-} from '../compatibility/claude/shared-resources.js'
+import type { SharedResources, TextResource } from '../core/resources.js'
 import {
   claudeInitDescription,
   claudeInitPrompt,
@@ -16,7 +12,7 @@ import {
 
 export type ClaudeExtensionKind = 'agent' | 'command' | 'skill'
 
-export interface ClaudeExtensionDefinition extends ClaudeTextResource {
+export interface ClaudeExtensionDefinition extends TextResource {
   kind: ClaudeExtensionKind
   name: string
   description: string
@@ -110,19 +106,19 @@ Input:
 $ARGUMENTS`,
 }
 
-function builtinInitCommand(dataPlane: DataPlane): ClaudeExtensionDefinition {
+function builtinInitCommand(): ClaudeExtensionDefinition {
   return {
     path: '/__praxis_builtin__/commands/init.md',
     scope: 'user',
     content: '',
     kind: 'command',
     name: 'init',
-    description: claudeInitDescription(process.env, dataPlane),
+    description: claudeInitDescription(process.env),
     modelInvocable: false,
     permissionSafe: true,
     progressMessage: 'analyzing your codebase',
     builtin: true,
-    body: claudeInitPrompt(process.env, dataPlane),
+    body: claudeInitPrompt(process.env),
   }
 }
 
@@ -132,17 +128,14 @@ const BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
   content: '',
   kind: 'command',
   name: 'statusline',
-  description: "Set up Claude Code's status line UI",
+  description: "Set up Praxis's status line UI",
   modelInvocable: false,
   permissionSafe: true,
   builtin: true,
   body: `Create an Agent with subagent_type "statusline-setup" and the prompt "$ARGUMENTS"`,
 }
 
-const NATIVE_BUILTIN_STATUSLINE_COMMAND: ClaudeExtensionDefinition = {
-  ...BUILTIN_STATUSLINE_COMMAND,
-  description: "Set up Praxis's status line UI",
-}
+const NATIVE_BUILTIN_STATUSLINE_COMMAND = BUILTIN_STATUSLINE_COMMAND
 
 export const BUILTIN_STATUSLINE_AGENT_PATH =
   '/__praxis_builtin__/agents/statusline-setup.md'
@@ -153,10 +146,10 @@ const BUILTIN_STATUSLINE_AGENT: ClaudeAgentRuntimeDefinition = {
   content: '',
   kind: 'agent',
   name: 'statusline-setup',
-  description: "Configure the user's Claude Code status line setting.",
+  description: "Configure the user's Praxis status line setting.",
   modelInvocable: false,
   permissionSafe: false,
-  body: `You configure the statusLine command in the user's shared Claude Code settings.
+  body: `You configure the statusLine command in the user's shared Praxis settings.
 
 Importing a shell prompt:
 1. Inspect shell configuration in this order: ~/.zshrc, ~/.bashrc, ~/.bash_profile, then ~/.profile.
@@ -168,7 +161,7 @@ Importing a shell prompt:
 
 The status command receives one JSON document on stdin. It contains session_id, optional session_name, transcript_path, cwd, model.id and model.display_name, workspace.current_dir/project_dir/added_dirs, version, output_style.name, cost totals, context_window totals/current_usage/used_percentage/remaining_percentage, exceeds_200k_tokens, and optional vim, agent, and worktree objects. Read stdin once and reuse it when extracting multiple values. Typical jq selectors include .model.display_name, .workspace.current_dir, .output_style.name, .context_window.remaining_percentage, and .context_window.used_percentage. Optional values must be tested before printing them.
 
-Preserve every unrelated setting and update ~/.claude/settings.json with this shape:
+Preserve every unrelated setting and update ~/.praxis/settings.json with this shape:
 {
   "statusLine": {
     "type": "command",
@@ -176,16 +169,10 @@ Preserve every unrelated setting and update ~/.claude/settings.json with this sh
   }
 }
 
-Resolve a symlinked settings file and edit its target. Complex implementations may live in a script under ~/.claude and be referenced by the setting. Git commands in that script must avoid optional locks. Report the exact configuration and script path, if any. End by telling the parent agent that future status-line changes must use the statusline-setup agent and that the user can request further changes.`,
+Resolve a symlinked settings file and edit its target. Complex implementations may live in a script under ~/.praxis and be referenced by the setting. Git commands in that script must avoid optional locks. Report the exact configuration and script path, if any. End by telling the parent agent that future status-line changes must use the statusline-setup agent and that the user can request further changes.`,
 }
 
-const NATIVE_BUILTIN_STATUSLINE_AGENT: ClaudeAgentRuntimeDefinition = {
-  ...BUILTIN_STATUSLINE_AGENT,
-  description: "Configure the user's Praxis status line setting.",
-  body: BUILTIN_STATUSLINE_AGENT.body
-    .replaceAll('Claude Code', 'Praxis')
-    .replaceAll('~/.claude', '~/.praxis'),
-}
+const NATIVE_BUILTIN_STATUSLINE_AGENT = BUILTIN_STATUSLINE_AGENT
 
 const GENERAL_PURPOSE_AGENT: ClaudeAgentDefinition = {
   name: 'general-purpose',
@@ -193,7 +180,7 @@ const GENERAL_PURPOSE_AGENT: ClaudeAgentDefinition = {
     'General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.',
 }
 
-function parseFrontmatter(resource: ClaudeTextResource): {
+function parseFrontmatter(resource: TextResource): {
   metadata: Record<string, unknown>
   body: string
 } {
@@ -274,7 +261,7 @@ function parsePositiveInteger(value: unknown): number | undefined {
 }
 
 function parseAgentDefinition(
-  resource: ClaudeTextResource,
+  resource: TextResource,
 ): ClaudeAgentRuntimeDefinition {
   const definition = parseDefinition('agent', resource)
   const { metadata } = parseFrontmatter(resource)
@@ -344,7 +331,7 @@ function parseAgentDefinition(
 }
 
 export function validateClaudeExtensions(
-  resources: readonly ClaudeTextResource[],
+  resources: readonly TextResource[],
 ): void {
   for (const resource of resources) {
     const lines = resource.content.split(/\r?\n/)
@@ -414,7 +401,7 @@ function defaultName(kind: ClaudeExtensionKind, path: string): string {
 
 function parseDefinition(
   kind: ClaudeExtensionKind,
-  resource: ClaudeTextResource,
+  resource: TextResource,
 ): ClaudeExtensionDefinition {
   const parsed = parseFrontmatter(resource)
   const metadata =
@@ -458,7 +445,7 @@ function parseDefinition(
 
 function indexed(
   kind: Exclude<ClaudeExtensionKind, 'agent'>,
-  resources: readonly ClaudeTextResource[],
+  resources: readonly TextResource[],
 ): Map<string, ClaudeExtensionDefinition> {
   const definitions = new Map<string, ClaudeExtensionDefinition>()
   for (const resource of resources) {
@@ -469,7 +456,7 @@ function indexed(
 }
 
 function indexedAgents(
-  resources: readonly ClaudeTextResource[],
+  resources: readonly TextResource[],
 ): Map<string, ClaudeAgentRuntimeDefinition> {
   const definitions = new Map<string, ClaudeAgentRuntimeDefinition>()
   for (const resource of resources) {
@@ -504,24 +491,17 @@ export class ClaudeExtensionCatalog {
   private mcpPrompts = new Map<string, ClaudeMcpPromptDefinition>()
 
   constructor(
-    resources: Pick<ClaudeSharedResources, 'agents' | 'commands' | 'skills'>,
-    options: { disableSlashCommands?: boolean; dataPlane?: DataPlane } = {},
+    resources: Pick<SharedResources, 'agents' | 'commands' | 'skills'>,
+    options: { disableSlashCommands?: boolean; dataPlane?: string } = {},
   ) {
-    const dataPlane = options.dataPlane ?? 'claude'
-    const statuslineCommand =
-      dataPlane === 'native'
-        ? NATIVE_BUILTIN_STATUSLINE_COMMAND
-        : BUILTIN_STATUSLINE_COMMAND
-    const statuslineAgent =
-      dataPlane === 'native'
-        ? NATIVE_BUILTIN_STATUSLINE_AGENT
-        : BUILTIN_STATUSLINE_AGENT
+    const statuslineCommand = NATIVE_BUILTIN_STATUSLINE_COMMAND
+    const statuslineAgent = NATIVE_BUILTIN_STATUSLINE_AGENT
     this.disableSlashCommands = options.disableSlashCommands === true
     this.commands = options.disableSlashCommands
       ? new Map()
       : new Map([
           ['loop', BUILTIN_LOOP],
-          ['init', builtinInitCommand(dataPlane)],
+          ['init', builtinInitCommand()],
           ['statusline', statuslineCommand],
         ])
     if (!options.disableSlashCommands) {

@@ -1,46 +1,47 @@
-import type {
-  ClaudeSidechainMetadata,
-  ClaudeSidechainPaths,
-} from '../compatibility/claude/sidechain.js'
-import type { ClaudeTranscriptEntry } from '../compatibility/claude/schema.js'
-import type { ClaudeTranscriptLease } from './claude-transcript-store.js'
+import {
+  NativeSessionTranscript,
+  type NativeSessionTranscriptLease,
+} from '../application/native-session-transcript.js'
 import { InMemoryTranscriptStore } from './in-memory-transcript-store.js'
 
+type NativeSidechainPaths = {
+  readonly sessionId: string
+  readonly agentId: string
+}
+type NativeSidechainMetadata = Record<string, unknown>
+
 export class InMemorySidechainStore {
-  private readonly transcript = new InMemoryTranscriptStore()
-
-  constructor(
-    private readonly paths: Pick<ClaudeSidechainPaths, 'sessionId' | 'agentId'>,
-  ) {}
-
+  private readonly store = new InMemoryTranscriptStore()
+  private readonly transcript: NativeSessionTranscript
+  private sidechainMetadata: NativeSidechainMetadata | undefined
+  constructor(private readonly paths: NativeSidechainPaths) {
+    this.transcript = new NativeSessionTranscript({
+      sessionId: paths.sessionId,
+      store: this.store as never,
+    })
+  }
   async create(
-    root: ClaudeTranscriptEntry,
-    metadata: ClaudeSidechainMetadata,
+    prompt: string | { message?: { content?: string } },
+    metadata: NativeSidechainMetadata,
   ): Promise<void> {
-    this.assertIdentity(root)
-    void metadata
-    const result = await this.transcript.create([root])
-    if (result.status === 'conflict') {
-      throw new Error('Claude sidechain transcript already exists')
-    }
+    this.sidechainMetadata = { ...metadata }
+    const content =
+      typeof prompt === 'string' ? prompt : prompt.message?.content
+    if (typeof content !== 'string' || content.length === 0)
+      throw new Error('native sidechain prompt must not be blank')
+    await this.transcript.withLease({ kind: 'start' }, (lease) =>
+      lease
+        .appendMessages({ messages: [{ role: 'user', content }] })
+        .then(() => undefined),
+    )
   }
-
-  async withLease<T>(
-    operation: (lease: ClaudeTranscriptLease) => Promise<T>,
-  ): Promise<T> {
-    const result = await this.transcript.withLease(operation)
-    if (result.status === 'conflict') {
-      throw new Error('Claude sidechain transcript is locked')
-    }
-    return result.value
+  withLease<T>(operation: (lease: NativeSessionTranscriptLease) => Promise<T>) {
+    return this.transcript.withLease({ kind: 'resume' }, operation)
   }
-
-  private assertIdentity(root: ClaudeTranscriptEntry): void {
-    if (
-      root.sessionId !== this.paths.sessionId ||
-      root.agentId !== this.paths.agentId
-    ) {
-      throw new Error('Claude sidechain root identity does not match paths')
-    }
+  async loadReadOnly() {
+    return this.store.loadReadOnly()
+  }
+  async metadata() {
+    return this.sidechainMetadata ?? {}
   }
 }

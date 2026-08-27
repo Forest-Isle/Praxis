@@ -16,7 +16,7 @@ describe('Claude status line', () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-'))
     const cwd = join(root, 'workspace')
     const configRoot = join(root, 'config')
-    await mkdir(join(cwd, '.claude'), { recursive: true })
+    await mkdir(join(cwd, '.praxis'), { recursive: true })
     await mkdir(configRoot)
     await writeFile(
       join(configRoot, 'settings.json'),
@@ -25,7 +25,7 @@ describe('Claude status line', () => {
       }),
     )
     await writeFile(
-      join(cwd, '.claude', 'settings.local.json'),
+      join(cwd, '.praxis', 'settings.local.json'),
       JSON.stringify({ disableAllHooks: true }),
     )
 
