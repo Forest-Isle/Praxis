@@ -44,6 +44,9 @@ this file from merged Conventional Commit pull requests.
 * unify runtime and composer state behind the framework-free `TuiStore`, with
   cursor clamping, identity-preserving no-ops, and runtime transitions that
   retain composer state
+* derive ANSI fullscreen text styles from the active semantic theme, including
+  ANSI16/256/truecolor conversion and automatic no-color/screen-reader
+  suppression
 
 ### Changed
 

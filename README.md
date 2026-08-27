@@ -124,6 +124,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   cancellation routing,
   plus a generation-aware effect runner that drops stale asynchronous results
   and aborts cleanly on replacement or unmount,
+  with ANSI fullscreen text styles derived from the active semantic theme and
+  automatic no-color/screen-reader suppression,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,

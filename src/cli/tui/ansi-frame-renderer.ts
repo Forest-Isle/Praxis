@@ -73,7 +73,7 @@ function renderLine(
 export class AnsiFullscreenRenderer {
   readonly #writer: AnsiFrameWriter
   readonly #synchronizedOutput: boolean
-  readonly #styles: Partial<Record<TuiTextRole, string>> | undefined
+  #styles: Partial<Record<TuiTextRole, string>> | undefined
   #mounted = false
   #previousLines: readonly string[] = []
 
@@ -81,6 +81,10 @@ export class AnsiFullscreenRenderer {
     this.#writer = options.writer
     this.#synchronizedOutput = options.synchronizedOutput === true
     this.#styles = options.styles
+  }
+
+  setStyles(styles?: Partial<Record<TuiTextRole, string>>): void {
+    this.#styles = styles
   }
 
   get mounted(): boolean {

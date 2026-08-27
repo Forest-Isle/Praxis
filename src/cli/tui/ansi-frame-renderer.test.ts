@@ -72,6 +72,22 @@ describe('AnsiFullscreenRenderer', () => {
     expect(output.join('')).toContain('\u001b[2;1H\u001b[2K')
   })
 
+  it('applies replacement styles to subsequent draws', () => {
+    const output: string[] = []
+    const renderer = new AnsiFullscreenRenderer({
+      writer: { write: (x) => output.push(x) },
+      styles: { body: '\u001b[31m' },
+    })
+    renderer.mount()
+    renderer.draw(frame([row('one')]))
+    output.length = 0
+    renderer.setStyles({ body: '\u001b[32m' })
+    renderer.draw(frame([row('one')]))
+    expect(output.join('')).toContain(
+      '\u001b[1;1H\u001b[2K\u001b[32mone\u001b[0m',
+    )
+  })
+
   it('rejects invalid frames before writing and can dispose after writer errors', () => {
     const output: string[] = []
     const renderer = new AnsiFullscreenRenderer({

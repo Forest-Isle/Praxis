@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useStdout } from 'ink'
 
 import {
   AnsiFullscreenRenderer,
   type AnsiFrame,
 } from './ansi-frame-renderer.js'
+import { resolveAnsiTextStyles } from './ansi-theme.js'
+import { useTuiTheme } from './theme.js'
 import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
 import type { TuiScreenModel } from './tui-screen-model.js'
 
@@ -201,6 +203,8 @@ export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
 
 export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
   const { stdout } = useStdout()
+  const theme = useTuiTheme()
+  const styles = useMemo(() => resolveAnsiTextStyles(theme), [theme])
   const rendererRef = useRef<AnsiFullscreenRenderer | null>(null)
   const failedRef = useRef(false)
   if (rendererRef.current === null) {
@@ -209,6 +213,7 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
       synchronizedOutput:
         typeof (stdout as { writeSynchronized?: unknown }).writeSynchronized ===
         'function',
+      styles,
     })
   }
   useEffect(() => {
@@ -228,6 +233,9 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
       }
     }
   }, [])
+  useEffect(() => {
+    rendererRef.current?.setStyles(styles)
+  }, [styles])
   useEffect(() => {
     if (failedRef.current) return
     const renderer = rendererRef.current
