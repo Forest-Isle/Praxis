@@ -23,6 +23,8 @@ this file from merged Conventional Commit pull requests.
 
 * add a reusable P-loop + spark Praxis TUI logo with semantic theme styling
   and screen-reader/no-color fallbacks
+* add a framework-free TUI runtime kernel with pure reducer transitions and
+  atomic streaming text/thinking frame publication
 
 ### Changed
 

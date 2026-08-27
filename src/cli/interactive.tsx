@@ -5,7 +5,14 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 
 import { Box, Text, render, useApp, useInput } from 'ink'
 
@@ -120,6 +127,10 @@ import {
   useTuiPresentationEnvironment,
 } from './tui/presentation-environment.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
+import {
+  createTuiRuntimeKernelState,
+  reduceTuiRuntimeKernel,
+} from './tui/kernel/tui-runtime-kernel.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
 import {
@@ -1445,7 +1456,19 @@ export function InteractiveApp({
   const configOperationRef = useRef<Promise<void> | null>(null)
   const doctorMenuGenerationRef = useRef(0)
   const doctorOperationRef = useRef<Promise<void> | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [kernelState, dispatchKernel] = useReducer(
+    reduceTuiRuntimeKernel,
+    undefined,
+    createTuiRuntimeKernelState,
+  )
+  const busy = kernelState.busy
+  const status = kernelState.status
+  const activeText = kernelState.activeText
+  const activeThinking = kernelState.activeThinking
+  const setBusy = (value: boolean) =>
+    dispatchKernel({ type: 'set-busy', busy: value })
+  const setStatus = (value: string) =>
+    dispatchKernel({ type: 'set-status', status: value })
   const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
   const mcpControllerRef = useRef<McpPanelController | null>(null)
   const [compactProgress, setCompactProgress] = useState(0)
@@ -1453,9 +1476,6 @@ export function InteractiveApp({
   const [initialPromptPending, setInitialPromptPending] = useState(
     initialPromptRef.current.length > 0,
   )
-  const [status, setStatus] = useState('ready')
-  const [activeText, setActiveText] = useState('')
-  const [activeThinking, setActiveThinking] = useState('')
   // One provider-neutral streaming frame buffer per mounted app. RuntimeEvent
   // text/thinking deltas accumulate here and are coalesced into bounded frames
   // instead of causing a React state update per delta. The React state is only
@@ -1465,8 +1485,11 @@ export function InteractiveApp({
   if (streamingFrameRef.current === null) {
     streamingFrameRef.current = new StreamingFrameBuffer({
       publish: (frame) => {
-        setActiveText(frame.text)
-        setActiveThinking(frame.thinking)
+        dispatchKernel({
+          type: 'publish-stream-frame',
+          text: frame.text,
+          thinking: frame.thinking,
+        })
       },
     })
   }
