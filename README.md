@@ -112,6 +112,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   stable incremental updates,
   and an independent ANSI fullscreen frame renderer with alternate-screen
   lifecycle, synchronized output, and dirty-row diffing,
+  opt-in TTY wiring with automatic Ink fallback on renderer failure,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,

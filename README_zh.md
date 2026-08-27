@@ -83,7 +83,7 @@ praxis doctor
 ## Praxis 提供什么
 
 - **本地 Agent 运行时** — Claude 风格的响应式 TUI，具备固定全屏视口、不会收缩的输入框/状态区和完整且有边界的欢迎界面，并使用可复用的 P-loop + spark Praxis 标识及 ANSI/无色降级；还包括共享命令斜杠面板、带标签页的帮助和快捷键界面、可搜索的会话恢复选择器、恢复活动分支的对话历史、流式及可展开思考、分组多文件读取、可全局展开的工具结果、命令专用 `/add-dir`、代码感知 `/copy`、`/branch`、`/rename`、`/export`、无需提供商的只读共享 `/hooks`、由提供商支持的 `/compact`、原生 `/rewind`、运行时 `/cd`、不写入 transcript 的 `/btw` 旁支问题及后台 Agent 移交、交互式 `/background` 终端移交、统一的 `/status`/`/config`/`/usage` 设置标签页、`/sandbox` 模式/依赖/覆盖/配置控制、本地缓存的 `/release-notes`、兼容 Claude 的 `/statusline` 命令执行和设置 Agent、与源代码对齐的 `/init` 项目指令引导及增强的技能/钩子流程、无需提供商的每会话 `/color` 提示栏样式、`/mcp`、`/memory` 共享指令和自动记忆访问、实时扩展重载控制、
-  并通过无框架 runtime kernel 原子发布流式帧，让状态和 busy 转换保持确定性；共享的语义 transcript Row IR 负责与渲染器无关的布局和稳定增量更新；同时提供独立的 ANSI 全屏帧渲染器，支持备用屏幕生命周期、同步输出和脏行差分；
+  并通过无框架 runtime kernel 原子发布流式帧，让状态和 busy 转换保持确定性；共享的语义 transcript Row IR 负责与渲染器无关的布局和稳定增量更新；同时提供独立的 ANSI 全屏帧渲染器，支持备用屏幕生命周期、同步输出和脏行差分，并可在 TTY 中显式启用，渲染失败时自动回退 Ink；
   光标/历史输入框、无需提供商的 `/cost` 用量和价格摘要、交互式 `/doctor` 诊断、每会话模型/effort/权限控制、上下文/状态/技能/任务面板、提示暂存和继续快捷键、可筛选的 `@` 文件和 Agent 引用、输入框撤销、`Ctrl+G` 外部编辑、共享 `/keybindings` 创建/编辑及支持动作重映射、共享内置及兼容 Claude 的自定义 `/theme` 配置并立即进行语义重着色、
   令牌编辑/重置、删除及在 transcript 代码和 diff 视图中持久化语法切换、减少动画的共享运行时偏好、spinner 提示、进度和回合耗时显示、编辑器模式、回顾、通知、自动更新通道、感知 gitignore 的文件引用、可配置的 AskUserQuestion 超时、无需提供商的 `/terminal-setup` 诊断及对受支持本地终端可重复执行的 Shift+Enter 设置、
   `Ctrl+V` 文本/图像剪贴板粘贴、`Ctrl+Z` shell 挂起和 `fg` 恢复、权限控制的 `!` shell 回合、可导航的当前/每回合 Git diff 视图、具备完整 screen-reader 操作提示的语义化计划/问题决策面板、所有可选择界面的语义化 screen projection、URL/表单 elicitation 的确定性自适应终端尺寸渲染和可测量上下文预算；以及 print 模式、结构化 JSON/JSONL、上下文压缩、工具循环和有边界的执行。

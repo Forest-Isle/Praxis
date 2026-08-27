@@ -29,6 +29,8 @@ this file from merged Conventional Commit pull requests.
   renderer-neutral role segments
 * add an independent ANSI fullscreen frame renderer with alternate-screen
   lifecycle, synchronized output, and dirty-row diffing
+* wire ANSI rendering into interactive TTY sessions with automatic Ink
+  fallback while preserving screen-reader and non-TTY paths
 
 ### Changed
 

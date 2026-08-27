@@ -143,6 +143,7 @@ import {
   type TuiScreenInput,
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
+import { TuiAnsiSurface } from './tui/ansi-surface.js'
 import {
   projectTuiHelpSurface,
   type TuiHelpSurfaceModel,
@@ -608,6 +609,7 @@ interface InteractiveAppProps {
     request: InteractiveBackgroundRequest,
   ) => Promise<InteractiveBackgroundResult>
   axScreenReader?: boolean
+  ansiRenderer?: boolean
   allowNewSession?: boolean
   resume?: InteractiveResumeOptions
   display?: TuiDisplayMetadata
@@ -1154,6 +1156,7 @@ export function InteractiveApp({
   onRendererChange,
   onBackground,
   axScreenReader = false,
+  ansiRenderer = false,
   allowNewSession = true,
   resume,
   display = { version: 'dev', cwd: process.cwd() },
@@ -1323,8 +1326,18 @@ export function InteractiveApp({
     suppliedRuntimeSettings ??
       projectRuntimeSettings({ settings: {}, state: {} }),
   )
+  const [ansiRendererFailed, setAnsiRendererFailed] = useState(false)
+  const ansiActive =
+    ansiRenderer &&
+    !ansiRendererFailed &&
+    !axScreenReader &&
+    runtimeSettings.tui === 'fullscreen'
   const presentation = useTuiPresentationEnvironment({
-    renderer: runtimeSettings.tui,
+    renderer: ansiRenderer
+      ? ansiActive
+        ? 'fullscreen'
+        : 'default'
+      : runtimeSettings.tui,
     screenReader: axScreenReader,
     ...(terminalWidth === undefined
       ? {}
@@ -8280,7 +8293,18 @@ export function InteractiveApp({
           ? {}
           : { height: rows, overflowY: 'hidden' as const })}
       >
-        {screen.body.kind === 'session-picker' ? (
+        {ansiActive ? (
+          <TuiAnsiSurface
+            screen={screen}
+            width={width}
+            rows={rows}
+            input={shellMode ? input.slice(1) : input}
+            busy={busy}
+            status={status}
+            screenReader={axScreenReader}
+            onError={() => setAnsiRendererFailed(true)}
+          />
+        ) : screen.body.kind === 'session-picker' ? (
           <SessionPicker
             model={screen.body.surface}
             screenReader={axScreenReader}
@@ -8894,6 +8918,10 @@ export async function runInteractive(options: {
     let cleanup: Promise<void> | null = null
     let backgrounded: InteractiveBackgroundResult | undefined
     rendererChange = null
+    const ansiRendererEnabled =
+      currentRenderer === 'fullscreen' &&
+      process.stdin.isTTY === true &&
+      options.axScreenReader !== true
     const instance = render(
       <InteractiveApp
         dataPlane={dataPlane}
@@ -8918,6 +8946,7 @@ export async function runInteractive(options: {
           ? {}
           : { initialPrompt: currentInitialPrompt })}
         signal={signal}
+        ansiRenderer={ansiRendererEnabled}
         onCancel={() => controller.abort()}
         onTurnChange={(turn) => {
           activeTurn = turn
@@ -8955,7 +8984,7 @@ export async function runInteractive(options: {
       {
         exitOnCtrlC: false,
         ...tuiInkRenderOptions(
-          currentRenderer,
+          ansiRendererEnabled ? 'default' : currentRenderer,
           options.axScreenReader === true,
         ),
         interactive: true,
