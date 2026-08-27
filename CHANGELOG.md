@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.39.0](https://github.com/Forest-Isle/Praxis/compare/v0.38.0...v0.39.0) (2026-08-27)
+
+
+### Features
+
+* publish native-only data plane ([#470](https://github.com/Forest-Isle/Praxis/issues/470)) ([697e2ea](https://github.com/Forest-Isle/Praxis/commit/697e2ea60c7c3328ad4ae90848e39baf479f9f8c))
+
 ## [0.38.0](https://github.com/Forest-Isle/Praxis/compare/v0.37.0...v0.38.0) (2026-08-26)
 
 
