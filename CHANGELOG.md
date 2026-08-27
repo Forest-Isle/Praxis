@@ -37,6 +37,8 @@ this file from merged Conventional Commit pull requests.
   projection is available, avoiding lossy generic summaries
 * guard theme loading with a generation-aware effect runner that aborts on
   replacement/unmount and suppresses stale results
+* keep welcome and identity intro frames on Ink so ANSI mode never hides the
+  complete first-session surface
 
 ### Changed
 

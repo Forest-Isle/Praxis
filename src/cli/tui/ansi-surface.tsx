@@ -110,6 +110,7 @@ function surfaceRows(screen: TuiScreenModel): TuiRow[] {
 export function supportsAnsiSurface(screen: TuiScreenModel): boolean {
   if (screen.body.kind !== 'conversation') return false
   return (
+    screen.body.intro === 'none' &&
     screen.body.foreground.kind === 'compose' &&
     screen.body.foreground.overlays.length === 0
   )

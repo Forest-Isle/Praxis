@@ -33,6 +33,8 @@ function screen(overrides: Record<string, unknown> = {}) {
 describe('projectAnsiSurfaceFrame', () => {
   it('supports only an unobstructed conversation composer', () => {
     expect(supportsAnsiSurface(screen())).toBe(true)
+    expect(supportsAnsiSurface(screen({ intro: 'welcome' }))).toBe(false)
+    expect(supportsAnsiSurface(screen({ intro: 'identity' }))).toBe(false)
     expect(
       supportsAnsiSurface(
         screen({

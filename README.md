@@ -115,6 +115,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   opt-in TTY wiring with automatic Ink fallback on renderer failure,
   with complex overlays and dialogs intentionally remaining on the mature Ink
   surface until their semantic ANSI projections are complete,
+  while welcome and identity intros also remain on Ink for a complete first
+  frame,
   and a pure FocusStack that centralizes overlay/dialog precedence and Esc
   cancellation routing,
   plus a generation-aware effect runner that drops stale asynchronous results
