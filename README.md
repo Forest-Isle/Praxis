@@ -127,6 +127,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   with ANSI fullscreen text styles derived from the active semantic theme and
   automatic no-color/screen-reader suppression,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
+  with a hermetic PTY smoke covering real `runInteractive` ANSI entry,
+  resize-safe lifecycle, and Ctrl-C restoration,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

@@ -47,6 +47,8 @@ this file from merged Conventional Commit pull requests.
 * derive ANSI fullscreen text styles from the active semantic theme, including
   ANSI16/256/truecolor conversion and automatic no-color/screen-reader
   suppression
+* add a hermetic PTY smoke for real `runInteractive` ANSI entry, resumed
+  transcript rendering, Ctrl-C confirmation, and terminal lifecycle cleanup
 
 ### Changed
 
