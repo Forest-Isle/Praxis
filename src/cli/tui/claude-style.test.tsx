@@ -4,6 +4,7 @@ import type { ComponentProps, ReactElement } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { TuiThemeProvider } from './theme.js'
+import { PraxisLogo, PRAXIS_LOGO_ROWS } from './praxis-logo.js'
 import {
   ACTIVE_STREAM_MAX_LINES,
   BtwPanel,
@@ -216,6 +217,20 @@ describe('Claude-style TUI components', () => {
     expect(frame).not.toContain("What's new")
     expect(frame).not.toContain('SendMessage')
     expect(frame).not.toContain('/release-notes')
+  })
+
+  it('renders the reusable Praxis logo glyph rows', () => {
+    const app = render(<PraxisLogo />)
+    const frame = app.lastFrame() ?? ''
+    expect(PRAXIS_LOGO_ROWS).toEqual(['╭─╮', '│▸│', '╰╲╯', ' ╲✦'])
+    expect(frame.split('\n')).toEqual([...PRAXIS_LOGO_ROWS])
+  })
+
+  it('renders one semantic label for the Praxis logo in screen-reader mode', () => {
+    const app = render(<PraxisLogo screenReader />)
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toBe('Praxis')
+    expect(PRAXIS_LOGO_ROWS.some((row) => frame.includes(row))).toBe(false)
   })
 
   it('stays complete and within bounds on a narrow terminal', () => {

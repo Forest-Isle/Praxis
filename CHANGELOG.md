@@ -19,6 +19,11 @@ this file from merged Conventional Commit pull requests.
 
 ## [Unreleased]
 
+### Added
+
+* add a reusable P-loop + spark Praxis TUI logo with semantic theme styling
+  and screen-reader/no-color fallbacks
+
 ### Changed
 
 * make the Praxis data plane native-only: sessions, resources, permissions,

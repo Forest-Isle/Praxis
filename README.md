@@ -90,7 +90,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 - **Local agent runtime** — Claude-style responsive TUI with a fixed fullscreen
   viewport, non-shrinking composer/status area, and complete bounded welcome
-  surface, plus a shared-command
+  surface with the reusable P-loop + spark Praxis mark and ANSI/no-color
+  fallbacks, plus a shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
