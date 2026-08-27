@@ -65,6 +65,15 @@ on a Claude installation. Native transcript schema changes require focused
 fixtures, the tarball gate, and Standards/Spec review; unsupported formats are
 always read-only and are never migrated.
 
+## Native-only release boundary
+
+The 0.39.x line is the first release with the native-only runtime data plane.
+New and existing native sessions use `PRAXIS_HOME` or `~/.praxis`; `.claude`
+and `CLAUDE_CONFIG_DIR` are not read. Legacy Claude transcripts and metadata
+are unsupported and cannot be migrated or resumed. Claude-shaped protocol
+fields remain where needed for wire compatibility, but persistence ownership
+is Praxis-native.
+
 ## Manual package creation
 
 ```sh
