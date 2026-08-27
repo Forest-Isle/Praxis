@@ -117,6 +117,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   surface until their semantic ANSI projections are complete,
   and a pure FocusStack that centralizes overlay/dialog precedence and Esc
   cancellation routing,
+  plus a generation-aware effect runner that drops stale asynchronous results
+  and aborts cleanly on replacement or unmount,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,

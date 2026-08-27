@@ -131,6 +131,7 @@ import {
   createTuiRuntimeKernelState,
   reduceTuiRuntimeKernel,
 } from './tui/kernel/tui-runtime-kernel.js'
+import { TuiEffectRunner } from './tui/kernel/tui-effect-runner.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
 import {
@@ -1419,6 +1420,9 @@ export function InteractiveApp({
   const clipboardQueueRef = useRef(Promise.resolve())
   const clipboardPendingRef = useRef(0)
   const componentMountedRef = useRef(true)
+  const themeEffectRunnerRef = useRef<TuiEffectRunner | null>(null)
+  if (themeEffectRunnerRef.current === null)
+    themeEffectRunnerRef.current = new TuiEffectRunner()
   const [clipboardBusy, setClipboardBusy] = useState(false)
   const stashedInputRef = useRef('')
   const lastEscapeAtRef = useRef(0)
@@ -2584,6 +2588,7 @@ export function InteractiveApp({
   useEffect(
     () => () => {
       componentMountedRef.current = false
+      themeEffectRunnerRef.current?.dispose()
       streamingFrameRef.current?.dispose()
       drainPermissionQueue()
       elicitationRef.current?.resolve({ action: 'cancel' })
@@ -2624,25 +2629,27 @@ export function InteractiveApp({
         append({ kind: 'warning', text: initialThemeLoadError })
       return
     }
-    let cancelled = false
-    void presentationThemeStore.load().then(
+    const themeEffectRunner = themeEffectRunnerRef.current
+    if (themeEffectRunner === null) return
+    const run = themeEffectRunner.run(async ({ isCurrent }) => {
+      const loaded = await presentationThemeStore.load()
+      return isCurrent() ? loaded : undefined
+    })
+    void run.promise.then(
       (loaded) => {
-        if (!cancelled)
+        if (loaded !== undefined)
           setThemeSettings(themeSettingsWithCustomTheme(loaded, customThemes))
       },
       (error: unknown) => {
-        if (!cancelled)
-          append({
-            kind: 'warning',
-            text: `Unable to load theme settings: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          })
+        append({
+          kind: 'warning',
+          text: `Unable to load theme settings: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        })
       },
     )
-    return () => {
-      cancelled = true
-    }
+    return run.cancel
   }, [
     customThemes,
     initialThemeLoadError,

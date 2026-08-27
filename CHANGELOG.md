@@ -35,6 +35,8 @@ this file from merged Conventional Commit pull requests.
   without changing existing keybindings or cancellation targets
 * keep complex overlay/dialog surfaces on Ink until a complete semantic ANSI
   projection is available, avoiding lossy generic summaries
+* guard theme loading with a generation-aware effect runner that aborts on
+  replacement/unmount and suppresses stale results
 
 ### Changed
 
