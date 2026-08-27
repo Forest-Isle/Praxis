@@ -110,6 +110,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   frames and keeps status/busy transitions deterministic,
   with a shared semantic transcript Row IR for renderer-neutral layout and
   stable incremental updates,
+  backed by the authoritative grapheme/Markdown viewport layout so narrow and
+  Unicode-heavy transcripts wrap consistently across renderers,
   and an independent ANSI fullscreen frame renderer with alternate-screen
   lifecycle, synchronized output, and dirty-row diffing,
   opt-in TTY wiring with automatic Ink fallback on renderer failure,

@@ -882,6 +882,14 @@ function entryViewportRows(
   return rows
 }
 
+export function projectTranscriptEntryRows(
+  entry: TranscriptPresentationEntry,
+  width: number,
+  mode: TranscriptPresentationMode,
+): readonly string[] | undefined {
+  return entryViewportRows(entry, Math.max(1, width), mode)
+}
+
 interface MarkdownViewportRow {
   readonly text: string
   readonly fenceBefore: boolean

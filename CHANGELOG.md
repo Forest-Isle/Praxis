@@ -39,6 +39,8 @@ this file from merged Conventional Commit pull requests.
   replacement/unmount and suppresses stale results
 * keep welcome and identity intro frames on Ink so ANSI mode never hides the
   complete first-session surface
+* route Row IR through the authoritative transcript viewport layout for
+  width-aware Unicode/Markdown physical rows without duplicate prefixes
 
 ### Changed
 

@@ -5,6 +5,7 @@ import type {
   TranscriptPresentationEntry,
   TranscriptPresentationMode,
 } from './transcript-presentation.js'
+import { projectTranscriptEntryRows } from './transcript-viewport.js'
 
 export type TuiTextRole =
   | 'body'
@@ -127,8 +128,6 @@ function lineRole(
 export function projectTuiRows(
   input: TuiRowProjectionInput,
 ): readonly TuiRow[] {
-  void input.width
-  void input.mode
   const rows: TuiRow[] = []
   for (const entry of input.entries) {
     const styled = entry.viewportSlice
@@ -138,15 +137,21 @@ export function projectTuiRows(
             entry.kind === 'tool' ? ('tool' as const) : entryText(entry).role,
         }
       : entryText(entry)
-    const lines = stripVTControlCharacters(styled.text)
-      .replace(/\r\n?/gu, '\n')
-      .split('\n')
+    const authoritativeRows = entry.viewportSlice
+      ? undefined
+      : projectTranscriptEntryRows(entry, input.width, input.mode)
+    const lines = authoritativeRows
+      ? authoritativeRows.map((line) => stripVTControlCharacters(line))
+      : stripVTControlCharacters(styled.text)
+          .replace(/\r\n?/gu, '\n')
+          .split('\n')
     lines.forEach((line, lineIndex) => {
       const text = line.length === 0 ? ' ' : line
       const assistantHeading =
         entry.kind === 'item' &&
         entry.item.kind === 'assistant' &&
         !entry.viewportSlice &&
+        !authoritativeRows &&
         lineIndex === 0 &&
         text.startsWith('⏺ ')
       rows.push({

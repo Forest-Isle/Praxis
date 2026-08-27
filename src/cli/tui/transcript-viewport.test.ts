@@ -8,11 +8,30 @@ import {
   estimateTranscriptEntryLines,
   projectTranscriptPresentationTail,
   projectTranscriptPresentationWindow,
+  projectTranscriptEntryRows,
   transcriptPresentationLineCount,
   TRANSCRIPT_TRUNCATION_MARKER,
 } from './transcript-viewport.js'
 
 describe('presentation viewport', () => {
+  it('exposes the authoritative physical rows for an entry', () => {
+    const entry = projectTranscriptPresentation(
+      [{ kind: 'assistant', text: '界'.repeat(20) }],
+      'normal',
+    )[0]
+    if (!entry) throw new Error('missing assistant presentation entry')
+    expect(projectTranscriptEntryRows(entry, 10, 'normal')).toEqual([
+      '',
+      '界界界',
+      '界界界',
+      '界界界',
+      '界界界',
+      '界界界',
+      '界界界',
+      '界界',
+    ])
+  })
+
   it('preserves wrap state across logical lines and hard words', () => {
     const repeatedLines = projectTranscriptPresentation(
       [
