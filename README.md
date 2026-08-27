@@ -107,7 +107,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `/mcp`, `/memory` shared instruction and auto-memory
   access, and live extension-reload controls,
   plus a framework-free runtime kernel that atomically publishes streaming
-  frames and keeps status/busy transitions deterministic,
+  frames and keeps status/busy transitions deterministic, with a unified
+  framework-free TuiStore that retains runtime and composer state together,
   with a shared semantic transcript Row IR for renderer-neutral layout and
   stable incremental updates,
   backed by the authoritative grapheme/Markdown viewport layout so narrow and

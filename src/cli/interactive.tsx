@@ -127,10 +127,7 @@ import {
   useTuiPresentationEnvironment,
 } from './tui/presentation-environment.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
-import {
-  createTuiRuntimeKernelState,
-  reduceTuiRuntimeKernel,
-} from './tui/kernel/tui-runtime-kernel.js'
+import { createTuiStoreState, reduceTuiStore } from './tui/kernel/tui-store.js'
 import { TuiEffectRunner } from './tui/kernel/tui-effect-runner.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
@@ -1405,9 +1402,7 @@ export function InteractiveApp({
       : undefined,
   )
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
-  const [input, setInput] = useState('')
   const inputRef = useRef('')
-  const [inputCursor, setInputCursor] = useState(0)
   const inputCursorRef = useRef(0)
   const inputHistoryRef = useRef<string[]>([])
   const inputHistoryIndexRef = useRef<number | null>(null)
@@ -1476,15 +1471,17 @@ export function InteractiveApp({
   const configOperationRef = useRef<Promise<void> | null>(null)
   const doctorMenuGenerationRef = useRef(0)
   const doctorOperationRef = useRef<Promise<void> | null>(null)
-  const [kernelState, dispatchKernel] = useReducer(
-    reduceTuiRuntimeKernel,
+  const [tuiStore, dispatchKernel] = useReducer(
+    reduceTuiStore,
     undefined,
-    createTuiRuntimeKernelState,
+    createTuiStoreState,
   )
-  const busy = kernelState.busy
-  const status = kernelState.status
-  const activeText = kernelState.activeText
-  const activeThinking = kernelState.activeThinking
+  const busy = tuiStore.busy
+  const status = tuiStore.status
+  const activeText = tuiStore.activeText
+  const activeThinking = tuiStore.activeThinking
+  const input = tuiStore.composer.text
+  const inputCursor = tuiStore.composer.cursor
   const setBusy = (value: boolean) =>
     dispatchKernel({ type: 'set-busy', busy: value })
   const setStatus = (value: string) =>
@@ -2750,8 +2747,11 @@ export function InteractiveApp({
     const editor = createComposerEditor(next, cursor)
     inputRef.current = editor.text
     inputCursorRef.current = editor.cursor
-    setInput(editor.text)
-    setInputCursor(editor.cursor)
+    dispatchKernel({
+      type: 'set-composer',
+      text: editor.text,
+      cursor: editor.cursor,
+    })
     setShortcutsVisible(false)
     setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
@@ -8305,6 +8305,11 @@ export function InteractiveApp({
             input={shellMode ? input.slice(1) : input}
             busy={busy}
             status={status}
+            display={runtimeDisplay}
+            {...(conversationScreen?.sessionLabel === undefined
+              ? {}
+              : { sessionLabel: conversationScreen.sessionLabel })}
+            cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
             screenReader={axScreenReader}
             onError={() => setAnsiRendererFailed(true)}
           />

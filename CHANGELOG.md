@@ -41,6 +41,9 @@ this file from merged Conventional Commit pull requests.
   complete first-session surface
 * route Row IR through the authoritative transcript viewport layout for
   width-aware Unicode/Markdown physical rows without duplicate prefixes
+* unify runtime and composer state behind the framework-free `TuiStore`, with
+  cursor clamping, identity-preserving no-ops, and runtime transitions that
+  retain composer state
 
 ### Changed
 

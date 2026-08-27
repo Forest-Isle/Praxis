@@ -16,6 +16,15 @@ export interface TuiAnsiSurfaceProps {
   busy: boolean
   status: string
   screenReader?: boolean
+  display?: {
+    cwd: string
+    model?: string
+    effort?: string
+    permissionMode?: string
+    version?: string
+  }
+  sessionLabel?: string
+  cursor?: number
   onError: (error: unknown) => void
 }
 
@@ -58,6 +67,25 @@ function activeRows(
     .replace(/\r\n?/gu, '\n')
     .split('\n')
     .map((line, index) => row(`${key}:${index}`, line, role))
+}
+
+function headerRows(props: TuiAnsiSurfaceProps): TuiRow[] {
+  const display = props.display
+  const identity = `Praxis${display?.version ? ` ${safeText(display.version)}` : ''}${props.sessionLabel ? ` · session ${safeText(props.sessionLabel)}` : ''}`
+  const metadata = [
+    display?.cwd ? `cwd ${safeText(display.cwd).slice(0, 80)}` : '',
+    display?.model ? `model ${safeText(display.model).slice(0, 40)}` : '',
+    display?.effort ? `effort ${safeText(display.effort).slice(0, 20)}` : '',
+    display?.permissionMode
+      ? `permissions ${safeText(display.permissionMode).slice(0, 30)}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+  return [
+    row('ansi:header:identity', identity, 'heading'),
+    row('ansi:header:context', metadata || 'Ready', 'muted'),
+  ]
 }
 
 function summarize(value: unknown, depth = 0): string[] {
@@ -119,6 +147,7 @@ export function supportsAnsiSurface(screen: TuiScreenModel): boolean {
 export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
   const body = props.screen.body
   const lines: TuiRow[] = [...surfaceRows(props.screen)]
+  const headers = body.kind === 'conversation' ? headerRows(props) : []
   if (body.kind === 'conversation') {
     lines.push(...body.transcript.rows)
     if (body.transcript.active.visible) {
@@ -136,7 +165,17 @@ export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
         )
     }
   }
-  lines.push(row('composer', `❯ ${props.input}`, 'input'))
+  const cursor = Math.min(
+    Math.max(0, props.cursor ?? props.input.length),
+    props.input.length,
+  )
+  lines.push(
+    row(
+      'composer',
+      `❯ ${props.input.slice(0, cursor)}▌${props.input.slice(cursor)}`,
+      'input',
+    ),
+  )
   lines.push(
     row('status', `● ${props.status}${props.busy ? ' · busy' : ''}`, 'muted'),
   )
@@ -144,11 +183,19 @@ export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
   const limit =
     props.rows === undefined ? lines.length : Math.max(2, props.rows)
   const chrome = lines.slice(-2)
-  const content = lines.slice(0, -2).slice(-Math.max(0, limit - 2))
+  const content = [...headers, ...lines.slice(0, -2)]
+  const headerCount = Math.min(headers.length, Math.max(0, limit - 2))
+  const visibleHeaders = headers.slice(0, headerCount)
+  const bodyRows = content.slice(headers.length)
+  const contentBudget = Math.max(0, limit - headerCount - 2)
   return {
     columns: Math.max(1, Math.floor(props.width)),
     rows: limit,
-    lines: [...content, ...chrome],
+    lines: [
+      ...visibleHeaders,
+      ...bodyRows.slice(-contentBudget),
+      ...chrome,
+    ].slice(-limit),
   }
 }
 

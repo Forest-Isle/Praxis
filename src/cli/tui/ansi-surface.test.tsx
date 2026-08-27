@@ -68,9 +68,11 @@ describe('projectAnsiSurfaceFrame', () => {
       onError: () => undefined,
     })
     expect(frame.lines.map((line) => line.segments[0]?.text)).toEqual([
+      'Praxis',
+      'Ready',
       'hello',
       'streaming',
-      '❯ prompt',
+      '❯ prompt▌',
       '● Ready · busy',
     ])
   })
@@ -95,6 +97,8 @@ describe('projectAnsiSurfaceFrame', () => {
       onError: () => undefined,
     })
     expect(frame.lines.map((line) => line.key)).toEqual([
+      'ansi:header:identity',
+      'ansi:header:context',
       'ansi:active:text:0',
       'ansi:active:text:1',
       'ansi:active:thinking:0',
@@ -117,17 +121,38 @@ describe('projectAnsiSurfaceFrame', () => {
         },
       }),
       width: 40,
-      rows: 3,
+      rows: 5,
       input: 'x',
       busy: false,
       status: 'ok',
       onError: () => undefined,
     })
     expect(frame.lines.map((line) => line.segments[0]?.text)).toEqual([
+      'Praxis',
+      'Ready',
       'line-9',
-      '❯ x',
+      '❯ x▌',
       '● ok',
     ])
+  })
+
+  it('fits tiny viewports while retaining composer and status', () => {
+    for (const rows of [2, 3]) {
+      const frame = projectAnsiSurfaceFrame({
+        screen: screen(),
+        width: 40,
+        rows,
+        input: 'x',
+        busy: false,
+        status: 'ok',
+        onError: () => undefined,
+      })
+      expect(frame.lines).toHaveLength(rows)
+      expect(frame.lines.slice(-2).map((line) => line.key)).toEqual([
+        'composer',
+        'status',
+      ])
+    }
   })
 
   it('summarizes picker surfaces without stringifying objects', () => {
