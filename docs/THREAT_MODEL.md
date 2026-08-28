@@ -23,7 +23,8 @@ Protected assets:
 | Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                                                          |
 | Sandboxed Bash escape                          | Official sandbox runtime, settings-file/extension write denies, explicit rule precedence, bare-repository file cleanup, and fail-closed required mode     |
 | Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts |
-| Malicious hook, skill, or MCP server           | Treat as user-installed executable code; show origin, preserve Claude scopes, require the applicable permission policy                                    |
+| Malicious project hook or MCP server           | Discover as data, show canonical origin, and require exact-fingerprint workspace trust before constructing project/local processes                        |
+| Malicious user/explicit hook, skill, or MCP    | Treat as user-authorized executable code; preserve scopes and apply the relevant tool, sandbox, environment, and redaction controls                       |
 | Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
 | Unsupported transcript format                  | Native codec selects read-only fallback before any write                                                                                                  |
 | Provider payload incompatibility               | Persist only translated native completed events; raw payload stays in sidecar                                                                             |
@@ -36,6 +37,11 @@ Protected assets:
 ## Explicit assumptions
 
 - User may intentionally grant broad shell/filesystem access.
+- Workspace trust is separate from tool permission and sandbox modes. A stored
+  grant covers only one canonical workspace plus the exact executable
+  project/local hook and MCP fingerprint; changing definitions, source, scope,
+  or hook execution environment requires a new decision. `--safe-mode` and
+  `--bare` suppress shared executables even when a matching grant exists.
 - Explicit MCP `env` and sensitive HTTP headers grant that credential to the
   configured server. Exact values and common auth/cookie payloads are redacted
   on return; transformed or encoded values are the server's responsibility.
@@ -70,6 +76,10 @@ Protected assets:
   from tool results, warnings, errors, hook attachments, and shared JSONL;
 - prevent login/non-interactive shell startup files from restoring stripped
   credentials.
+- block project/local hooks and MCP transports before trust; preserve user and
+  explicitly supplied resources; invalidate trust after executable config,
+  source symlink, scope, or hook-environment changes; and keep corrupt native
+  state fail-closed without rewriting unknown fields;
 - reject private WebFetch literals and DNS results; never pass an unvalidated
   address to the HTTPS request lookup;
 - bound WebFetch DNS/request duration, redirect count, response bytes, processed

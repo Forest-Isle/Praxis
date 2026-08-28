@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import {
   cp,
   mkdir,
@@ -32,9 +34,42 @@ import {
   readClaudeInstalledPlugins,
   validateClaudePluginUserConfig,
 } from './claude-plugin-marketplace.js'
-import { loadClaudePluginMcpb } from './claude-plugin-mcpb.js'
+import {
+  CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES,
+  loadClaudePluginMcpb,
+} from './claude-plugin-mcpb.js'
 
 const execFileAsync = promisify(execFile)
+
+async function boundedFileSha256(path: string): Promise<string> {
+  const metadata = await stat(path)
+  if (!metadata.isFile()) {
+    throw new Error(`MCPB archive must be a regular file: ${path}`)
+  }
+  if (metadata.size > CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES) {
+    throw new Error(
+      `MCPB archive exceeds ${CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES} bytes`,
+    )
+  }
+  const source = createReadStream(path)
+  const hash = createHash('sha256')
+  let bytes = 0
+  try {
+    for await (const chunk of source) {
+      const value = chunk as Buffer
+      bytes += value.byteLength
+      if (bytes > CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES) {
+        throw new Error(
+          `MCPB archive exceeds ${CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES} bytes`,
+        )
+      }
+      hash.update(value)
+    }
+    return hash.digest('hex')
+  } finally {
+    source.destroy()
+  }
+}
 
 interface ClaudePluginCommandDefinition {
   source?: string
@@ -314,6 +349,20 @@ function safePluginPath(pluginPath: string, candidate: string): string {
   }
   const resolved = resolve(pluginPath, candidate)
   const root = resolve(pluginPath)
+  if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+    throw new Error(`Plugin path escapes plugin root: ${candidate}`)
+  }
+  return resolved
+}
+
+async function canonicalPluginPath(
+  pluginPath: string,
+  candidate: string,
+): Promise<string> {
+  const [root, resolved] = await Promise.all([
+    realpath(pluginPath),
+    realpath(candidate),
+  ])
   if (resolved !== root && !resolved.startsWith(`${root}/`)) {
     throw new Error(`Plugin path escapes plugin root: ${candidate}`)
   }
@@ -863,6 +912,8 @@ async function loadPlugin(
   environment: Readonly<Record<string, string | undefined>> = process.env,
   configId?: string,
   readOnlyHooks = false,
+  readOnlyExecutables = false,
+  allowWorkspaceMcpb = true,
   dataPlane?: DataPlane,
 ): Promise<{
   record: ClaudePluginRecord
@@ -897,7 +948,8 @@ async function loadPlugin(
     )
     .filter((value) => value.length > 0)
   const pluginData = claudePluginDataPath(configRoot ?? canonical, source)
-  if (configRoot !== undefined && !readOnlyHooks) {
+  const readOnlyComponents = readOnlyHooks || readOnlyExecutables
+  if (configRoot !== undefined && !readOnlyComponents) {
     await mkdir(pluginData, { recursive: true })
   }
   const pluginEnvironment = pluginOptionEnvironment(
@@ -912,7 +964,8 @@ async function loadPlugin(
     environment: pluginEnvironment,
     ...(sensitiveValues.length === 0 ? {} : { sensitiveValues }),
   }
-  const scope = resourceScope ?? scopeForPath(canonical, cwd)
+  const scope =
+    resourceScope ?? scopeForPath(canonical, await realpath(resolve(cwd)))
   const commandDefinitions = isRecord(manifest.commands)
     ? (manifest.commands as Record<string, ClaudePluginCommandDefinition>)
     : undefined
@@ -935,7 +988,7 @@ async function loadPlugin(
   const agentsRoots = pathList(manifest.agents, 'agents').map((path) =>
     safePluginPath(canonical, path),
   )
-  const [commands, skills, agents, lsp] = readOnlyHooks
+  const [commands, skills, agents, lsp] = readOnlyComponents
     ? [[], [], [], []]
     : await (async () => {
         const [commandFiles, skillFiles, agentFiles, loadedLsp] =
@@ -992,7 +1045,7 @@ async function loadPlugin(
         ])
         return [...loadedText, loadedLsp] as const
       })()
-  if (commandDefinitions && !readOnlyHooks) {
+  if (commandDefinitions && !readOnlyComponents) {
     for (const [commandName, definition] of Object.entries(
       commandDefinitions,
     )) {
@@ -1160,7 +1213,9 @@ async function loadPlugin(
         const urlReference = isUrlReference(spec)
         if (
           (urlReference &&
-            (!/^https?:\/\//u.test(spec) || !isMcpbReference(spec))) ||
+            (!/^https?:\/\//u.test(spec) ||
+              !isMcpbReference(spec) ||
+              (scope !== 'user' && !/^https:\/\//u.test(spec)))) ||
           (!urlReference && isMcpbReference(spec) && !spec.startsWith('./'))
         ) {
           mcpErrors.push(
@@ -1169,11 +1224,58 @@ async function loadPlugin(
           continue
         }
         if (isMcpbReference(spec)) {
+          let mcpbPath: string
+          let sourceFingerprint: string
+          try {
+            mcpbPath = urlReference
+              ? join(canonical, '.claude-plugin', `plugin-mcpb-${index}.json`)
+              : await canonicalPluginPath(
+                  canonical,
+                  safePluginPath(canonical, spec),
+                )
+            sourceFingerprint = createHash('sha256')
+              .update(urlReference ? spec : await boundedFileSha256(mcpbPath))
+              .digest('hex')
+          } catch (error) {
+            mcpErrors.push(
+              `Invalid plugin MCPB reference at index ${index}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            )
+            continue
+          }
+          const pluginExecutableSource = {
+            kind: 'mcpb' as const,
+            source: spec,
+            fingerprint: sourceFingerprint,
+          }
+          if (readOnlyExecutables) {
+            mcp.push({
+              path: mcpbPath,
+              scope,
+              plugin: true,
+              value: {
+                mcpServers: {
+                  [`plugin:${manifest.name}:mcpb-${index}`]: {
+                    type: 'mcpb-reference',
+                    source: spec,
+                    fingerprint: sourceFingerprint,
+                  },
+                },
+              },
+              environment: pluginEnvironment,
+              pluginExecutableSource,
+              sensitiveValues,
+            })
+            continue
+          }
+          if (scope !== 'user' && !allowWorkspaceMcpb) continue
           try {
             const loaded = await loadClaudePluginMcpb({
               pluginRoot: canonical,
               pluginData,
               source: spec,
+              requireHttps: scope !== 'user',
               ...(configRoot === undefined ? {} : { configRoot }),
               ...(dataPlane === undefined ? {} : { dataPlane }),
               environment,
@@ -1192,12 +1294,18 @@ async function loadPlugin(
                     )
                   : {},
             })
+            if (
+              !urlReference &&
+              createHash('sha256')
+                .update(await boundedFileSha256(mcpbPath))
+                .digest('hex') !== sourceFingerprint
+            ) {
+              throw new Error(
+                `Plugin MCPB source changed while loading: ${mcpbPath}`,
+              )
+            }
             mcp.push({
-              path: join(
-                canonical,
-                '.claude-plugin',
-                `plugin-mcpb-${index}.json`,
-              ),
+              path: mcpbPath,
               scope,
               plugin: true,
               value: {
@@ -1206,6 +1314,7 @@ async function loadPlugin(
                 },
               },
               environment: pluginEnvironment,
+              pluginExecutableSource,
               sensitiveValues: [...sensitiveValues, ...loaded.sensitiveValues],
             })
           } catch (error) {
@@ -1340,6 +1449,8 @@ export async function loadClaudePlugins(options: {
   pluginUrls?: readonly string[]
   loadInstalled?: boolean
   readOnlyHooks?: boolean
+  readOnlyExecutables?: boolean
+  allowWorkspaceMcpb?: boolean
   environment?: Readonly<Record<string, string | undefined>>
 }): Promise<ClaudePluginResources> {
   const registry =
@@ -1442,6 +1553,8 @@ export async function loadClaudePlugins(options: {
             options.environment ?? process.env,
             candidate.configId,
             options.readOnlyHooks,
+            options.readOnlyExecutables,
+            options.allowWorkspaceMcpb,
             options.dataPlane,
           )
         } catch (error) {

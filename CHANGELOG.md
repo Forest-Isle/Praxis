@@ -28,6 +28,8 @@ this file from merged Conventional Commit pull requests.
 
 ### Added
 
+* add exact-fingerprint workspace trust that blocks automatically discovered
+  project/local hooks and MCP servers until the canonical workspace is accepted
 * add a reusable P-loop + spark Praxis TUI logo with semantic theme styling
   and screen-reader/no-color fallbacks
 * add a framework-free TUI runtime kernel with pure reducer transitions and

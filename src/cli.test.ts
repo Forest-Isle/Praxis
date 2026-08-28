@@ -1181,6 +1181,10 @@ describe('Praxis CLI', () => {
       async createService(options) {
         expect(options.requireProvider).toBe(false)
         expect(options.exposeToolRegistry).toBe(true)
+        options.eventSink({
+          type: 'warning',
+          message: 'workspace executables blocked',
+        })
         return {
           ...(await base.createService(options)),
           async lifecycle(trigger, lifecycleOptions) {
@@ -1195,6 +1199,7 @@ describe('Praxis CLI', () => {
     ).resolves.toBe(0)
     expect(calls).toEqual(['init:true'])
     expect(capture.stdout).toEqual([])
+    expect(capture.stderr.join('')).toContain('workspace executables blocked')
   })
 
   it('keeps init-only provider-free when invoked from a TTY', async () => {
@@ -2638,6 +2643,308 @@ describe('Praxis CLI', () => {
           ),
         ).toEqual(['explicit-hook'])
       }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks project hooks until exact workspace trust while preserving user and explicit hooks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workspace-hooks-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    const hookSettings = (command: string, extra = {}) => ({
+      ...extra,
+      hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command }] }],
+      },
+    })
+    const projectSettingsPath = join(projectRoot, 'settings.json')
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify(hookSettings('user-hook')),
+      ),
+      writeFile(
+        projectSettingsPath,
+        JSON.stringify(
+          hookSettings('project-hook', {
+            permissions: { allow: ['Read'] },
+          }),
+        ),
+      ),
+    ])
+    const warnings: string[] = []
+    const configuration = async (controls: CliControls) => {
+      const service = await createDefaultDependencies().createService({
+        eventSink: (event) => {
+          if (event.type === 'warning') warnings.push(event.message)
+        },
+        requireProvider: false,
+        hooksOnly: true,
+        cwd,
+        configRoot,
+        providerEnvironment: {},
+        controls,
+      })
+      try {
+        return await service.hookConfiguration?.()
+      } finally {
+        await service.close?.()
+      }
+    }
+    const labels = (
+      value: Awaited<ReturnType<typeof configuration>>,
+    ): string[] =>
+      value?.events.flatMap((event) =>
+        event.matchers.flatMap((matcher) =>
+          matcher.hooks.map((hook) => hook.label),
+        ),
+      ) ?? []
+
+    try {
+      const blocked = await configuration({
+        ...DEFAULT_CLI_CONTROLS,
+        settings: JSON.stringify(hookSettings('explicit-hook')),
+      })
+      expect(labels(blocked).sort()).toEqual(['explicit-hook', 'user-hook'])
+      expect(warnings).toContainEqual(
+        expect.stringContaining('rerun with --trust-project'),
+      )
+
+      const accepted = await configuration({
+        ...DEFAULT_CLI_CONTROLS,
+        trustProject: true,
+        settings: JSON.stringify(hookSettings('explicit-hook')),
+      })
+      expect(labels(accepted).sort()).toEqual([
+        'explicit-hook',
+        'project-hook',
+        'user-hook',
+      ])
+
+      const reused = await configuration(DEFAULT_CLI_CONTROLS)
+      expect(labels(reused).sort()).toEqual(['project-hook', 'user-hook'])
+
+      await writeFile(
+        projectSettingsPath,
+        JSON.stringify(
+          hookSettings('changed-project-hook', {
+            permissions: { allow: ['Read'] },
+          }),
+        ),
+      )
+      const stale = await configuration(DEFAULT_CLI_CONTROLS)
+      expect(labels(stale)).toEqual(['user-hook'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('executes only authorized hook marker processes and treats approval cancellation as rejection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workspace-hook-markers-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    const userMarker = join(root, 'user-marker')
+    const projectMarker = join(root, 'project-marker')
+    const localMarker = join(root, 'local-marker')
+    const explicitMarker = join(root, 'explicit-marker')
+    const changedMarker = join(root, 'changed-marker')
+    const markerCommand = (marker: string) =>
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`,
+      )}`
+    const hookSettings = (marker: string) => ({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: markerCommand(marker) }] },
+        ],
+      },
+    })
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify(hookSettings(userMarker)),
+      ),
+      writeFile(
+        join(projectRoot, 'settings.json'),
+        JSON.stringify(hookSettings(projectMarker)),
+      ),
+      writeFile(
+        join(projectRoot, 'settings.local.json'),
+        JSON.stringify(hookSettings(localMarker)),
+      ),
+    ])
+    const warnings: string[] = []
+    const start = async (
+      approveWorkspaceTrust: () => boolean | Promise<boolean>,
+    ) =>
+      createDefaultDependencies().createService({
+        eventSink: (event) => {
+          if (event.type === 'warning') warnings.push(event.message)
+        },
+        requireProvider: false,
+        exposeToolRegistry: true,
+        cwd,
+        configRoot,
+        providerEnvironment: {},
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          settings: JSON.stringify(hookSettings(explicitMarker)),
+        },
+        approveWorkspaceTrust,
+      })
+
+    try {
+      const blocked = await start(async () => false)
+      await blocked.lifecycle?.('init', { sessionStart: true })
+      await blocked.close?.()
+      await expect(readFile(userMarker, 'utf8')).resolves.toBe('started')
+      await expect(readFile(explicitMarker, 'utf8')).resolves.toBe('started')
+      await expect(access(projectMarker)).rejects.toThrow()
+      await expect(access(localMarker)).rejects.toThrow()
+
+      const accepted = await start(async () => true)
+      await accepted.lifecycle?.('init', { sessionStart: true })
+      await accepted.close?.()
+      await expect(readFile(projectMarker, 'utf8')).resolves.toBe('started')
+      await expect(readFile(localMarker, 'utf8')).resolves.toBe('started')
+
+      await writeFile(
+        join(projectRoot, 'settings.json'),
+        JSON.stringify(hookSettings(changedMarker)),
+      )
+      const cancelled = await start(async () => {
+        throw new DOMException('cancelled', 'AbortError')
+      })
+      await cancelled.lifecycle?.('init', { sessionStart: true })
+      await cancelled.close?.()
+      await expect(access(changedMarker)).rejects.toThrow()
+      expect(warnings.at(-1)).toContain('rerun with --trust-project')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('safe and bare modes never persist workspace trust', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workspace-safe-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(join(cwd, '.praxis'), { recursive: true })
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      join(cwd, '.praxis', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [
+            { hooks: [{ type: 'command', command: 'project-hook' }] },
+          ],
+        },
+      }),
+    )
+    try {
+      for (const mode of ['safeMode', 'bare'] as const) {
+        const service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          hooksOnly: true,
+          cwd,
+          configRoot,
+          providerEnvironment: {},
+          controls: {
+            ...DEFAULT_CLI_CONTROLS,
+            [mode]: true,
+            trustProject: true,
+          },
+        })
+        expect(await service.hookConfiguration?.()).toMatchObject({
+          hookCount: 0,
+        })
+        await service.close?.()
+      }
+      await expect(access(join(configRoot, 'state.json'))).rejects.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not spawn project MCP before trust and preserves user and explicit MCP', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workspace-mcp-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(join(cwd, '.praxis'), { recursive: true }),
+    ])
+    const projectMarker = join(root, 'project-marker')
+    const changedProjectMarker = join(root, 'changed-project-marker')
+    const userMarker = join(root, 'user-marker')
+    const explicitMarker = join(root, 'explicit-marker')
+    const server = (marker: string) => ({
+      command: process.execPath,
+      args: [
+        '-e',
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`,
+      ],
+    })
+    await Promise.all([
+      writeFile(
+        join(cwd, '.praxis', 'mcp.json'),
+        JSON.stringify({ mcpServers: { project: server(projectMarker) } }),
+      ),
+      writeFile(
+        join(configRoot, 'mcp.json'),
+        JSON.stringify({ mcpServers: { user: server(userMarker) } }),
+      ),
+    ])
+    const controls = (trustProject = false): CliControls => ({
+      ...DEFAULT_CLI_CONTROLS,
+      trustProject,
+      mcpConfigs: [
+        JSON.stringify({
+          mcpServers: { explicit: server(explicitMarker) },
+        }),
+      ],
+    })
+    const start = async (trustProject = false) => {
+      return createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: false,
+        exposeToolRegistry: true,
+        cwd,
+        configRoot,
+        providerEnvironment: {},
+        controls: controls(trustProject),
+      })
+    }
+
+    try {
+      const blocked = await start()
+      await blocked.close?.()
+      await expect(access(projectMarker)).rejects.toThrow()
+      await expect(readFile(userMarker, 'utf8')).resolves.toBe('started')
+      await expect(readFile(explicitMarker, 'utf8')).resolves.toBe('started')
+
+      const trusted = await start(true)
+      await expect(readFile(projectMarker, 'utf8')).resolves.toBe('started')
+      await writeFile(
+        join(cwd, '.praxis', 'mcp.json'),
+        JSON.stringify({
+          mcpServers: { changed: server(changedProjectMarker) },
+        }),
+      )
+      await trusted.mcpReload?.()
+      await expect(access(changedProjectMarker)).rejects.toThrow()
+      await trusted.close?.()
     } finally {
       await rm(root, { recursive: true, force: true })
     }

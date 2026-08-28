@@ -43,6 +43,7 @@ import {
 } from '../persistence/data-plane.js'
 
 const DEFAULT_ARCHIVE_BYTES = 512 * 1024 * 1024
+export const CLAUDE_PLUGIN_MCPB_ARCHIVE_BYTES = DEFAULT_ARCHIVE_BYTES
 const DEFAULT_EXTRACTED_BYTES = 1024 * 1024 * 1024
 const DEFAULT_FILE_BYTES = 512 * 1024 * 1024
 const DEFAULT_FILES = 100_000
@@ -130,6 +131,7 @@ export interface LoadClaudePluginMcpbOptions {
   signal?: AbortSignal
   timeoutMs?: number
   refresh?: boolean
+  requireHttps?: boolean
   limits?: ClaudePluginMcpbLimits
   fetch?: typeof fetch
 }
@@ -805,9 +807,18 @@ async function fetchArchive(
         throw new Error('MCPB download redirect is missing Location')
       }
       const redirected = new URL(location, requestUrl)
-      if (redirected.protocol !== 'http:' && redirected.protocol !== 'https:') {
+      if (
+        (options.requireHttps && redirected.protocol !== 'https:') ||
+        (!options.requireHttps &&
+          redirected.protocol !== 'http:' &&
+          redirected.protocol !== 'https:')
+      ) {
         await response.body?.cancel()
-        throw new Error('MCPB download redirect must use HTTP or HTTPS')
+        throw new Error(
+          options.requireHttps
+            ? 'MCPB download redirect must use HTTPS'
+            : 'MCPB download redirect must use HTTP or HTTPS',
+        )
       }
       await response.body?.cancel()
       if (++redirects > 5) {
@@ -893,6 +904,9 @@ async function resolveMcpbSource(
   const pluginRoot = await realpath(resolve(options.pluginRoot))
   signal.throwIfAborted()
   const remote = /^https?:\/\//u.test(options.source)
+  if (options.requireHttps && remote && !/^https:\/\//u.test(options.source)) {
+    throw new Error('MCPB download source must use HTTPS')
+  }
   if (!remote && /^[a-z][a-z0-9+.-]*:\/\//iu.test(options.source))
     throw new Error('MCPB source URL must use HTTP or HTTPS')
   if (

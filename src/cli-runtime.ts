@@ -127,6 +127,20 @@ import {
 } from './extensions/claude-extension-tools.js'
 import { ClaudeExtensionCatalog } from './extensions/claude-extensions.js'
 import { ClaudeHookRunner } from './hooks/claude-hooks.js'
+import {
+  allowedWorkspaceHookSettings,
+  allowedWorkspaceMcpResources,
+  assessWorkspaceTrust,
+  persistWorkspaceTrust,
+  workspaceTrustDecisionKey,
+  workspaceTrustInventory,
+  type WorkspaceTrustInventory,
+} from './security/workspace-trust.js'
+import {
+  createWorkspaceTrustDecisionCache,
+  promptWorkspaceTrust,
+  safeWorkspaceTrustDisplayField,
+} from './cli/workspace-trust-prompt.js'
 import { ClaudeSessionEnvironment } from './hooks/claude-session-environment.js'
 import {
   ClaudeMcpToolRegistry,
@@ -438,6 +452,7 @@ Options:
   --setting-sources <sources>         user, project, local, or an empty list
   --safe-mode                         Disable shared customizations
   --bare                              Use only explicitly supplied context
+  --trust-project                     Trust current workspace executables
   --system-prompt <prompt>            Set system prompt
   --append-system-prompt <prompt>     Append system prompt
   --exclude-dynamic-system-prompt-sections
@@ -1209,6 +1224,9 @@ export interface CliDependencies extends InteractiveServiceFactory {
     ) => Promise<CliElicitationResult>
     askUser?: ClaudeInteractiveToolCallbacks['askUser']
     approvePlan?: ClaudeInteractiveToolCallbacks['approvePlan']
+    approveWorkspaceTrust?: (
+      request: WorkspaceTrustInventory,
+    ) => boolean | Promise<boolean>
   }): Promise<SessionCommands>
   createAutoModeCritic?(options: {
     model?: string
@@ -1246,6 +1264,12 @@ const consoleIO: CliIO = {
   stderr: (message) => process.stderr.write(message),
   isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   readStdinLines: () => process.stdin,
+}
+
+function warningEventSink(io: Pick<CliIO, 'stderr'>): RuntimeEventSink {
+  return (event) => {
+    if (event.type === 'warning') io.stderr(`${event.message}\n`)
+  }
 }
 
 /**
@@ -1320,6 +1344,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   onElicitation,
   askUser,
   approvePlan,
+  approveWorkspaceTrust,
   emitToolUseSummaries = false,
   cwd: requestedCwd,
   sandboxOriginalCwd,
@@ -1555,11 +1580,63 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
+  const warnedWorkspaceFingerprints = new Set<string>()
+  let trustProjectRequestAvailable = cli.trustProject
+  const authorizeWorkspaceExecutables = async (
+    automaticSettings: readonly JsonResource[],
+    automaticMcp: readonly JsonResource[],
+    runtimeCwd: string,
+  ): Promise<boolean> => {
+    if (cli.safeMode || simpleMode) return true
+    const trustRequested = trustProjectRequestAvailable
+    trustProjectRequestAvailable = false
+    const inventory = await workspaceTrustInventory({
+      cwd: runtimeCwd,
+      settings: automaticSettings,
+      mcp: automaticMcp,
+    })
+    const assessment = await assessWorkspaceTrust(inventory, claudeStatePath)
+    if (assessment.status !== 'untrusted') return true
+
+    let approved = trustRequested
+    if (!approved && approveWorkspaceTrust) {
+      try {
+        approved = await approveWorkspaceTrust(assessment)
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          (error.name === 'AbortError' || error.name === 'CancellationError')
+        )) {
+          throw error
+        }
+        approved = false
+      }
+    }
+    if (approved) {
+      await persistWorkspaceTrust(assessment, claudeStatePath)
+      return true
+    }
+
+    const warningKey = workspaceTrustDecisionKey(assessment)
+    if (!warnedWorkspaceFingerprints.has(warningKey)) {
+      warnedWorkspaceFingerprints.add(warningKey)
+      runtimeEventSink({
+        type: 'warning',
+        message: `Workspace executable resources blocked for ${safeWorkspaceTrustDisplayField(assessment.canonicalPath)}; restart to review them interactively, or rerun with --trust-project to approve the current fingerprint.`,
+      })
+    }
+    return false
+  }
   const hookConfiguration = async () => {
-    const [settings, pluginResources] = await Promise.all([
+    const [sharedResources, pluginResources] = await Promise.all([
       cli.safeMode || simpleMode
-        ? []
-        : loadNativeSettings({ root: configRoot, cwd }),
+        ? Promise.resolve({ settings: [], mcp: [] })
+        : loadNativeSharedResources({
+            root: configRoot,
+            cwd,
+            environment: runtimeEnvironment,
+            includeProjectMemory: false,
+          }),
       loadClaudePlugins({
         configRoot,
         cwd,
@@ -1568,13 +1645,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
         strictPluginDirectories:
           cli.pluginDirectories.length + cli.pluginUrls.length > 0,
         loadInstalled: !cli.safeMode && !simpleMode,
-        readOnlyHooks: true,
+        readOnlyExecutables: true,
         environment: runtimeEnvironment,
       }),
     ])
-    return projectTuiHooks([
-      ...settings,
+    const automaticSettings = [
+      ...sharedResources.settings,
       ...pluginResources.settings,
+    ]
+    const automaticMcp = cli.strictMcpConfig
+      ? []
+      : [...sharedResources.mcp, ...pluginResources.mcp]
+    const trusted = await authorizeWorkspaceExecutables(
+      automaticSettings,
+      automaticMcp,
+      cwd,
+    )
+    return projectTuiHooks([
+      ...allowedWorkspaceHookSettings(automaticSettings, trusted),
       ...(cli.additionalSettings ? [cli.additionalSettings] : []),
     ])
   }
@@ -1585,7 +1673,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
   if (!provider && !exposeToolRegistry) {
     const service = new ClaudeSessionService(options)
     if (!interactive) return service
-    return Object.assign(service, { hookConfiguration })
+    const initialHookConfiguration = await hookConfiguration()
+    return Object.assign(service, {
+      hookConfiguration: () => Promise.resolve(initialHookConfiguration),
+    })
   }
   const toolProvider: ModelProvider = provider ?? {
     model: 'praxis/provider',
@@ -1622,7 +1713,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const baseSettings = nativeSharedResourcesEnabled
     ? await loadNativeSettings({ root: configRoot, cwd })
     : []
-  const pluginResources = await loadClaudePlugins({
+  const pluginLoadOptions = {
     configRoot,
     cwd,
     pluginDirectories: cli.pluginDirectories,
@@ -1631,6 +1722,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       cli.pluginDirectories.length + cli.pluginUrls.length > 0,
     loadInstalled: !cli.safeMode && !simpleMode,
     environment: runtimeEnvironment,
+  }
+  const executablePluginResources = await loadClaudePlugins({
+    ...pluginLoadOptions,
+    readOnlyExecutables: true,
   })
   const projectMemoryPolicy =
     cli.safeMode || simpleMode
@@ -1639,7 +1734,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           dataPlane,
           settings: [
             ...baseSettings,
-            ...pluginResources.settings,
+            ...executablePluginResources.settings,
             ...(cli.additionalSettings ? [cli.additionalSettings] : []),
           ],
           environment: runtimeEnvironment,
@@ -1662,7 +1757,48 @@ const createDefaultService: CliDependencies['createService'] = async ({
         settings: [],
         mcp: [],
       }
-  const settings = [
+  const trustSettings = [
+    ...loadedResources.settings,
+    ...executablePluginResources.settings,
+  ]
+  const trustMcp = cli.strictMcpConfig
+    ? []
+    : [...loadedResources.mcp, ...executablePluginResources.mcp]
+  const workspaceExecutablesTrusted = await authorizeWorkspaceExecutables(
+    trustSettings,
+    trustMcp,
+    cwd,
+  )
+  const loadedPluginResources = await loadClaudePlugins({
+    ...pluginLoadOptions,
+    allowWorkspaceMcpb: workspaceExecutablesTrusted,
+  })
+  const materializedPluginMcp = new Map(
+    loadedPluginResources.mcp.map((resource) => [resource.path, resource]),
+  )
+  const pluginResources = {
+    ...loadedPluginResources,
+    settings: executablePluginResources.settings,
+    mcp: executablePluginResources.mcp.flatMap((resource) => {
+      if (resource.pluginExecutableSource?.kind !== 'mcpb') return [resource]
+      const materialized = materializedPluginMcp.get(resource.path)
+      if (!materialized) return []
+      if (
+        materialized.pluginExecutableSource?.source !==
+          resource.pluginExecutableSource.source ||
+        materialized.pluginExecutableSource.fingerprint !==
+          resource.pluginExecutableSource.fingerprint
+      ) {
+        runtimeEventSink({
+          type: 'warning',
+          message: `Workspace MCPB source changed during trust preflight and was blocked: ${safeWorkspaceTrustDisplayField(resource.path)}. Restart to review the new fingerprint.`,
+        })
+        return []
+      }
+      return [materialized]
+    }),
+  }
+  const allSettings = [
     ...loadedResources.settings,
     ...pluginResources.settings,
     ...(cli.additionalSettings ? [cli.additionalSettings] : []),
@@ -1675,7 +1811,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       })
     }
   }
-  const configuredAgent = [...settings]
+  const configuredAgent = [...allSettings]
     .reverse()
     .map((resource) =>
       resource.value &&
@@ -1688,6 +1824,24 @@ const createDefaultService: CliDependencies['createService'] = async ({
       (value): value is string => typeof value === 'string' && value.length > 0,
     )
   const selectedMainAgent = agent ?? configuredAgent
+  const automaticSettings = [
+    ...loadedResources.settings,
+    ...pluginResources.settings,
+  ]
+  const automaticMcp = cli.strictMcpConfig
+    ? []
+    : [...loadedResources.mcp, ...pluginResources.mcp]
+  const hookSettings = [
+    ...allowedWorkspaceHookSettings(
+      automaticSettings,
+      workspaceExecutablesTrusted,
+    ),
+    ...(cli.additionalSettings ? [cli.additionalSettings] : []),
+  ]
+  const executableMcp = [
+    ...allowedWorkspaceMcpResources(automaticMcp, workspaceExecutablesTrusted),
+    ...cli.mcpResources,
+  ]
   const resources = {
     ...loadedResources,
     commands: [...loadedResources.commands, ...pluginResources.commands],
@@ -1697,10 +1851,8 @@ const createDefaultService: CliDependencies['createService'] = async ({
       ...pluginResources.agents,
       ...cli.inlineAgents,
     ],
-    settings,
-    mcp: cli.strictMcpConfig
-      ? cli.mcpResources
-      : [...loadedResources.mcp, ...pluginResources.mcp, ...cli.mcpResources],
+    settings: allSettings,
+    mcp: executableMcp,
   }
   const extensions = new ClaudeExtensionCatalog(resources, {
     disableSlashCommands: cli.disableSlashCommands,
@@ -1777,7 +1929,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...(exposePlanDirectory ? [resolve(configRoot, 'plans')] : []),
   ]
   const sandboxSettings = loadClaudeSandboxSettings({
-    resources: settings.filter((resource) => resource.plugin !== true),
+    resources: allSettings.filter((resource) => resource.plugin !== true),
     cwd: workspace.cwd(),
     originalCwd: sandboxOriginalCwd ?? workspace.cwd(),
     configRoot,
@@ -1806,7 +1958,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         cwd,
         cwdProvider: () => workspace.cwd(),
         configRoot,
-        settings,
+        settings: allSettings,
         allowedTools: cli.allowedTools,
         disallowedTools: cli.disallowedTools,
         additionalDirectories: permissionAdditionalDirectories,
@@ -1887,9 +2039,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
             settings: [],
             mcp: [],
           }
+      const refreshedSettings = [
+        ...refreshed.settings,
+        ...pluginResources.settings,
+      ]
+      const refreshedMcp = [...refreshed.mcp, ...pluginResources.mcp]
+      const trusted = await authorizeWorkspaceExecutables(
+        refreshedSettings,
+        refreshedMcp,
+        workspace.cwd(),
+      )
       return runtimeMcpResources([
-        ...refreshed.mcp,
-        ...pluginResources.mcp,
+        ...allowedWorkspaceMcpResources(refreshedMcp, trusted),
         ...cli.mcpResources,
       ])
     },
@@ -2089,7 +2250,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       cli.safeMode || simpleMode
         ? undefined
         : new ClaudeHookRunner({
-            settings,
+            settings: hookSettings,
             cwd,
             onEvent: (event) => runtimeEventSink({ type: 'hook', event }),
             sessionEnvironment: hookSessionEnvironment,
@@ -2521,7 +2682,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
             ? {}
             : { progressMessage: definition.progressMessage }),
         })),
-      hookConfiguration: async () => projectTuiHooks(settings),
+      hookConfiguration: async () => projectTuiHooks(hookSettings),
       mcpInspect: () => service.mcpInspect(),
       mcpReconnect: (name) => service.mcpReconnect(name),
       mcpAuthenticate: (name) => service.mcpAuthenticate(name),
@@ -2829,6 +2990,20 @@ export function createDefaultDependencies(
     }) => {
       const { runInteractive } = await import('./cli/interactive.js')
       const interactiveControls = controls ?? DEFAULT_CLI_CONTROLS
+      let workspaceTrustPreflightOpen = true
+      const cachedWorkspaceTrustDecision = createWorkspaceTrustDecisionCache(
+        (request) =>
+          promptWorkspaceTrust(request, {
+            output: (text) => process.stderr.write(text),
+            ...(signal ? { signal } : {}),
+          }),
+      )
+      const approveInteractiveWorkspaceTrust = (
+        request: WorkspaceTrustInventory,
+      ): Promise<boolean> =>
+        workspaceTrustPreflightOpen
+          ? cachedWorkspaceTrustDecision(request)
+          : Promise.resolve(false)
       const initialAdditionalDirectories =
         interactiveControls.addDirectories.map((directory) =>
           realpathSync(resolve(process.cwd(), directory)),
@@ -2877,12 +3052,16 @@ export function createDefaultDependencies(
           ...(agent === undefined ? {} : { agent }),
           controls: {
             ...interactiveControls,
+            trustProject:
+              workspaceTrustPreflightOpen && interactiveControls.trustProject,
             addDirectories:
               options.additionalDirectories ??
               interactiveControls.addDirectories,
           },
           interactive: true,
+          approveWorkspaceTrust: approveInteractiveWorkspaceTrust,
         })
+        workspaceTrustPreflightOpen = false
         if (resumePath !== undefined) {
           await commands.registerResumePath?.(resumePath)
         }
@@ -4624,7 +4803,7 @@ async function executeMcpCommand(
       writeError: (message) => io.stderr(message),
       createToolRegistry: async () => {
         const service = await dependencies.createService({
-          eventSink: () => undefined,
+          eventSink: warningEventSink(io),
           requireProvider: false,
           exposeToolRegistry: true,
           approveTool: async () => true,
@@ -5539,7 +5718,7 @@ async function executeTeamCommand(
     dataPlane: 'native' as const,
   }
   const service = await dependencies.createService({
-    eventSink: () => undefined,
+    eventSink: warningEventSink(io),
     requireProvider: !['list', 'status', 'logs', 'attach'].includes(
       parsed.command,
     ),
@@ -5922,7 +6101,7 @@ async function execute(
   }
   if (invocation.initOnly) {
     const lifecycleService = await dependencies.createService({
-      eventSink: () => undefined,
+      eventSink: warningEventSink(io),
       requireProvider: false,
       exposeToolRegistry: true,
       ...(signal ? { signal } : {}),

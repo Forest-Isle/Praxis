@@ -38,6 +38,7 @@ export interface CliControls {
   settingSources: readonly ('user' | 'project' | 'local')[] | undefined
   safeMode: boolean
   bare: boolean
+  trustProject: boolean
   systemPrompt: string | undefined
   systemPromptFile: string | undefined
   appendSystemPrompt: string | undefined
@@ -677,6 +678,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let autocompact: 'auto' | number | undefined
   let safeMode = false
   let bare = false
+  let trustProject = false
   let systemPrompt: string | undefined
   let systemPromptFile: string | undefined
   let appendSystemPrompt: string | undefined
@@ -1445,6 +1447,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       bare = true
       continue
     }
+    if (value === '--trust-project') {
+      trustProject = true
+      continue
+    }
     if (value === '--init') {
       init = true
       continue
@@ -1759,6 +1765,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     settingSources,
     safeMode,
     bare,
+    trustProject,
     systemPrompt,
     systemPromptFile,
     appendSystemPrompt,

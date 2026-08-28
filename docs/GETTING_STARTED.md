@@ -94,6 +94,28 @@ praxis -p --output-format json "List the risky changes"
 Praxis asks before protected tool actions unless settings or CLI rules already
 allow or deny them. Review every command and write request before approving it.
 
+### Trust project executables
+
+Praxis discovers project/local hook and MCP configuration as inert data and
+blocks it by default. On interactive startup, review the canonical workspace
+path and every displayed executable origin. Accepting stores a grant for only
+that exact fingerprint; changing a hook or MCP definition, scope, source, or
+hook execution environment blocks it again. Rejection leaves the ordinary
+session, instructions, permissions, skills, commands, agents, and memory
+available.
+
+Headless runs never prompt. After reviewing the project configuration, approve
+the current fingerprint explicitly:
+
+```sh
+praxis --trust-project -p "Run with the reviewed project integrations"
+```
+
+User-scope resources and explicit `--settings` or `--mcp-config` inputs are
+treated as user-authorized. Tool permission bypass does not grant workspace
+trust. Safe and bare modes continue to suppress shared hooks and MCP regardless
+of stored trust.
+
 ## Resume and inspect work
 
 ```sh

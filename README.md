@@ -170,7 +170,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   exclusions, violation reporting, and bare-repository control-file cleanup,
   safe-property Skill auto-allow, interactive
   workspace-directory add/remove controls, path confinement, credential
-  redaction, and sanitized child processes.
+  redaction, sanitized child processes, and exact-fingerprint workspace trust
+  that blocks automatically discovered project/local hooks and MCP servers
+  until the canonical workspace configuration is explicitly accepted.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, top-level agents, and
   Claude-compatible main-thread agent definitions with native prompt, model,
