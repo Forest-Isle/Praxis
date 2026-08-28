@@ -96,6 +96,7 @@ describe('NativeTranscriptStore', () => {
     await writeFile(transcriptFile, '')
     const loaded = await store.load()
     expect(Object.keys(loaded)).toEqual(['records', 'tail'])
+    expect('entries' in loaded).toBe(false)
     expect((await store.loadReadOnly()).issue).toBeNull()
   })
 
@@ -313,7 +314,7 @@ describe('NativeTranscriptStore', () => {
 })
 
 describe('InMemoryTranscriptStore', () => {
-  it('exposes the same non-authoritative entry projection as the native store', async () => {
+  it('exposes the same authoritative snapshot shape as the native store', async () => {
     const store = new InMemoryTranscriptStore()
     const result = await store.withLease(async (lease) => {
       const initial = await lease.load()
@@ -323,15 +324,8 @@ describe('InMemoryTranscriptStore', () => {
       ).resolves.toEqual(expect.objectContaining({ status: 'appended' }))
       const loaded = await lease.load()
       expect(loaded.records.map((record) => record.event.id)).toEqual(['one'])
-      expect(loaded.entries).toEqual([
-        expect.objectContaining({
-          type: 'user',
-          uuid: 'one',
-          parentUuid: null,
-          message: { role: 'user', content: 'one' },
-        }),
-      ])
       expect(Object.keys(loaded)).toEqual(['records', 'tail'])
+      expect('entries' in loaded).toBe(false)
     })
     expect(result.status).toBe('completed')
   })

@@ -3,7 +3,6 @@ import { mkdir, open, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 import type { TranscriptEvent } from '../core/transcript-event.js'
-import type { NativeTranscriptEntry } from '../native/schema.js'
 import {
   type DecodedTranscriptRecord,
   type TranscriptCodecDiagnostic,
@@ -21,8 +20,6 @@ export interface NativeTranscriptTail {
 }
 export interface NativeTranscriptSnapshot {
   records: readonly DecodedTranscriptRecord[]
-  /** Claude-shaped projection for higher-level session helpers; never authoritative. */
-  entries: NativeTranscriptEntry[]
   tail: NativeTranscriptTail
 }
 export interface NativeTranscriptRecovery extends NativeTranscriptSnapshot {
@@ -53,50 +50,6 @@ export interface NativeTranscriptLease {
 }
 export type NativeTranscriptLeaseResult<T> =
   { status: 'completed'; value: T } | { status: 'conflict'; reason: 'locked' }
-
-/**
- * Projects authoritative native events into the Claude-shaped entry view
- * consumed by higher-level session helpers. The projection is intentionally
- * non-authoritative; callers must persist and validate `records`.
- */
-export function projectNativeTranscriptEntries(
-  records: readonly DecodedTranscriptRecord[],
-): NativeTranscriptEntry[] {
-  return records.flatMap(({ event }) => {
-    const messages = event.kind === 'messages' ? event.messages : []
-    if (messages.length === 0) {
-      return [
-        {
-          ...(event as unknown as Record<string, unknown>),
-          type:
-            event.kind === 'tool-execution-started' ? 'assistant' : 'system',
-          uuid: event.id,
-          parentUuid: event.parentId,
-        } as NativeTranscriptEntry,
-      ]
-    }
-    return messages.map(
-      (message, index) =>
-        ({
-          ...(event as unknown as Record<string, unknown>),
-          type: message.role,
-          uuid: index === 0 ? event.id : `${event.id}:${index}`,
-          parentUuid: index === 0 ? event.parentId : event.id,
-          message,
-        }) as NativeTranscriptEntry,
-    )
-  })
-}
-
-function attachEntries<
-  T extends { records: readonly DecodedTranscriptRecord[] },
->(snapshot: T): T & { entries: NativeTranscriptEntry[] } {
-  Object.defineProperty(snapshot, 'entries', {
-    value: projectNativeTranscriptEntries(snapshot.records),
-    enumerable: false,
-  })
-  return snapshot as T & { entries: NativeTranscriptEntry[] }
-}
 
 const hashLine = (line: Uint8Array) =>
   createHash('sha256').update(line).digest('hex')
@@ -278,21 +231,20 @@ export class NativeTranscriptStore {
     }
   }
   private decode(source: Buffer, recover: boolean): NativeTranscriptRecovery {
-    if (!source.length)
-      return attachEntries({ records: [], tail: emptyTail(), issue: null })
+    if (!source.length) return { records: [], tail: emptyTail(), issue: null }
     const decoded = createNativeTranscriptCodec().decodeDocument(source)
     if (decoded.issue && !recover)
       throw new Error(`Invalid native transcript: ${decoded.issue.message}`)
     if (!recover) validateHistory(decoded.records.map((record) => record.event))
-    return attachEntries({
+    return {
       records: decoded.records,
       tail: tailFrom(source, decoded.records),
       issue: decoded.issue,
-    })
+    }
   }
   async load(): Promise<NativeTranscriptSnapshot> {
     const { records, tail } = this.decode(await this.source(), false)
-    return attachEntries({ records, tail })
+    return { records, tail }
   }
   async loadReadOnly() {
     return this.decode(await this.source(), true)

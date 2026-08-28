@@ -44,7 +44,6 @@ import {
   type ClaudeFileResource,
   type ClaudeFileResourceConfig,
 } from '../native/file-resources.js'
-import { createClaudeNativeFork } from '../native/fork.js'
 import { selectClaudeActiveTranscript } from '../native/history.js'
 import { ClaudeFileHistory } from '../native/file-history.js'
 import {
@@ -2942,7 +2941,7 @@ export class ClaudeSessionService {
         const relocated = await sourceStore.withLease(
           async (lease: NativeTranscriptLease) => {
             const snapshot = await lease.load()
-            if (snapshot.entries.length === 0) {
+            if (snapshot.records.length === 0) {
               throw new Error(`Claude session not found: ${sessionId}`)
             }
             await mkdir(targetPaths.projectRoot, { recursive: true })
@@ -3441,40 +3440,6 @@ export class ClaudeSessionService {
       })
       return { sessionId, parentSessionId }
     }
-  }
-
-  private async nativeForkEntries(
-    parentSessionId: string,
-    sessionId: string,
-    resumeSessionAt?: string,
-    sourceEntryCount?: number,
-  ): Promise<NativeTranscriptEntry[]> {
-    const sourceResult = await this.store(parentSessionId).withLease(
-      (lease: NativeTranscriptLease) => lease.load(),
-    )
-    if (sourceResult.status === 'conflict') {
-      throw new Error(`Claude transcript fork conflict: ${sourceResult.reason}`)
-    }
-    const source = sourceResult.value
-    if (source.entries.length === 0) {
-      throw new Error(`Claude session not found: ${parentSessionId}`)
-    }
-    if (
-      sourceEntryCount !== undefined &&
-      (sourceEntryCount <= 0 || sourceEntryCount > source.entries.length)
-    ) {
-      throw new Error('Claude handoff source checkpoint is no longer available')
-    }
-
-    return createClaudeNativeFork({
-      source:
-        sourceEntryCount === undefined
-          ? source.entries
-          : source.entries.slice(0, sourceEntryCount),
-      sourceSessionId: parentSessionId,
-      sessionId,
-      ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
-    })
   }
 
   async rewindFiles(sessionId: string, userMessageId: string): Promise<void> {
