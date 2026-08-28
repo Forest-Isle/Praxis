@@ -107,6 +107,39 @@ describe('projectQuietInkFrameLines', () => {
     ])
   })
 
+  it('selects a grapheme by terminal-cell cursor position across roles', () => {
+    const result = projectQuietInkFrameLines(
+      frame(
+        [
+          [
+            { text: 'a', role: 'body' },
+            { text: '界b', role: 'input' },
+          ],
+        ],
+        { rowKey: 'row:0', column: 2 },
+      ),
+    )
+    expect(result[0]?.segments).toEqual([
+      { text: 'a', role: 'body' },
+      { text: '界', role: 'inputMarker', cursor: true },
+      { text: 'b', role: 'inputMarker' },
+    ])
+  })
+
+  it('keeps a ZWJ emoji whole when the cursor occupies its second cell', () => {
+    const result = projectQuietInkFrameLines(
+      frame([[{ text: 'x👩‍💻y', role: 'input' }]], {
+        rowKey: 'row:0',
+        column: 2,
+      }),
+    )
+    expect(result[0]?.segments).toEqual([
+      { text: 'x', role: 'inputMarker' },
+      { text: '👩‍💻', role: 'inputMarker', cursor: true },
+      { text: 'y', role: 'inputMarker' },
+    ])
+  })
+
   it('renders only the projected borderless lines', () => {
     const source = frame([
       [{ text: 'Praxis', role: 'heading' }],

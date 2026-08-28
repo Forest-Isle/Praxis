@@ -14,6 +14,7 @@ import {
 } from './quiet-settings-rows.js'
 import {
   projectQuietFrame,
+  createQuietFrameRow,
   resolveQuietFrameDensity,
   type QuietFrame,
   type QuietFrameInput,
@@ -143,11 +144,24 @@ export function projectQuietScreenFrame(
       ? undefined
       : Math.floor(viewport.rows)
   const density = resolveQuietFrameDensity(width)
-  const focusRows = projectFocusRows(
-    input,
-    density,
-    input.screen.presentation.screenReader,
-  )
+  let focusRows: QuietFrameInput['focusRows']
+  try {
+    focusRows = projectFocusRows(
+      input,
+      density,
+      input.screen.presentation.screenReader,
+    )
+  } catch {
+    focusRows = [
+      createQuietFrameRow(
+        'quiet:projection-error',
+        'Unable to render this view. Press Esc to return.',
+        'focus',
+        'error',
+        'Unable to render this view. Press Esc to return.',
+      ),
+    ]
+  }
   return projectQuietFrame({
     screen: input.screen,
     width,

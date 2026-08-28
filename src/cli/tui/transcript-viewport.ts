@@ -20,7 +20,7 @@ const extendedPictographicPattern = /\p{Extended_Pictographic}/gu
 const spacingMarkPattern = /\p{Spacing_Mark}/v
 const unqualifiedKeycapPattern = /^[\d#*]\u20e3$/u
 
-function graphemes(text: string): readonly string[] {
+export function terminalGraphemes(text: string): readonly string[] {
   return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment)
 }
 
@@ -59,7 +59,7 @@ function isDoubleWidthEmoji(cluster: string): boolean {
   return (cluster.match(extendedPictographicPattern)?.length ?? 0) >= 2
 }
 
-function graphemeWidth(cluster: string): number {
+export function terminalGraphemeWidth(cluster: string): number {
   if (!cluster || zeroWidthClusterPattern.test(cluster)) return 0
   if (isDoubleWidthEmoji(cluster)) return 2
   const visible = cluster.replace(leadingNonPrintingPattern, '')
@@ -83,7 +83,7 @@ function graphemeWidth(cluster: string): number {
   return width
 }
 
-function terminalStringWidth(text: string): number {
+export function terminalTextWidth(text: string): number {
   if (isPrintableAscii(text)) return text.length
   const first = text.codePointAt(0)
   if (first !== undefined && text.length === (first > 0xffff ? 2 : 1)) {
@@ -91,17 +91,43 @@ function terminalStringWidth(text: string): number {
     if (isWideCodePoint(first)) return 2
     return first <= 0xffff ? 1 : isDoubleWidthEmoji(text) ? 2 : 1
   }
-  return graphemes(text).reduce(
-    (width, cluster) => width + graphemeWidth(cluster),
+  return terminalGraphemes(text).reduce(
+    (width, cluster) => width + terminalGraphemeWidth(cluster),
     0,
   )
+}
+
+export function terminalTextHead(text: string, budget: number): string {
+  const limit = Number.isFinite(budget) ? Math.max(0, Math.floor(budget)) : 0
+  let used = 0
+  const result: string[] = []
+  for (const { segment: cluster } of graphemeSegmenter.segment(text)) {
+    const width = terminalGraphemeWidth(cluster)
+    if (used + width > limit) break
+    result.push(cluster)
+    used += width
+  }
+  return result.join('')
+}
+
+export function terminalTextTail(text: string, budget: number): string {
+  const limit = Number.isFinite(budget) ? Math.max(0, Math.floor(budget)) : 0
+  let used = 0
+  const result: string[] = []
+  for (const cluster of [...terminalGraphemes(text)].reverse()) {
+    const width = terminalGraphemeWidth(cluster)
+    if (used + width > limit) break
+    result.unshift(cluster)
+    used += width
+  }
+  return result.join('')
 }
 
 function expandTabs(line: string): string {
   if (!line.includes('\t')) return line
   let column = 0
   let expanded = ''
-  for (const cluster of graphemes(line)) {
+  for (const cluster of terminalGraphemes(line)) {
     if (cluster === '\t') {
       const spaces = 8 - (column % 8)
       expanded += ' '.repeat(spaces)
@@ -109,7 +135,7 @@ function expandTabs(line: string): string {
       continue
     }
     expanded += cluster
-    column += graphemeWidth(cluster)
+    column += terminalGraphemeWidth(cluster)
   }
   return expanded
 }
@@ -129,11 +155,11 @@ function hardWrappedRows(
       column: occupied % width || width,
     }
   }
-  const clusters = graphemes(word)
+  const clusters = terminalGraphemes(word)
   let rows = 0
   let column = startColumn
   for (const [index, cluster] of clusters.entries()) {
-    const clusterWidth = graphemeWidth(cluster)
+    const clusterWidth = terminalGraphemeWidth(cluster)
     if (column + clusterWidth > width) {
       rows += 1
       column = clusterWidth
@@ -179,9 +205,9 @@ function wrappedLineLayout(
       column = wrapped.column
       return
     }
-    const clusters = graphemes(word)
+    const clusters = terminalGraphemes(word)
     for (const [index, cluster] of clusters.entries()) {
-      const clusterWidth = graphemeWidth(cluster)
+      const clusterWidth = terminalGraphemeWidth(cluster)
       if (column + clusterWidth > width) pushRow()
       row += cluster
       column += clusterWidth
@@ -192,7 +218,7 @@ function wrappedLineLayout(
     const word = words[index] ?? ''
     const wordWidth = isPrintableAscii(word)
       ? word.length
-      : terminalStringWidth(word)
+      : terminalTextWidth(word)
     if (index > 0) {
       if (column >= width) pushRow()
       if (output) row += ' '
@@ -464,7 +490,7 @@ function textTail(text: string, budget: number, width: number): string {
 
     const remainingRows = usableBudget - rowsAfter
     if (remainingRows > 0) {
-      const clusters = graphemes(line)
+      const clusters = terminalGraphemes(line)
       let low = 0
       let high = clusters.length
       let suffix = ''
@@ -490,7 +516,7 @@ function textTail(text: string, budget: number, width: number): string {
           usableWidth,
         ) > remainingRows
       ) {
-        const suffixClusters = graphemes(suffix)
+        const suffixClusters = terminalGraphemes(suffix)
         suffix = suffixClusters.slice(0, -1).join('')
       }
       kept.unshift(suffix)
@@ -519,7 +545,7 @@ function textHead(text: string, budget: number, width: number): string {
     usableBudget - wrappedLineCount(marker, usableWidth),
   )
   const prefix = kept.join('\n')
-  const clusters = graphemes(prefix)
+  const clusters = terminalGraphemes(prefix)
   let low = 0
   let high = clusters.length
   let best = ''
@@ -671,13 +697,6 @@ function estimateRenderedTranscriptEntryLines(
       width,
     )
   if (entry.kind === 'tool') {
-    if (
-      mode === 'normal' &&
-      entry.item.call.name === 'Read' &&
-      entry.result &&
-      !entry.result.isError
-    )
-      return 1
     const summaryRows = wrappedLineCount(toolSummary(entry, mode), width)
     if (mode === 'normal') {
       if (!entry.result || !entry.result.isError) return summaryRows
@@ -776,21 +795,65 @@ function viewportOutputRows(
   width: number,
   mode: TranscriptPresentationMode,
 ): readonly string[] {
-  const lines = contentLines(text)
-  const visible = mode === 'normal' ? lines.slice(0, 3) : lines
   const outputWidth = Math.max(1, width - 2)
-  const rows = visible.flatMap((line, index) =>
-    textVisualRows(`${index === 0 ? '⎿ ' : '   '}${line || ' '}`, outputWidth),
-  )
-  if (mode === 'normal' && lines.length > visible.length) {
-    rows.push(
-      ...textVisualRows(
-        `   ${TRANSCRIPT_TRUNCATION_MARKER} +${lines.length - visible.length} lines (ctrl+o to expand)`,
+  if (mode !== 'normal') {
+    const lines = contentLines(text)
+    return lines.flatMap((line, index) =>
+      textVisualRows(
+        `${index === 0 ? '⎿ ' : '   '}${line || ' '}`,
         outputWidth,
       ),
     )
   }
-  return rows
+
+  const rows: string[] = []
+  const rowBudget = 8
+  const lines: string[] = []
+  let lineStart = 0
+  let omittedLines = 0
+  for (let index = 0; index <= text.length && lines.length < 3; index += 1) {
+    if (index !== text.length && text[index] !== '\n') continue
+    const line = text.slice(lineStart, index).replace(/\r$/u, '')
+    if (!(index === text.length && line === '' && text.endsWith('\n')))
+      lines.push(line)
+    lineStart = index + 1
+  }
+  for (let index = lineStart; index < text.length; index += 1)
+    if (text[index] === '\n') omittedLines += 1
+  if (lineStart < text.length && !text.endsWith('\n')) omittedLines += 1
+  let hidden = omittedLines > 0
+  for (const [index, line] of lines.entries()) {
+    const prefix = index === 0 ? '⎿ ' : '   '
+    const remaining = rowBudget - rows.length
+    if (remaining <= 1) {
+      hidden = true
+      break
+    }
+    const candidate = terminalTextHead(
+      line || ' ',
+      outputWidth * (remaining - 1),
+    )
+    if (candidate.length < (line || ' ').length) hidden = true
+    rows.push(
+      ...textVisualRows(`${prefix}${candidate}`, outputWidth).slice(
+        0,
+        remaining - 1,
+      ),
+    )
+    if (rows.length >= rowBudget - 1) break
+  }
+  if (hidden) {
+    const marker = textVisualRows(
+      omittedLines > 0
+        ? `   ${TRANSCRIPT_TRUNCATION_MARKER} +${omittedLines} lines (ctrl+o to expand)`
+        : `   ${TRANSCRIPT_TRUNCATION_MARKER}`,
+      outputWidth,
+    )
+    if (marker.length <= rowBudget - rows.length)
+      rows.push(...marker.slice(0, rowBudget - rows.length))
+    else rows.push(TRANSCRIPT_TRUNCATION_MARKER)
+  }
+  return rows.slice(0, rowBudget)
 }
 
 function entryViewportRows(
@@ -900,13 +963,6 @@ function entryViewportRows(
         : textVisualRows('⎿ ', Math.max(1, width - 2))),
     ]
   }
-  if (
-    mode === 'normal' &&
-    entry.item.call.name === 'Read' &&
-    entry.result &&
-    !entry.result.isError
-  )
-    return textVisualRows('✓ Read 1 file', width)
   const summaryRows = textVisualRows(toolSummary(entry, mode), width)
   if (mode === 'normal') {
     if (!entry.result || !entry.result.isError) return summaryRows

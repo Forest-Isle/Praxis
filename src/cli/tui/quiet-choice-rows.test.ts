@@ -150,8 +150,9 @@ describe('quiet choice rows', () => {
       density: 'standard',
     })
     expect(populated.at(-1)?.segments[0]?.text).toBe(
-      '←/→ tab  ↑/↓ select  Enter open  Esc close',
+      '↑/↓ select  Enter open  Esc close',
     )
+    expect(populated.at(-1)?.segments[0]?.text).not.toContain('←/→')
     expect(populated.at(-1)?.accessibleText).toContain('left and right arrows')
 
     const emptyModel = projectTuiPermissionSurface({
@@ -167,9 +168,69 @@ describe('quiet choice rows', () => {
       throw new Error('expected empty dashboard')
     const empty = projectQuietChoiceRows(emptyModel, { density: 'compact' })
     expect(text(empty)).toContain('No recent denials.')
-    expect(empty.at(-1)?.segments[0]?.text).toBe('←/→ tab  Esc close')
+    expect(empty.at(-1)?.segments[0]?.text).toBe('Esc close')
     expect(empty.at(-1)?.accessibleText).not.toContain('Press Enter')
     expect(text(empty)).not.toContain(emptyModel.description)
+  })
+
+  it('uses warning semantics for retrying dashboard rows while preserving selection focus', () => {
+    const input: TuiPermissionSurfaceInput = {
+      kind: 'permission-dashboard',
+      tabIndex: 0,
+      selectedIndex: 0,
+      query: '',
+      rules: [],
+      recentDenied: [
+        {
+          id: 'denied',
+          call: {
+            id: 'call-denied',
+            name: 'Bash',
+            input: { command: 'rm -rf /tmp/target' },
+          },
+          display: 'Delete target',
+          reason: 'Classifier policy',
+          sessionId: '11111111-1111-4111-8111-111111111111',
+        },
+        {
+          id: 'retrying',
+          call: {
+            id: 'call-retrying',
+            name: 'Bash',
+            input: { command: 'rm -rf /tmp/other-target' },
+          },
+          display: 'Delete other target',
+          reason: 'Classifier policy',
+          sessionId: '22222222-2222-4222-8222-222222222222',
+        },
+      ],
+      retryingDeniedId: 'retrying',
+      workspaceDirectories: [],
+    }
+    const unselectedRetry = projectQuietChoiceRows(
+      projectTuiPermissionSurface(input),
+      { density: 'standard' },
+    )
+    const retryingRow = unselectedRetry.find(
+      (row) => row.key === 'quiet:dashboard:retrying',
+    )
+    expect(retryingRow?.segments[0]?.text).toContain(
+      'Delete other target (retrying)',
+    )
+    expect(retryingRow?.segments[0]?.role).toBe('warning')
+
+    const selectedRetryModel = projectTuiPermissionSurface({
+      ...input,
+      selectedIndex: 1,
+    })
+    const selectedRetry = projectQuietChoiceRows(selectedRetryModel, {
+      density: 'standard',
+      screenReader: true,
+    }).find((row) => row.key === 'quiet:dashboard:retrying')
+    expect(selectedRetry?.segments[0]?.text).toContain(
+      'Selected: Delete other target (retrying)',
+    )
+    expect(selectedRetry?.segments[0]?.role).toBe('selection')
   })
 
   it('hides picker descriptions at compact density and keeps stable row identity', () => {

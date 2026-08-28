@@ -237,7 +237,7 @@ function permission(
                 : item.status === 'denied'
                   ? 'error'
                   : item.status === 'retrying'
-                    ? 'success'
+                    ? 'warning'
                     : 'body',
             ),
           ),
@@ -249,8 +249,8 @@ function permission(
         explicitFooter(
           'quiet:dashboard:footer',
           surface.rows.length > 0
-            ? '←/→ tab  ↑/↓ select  Enter open  Esc close'
-            : '←/→ tab  Esc close',
+            ? '↑/↓ select  Enter open  Esc close'
+            : 'Esc close',
           surface.rows.length > 0
             ? 'Use left and right arrows to switch tabs. Use up and down arrows to select. Press Enter to open. Press Escape to close.'
             : 'Use left and right arrows to switch tabs. Press Escape to close.',

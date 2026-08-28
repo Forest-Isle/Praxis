@@ -1,9 +1,11 @@
+import { stripVTControlCharacters } from 'node:util'
+
 import { describe, expect, it } from 'vitest'
 import {
   AnsiFullscreenRenderer,
   type AnsiFrame,
 } from './ansi-frame-renderer.js'
-import type { TuiRow } from './tui-row-ir.js'
+import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
 
 const row = (
   text: string,
@@ -34,6 +36,78 @@ describe('AnsiFullscreenRenderer', () => {
       '\u001b[?1049h\u001b[?25l\u001b[?25h\u001b[?1049l',
     )
     expect(renderer.mounted).toBe(false)
+  })
+
+  it('rolls back a mount that fails after entering the alternate screen', () => {
+    const output: string[] = []
+    let fail = true
+    const mountError = new Error('cursor initialization failed')
+    const renderer = new AnsiFullscreenRenderer({
+      writer: {
+        write: (chunk) => {
+          output.push(chunk)
+          if (fail && chunk === '\u001b[?25l') throw mountError
+        },
+      },
+    })
+
+    expect(() => renderer.mount()).toThrow(mountError)
+    expect(output).toEqual([
+      '\u001b[?1049h',
+      '\u001b[?25l',
+      '\u001b[?25h',
+      '\u001b[?1049l',
+    ])
+    expect(renderer.mounted).toBe(false)
+    expect(() => renderer.draw(frame([]))).toThrow(
+      'ANSI fullscreen renderer is not mounted',
+    )
+
+    fail = false
+    output.length = 0
+    renderer.mount()
+    expect(renderer.mounted).toBe(true)
+    renderer.dispose()
+    expect(output.join('')).toBe(
+      '\u001b[?1049h\u001b[?25l\u001b[?25h\u001b[?1049l',
+    )
+  })
+
+  it('rolls back synchronized mount failures independently and preserves the original error', () => {
+    const output: string[] = []
+    let fail = true
+    const mountError = new Error('synchronized output initialization failed')
+    const renderer = new AnsiFullscreenRenderer({
+      writer: {
+        write: (chunk) => {
+          output.push(chunk)
+          if (fail && chunk === '\u001b[?2026h') throw mountError
+          if (fail && chunk === '\u001b[?2026l')
+            throw new Error('synchronized output rollback failed')
+        },
+      },
+      synchronizedOutput: true,
+    })
+
+    expect(() => renderer.mount()).toThrow(mountError)
+    expect(output).toEqual([
+      '\u001b[?1049h',
+      '\u001b[?25l',
+      '\u001b[?2026h',
+      '\u001b[?2026l',
+      '\u001b[?25h',
+      '\u001b[?1049l',
+    ])
+    expect(renderer.mounted).toBe(false)
+
+    fail = false
+    output.length = 0
+    renderer.mount()
+    expect(renderer.mounted).toBe(true)
+    renderer.dispose()
+    expect(output.join('')).toBe(
+      '\u001b[?1049h\u001b[?25l\u001b[?2026h\u001b[?2026l\u001b[?25h\u001b[?1049l',
+    )
   })
 
   it('balances synchronized markers and emits only dirty rows', () => {
@@ -145,6 +219,60 @@ describe('AnsiFullscreenRenderer', () => {
     renderer.draw(frame([row('abcdef')], 4))
     expect(output.join('')).toContain('\u001b[1;1H\u001b[2Kabc…')
     expect(output.join('')).toContain('\u001b[2;1H\u001b[2K')
+  })
+
+  it('clips by terminal cells without splitting graphemes or leaking segments', () => {
+    const render = (
+      line: TuiRow,
+      columns: number,
+      styles?: Partial<Record<TuiTextRole, string>>,
+    ) => {
+      const output: string[] = []
+      const options = {
+        writer: { write: (chunk: string) => output.push(chunk) },
+      }
+      const renderer = new AnsiFullscreenRenderer(
+        styles === undefined ? options : { ...options, styles },
+      )
+      renderer.mount()
+      renderer.draw(frame([line], columns))
+      return output.join('')
+    }
+
+    expect(render(row('e\u0301e\u0301e\u0301'), 3)).toContain(
+      'e\u0301e\u0301e\u0301',
+    )
+    expect(render(row('👩‍💻'), 2)).toContain('👩‍💻')
+    expect(render(row('界界'), 3)).toContain('界…')
+
+    const leaking = render(
+      {
+        key: 'wide',
+        segments: [
+          { text: '界', role: 'body' },
+          { text: 'leak', role: 'heading' },
+        ],
+        height: 1,
+      },
+      2,
+    )
+    expect(leaking.endsWith('…')).toBe(true)
+    expect(stripVTControlCharacters(leaking)).toBe('…')
+
+    expect(
+      render(
+        {
+          key: 'styled',
+          segments: [
+            { text: 'a', role: 'body' },
+            { text: 'b', role: 'heading' },
+          ],
+          height: 1,
+        },
+        2,
+        { body: '\u001b[31m', heading: '\u001b[1m' },
+      ),
+    ).toContain('\u001b[31ma\u001b[0m\u001b[1mb\u001b[0m')
   })
 
   it('applies replacement styles to subsequent draws', () => {

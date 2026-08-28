@@ -3,6 +3,11 @@ import { Text } from 'ink'
 import type { QuietFrame, QuietFrameRow } from './quiet-frame.js'
 import { useTuiTheme, type TuiTextRole } from './theme.js'
 import type { TuiTextRole as RowIrTextRole } from './tui-row-ir.js'
+import {
+  terminalGraphemeWidth,
+  terminalGraphemes,
+  terminalTextWidth,
+} from './transcript-viewport.js'
 
 export interface QuietInkLineSegment {
   readonly text: string
@@ -63,10 +68,20 @@ export function projectQuietInkFrameLines(
     let position = 0
     let inserted = false
     for (const segment of row.segments) {
-      const chars = Array.from(segment.text)
+      const chars = terminalGraphemes(segment.text)
       const mappedRole = ROLE_MAP[segment.role]
-      if (!inserted && cursor >= position && cursor < position + chars.length) {
-        const offset = cursor - position
+      const segmentWidth = terminalTextWidth(segment.text)
+      if (!inserted && cursor >= position && cursor < position + segmentWidth) {
+        let offset = 0
+        let cell = position
+        for (const [index, grapheme] of chars.entries()) {
+          const width = terminalGraphemeWidth(grapheme)
+          if (cursor < cell + width) {
+            offset = index
+            break
+          }
+          cell += width
+        }
         const before = chars.slice(0, offset).join('')
         const at = chars[offset] ?? ' '
         const after = chars
@@ -77,7 +92,7 @@ export function projectQuietInkFrameLines(
         if (after) output.push({ text: after, role: mappedRole })
         inserted = true
       } else output.push({ text: segment.text, role: mappedRole })
-      position += chars.length
+      position += segmentWidth
     }
     if (!inserted) output.push({ text: ' ', role: 'body', cursor: true })
     return { key: row.key, segments: output }

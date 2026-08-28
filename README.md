@@ -89,10 +89,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
 
-- **Local agent runtime** — Claude-style responsive TUI with a fixed fullscreen
-  viewport, non-shrinking composer/status area, and complete bounded welcome
-  surface with the reusable P-loop + spark Praxis mark and ANSI/no-color
-  fallbacks, plus a shared-command
+- **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
+  `you>`/`praxis>` conversation, compact stable tool rows, responsive density,
+  terminal-native background, and a minimal composer/status row. Interactive
+  surfaces share the same presentation across terminals, with English
+  permission/configuration choices and a taught `❯` / Up/Down / Enter / Esc
+  interaction grammar, plus a
+  shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
@@ -107,26 +110,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   skills/hooks flow, provider-free per-session `/color` prompt-bar styling,
   `/mcp`, `/memory` shared instruction and auto-memory
   access, and live extension-reload controls,
-  plus a framework-free runtime kernel that atomically publishes streaming
-  frames and keeps status/busy transitions deterministic, with a unified
-  framework-free TuiStore that retains runtime and composer state together,
-  with a shared semantic transcript Row IR for renderer-neutral layout and
-  stable incremental updates,
-  backed by the authoritative grapheme/Markdown viewport layout so narrow and
-  Unicode-heavy transcripts wrap consistently across renderers,
-  and an independent ANSI fullscreen frame renderer with alternate-screen
-  lifecycle, synchronized output, and dirty-row diffing,
-  opt-in TTY wiring with automatic Ink fallback on renderer failure,
-  with complex overlays and dialogs intentionally remaining on the mature Ink
-  surface until their semantic ANSI projections are complete,
-  while welcome and identity intros also remain on Ink for a complete first
-  frame,
-  and a pure FocusStack that centralizes overlay/dialog precedence and Esc
-  cancellation routing,
-  plus a generation-aware effect runner that drops stale asynchronous results
-  and aborts cleanly on replacement or unmount,
-  with ANSI fullscreen text styles derived from the active semantic theme and
-  automatic no-color/screen-reader suppression,
+  plus automatic fallback when a terminal renderer fails, screen-reader
+  support, and no-color output,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
   with a hermetic PTY smoke covering real `runInteractive` ANSI entry,
   resize-safe lifecycle, and Ctrl-C restoration,
@@ -215,17 +200,17 @@ not in this entry-point README.
 
 ## Documentation
 
-| Need                                       | Document                                                                                   |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Install and run the first session          | [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md) |
-| Common commands and environment variables  | [CLI Reference](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)     |
-| Find all user and maintainer documentation | [Documentation Index](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)      |
-| Understand module and data-flow boundaries | [Architecture](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)       |
-| Review security assumptions                | [Threat Model](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)       |
-| Check Claude Code parity                   | [Parity Matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)     |
-| Review interactive TUI design and evidence | [TUI Parity](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_PARITY.md)           |
-| Build, test, and contribute                | [Contributing](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)            |
-| Verify release and supply-chain controls   | [Release Contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)        |
+| Need                                       | Document                                                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Install and run the first session          | [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)       |
+| Common commands and environment variables  | [CLI Reference](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)           |
+| Find all user and maintainer documentation | [Documentation Index](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)            |
+| Understand module and data-flow boundaries | [Architecture](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)             |
+| Review security assumptions                | [Threat Model](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)             |
+| Check Claude Code parity                   | [Parity Matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)           |
+| Review interactive TUI design and evidence | [Quiet Operator Spec](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_REDESIGN_SPEC.md) |
+| Build, test, and contribute                | [Contributing](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)                  |
+| Verify release and supply-chain controls   | [Release Contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)              |
 
 ## Project boundary
 
@@ -261,8 +246,10 @@ npm run check
 transcript, and session profile.
 `npm run test:native:deletion` adds an emitted-output deletion gate. These are
 implemented profile checks, not qualification of the full native package.
-`npm run test:performance` runs the native projection scaling and regression
-budgets; the retained-render p95 budget remains 50 ms.
+`npm run test:performance` enforces TUI projection scaling, doubling ratios
+`<=3.25`, the absolute 120k median budget of `<1000 ms`, and deterministic
+injected regression protection, plus Quiet Operator input echo `<50 ms` and
+normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run check` also enforces the corresponding source dependency direction.
 `npm run test:core-completion` runs the 56-story #402 audit and reports
 implemented, qualified, blocked, deferred, and out-of-scope states separately;

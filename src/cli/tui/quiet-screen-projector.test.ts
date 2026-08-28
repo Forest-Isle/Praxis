@@ -185,6 +185,33 @@ describe('projectQuietScreenFrame', () => {
     )
   })
 
+  it('projects an English bounded error row for an unsupported focus surface', () => {
+    const valid = projectTuiLeafSurface({ kind: 'export', selectedIndex: 0 })
+    const screen = conversationScreen({ kind: 'secondary', surface: valid })
+    ;(
+      screen.body as unknown as { foreground: { surface: unknown } }
+    ).foreground.surface = {
+      kind: 'future-surface',
+    }
+    const before = structuredClone(screen)
+    const frame = project(screen)
+    expect(frame.lines.map((row) => row.key)).toContain(
+      'quiet:projection-error',
+    )
+    const error = frame.lines.find(
+      (row) => row.key === 'quiet:projection-error',
+    )
+    expect(error?.segments[0]).toEqual({
+      text: 'Unable to render this view. Press Esc to return.',
+      role: 'error',
+    })
+    expect(error?.accessibleText).toBe(
+      'Unable to render this view. Press Esc to return.',
+    )
+    expect(frame.lines.length).toBeLessThanOrEqual(24)
+    expect(screen).toEqual(before)
+  })
+
   it('uses fixed overlay precedence independent of array order', () => {
     const command = projectTuiCommandPalette({
       commands: [{ name: 'review', description: 'Review', source: 'builtin' }],

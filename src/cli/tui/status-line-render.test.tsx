@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createClaudeStatusLineInput,
-  StatusLine,
   useClaudeStatusLine,
   type UseClaudeStatusLineOptions,
 } from './status-line.js'
@@ -21,7 +20,7 @@ function HookProbe(props: UseClaudeStatusLineOptions) {
   return <Text>{`${state.padding}|${state.text ?? ''}`}</Text>
 }
 
-describe('StatusLine', () => {
+describe('useClaudeStatusLine', () => {
   it('publishes configured output and padding from the lifecycle hook', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-hook-'))
     const configRoot = join(root, 'config')
@@ -81,7 +80,7 @@ describe('StatusLine', () => {
       additionalDirectories: [],
     })
     const app = render(
-      <StatusLine
+      <HookProbe
         configRoot={configRoot}
         cwd={cwd}
         input={input}
@@ -126,7 +125,7 @@ describe('StatusLine', () => {
       additionalDirectories: [],
     })
     const app = render(
-      <StatusLine
+      <HookProbe
         configRoot={configRoot}
         cwd={cwd}
         input={input}

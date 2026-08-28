@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   projectTranscriptPresentation,
+  type TranscriptPresentationEntry,
   type TranscriptItem,
 } from './transcript-presentation.js'
 import {
@@ -11,9 +12,26 @@ import {
   projectTranscriptEntryRows,
   transcriptPresentationLineCount,
   TRANSCRIPT_TRUNCATION_MARKER,
+  terminalGraphemeWidth,
+  terminalTextHead,
+  terminalTextTail,
+  terminalTextWidth,
 } from './transcript-viewport.js'
 
 describe('presentation viewport', () => {
+  it('provides grapheme-safe terminal-cell helpers', () => {
+    const text = '界e\u0301👩‍💻'
+    expect(terminalTextWidth(text)).toBe(5)
+    expect(terminalGraphemeWidth('界')).toBe(2)
+    expect(terminalTextHead(text, 3)).toBe('界e\u0301')
+    expect(terminalTextTail(text, 2)).toBe('👩‍💻')
+    expect(terminalTextHead('界x', 1)).toBe('')
+    expect(terminalTextTail('x界', 1)).toBe('')
+    expect(terminalTextHead(text, 0)).toBe('')
+    expect(terminalTextHead(text, -1)).toBe('')
+    expect(terminalTextTail(text, Number.NaN)).toBe('')
+    expect(terminalTextTail(text, Number.POSITIVE_INFINITY)).toBe('')
+  })
   it('exposes the authoritative physical rows for an entry', () => {
     const entry = projectTranscriptPresentation(
       [{ kind: 'assistant', text: '界'.repeat(20) }],
@@ -71,6 +89,44 @@ describe('presentation viewport', () => {
         'normal',
       ),
     ).toBe(1)
+  })
+
+  it('keeps the path on successful individual Read summaries and matches narrow wrapping', () => {
+    const entry: TranscriptPresentationEntry = {
+      kind: 'tool',
+      key: 'read-path',
+      item: {
+        kind: 'tool',
+        call: {
+          id: 'read-path',
+          name: 'Read',
+          input: { file_path: 'src/components/example.ts' },
+        },
+        detail: '',
+      },
+      result: {
+        kind: 'tool-result',
+        callId: 'read-path',
+        text: 'export const value = 1',
+        isError: false,
+      },
+    }
+    const wideRows = projectTranscriptEntryRows(entry, 80, 'normal')
+    expect(wideRows).toEqual(['✓ Read  src/components/example.ts'])
+    const narrowRows = projectTranscriptEntryRows(entry, 10, 'normal')
+    if (!narrowRows) throw new Error('expected narrow Read rows')
+    expect(narrowRows.join('')).toContain('src/components/example.ts')
+    expect(estimateTranscriptEntryLines(entry, 10, 'normal')).toBe(
+      narrowRows.length,
+    )
+  })
+
+  it('keeps grouped Read summaries in count grammar', () => {
+    const entry = { kind: 'read-summary' as const, key: 'reads', count: 2 }
+    expect(projectTranscriptEntryRows(entry, 80, 'normal')).toEqual([
+      '✓ Read 2 files',
+    ])
+    expect(estimateTranscriptEntryLines(entry, 80, 'normal')).toBe(1)
   })
 
   it('keeps paired entries indivisible and preserves keys', () => {
@@ -621,6 +677,61 @@ describe('presentation viewport', () => {
     expect(normalRows).toBeLessThanOrEqual(8)
     expect(auditRows).toBeGreaterThanOrEqual(120)
     expect(auditRows).toBeGreaterThan(normalRows)
+  })
+
+  it('bounds a huge failed shell line before normal row projection', () => {
+    const output = 'x'.repeat(100_000)
+    const items: readonly TranscriptItem[] = [
+      { kind: 'shell', callId: 'shell', command: 'run' },
+      {
+        kind: 'shell-result',
+        callId: 'shell',
+        stdout: output,
+        stderr: '',
+        isError: true,
+      },
+    ]
+    const normal = projectTranscriptPresentation(items, 'normal')[0]
+    const audit = projectTranscriptPresentation(items, 'audit')[0]
+    if (!normal || !audit) throw new Error('expected projected shell entries')
+    const source = JSON.stringify(normal)
+    const normalRows = projectTranscriptEntryRows(normal, 40, 'normal')
+    const auditRows = projectTranscriptEntryRows(audit, 40, 'audit')
+    if (!normalRows || !auditRows) throw new Error('expected projected rows')
+    expect(normalRows.length).toBeLessThanOrEqual(9)
+    expect(normalRows.at(-1)).toContain(TRANSCRIPT_TRUNCATION_MARKER)
+    expect(normalRows.every((row) => terminalTextWidth(row) <= 38)).toBe(true)
+    expect(auditRows.some((row) => row.includes('x'.repeat(30)))).toBe(true)
+    expect(JSON.stringify(normal)).toBe(source)
+  })
+
+  it('counts a huge newline-heavy failed shell preview without materializing it', () => {
+    const output = 'line\n'.repeat(100_000)
+    const items: readonly TranscriptItem[] = [
+      { kind: 'shell', callId: 'shell-lines', command: 'run-lines' },
+      {
+        kind: 'shell-result',
+        callId: 'shell-lines',
+        stdout: output,
+        stderr: '',
+        isError: true,
+      },
+    ]
+    const normal = projectTranscriptPresentation(items, 'normal')[0]
+    const audit = projectTranscriptPresentation(items, 'audit')[0]
+    if (!normal || !audit) throw new Error('expected projected shell entries')
+    const source = JSON.stringify(normal)
+    const normalRows = projectTranscriptEntryRows(normal, 40, 'normal')
+    if (!normalRows) throw new Error('expected normal projected rows')
+    expect(normalRows.length).toBeLessThanOrEqual(9)
+    expect(normalRows.at(-1)?.replace(/^\s+/u, '')).toBe(
+      '… +99997 lines (ctrl+o to expand)',
+    )
+    expect(normalRows.every((row) => terminalTextWidth(row) <= 38)).toBe(true)
+    expect(estimateTranscriptEntryLines(audit, 40, 'audit')).toBeGreaterThan(
+      normalRows.length,
+    )
+    expect(JSON.stringify(normal)).toBe(source)
   })
 
   it('uses one stable normal row for running and successful tools and shells', () => {

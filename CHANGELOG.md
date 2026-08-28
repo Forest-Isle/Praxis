@@ -62,8 +62,13 @@ this file from merged Conventional Commit pull requests.
   deadline and abort-aware fallback backoff
 * add exact-fingerprint workspace trust that blocks automatically discovered
   project/local hooks and MCP servers until the canonical workspace is accepted
-* add a reusable P-loop + spark Praxis TUI logo with semantic theme styling
-  and screen-reader/no-color fallbacks
+* add a responsive shared QuietFrame projection for every selectable
+  interactive surface, rendered through ANSI or Ink adapters with full parity
+* adopt the terminal-native C+ Quiet Operator palette with mint, amber, and
+  red semantics, linear conversation, compact tool disclosure, and a minimal
+  composer/status row
+* use English permission/configuration choices with a simple `❯`, Up/Down,
+  Enter, and Esc focus/navigation grammar
 * add a framework-free TUI runtime kernel with pure reducer transitions and
   atomic streaming text/thinking frame publication
 * add a shared semantic transcript Row IR with stable source-derived keys and
@@ -71,15 +76,12 @@ this file from merged Conventional Commit pull requests.
 * add an independent ANSI fullscreen frame renderer with alternate-screen
   lifecycle, synchronized output, and dirty-row diffing
 * wire ANSI rendering into interactive TTY sessions with automatic Ink
-  fallback while preserving screen-reader and non-TTY paths
+  fallback while preserving screen-reader and non-TTY paths, using the shared
+  QuietFrame for complete surface parity
 * centralize TUI overlay and dialog precedence in a pure FocusStack projection
   without changing existing keybindings or cancellation targets
-* keep complex overlay/dialog surfaces on Ink until a complete semantic ANSI
-  projection is available, avoiding lossy generic summaries
 * guard theme loading with a generation-aware effect runner that aborts on
   replacement/unmount and suppresses stale results
-* keep welcome and identity intro frames on Ink so ANSI mode never hides the
-  complete first-session surface
 * route Row IR through the authoritative transcript viewport layout for
   width-aware Unicode/Markdown physical rows without duplicate prefixes
 * unify runtime and composer state behind the framework-free `TuiStore`, with
@@ -90,6 +92,8 @@ this file from merged Conventional Commit pull requests.
   suppression
 * add a hermetic PTY smoke for real `runInteractive` ANSI entry, resumed
   transcript rendering, Ctrl-C confirmation, and terminal lifecycle cleanup
+* enforce Quiet Operator input-echo and normal/low-capability ANSI frame p95
+  budgets with a deterministic production-build performance gate
 
 ### Fixed
 

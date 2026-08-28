@@ -2,6 +2,11 @@ import { stripVTControlCharacters } from 'node:util'
 
 import type { QuietFrameCursor } from './quiet-frame.js'
 import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
+import {
+  terminalGraphemes,
+  terminalGraphemeWidth,
+  terminalTextWidth,
+} from './transcript-viewport.js'
 
 export interface AnsiFrameWriter {
   write(chunk: string): void
@@ -72,17 +77,27 @@ function renderLine(
     role: segment.role,
   }))
   const visibleLength = segments.reduce(
-    (length, segment) => length + Array.from(segment.text).length,
+    (length, segment) => length + terminalTextWidth(segment.text),
     0,
   )
   const wasTruncated = visibleLength > columns
   const targetLength = wasTruncated ? Math.max(0, columns - 1) : columns
   let remaining = targetLength
   let line = ''
+  let stopped = false
   for (const segment of segments) {
-    if (remaining === 0) break
-    const text = Array.from(segment.text).slice(0, remaining).join('')
-    remaining -= Array.from(text).length
+    if (remaining === 0 || stopped) break
+    let text = ''
+    for (const grapheme of terminalGraphemes(segment.text)) {
+      const width = terminalGraphemeWidth(grapheme)
+      if (remaining < width) {
+        stopped = true
+        break
+      }
+      text += grapheme
+      remaining -= width
+    }
+    if (text.length === 0) continue
     const style = styles?.[segment.role]
     line += style === undefined ? text : `${style}${text}${RESET}`
   }
@@ -115,10 +130,46 @@ export class AnsiFullscreenRenderer {
 
   mount(): void {
     if (this.#mounted) return
-    this.#writer.write(ALTERNATE_SCREEN_ENTER)
-    this.#writer.write(HIDE_CURSOR)
-    if (this.#synchronizedOutput) this.#writer.write(SYNCHRONIZED_BEGIN)
-    this.#mounted = true
+    let alternateScreenEntered = false
+    let cursorHidden = false
+    let synchronizedOutputBegun = false
+    try {
+      alternateScreenEntered = true
+      this.#writer.write(ALTERNATE_SCREEN_ENTER)
+      cursorHidden = true
+      this.#writer.write(HIDE_CURSOR)
+      if (this.#synchronizedOutput) {
+        synchronizedOutputBegun = true
+        this.#writer.write(SYNCHRONIZED_BEGIN)
+      }
+      this.#mounted = true
+    } catch (error) {
+      this.#mounted = false
+      this.#previousLines = []
+      this.#previousCursor = undefined
+      if (synchronizedOutputBegun) {
+        try {
+          this.#writer.write(SYNCHRONIZED_END)
+        } catch {
+          // Rollback must continue if one restoration write fails.
+        }
+      }
+      if (cursorHidden) {
+        try {
+          this.#writer.write(SHOW_CURSOR)
+        } catch {
+          // Rollback must continue if one restoration write fails.
+        }
+      }
+      if (alternateScreenEntered) {
+        try {
+          this.#writer.write(ALTERNATE_SCREEN_LEAVE)
+        } catch {
+          // Rollback must continue if one restoration write fails.
+        }
+      }
+      throw error
+    }
   }
 
   draw(frame: AnsiFrame): void {

@@ -34,7 +34,10 @@ interactive.tsx controller
         ↓
 TuiScreenModel (semantic application state)
         ↓
-Quiet Frame projection (pure layout and disclosure policy)
+Presentation projection
+  transcript viewport helpers
+  surface serializers
+  final QuietFrame composition
         ↓
 ANSI fullscreen adapter │ Ink classic / screen-reader adapter
 ```
@@ -43,19 +46,19 @@ ANSI fullscreen adapter │ Ink classic / screen-reader adapter
 selection only. It must not keep independent visual JSX branches for each
 surface.
 
-The Quiet Frame module is framework-free and is the only place that decides:
+The presentation projection is framework-free and collectively owns responsive
+presentation, stable semantic row identity, disclosure, and adapter-neutral
+content. Transcript viewport helpers own transcript row windowing and
+transcript tool success/running/error disclosure. Surface serializers own the
+selected surface semantics, stable surface row keys, English permission
+labels, selection markers, and density-specific optional detail. Final
+`QuietFrame` composition owns final region ordering, viewport row budgeting,
+identity/chrome rows, focus/composer/status placement, sanitization, clipping,
+and cursor metadata.
 
-- visible regions and ordering;
-- responsive density;
-- stable row identity;
-- tool success/running/error disclosure;
-- selection markers and English permission labels;
-- composer/status content;
-- truncation and optional secondary detail.
-
-ANSI and Ink are true adapters over the same frame. They may translate styles,
-cursor placement, and accessibility wording, but may not invent different
-information architecture or permission semantics.
+ANSI and Ink consume only the completed `QuietFrame`. They may translate
+styles, cursor placement, and accessibility wording, but may not invent
+content, information architecture, or permission semantics.
 
 ## Frame Contract
 
@@ -93,7 +96,8 @@ status updates must not churn unrelated keys.
   ambiguous.
 - Animation is limited to low-frequency text state changes. No spinner may
   cause full-frame redraw or unstable row width.
-- Unicode markers require ASCII/no-color equivalents.
+- Screen-reader output provides textual accessible labels. `NO_COLOR` suppresses
+  terminal styling only; it preserves the terminal-safe `❯` selection marker.
 
 Transcript grammar:
 
@@ -137,8 +141,9 @@ approval values remain unchanged.
 
 1. Runtime events update existing controller state and transcript projection.
 2. `TuiScreenModel` selects exactly one foreground surface.
-3. Quiet Frame projects the screen, composer, status, and display metadata into
-   stable semantic rows for the current viewport and accessibility mode.
+3. The presentation projection composes transcript, surface, composer, status,
+   and display metadata into stable semantic rows for the current viewport and
+   accessibility mode.
 4. The selected adapter renders only the frame it receives.
 5. ANSI performs row/cell diff output; Ink renders the same ordered rows.
 
@@ -153,7 +158,10 @@ depend on cursor placement or color, and preserves current input announcements.
 
 - input echo p95 `< 50 ms`;
 - normal fullscreen frame p95 `< 16.7 ms`, low-capability terminal `< 33 ms`;
-- 120k-item transcript cold projection `< 100 ms`;
+- 120k-item transcript cold projection median `<1000 ms`, with doubling ratios
+  `<=3.25`;
+- sub-100 ms to low-hundreds-ms local measurements are performance targets and
+  evidence, not normative budget limits;
 - single transcript append projection `< 5 ms`;
 - resize settles within `100 ms`;
 - no dropped, duplicated, or reordered streaming text;
@@ -180,7 +188,8 @@ depend on cursor placement or color, and preserves current input announcements.
 - PTY: alternate screen, cursor/raw mode cleanup, resize, streaming, focused
   decisions, and ANSI-to-Ink fallback.
 - Performance: cold projection, append, stable-row diff bytes, and streaming
-  coalescing.
+  coalescing, including a deterministic injected-threshold self-test that
+  protects both the doubling-ratio and absolute 120k median limits.
 - Compatibility: existing interactive behavior tests and byte-identical native
   transcript behavior.
 

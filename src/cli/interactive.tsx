@@ -104,6 +104,7 @@ import { createTuiStoreState, reduceTuiStore } from './tui/kernel/tui-store.js'
 import { TuiEffectRunner } from './tui/kernel/tui-effect-runner.js'
 import {
   createClaudeStatusLineInput,
+  formatClaudeStatusLineState,
   useClaudeStatusLine,
 } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
@@ -8211,12 +8212,16 @@ export function InteractiveApp({
     width,
     ...(settingSources === undefined ? {} : { settingSources }),
   })
+  const configuredStatusText = formatClaudeStatusLineState(
+    configuredStatusLine,
+    width,
+  )
   const conciseStatus = [
     status,
     editorFooterMessage
       ? `${editorFooterMessage.isError ? 'Error: ' : ''}${editorFooterMessage.text}`
       : undefined,
-    configuredStatusLine.text,
+    configuredStatusText,
   ]
     .filter(
       (value, index, values) =>

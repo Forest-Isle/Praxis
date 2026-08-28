@@ -2136,7 +2136,7 @@ describe('InteractiveApp', () => {
     expect(countOccurrences(frame, 'you>')).toBe(1)
   })
 
-  it('coalesces streamed deltas into bounded frames and preserves the exact final text', async () => {
+  it('bounds active stream frames and preserves the completed transcript', async () => {
     const chunks = Array.from({ length: 200 }, (_, index) => `chunk-${index}`)
     let release: (() => void) | undefined
     const gate = new Promise<void>((resolve) => {
@@ -2180,26 +2180,28 @@ describe('InteractiveApp', () => {
     // The delta burst is buffered, not rendered synchronously per delta.
     expect(app.lastFrame()).not.toContain('chunk-0')
 
-    // The first bounded frame publishes the full accumulated stream. Ink wraps
-    // the long single-line body, so strip whitespace to compare the contiguous
-    // string exactly.
-    const normalized = (frame: string | undefined) =>
-      (frame ?? '').replace(/\s+/gu, '')
-    await waitFor(() => {
+    // QuietFrame publishes one clipped semantic row instead of delegating an
+    // oversized line to Ink wrapping. The authoritative result remains in the
+    // transcript; the visible row is deterministic and width-bounded.
+    const streamingFrame = await waitFor(() => {
       const frame = app.lastFrame()
-      return frame?.includes('praxis>') &&
-        normalized(frame).includes(chunks.join(''))
-        ? true
+      return frame?.includes('praxis> chunk-0') && frame.includes('…')
+        ? frame
         : undefined
     })
-    expect(app.lastFrame()).toContain('praxis>')
-    expect(normalized(app.lastFrame())).toContain(chunks.join(''))
+    expect(streamingFrame).not.toContain(chunks.join(''))
+    const activeLine = streamingFrame
+      .split('\n')
+      .find((line) => line.startsWith('praxis>'))
+    expect(Array.from(activeLine ?? '')).toHaveLength(100)
 
-    // Releasing the turn replaces streaming text with the completed assistant
-    // entry; the observable final text is identical.
+    // Releasing the turn replaces the active row with authoritative transcript
+    // viewport rows; their wrapped content preserves the completed text.
     release?.()
     await flush()
-    expect(normalized(app.lastFrame())).toContain(chunks.join(''))
+    const normalized = (app.lastFrame() ?? '').replace(/\s+/gu, '')
+    expect(app.lastFrame()).toContain('praxis>')
+    expect(normalized).toContain(chunks.join(''))
   })
 
   it('moves the active foreground Agent to background with the Task keybinding', async () => {
