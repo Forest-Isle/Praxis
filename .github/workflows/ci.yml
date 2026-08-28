@@ -59,6 +59,23 @@ jobs:
       - name: Run quality gates
         run: npm run check
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run coverage
+        run: npm run test:coverage
+
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
@@ -84,13 +101,15 @@ jobs:
   required:
     name: CI
     if: always()
-    needs: [quality, release-regression]
+    needs: [quality, coverage, release-regression]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI lane
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
           RELEASE_RESULT: ${{ needs.release-regression.result }}
         run: |
           test "$QUALITY_RESULT" = success
+          test "$COVERAGE_RESULT" = success
           test "$RELEASE_RESULT" = success

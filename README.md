@@ -251,6 +251,8 @@ implemented profile checks, not qualification of the full native package.
 injected regression protection, plus Quiet Operator input echo `<50 ms` and
 normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run check` also enforces the corresponding source dependency direction.
+`npm run test:coverage` measures all production code under `src/**` with V8 and
+enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines.
 `npm run test:core-completion` runs the 56-story #402 audit and reports
 implemented, qualified, blocked, deferred, and out-of-scope states separately;
 it never treats missing live prerequisites as a pass.
