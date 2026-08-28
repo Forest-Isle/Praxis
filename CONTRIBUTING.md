@@ -14,6 +14,10 @@ npm run check
 `npm run check` includes formatting, linting, internal documentation links,
 module boundaries, typechecking, unit/integration tests, and a clean build.
 
+`npm run test:coverage` measures all production code under `src/**` with V8 and
+enforces global floors of 79% statements, 70% branches, 85% functions, and 81%
+lines.
+
 Keep changes focused and add tests for observable behavior. Changes affecting
 Claude interoperability must retain Claude Code 2.1.208 and run:
 

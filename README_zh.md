@@ -165,6 +165,8 @@ npm run check
 `npm run test:native:deletion` 会验证产物不含已删除的 Claude compatibility 模块，并执行 native 会话 smoke gate。
 `npm run test:performance` 强制检查 TUI projection scaling、<=3.25 的 doubling ratio、绝对的 120k median <1000 ms 预算、确定性的注入式回归保护，以及 Quiet Operator 输入回显 <50 ms 和普通/低能力全帧 p95 <16.7/<33 ms 预算。
 `npm run check` 还会强制执行对应的源代码依赖方向。
+`npm run test:coverage` 使用 V8 覆盖 `src/**` 下的全部生产代码，并强制执行全局最低标准：
+语句 79%、分支 70%、函数 85%、行 81%。
 `npm run test:core-completion` 会运行 #402 的 56 条 user story 审计，并分别报告 implemented、qualified、blocked、deferred 和 out-of-scope；缺少 live 前置条件不会被当作通过。
 
 贡献使用 Conventional Commit pull request 标题和受保护的 squash-merge 工作流。

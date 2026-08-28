@@ -29,7 +29,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run check:boundaries && npm run typecheck && npm run build:native && npm run build && npm test",
+    "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run verify:ci-coverage && npm run check:boundaries && npm run typecheck && npm run build:native && npm run build && npm test",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "dev": "tsx src/cli.ts",
     "format": "prettier --write .",
@@ -44,6 +44,7 @@
     "release:artifacts": "node scripts/build-release-artifacts.mjs",
     "release:verify": "node scripts/verify-release-ref.mjs",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:docs": "node scripts/verify-docs.mjs",
     "test:tui:pty": "npm run build && node scripts/verify-fullscreen-rendering.mjs && node scripts/verify-interactive-ansi.mjs",
     "test:self-update": "npm run build && node scripts/verify-self-update-contract.mjs",
@@ -56,7 +57,8 @@
     "test:mcp-oauth-serve": "npm run build && node scripts/verify-mcp-oauth-serve.mjs",
     "test:package": "npm run build && node scripts/verify-native-release-package.mjs",
     "typecheck": "tsc --noEmit",
-    "verify:release-automation": "node scripts/verify-release-automation.mjs"
+    "verify:release-automation": "node scripts/verify-release-automation.mjs",
+    "verify:ci-coverage": "node scripts/verify-ci-coverage.mjs"
   },
   "engines": {
     "node": ">=24"
@@ -91,6 +93,7 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.10",
     "@eslint/js": "^9.39.5",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
