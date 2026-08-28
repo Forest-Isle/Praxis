@@ -187,12 +187,30 @@ dependencies and inspect the effective configuration.
 ## Update or remove Praxis
 
 ```sh
+# Defaults to the latest release.
 praxis update
-# Or use npm directly:
+# Same latest-release target as update.
+praxis upgrade
+# Install the stable channel by default, or pass a channel/exact semver target.
+praxis install [--force] [target]
+
+# Direct npm remains a manual alternative:
 npm install --global praxis-agent@latest
 
 npm uninstall --global praxis-agent
 ```
+
+On supported macOS/Linux global npm layouts, `praxis update` and `praxis
+upgrade` validate the current installation, take an exclusive sibling lock,
+verify npm metadata and both SHA-512 SRI and SHA-1 checksums, and install only
+the verified tarball with lifecycle scripts disabled. The package is staged on
+the same filesystem and its manifest and CLI versions are gated before and
+after the atomic swap. If an update fails in process, Praxis restores the old
+installation; after a crash, its external launcher recovers the journaled
+backup. Corrupt or mismatched packages are rejected, concurrent updates are
+rejected, and cancellation retains exit code 130. Public failures omit
+subprocess stderr and temporary paths. Direct npm installation does not use
+these locking, verification, staging, or recovery safeguards.
 
 Every release includes provenance, SBOM, checksums, and GitHub attestations.
 See [RELEASE.md](RELEASE.md) for verification details.

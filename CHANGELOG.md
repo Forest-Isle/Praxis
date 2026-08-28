@@ -49,6 +49,8 @@ this file from merged Conventional Commit pull requests.
 
 ### Added
 
+* add transactional checksum-verified self-update with exclusive locking,
+  rollback, and crash recovery
 * bound every Anthropic/OpenAI provider attempt with a configurable absolute
   deadline and abort-aware fallback backoff
 * add exact-fingerprint workspace trust that blocks automatically discovered

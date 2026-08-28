@@ -1,10 +1,15 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 
+import {
+  runSelfUpdateTransaction,
+  type SelfUpdateLayout,
+  type TransactionRunner,
+} from './self-update-transaction.js'
+
 const execFileAsync = promisify(execFile)
 const DEFAULT_PACKAGE_NAME = 'praxis-agent'
 const DEFAULT_TIMEOUT_MS = 120_000
-const MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 
 export type SelfUpdateOperation = 'install' | 'update'
 
@@ -15,6 +20,8 @@ export interface SelfUpdateOptions {
   packageName?: string
   npmExecutable?: string
   timeoutMs?: number
+  signal?: AbortSignal
+  layout?: SelfUpdateLayout
   run?: SelfUpdateRunner
 }
 
@@ -23,6 +30,7 @@ export interface SelfUpdateRunnerOptions {
   env?: NodeJS.ProcessEnv
   timeout?: number
   maxBuffer?: number
+  signal?: AbortSignal
 }
 
 export type SelfUpdateRunner = (
@@ -42,15 +50,21 @@ export interface SelfUpdateResult {
 }
 
 const runCommand: SelfUpdateRunner = async (executable, args, options) => {
-  const result = await execFileAsync(executable, [...args], {
-    cwd: options.cwd,
-    env: options.env,
-    timeout: options.timeout,
-    maxBuffer: options.maxBuffer,
-  })
-  return {
-    stdout: String(result.stdout ?? ''),
-    stderr: String(result.stderr ?? ''),
+  try {
+    const result = await execFileAsync(executable, [...args], {
+      cwd: options.cwd,
+      env: options.env,
+      timeout: options.timeout,
+      maxBuffer: options.maxBuffer,
+      signal: options.signal,
+    })
+    return {
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    }
+  } catch (error) {
+    options.signal?.throwIfAborted()
+    throw new Error('self-update subprocess failed', { cause: error })
   }
 }
 
@@ -73,11 +87,6 @@ function requireTarget(value: string | undefined): string {
     )
   }
   return target
-}
-
-function commandOutput(stdout: string, stderr: string): string {
-  const output = `${stdout.trim()}${stderr.trim() ? `\n${stderr.trim()}` : ''}`
-  return output.length > 0 ? output : 'completed'
 }
 
 export async function runSelfUpdate(
@@ -105,12 +114,18 @@ export async function runSelfUpdate(
     spec,
   ]
   const runner = options.run ?? runCommand
-  let result: { stdout: string; stderr: string }
+  let result: { output: string }
   try {
-    result = await runner(npmExecutable, args, {
-      env: process.env,
-      timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxBuffer: MAX_OUTPUT_BYTES,
+    const transactionRunner: TransactionRunner = runner
+    result = await runSelfUpdateTransaction({
+      packageName,
+      target,
+      force,
+      npmExecutable,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      run: transactionRunner,
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.layout ? { layout: options.layout } : {}),
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -125,6 +140,6 @@ export async function runSelfUpdate(
     target,
     force,
     command: [npmExecutable, ...args],
-    output: commandOutput(result.stdout, result.stderr),
+    output: result.output,
   }
 }

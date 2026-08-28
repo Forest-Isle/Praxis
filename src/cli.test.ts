@@ -1371,6 +1371,28 @@ describe('Praxis CLI', () => {
     ])
   })
 
+  it('forwards the exact self-update signal and normalizes cancellation to 130', async () => {
+    vi.stubEnv('PRAXIS_DATA_PLANE', 'native')
+    const controller = new AbortController()
+    const reason = new DOMException('self-update cancelled', 'AbortError')
+    let receivedSignal: AbortSignal | undefined
+    const cliDependencies = dependencies()
+    cliDependencies.selfUpdate = async (options) => {
+      receivedSignal = options.signal
+      throw reason
+    }
+
+    for (const command of ['install', 'update']) {
+      const capture = captureIO()
+      await expect(
+        run([command], capture.io, cliDependencies, controller.signal),
+      ).resolves.toBe(130)
+      expect(receivedSignal).toBe(controller.signal)
+      expect(capture.stderr).toEqual(['Praxis run cancelled.\n'])
+      receivedSignal = undefined
+    }
+  })
+
   it('validates self-update operands and exposes command help', async () => {
     const cliDependencies = dependencies()
     const invalid = captureIO()

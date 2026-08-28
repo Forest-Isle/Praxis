@@ -1264,6 +1264,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     operation: 'install' | 'update'
     target?: string
     force?: boolean
+    signal?: AbortSignal
   }) => Promise<SelfUpdateResult>
 }
 
@@ -3795,6 +3796,7 @@ async function executeSelfUpdateCommand(
   argv: readonly string[],
   io: CliIO,
   dependencies: CliDependencies,
+  signal?: AbortSignal,
 ): Promise<number> {
   const command = argv[0]
   const values: string[] = []
@@ -3819,6 +3821,7 @@ async function executeSelfUpdateCommand(
     const runtimeSettings = await loadRuntimeSettings({ configRoot, statePath })
     const result = await dependencies.selfUpdate?.({
       operation: 'update',
+      ...(signal ? { signal } : {}),
       ...(runtimeSettings.autoUpdatesChannel === 'latest'
         ? {}
         : { target: runtimeSettings.autoUpdatesChannel }),
@@ -3837,6 +3840,7 @@ async function executeSelfUpdateCommand(
   if (targets.length > 1) throw new Error('install accepts at most one target')
   const result = await dependencies.selfUpdate?.({
     operation: 'install',
+    ...(signal ? { signal } : {}),
     force,
     ...(targets[0] === undefined ? {} : { target: targets[0] }),
   })
@@ -5957,6 +5961,7 @@ async function execute(
       [special.args[0] as string, ...special.args.slice(1)],
       io,
       dependencies,
+      signal,
     )
   }
   if (printCommandHelp(argv, io)) return 0

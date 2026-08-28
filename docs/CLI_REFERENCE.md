@@ -81,6 +81,32 @@ praxis update
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
 
+## Self-update lifecycle
+
+```sh
+praxis install [--force] [target]
+praxis update
+praxis upgrade
+```
+
+`install` defaults to the `stable` channel; `update` and `upgrade` default to
+`latest`. The accepted channels and exact semantic-version targets are
+unchanged. On supported macOS/Linux global npm layouts, self-update validates
+the current package, acquires an exclusive sibling lock, resolves npm
+distribution metadata, and downloads with `npm pack --ignore-scripts`.
+It independently verifies the SHA-512 SRI and SHA-1 shasum, then installs only
+the verified tarball with lifecycle scripts disabled into same-filesystem
+staging. Manifest and CLI versions are gated before and after the atomic root
+swap; a durable external launcher and fsynced journal allow an in-process
+failure to restore the old root and a crash to recover the exact journaled
+backup. Transaction artifacts are cleaned after completion. Concurrent updates
+are rejected, cancellation preserves exit code 130, and public failures redact
+subprocess stderr and temporary paths. Windows is unsupported by this
+transaction.
+
+Direct `npm install --global praxis-agent@latest` remains a manual alternative,
+but bypasses Praxis's locking, verification, staging, and recovery safeguards.
+
 ## Experimental local Teams
 
 Local Teams are experimental and require explicit activation for every command:
