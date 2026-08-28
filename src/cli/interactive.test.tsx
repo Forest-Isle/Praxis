@@ -10103,6 +10103,125 @@ describe('InteractiveApp', () => {
 })
 
 describe('runInteractive', () => {
+  it('uses the classic renderer when stdout is not a TTY', async () => {
+    const calls: string[] = []
+    const output: string[] = []
+    const controller = new AbortController()
+    const configRoot = await mkdtemp(join(tmpdir(), 'praxis-stdout-tty-'))
+    const consoleConstructor = Object.getOwnPropertyDescriptor(
+      console,
+      'Console',
+    )
+    const stdinIsTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY')
+    const stdinSetRawMode = Object.getOwnPropertyDescriptor(
+      process.stdin,
+      'setRawMode',
+    )
+    const stdoutIsTty = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')
+    const stdoutWrite = Object.getOwnPropertyDescriptor(process.stdout, 'write')
+    Object.defineProperty(console, 'Console', {
+      configurable: true,
+      value: NodeConsole,
+    })
+    Object.defineProperty(process.stdin, 'isTTY', {
+      configurable: true,
+      value: true,
+    })
+    Object.defineProperty(process.stdin, 'setRawMode', {
+      configurable: true,
+      value: () => process.stdin,
+    })
+    Object.defineProperty(process.stdout, 'isTTY', {
+      configurable: true,
+      value: false,
+    })
+    Object.defineProperty(process.stdout, 'write', {
+      configurable: true,
+      value: (
+        chunk: string | Uint8Array,
+        encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+        callback?: (error?: Error | null) => void,
+      ) => {
+        output.push(
+          typeof chunk === 'string'
+            ? chunk
+            : Buffer.from(chunk).toString('utf8'),
+        )
+        const completion =
+          typeof encodingOrCallback === 'function'
+            ? encodingOrCallback
+            : callback
+        completion?.()
+        return true
+      },
+    })
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(prompt)
+            controller.abort()
+            return {
+              sessionId: 'redirected-session',
+              text: 'done',
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+
+    try {
+      await expect(
+        runInteractive({
+          factory,
+          configRoot,
+          statePath: join(configRoot, 'state.json'),
+          initialPrompt: 'REDIRECTED_PROMPT',
+          signal: controller.signal,
+        }),
+      ).resolves.toBe(130)
+      expect(calls).toEqual(['REDIRECTED_PROMPT'])
+      expect(output.join('')).not.toContain('\u001b[?1049h')
+    } finally {
+      if (consoleConstructor) {
+        Object.defineProperty(console, 'Console', consoleConstructor)
+      } else {
+        Reflect.deleteProperty(console, 'Console')
+      }
+      if (stdinIsTty) {
+        Object.defineProperty(process.stdin, 'isTTY', stdinIsTty)
+      } else {
+        Reflect.deleteProperty(process.stdin, 'isTTY')
+      }
+      if (stdinSetRawMode) {
+        Object.defineProperty(process.stdin, 'setRawMode', stdinSetRawMode)
+      } else {
+        Reflect.deleteProperty(process.stdin, 'setRawMode')
+      }
+      if (stdoutIsTty) {
+        Object.defineProperty(process.stdout, 'isTTY', stdoutIsTty)
+      } else {
+        Reflect.deleteProperty(process.stdout, 'isTTY')
+      }
+      if (stdoutWrite) {
+        Object.defineProperty(process.stdout, 'write', stdoutWrite)
+      } else {
+        Reflect.deleteProperty(process.stdout, 'write')
+      }
+      await rm(configRoot, { recursive: true, force: true })
+    }
+  })
+
   it('prepends the selected agent initial prompt once for a fresh session', async () => {
     const calls: string[] = []
     const controller = new AbortController()

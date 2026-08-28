@@ -8324,10 +8324,12 @@ export async function runInteractive(options: {
   const rendererExplicitlyConfigured = await tuiRendererExplicitlyConfigured(
     runtimeSettingsTarget,
   )
+  const interactiveTty =
+    process.stdin.isTTY === true && process.stdout.isTTY === true
   let currentRenderer = resolveTuiRenderer({
     configured: currentRuntimeSettings.tui,
     explicitlyConfigured: rendererExplicitlyConfigured,
-    interactiveTty: process.stdin.isTTY === true,
+    interactiveTty,
     screenReader: options.axScreenReader ?? false,
   })
   if (currentRenderer !== currentRuntimeSettings.tui) {
@@ -8434,7 +8436,7 @@ export async function runInteractive(options: {
     rendererChange = null
     const ansiRendererEnabled =
       currentRenderer === 'fullscreen' &&
-      process.stdin.isTTY === true &&
+      interactiveTty &&
       options.axScreenReader !== true
     const instance = render(
       <InteractiveApp
