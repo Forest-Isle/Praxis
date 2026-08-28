@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.44.0](https://github.com/Forest-Isle/Praxis/compare/v0.43.1...v0.44.0) (2026-08-28)
+
+
+### Features
+
+* add native multi-provider authentication ([#502](https://github.com/Forest-Isle/Praxis/issues/502)) ([8ffbf81](https://github.com/Forest-Isle/Praxis/commit/8ffbf8103afea5059144745291e6011532137a47))
+
 ## [0.43.1](https://github.com/Forest-Isle/Praxis/compare/v0.43.0...v0.43.1) (2026-08-28)
 
 
