@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.42.0](https://github.com/Forest-Isle/Praxis/compare/v0.41.0...v0.42.0) (2026-08-28)
+
+
+### Features
+
+* enforce provider request deadlines ([#481](https://github.com/Forest-Isle/Praxis/issues/481)) ([1b04552](https://github.com/Forest-Isle/Praxis/commit/1b045527ec86b29ab23b52de2fe099271f82124e)), closes [#480](https://github.com/Forest-Isle/Praxis/issues/480)
+
 ## [0.41.0](https://github.com/Forest-Isle/Praxis/compare/v0.40.0...v0.41.0) (2026-08-28)
 
 
