@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.42.1](https://github.com/Forest-Isle/Praxis/compare/v0.42.0...v0.42.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* bound MCP operations and reconnect disconnected servers ([#484](https://github.com/Forest-Isle/Praxis/issues/484)) ([cd32480](https://github.com/Forest-Isle/Praxis/commit/cd32480d606e62848ffb94ef210192c7906c72e1))
+
 ## [0.42.0](https://github.com/Forest-Isle/Praxis/compare/v0.41.0...v0.42.0) (2026-08-28)
 
 
