@@ -5,7 +5,14 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 
 import { Box, Text, render, useApp, useInput } from 'ink'
 
@@ -120,6 +127,8 @@ import {
   useTuiPresentationEnvironment,
 } from './tui/presentation-environment.js'
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
+import { createTuiStoreState, reduceTuiStore } from './tui/kernel/tui-store.js'
+import { TuiEffectRunner } from './tui/kernel/tui-effect-runner.js'
 import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
 import {
@@ -132,6 +141,7 @@ import {
   type TuiScreenInput,
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
+import { supportsAnsiSurface, TuiAnsiSurface } from './tui/ansi-surface.js'
 import {
   projectTuiHelpSurface,
   type TuiHelpSurfaceModel,
@@ -207,10 +217,13 @@ import {
 import {
   routeTuiInteraction,
   type TuiInteractionEffect,
-  type TuiInteractionLayer,
   type TuiInteractionSnapshot,
   type TuiScrollIntent,
 } from './tui/tui-interaction-router.js'
+import {
+  currentTuiInteractionLayer,
+  projectTuiFocusStack,
+} from './tui/tui-focus-stack.js'
 import {
   applyMentionReference,
   fileReferenceAtCursor,
@@ -597,6 +610,7 @@ interface InteractiveAppProps {
     request: InteractiveBackgroundRequest,
   ) => Promise<InteractiveBackgroundResult>
   axScreenReader?: boolean
+  ansiRenderer?: boolean
   allowNewSession?: boolean
   resume?: InteractiveResumeOptions
   display?: TuiDisplayMetadata
@@ -1143,6 +1157,7 @@ export function InteractiveApp({
   onRendererChange,
   onBackground,
   axScreenReader = false,
+  ansiRenderer = false,
   allowNewSession = true,
   resume,
   display = { version: 'dev', cwd: process.cwd() },
@@ -1312,8 +1327,18 @@ export function InteractiveApp({
     suppliedRuntimeSettings ??
       projectRuntimeSettings({ settings: {}, state: {} }),
   )
+  const [ansiRendererFailed, setAnsiRendererFailed] = useState(false)
+  const ansiRequested =
+    ansiRenderer &&
+    !ansiRendererFailed &&
+    !axScreenReader &&
+    runtimeSettings.tui === 'fullscreen'
   const presentation = useTuiPresentationEnvironment({
-    renderer: runtimeSettings.tui,
+    renderer: ansiRenderer
+      ? ansiRequested
+        ? 'fullscreen'
+        : 'default'
+      : runtimeSettings.tui,
     screenReader: axScreenReader,
     ...(terminalWidth === undefined
       ? {}
@@ -1377,9 +1402,7 @@ export function InteractiveApp({
       : undefined,
   )
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
-  const [input, setInput] = useState('')
   const inputRef = useRef('')
-  const [inputCursor, setInputCursor] = useState(0)
   const inputCursorRef = useRef(0)
   const inputHistoryRef = useRef<string[]>([])
   const inputHistoryIndexRef = useRef<number | null>(null)
@@ -1392,6 +1415,9 @@ export function InteractiveApp({
   const clipboardQueueRef = useRef(Promise.resolve())
   const clipboardPendingRef = useRef(0)
   const componentMountedRef = useRef(true)
+  const themeEffectRunnerRef = useRef<TuiEffectRunner | null>(null)
+  if (themeEffectRunnerRef.current === null)
+    themeEffectRunnerRef.current = new TuiEffectRunner()
   const [clipboardBusy, setClipboardBusy] = useState(false)
   const stashedInputRef = useRef('')
   const lastEscapeAtRef = useRef(0)
@@ -1445,7 +1471,21 @@ export function InteractiveApp({
   const configOperationRef = useRef<Promise<void> | null>(null)
   const doctorMenuGenerationRef = useRef(0)
   const doctorOperationRef = useRef<Promise<void> | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [tuiStore, dispatchKernel] = useReducer(
+    reduceTuiStore,
+    undefined,
+    createTuiStoreState,
+  )
+  const busy = tuiStore.busy
+  const status = tuiStore.status
+  const activeText = tuiStore.activeText
+  const activeThinking = tuiStore.activeThinking
+  const input = tuiStore.composer.text
+  const inputCursor = tuiStore.composer.cursor
+  const setBusy = (value: boolean) =>
+    dispatchKernel({ type: 'set-busy', busy: value })
+  const setStatus = (value: string) =>
+    dispatchKernel({ type: 'set-status', status: value })
   const taskEntriesRef = useRef<readonly TuiTaskEntry[]>([])
   const mcpControllerRef = useRef<McpPanelController | null>(null)
   const [compactProgress, setCompactProgress] = useState(0)
@@ -1453,9 +1493,6 @@ export function InteractiveApp({
   const [initialPromptPending, setInitialPromptPending] = useState(
     initialPromptRef.current.length > 0,
   )
-  const [status, setStatus] = useState('ready')
-  const [activeText, setActiveText] = useState('')
-  const [activeThinking, setActiveThinking] = useState('')
   // One provider-neutral streaming frame buffer per mounted app. RuntimeEvent
   // text/thinking deltas accumulate here and are coalesced into bounded frames
   // instead of causing a React state update per delta. The React state is only
@@ -1465,8 +1502,11 @@ export function InteractiveApp({
   if (streamingFrameRef.current === null) {
     streamingFrameRef.current = new StreamingFrameBuffer({
       publish: (frame) => {
-        setActiveText(frame.text)
-        setActiveThinking(frame.thinking)
+        dispatchKernel({
+          type: 'publish-stream-frame',
+          text: frame.text,
+          thinking: frame.thinking,
+        })
       },
     })
   }
@@ -2448,6 +2488,7 @@ export function InteractiveApp({
       screenSurfaces,
     ],
   )
+  const ansiActive = ansiRequested && supportsAnsiSurface(screen)
   useEffect(() => {
     previousTuiScreenRef.current = screen
   }, [screen])
@@ -2544,6 +2585,7 @@ export function InteractiveApp({
   useEffect(
     () => () => {
       componentMountedRef.current = false
+      themeEffectRunnerRef.current?.dispose()
       streamingFrameRef.current?.dispose()
       drainPermissionQueue()
       elicitationRef.current?.resolve({ action: 'cancel' })
@@ -2584,25 +2626,27 @@ export function InteractiveApp({
         append({ kind: 'warning', text: initialThemeLoadError })
       return
     }
-    let cancelled = false
-    void presentationThemeStore.load().then(
+    const themeEffectRunner = themeEffectRunnerRef.current
+    if (themeEffectRunner === null) return
+    const run = themeEffectRunner.run(async ({ isCurrent }) => {
+      const loaded = await presentationThemeStore.load()
+      return isCurrent() ? loaded : undefined
+    })
+    void run.promise.then(
       (loaded) => {
-        if (!cancelled)
+        if (loaded !== undefined)
           setThemeSettings(themeSettingsWithCustomTheme(loaded, customThemes))
       },
       (error: unknown) => {
-        if (!cancelled)
-          append({
-            kind: 'warning',
-            text: `Unable to load theme settings: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          })
+        append({
+          kind: 'warning',
+          text: `Unable to load theme settings: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        })
       },
     )
-    return () => {
-      cancelled = true
-    }
+    return run.cancel
   }, [
     customThemes,
     initialThemeLoadError,
@@ -2703,8 +2747,11 @@ export function InteractiveApp({
     const editor = createComposerEditor(next, cursor)
     inputRef.current = editor.text
     inputCursorRef.current = editor.cursor
-    setInput(editor.text)
-    setInputCursor(editor.cursor)
+    dispatchKernel({
+      type: 'set-composer',
+      text: editor.text,
+      cursor: editor.cursor,
+    })
     setShortcutsVisible(false)
     setCommandPaletteOpen(slashCommandQuery(editor.text) !== null)
     setCommandSelection(0)
@@ -5137,32 +5184,25 @@ export function InteractiveApp({
     if (hasPendingPrefix) {
       keySequenceRef.current = { chord: inputChord, at: Date.now() }
     }
-    const layer: TuiInteractionLayer = hasPendingPrefix
-      ? { kind: 'pending-prefix' }
-      : permission
-        ? { kind: 'cancelable', target: 'permission' }
-        : planApproval
-          ? { kind: 'cancelable', target: 'plan-approval' }
-          : question
-            ? { kind: 'cancelable', target: 'question' }
-            : elicitation
-              ? {
-                  kind: 'cancelable',
-                  target: elicitationUrlWaiting
-                    ? 'elicitation-url-waiting'
-                    : elicitationForm?.expandedField
-                      ? 'elicitation-options'
-                      : 'elicitation',
-                }
-              : selectingSession
-                ? { kind: 'delegated', target: 'session-picker' }
-                : menuRef.current
-                  ? { kind: 'delegated', target: 'menu' }
-                  : filePickerVisible
-                    ? { kind: 'cancelable', target: 'file-picker' }
-                    : commandPaletteVisible
-                      ? { kind: 'cancelable', target: 'command-palette' }
-                      : { kind: 'none' }
+    const layer = currentTuiInteractionLayer(
+      projectTuiFocusStack({
+        pendingPrefix: hasPendingPrefix,
+        permission: Boolean(permission),
+        planApproval: Boolean(planApproval),
+        question: Boolean(question),
+        elicitation: elicitation
+          ? elicitationUrlWaiting
+            ? 'url-waiting'
+            : elicitationForm?.expandedField
+              ? 'expanded-options'
+              : 'plain'
+          : false,
+        selectingSession: Boolean(selectingSession),
+        menu: Boolean(menuRef.current),
+        filePicker: filePickerVisible,
+        commandPalette: commandPaletteVisible,
+      }),
+    )
     const callerIntent =
       !busy && value === '?' && inputRef.current.length === 0
         ? 'toggle-shortcuts'
@@ -8257,7 +8297,23 @@ export function InteractiveApp({
           ? {}
           : { height: rows, overflowY: 'hidden' as const })}
       >
-        {screen.body.kind === 'session-picker' ? (
+        {ansiActive ? (
+          <TuiAnsiSurface
+            screen={screen}
+            width={width}
+            rows={rows}
+            input={shellMode ? input.slice(1) : input}
+            busy={busy}
+            status={status}
+            display={runtimeDisplay}
+            {...(conversationScreen?.sessionLabel === undefined
+              ? {}
+              : { sessionLabel: conversationScreen.sessionLabel })}
+            cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
+            screenReader={axScreenReader}
+            onError={() => setAnsiRendererFailed(true)}
+          />
+        ) : screen.body.kind === 'session-picker' ? (
           <SessionPicker
             model={screen.body.surface}
             screenReader={axScreenReader}
@@ -8871,6 +8927,10 @@ export async function runInteractive(options: {
     let cleanup: Promise<void> | null = null
     let backgrounded: InteractiveBackgroundResult | undefined
     rendererChange = null
+    const ansiRendererEnabled =
+      currentRenderer === 'fullscreen' &&
+      process.stdin.isTTY === true &&
+      options.axScreenReader !== true
     const instance = render(
       <InteractiveApp
         dataPlane={dataPlane}
@@ -8895,6 +8955,7 @@ export async function runInteractive(options: {
           ? {}
           : { initialPrompt: currentInitialPrompt })}
         signal={signal}
+        ansiRenderer={ansiRendererEnabled}
         onCancel={() => controller.abort()}
         onTurnChange={(turn) => {
           activeTurn = turn
@@ -8932,7 +8993,7 @@ export async function runInteractive(options: {
       {
         exitOnCtrlC: false,
         ...tuiInkRenderOptions(
-          currentRenderer,
+          ansiRendererEnabled ? 'default' : currentRenderer,
           options.axScreenReader === true,
         ),
         interactive: true,

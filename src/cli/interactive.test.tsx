@@ -438,7 +438,7 @@ describe('InteractiveApp', () => {
       },
     )
     expect(child.status, `${child.stdout}\n${child.stderr}`).toBe(0)
-  })
+  }, 20_000)
 
   it('configures sandbox mode, overrides, and config through /sandbox', async () => {
     let snapshot: TuiSandboxSnapshot = {

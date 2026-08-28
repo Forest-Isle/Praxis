@@ -12,6 +12,7 @@ import { Box, Text } from 'ink'
 import type { ModelToolCall, ModelUsage } from '../../core/runtime.js'
 import { composerEditorSegments } from './composer-editor.js'
 import { composerLayoutForWidth } from './composer-layout.js'
+import { PraxisLogo } from './praxis-logo.js'
 import type { TuiFileEntry } from './file-picker.js'
 import type { TuiMentionPickerModel } from './mention-picker-model.js'
 import type { TuiListSurfaceModel } from './list-surface-model.js'
@@ -198,11 +199,7 @@ export function WelcomePanel({
           <Text> </Text>
           <Text bold>Welcome to {brand}</Text>
           <Text> </Text>
-          <Text {...theme.text.productIdentity} bold>
-            ▐▛███▜▌
-          </Text>
-          <Text {...theme.text.productIdentity}>▝▜█████▛▘</Text>
-          <Text {...theme.text.productIdentity}> ▘▘ ▝▝</Text>
+          <PraxisLogo screenReader={theme.screenReader} />
           <Text> </Text>
           <Text wrap="truncate-end">
             {model}

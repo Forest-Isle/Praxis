@@ -19,6 +19,37 @@ this file from merged Conventional Commit pull requests.
 
 ## [Unreleased]
 
+### Added
+
+* add a reusable P-loop + spark Praxis TUI logo with semantic theme styling
+  and screen-reader/no-color fallbacks
+* add a framework-free TUI runtime kernel with pure reducer transitions and
+  atomic streaming text/thinking frame publication
+* add a shared semantic transcript Row IR with stable source-derived keys and
+  renderer-neutral role segments
+* add an independent ANSI fullscreen frame renderer with alternate-screen
+  lifecycle, synchronized output, and dirty-row diffing
+* wire ANSI rendering into interactive TTY sessions with automatic Ink
+  fallback while preserving screen-reader and non-TTY paths
+* centralize TUI overlay and dialog precedence in a pure FocusStack projection
+  without changing existing keybindings or cancellation targets
+* keep complex overlay/dialog surfaces on Ink until a complete semantic ANSI
+  projection is available, avoiding lossy generic summaries
+* guard theme loading with a generation-aware effect runner that aborts on
+  replacement/unmount and suppresses stale results
+* keep welcome and identity intro frames on Ink so ANSI mode never hides the
+  complete first-session surface
+* route Row IR through the authoritative transcript viewport layout for
+  width-aware Unicode/Markdown physical rows without duplicate prefixes
+* unify runtime and composer state behind the framework-free `TuiStore`, with
+  cursor clamping, identity-preserving no-ops, and runtime transitions that
+  retain composer state
+* derive ANSI fullscreen text styles from the active semantic theme, including
+  ANSI16/256/truecolor conversion and automatic no-color/screen-reader
+  suppression
+* add a hermetic PTY smoke for real `runInteractive` ANSI entry, resumed
+  transcript rendering, Ctrl-C confirmation, and terminal lifecycle cleanup
+
 ### Changed
 
 * make the Praxis data plane native-only: sessions, resources, permissions,

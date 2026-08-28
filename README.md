@@ -90,7 +90,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 - **Local agent runtime** — Claude-style responsive TUI with a fixed fullscreen
   viewport, non-shrinking composer/status area, and complete bounded welcome
-  surface, plus a shared-command
+  surface with the reusable P-loop + spark Praxis mark and ANSI/no-color
+  fallbacks, plus a shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
   thinking, grouped multi-file reads, globally expandable tool results,
@@ -105,7 +106,29 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   skills/hooks flow, provider-free per-session `/color` prompt-bar styling,
   `/mcp`, `/memory` shared instruction and auto-memory
   access, and live extension-reload controls,
+  plus a framework-free runtime kernel that atomically publishes streaming
+  frames and keeps status/busy transitions deterministic, with a unified
+  framework-free TuiStore that retains runtime and composer state together,
+  with a shared semantic transcript Row IR for renderer-neutral layout and
+  stable incremental updates,
+  backed by the authoritative grapheme/Markdown viewport layout so narrow and
+  Unicode-heavy transcripts wrap consistently across renderers,
+  and an independent ANSI fullscreen frame renderer with alternate-screen
+  lifecycle, synchronized output, and dirty-row diffing,
+  opt-in TTY wiring with automatic Ink fallback on renderer failure,
+  with complex overlays and dialogs intentionally remaining on the mature Ink
+  surface until their semantic ANSI projections are complete,
+  while welcome and identity intros also remain on Ink for a complete first
+  frame,
+  and a pure FocusStack that centralizes overlay/dialog precedence and Esc
+  cancellation routing,
+  plus a generation-aware effect runner that drops stale asynchronous results
+  and aborts cleanly on replacement or unmount,
+  with ANSI fullscreen text styles derived from the active semantic theme and
+  automatic no-color/screen-reader suppression,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
+  with a hermetic PTY smoke covering real `runInteractive` ANSI entry,
+  resize-safe lifecycle, and Ctrl-C restoration,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

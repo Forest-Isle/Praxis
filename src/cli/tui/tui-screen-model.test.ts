@@ -674,6 +674,20 @@ describe('projectTuiScreen', () => {
     const newEntries = conversation(appended).transcript.entries
     expect(newEntries[0]).toBe(oldEntries[0])
     expect(newEntries[1]).toBe(oldEntries[1])
+    const oldRows = conversation(initialScreen).transcript.rows
+    const newRows = conversation(appended).transcript.rows
+    expect(oldRows.map((row) => row.key)).toEqual([
+      'item-0:0',
+      'item-0:1',
+      'item-1:0',
+      'item-1:1',
+    ])
+    expect(newRows.slice(0, oldRows.length).map((row) => row.key)).toEqual(
+      oldRows.map((row) => row.key),
+    )
+    expect(newRows.slice(0, oldRows.length).map((row) => row.source)).toEqual(
+      oldRows.map((row) => row.source),
+    )
   })
 
   it('retains identity when returning from a session picker', () => {
