@@ -35,6 +35,7 @@ src/
 ├── mcp/           shared MCP config, clients, and tool adapter
 ├── persistence/   native storage, sessions, transcripts, and indexes
 ├── sandbox/       settings conversion and OS sandbox runtime adapter
+├── security/      workspace executable trust and other authorization policy
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
 
@@ -107,6 +108,25 @@ retire it before creating a replacement with the updated options; ordinary
 turns retain one service so session-only scheduled prompts survive. Unknown
 provider cost and API-only duration values stay `null` until provider ports
 expose verified metering.
+
+Automatically discovered executable workspace configuration crosses a separate
+trust preflight before hook runners or MCP transports are constructed.
+`security/workspace-trust.ts` canonicalizes the workspace with `realpath`,
+fingerprints only project/local hook and MCP definitions plus their resolved
+origins and hook execution environment, and compares that fingerprint with the
+record under `projects[canonicalPath].workspaceTrust` in native `state.json`.
+The mutation shares the native state lease, no-follow read, compare-before-
+commit, and atomic `0600` replacement conventions. User-scope and explicit CLI
+resources remain authorized; rejection removes only project/local executable
+resources. Interactive approval occurs before the renderer owns stdin, while a
+new fingerprint discovered after renderer startup is blocked until restart.
+Headless runs never prompt and emit the `--trust-project` remediation warning.
+Tool permission bypass, sandbox mode, and stored path identity do not broaden
+this exact-fingerprint grant. Plugin MCPB preflight is side-effect-free: local
+references contribute an archive hash and remote references contribute their
+exact HTTPS URL. Workspace MCPB downloads, extraction, and cache writes occur
+only after that fingerprint is trusted; user-scope MCPB remains explicitly
+authorized.
 
 Interrupted-tool recovery uses a separate `approveRecovery` port. The runtime
 invokes it after tool/hook preparation so the UI displays the input that would

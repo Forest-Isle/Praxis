@@ -15,6 +15,11 @@ export interface JsonResource {
   plugin?: true
   pluginName?: string
   pluginSource?: string
+  pluginExecutableSource?: {
+    kind: 'mcpb'
+    source: string
+    fingerprint: string
+  }
   environment?: Readonly<Record<string, string>>
   sensitiveValues?: readonly string[]
 }

@@ -31,6 +31,9 @@ praxis export <session-id> > session.jsonl
 praxis -p --safe-mode "Inspect without shared customizations"
 praxis -p --bare --tools Read,Grep "Read only"
 praxis -p --setting-sources project --add-dir ../shared "Inspect both roots"
+# Review the displayed project/local hook and MCP origins, then accept the
+# current canonical workspace executable fingerprint for this invocation.
+praxis --trust-project
 
 # Bound model execution
 praxis -p --model <model-id> --max-turns 4 "Investigate"
@@ -192,6 +195,8 @@ controls include:
 - `--settings <file-or-json>` to add an explicit settings object;
 - `--safe-mode` to disable shared customizations;
 - `--bare` to use only explicitly supplied context;
+- `--trust-project` to accept the current canonical workspace's exact
+  project/local hook and MCP fingerprint;
 - `--system-prompt` and `--append-system-prompt` for prompt control;
 - `--add-dir` for additional canonical filesystem roots;
 - `--allowed-tools`, `--disallowed-tools`, and `--permission-mode` for local
@@ -238,6 +243,15 @@ praxis -p --resume <session-id> --rewind-files <user-message-uuid>
 
 ## Security-sensitive controls
 
+- Automatically discovered project/local hooks and MCP servers are blocked by
+  default. Interactive startup shows their canonical origins and defaults to
+  reject; headless startup never prompts. An explicit acceptance or
+  `--trust-project` stores only the current executable fingerprint in native
+  `state.json`. Changing a command, argument, environment grant, header,
+  transport, scope, or resolved source invalidates it. User-scope resources and
+  explicit `--settings`/`--mcp-config` inputs retain their existing behavior.
+  `--dangerously-skip-permissions` never grants workspace trust, and safe/bare
+  modes still suppress shared executables.
 - `--dangerously-skip-permissions` bypasses normal checks except explicit deny
   rules and requires explicit enablement.
 - `--mcp-config` may start local processes or contact remote endpoints; review

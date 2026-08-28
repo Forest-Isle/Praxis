@@ -345,6 +345,37 @@ describe('Claude MCPB/DXT loader', () => {
       expect.objectContaining({ redirect: 'manual' }),
     )
 
+    const insecureSource = vi.fn<typeof fetch>()
+    await expect(
+      loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'http://example.test/insecure.dxt',
+        fetch: insecureSource,
+        requireHttps: true,
+        userConfig: { TOKEN: 'secret' },
+      }),
+    ).rejects.toThrow('must use HTTPS')
+    expect(insecureSource).not.toHaveBeenCalled()
+
+    const downgrade = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'http://example.test/downgraded.dxt' },
+      }),
+    )
+    await expect(
+      loadClaudePluginMcpb({
+        pluginRoot,
+        pluginData,
+        source: 'https://example.test/secure.dxt',
+        fetch: downgrade,
+        requireHttps: true,
+        userConfig: { TOKEN: 'secret' },
+      }),
+    ).rejects.toThrow('must use HTTPS')
+    expect(downgrade).toHaveBeenCalledTimes(1)
+
     const looping = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(null, {
         status: 302,

@@ -17,6 +17,7 @@ export const DEFAULT_CLI_CONTROLS: CliControls = {
   settingSources: undefined,
   safeMode: false,
   bare: false,
+  trustProject: false,
   systemPrompt: undefined,
   systemPromptFile: undefined,
   appendSystemPrompt: undefined,
@@ -249,6 +250,7 @@ export async function resolveCliControls(
     settingSources: controls.settingSources,
     safeMode: controls.safeMode,
     bare: controls.bare,
+    trustProject: controls.trustProject,
     systemPrompt,
     appendSystemPrompt,
     excludeDynamicSystemPromptSections:

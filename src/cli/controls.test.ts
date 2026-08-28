@@ -15,6 +15,16 @@ afterEach(async () => {
 })
 
 describe('CLI controls', () => {
+  it('defaults workspace trust off and preserves an explicit grant request', async () => {
+    expect(DEFAULT_CLI_CONTROLS.trustProject).toBe(false)
+    await expect(
+      resolveCliControls(
+        { ...DEFAULT_CLI_CONTROLS, trustProject: true },
+        '/workspace',
+      ),
+    ).resolves.toMatchObject({ trustProject: true })
+  })
+
   it('preserves setup lifecycle controls through async resolution', async () => {
     await expect(
       resolveCliControls(

@@ -659,26 +659,32 @@ describe('Praxis MCP CLI commands', () => {
         return { content: 'shared', isError: false }
       },
     }
-    const createService = vi.fn(async () => ({
-      toolRegistry: sharedRegistry,
-      run: async () => ({
-        sessionId: 'session',
-        text: 'result',
-        usage: { inputTokens: 1, outputTokens: 1 },
-      }),
-      resume: async () => ({
-        sessionId: 'session',
-        text: 'result',
-        usage: { inputTokens: 1, outputTokens: 1 },
-      }),
-      fork: async () => ({ parentSessionId: 'parent', sessionId: 'session' }),
-      sessions: async () => [],
-      inspect: async () => {
-        throw new Error('unused')
-      },
-      export: async () => Buffer.alloc(0),
-      close,
-    }))
+    const createService = vi.fn(async (options) => {
+      options.eventSink({
+        type: 'warning',
+        message: 'workspace executables blocked',
+      })
+      return {
+        toolRegistry: sharedRegistry,
+        run: async () => ({
+          sessionId: 'session',
+          text: 'result',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }),
+        resume: async () => ({
+          sessionId: 'session',
+          text: 'result',
+          usage: { inputTokens: 1, outputTokens: 1 },
+        }),
+        fork: async () => ({ parentSessionId: 'parent', sessionId: 'session' }),
+        sessions: async () => [],
+        inspect: async () => {
+          throw new Error('unused')
+        },
+        export: async () => Buffer.alloc(0),
+        close,
+      }
+    })
     const serve = vi.fn(async (options) => {
       expect(options).toMatchObject({ debug: true, verbose: true })
       const registry = await options.createToolRegistry?.()
@@ -719,6 +725,7 @@ describe('Praxis MCP CLI commands', () => {
     )
     expect(close).toHaveBeenCalledTimes(1)
     expect(capture.stdout).toEqual([])
+    expect(capture.stderr.join('')).toContain('workspace executables blocked')
   })
 
   it('rejects MCP-only flags on unrelated commands', async () => {
