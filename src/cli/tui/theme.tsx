@@ -781,10 +781,6 @@ function buildSemanticTheme(
     const resolved = color(value)
     return resolved === undefined ? {} : { borderColor: resolved }
   }
-  const background = (value: string): TuiSurfaceStyle => {
-    const resolved = color(value)
-    return resolved === undefined ? {} : { backgroundColor: resolved }
-  }
   const surface = {
     neutralBorder: semanticSurface(border(mutedColor), options),
     separator: semanticSurface(border(mutedColor), options),

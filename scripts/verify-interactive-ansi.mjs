@@ -79,7 +79,7 @@ while time.time() < deadline:
     if sent_ctrl_c_count == 0 and b'\x1b[?1049h' in output and b'PTY_RESUMED_USER' in output and b'PTY_RESUMED_ASSISTANT' in output:
         os.write(master, b'\x03')
         sent_ctrl_c_count = 1
-    if sent_ctrl_c_count == 1 and b'Press Ctrl-C again to exit' in output:
+    if sent_ctrl_c_count == 1 and b'Exit Praxis?' in output and b'Enter confirm  Esc cancel' in output:
         os.write(master, b'\x03')
         sent_ctrl_c_count = 2
     if process.poll() is not None:
@@ -100,6 +100,9 @@ if process.returncode != 0:
     raise SystemExit('interactive child exited ' + str(process.returncode))
 `
 
+const ansiEnvironment = { ...process.env, TERM: 'xterm-256color' }
+delete ansiEnvironment.NO_COLOR
+
 const driver = spawn(
   'python3',
   [
@@ -112,6 +115,7 @@ const driver = spawn(
   ],
   {
     cwd: new URL('..', import.meta.url),
+    env: ansiEnvironment,
     stdio: ['ignore', 'pipe', 'pipe'],
   },
 )

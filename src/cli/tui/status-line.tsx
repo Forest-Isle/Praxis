@@ -275,7 +275,22 @@ export function createClaudeStatusLineInput(options: {
   }
 }
 
-export function StatusLine({
+export interface ClaudeStatusLineState {
+  readonly text?: string
+  readonly padding: number
+}
+
+export interface UseClaudeStatusLineOptions {
+  readonly configRoot: string
+  readonly cwd: string
+  readonly input: ClaudeStatusLineInput
+  readonly refreshKey: string
+  readonly width?: number
+  readonly settingSources?: readonly ResourceScope[]
+  readonly dataPlane?: DataPlane
+}
+
+export function useClaudeStatusLine({
   configRoot,
   cwd,
   input,
@@ -283,15 +298,7 @@ export function StatusLine({
   width,
   settingSources,
   dataPlane: _dataPlane = 'native',
-}: {
-  configRoot: string
-  cwd: string
-  input: ClaudeStatusLineInput
-  refreshKey: string
-  width?: number
-  settingSources?: readonly ResourceScope[]
-  dataPlane?: DataPlane
-}) {
+}: UseClaudeStatusLineOptions): ClaudeStatusLineState {
   void _dataPlane
   const [text, setText] = useState<string>()
   const [padding, setPadding] = useState(0)
@@ -355,6 +362,27 @@ export function StatusLine({
     }
   }, [configRoot, cwd, schedule])
 
+  return text === undefined ? { padding } : { text, padding }
+}
+
+export function StatusLine({
+  configRoot,
+  cwd,
+  input,
+  refreshKey,
+  width,
+  settingSources,
+  dataPlane,
+}: UseClaudeStatusLineOptions) {
+  const { text, padding } = useClaudeStatusLine({
+    configRoot,
+    cwd,
+    input,
+    refreshKey,
+    ...(width === undefined ? {} : { width }),
+    ...(settingSources === undefined ? {} : { settingSources }),
+    ...(dataPlane === undefined ? {} : { dataPlane }),
+  })
   if (!text) return null
   return (
     <Box paddingX={padding} flexShrink={0}>

@@ -21,6 +21,11 @@ const text = (rows: ReturnType<typeof projectQuietChoiceRows>) =>
 const occurrences = (value: string, expected: string) =>
   value.split(expected).length - 1
 
+const required = <T>(value: T | undefined, label: string): T => {
+  if (value === undefined) throw new Error(`Missing ${label}`)
+  return value
+}
+
 const rule = {
   behavior: 'allow' as const,
   rule: 'Bash(npm test:*)',
@@ -89,7 +94,8 @@ describe('quiet choice rows', () => {
         model.kind,
       ).toBe(true)
       expect(output, model.kind).not.toMatch(/\p{Script=Han}/u)
-      expect(output, model.kind).not.toMatch(/[\u001b\u0007]/u)
+      expect(output, model.kind).not.toContain('\u001b')
+      expect(output, model.kind).not.toContain('\u0007')
       expect(model, model.kind).toEqual(before)
     }
   })
@@ -123,7 +129,9 @@ describe('quiet choice rows', () => {
 
   it('uses concise imperative labels for tool permission actions', () => {
     const rows = projectQuietChoiceRows(
-      projectTuiPermissionSurface(permissionInputs[0]!),
+      projectTuiPermissionSurface(
+        required(permissionInputs[0], 'permission input'),
+      ),
       { density: 'standard' },
     )
     const output = text(rows)
@@ -133,7 +141,9 @@ describe('quiet choice rows', () => {
   })
 
   it('uses populated and empty permission-dashboard controls honestly', () => {
-    const populatedModel = projectTuiPermissionSurface(permissionInputs[2]!)
+    const populatedModel = projectTuiPermissionSurface(
+      required(permissionInputs[2], 'permission dashboard input'),
+    )
     if (populatedModel.kind !== 'permission-dashboard')
       throw new Error('expected dashboard')
     const populated = projectQuietChoiceRows(populatedModel, {

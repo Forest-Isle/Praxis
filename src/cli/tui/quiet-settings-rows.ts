@@ -153,7 +153,7 @@ function doctor(
           : 'success',
     ),
   )
-  let checks = [...report.checks]
+  const checks = [...report.checks]
   if (o.density === 'minimal')
     checks.sort(
       (a, b) => (a.status === 'pass' ? 1 : 0) - (b.status === 'pass' ? 1 : 0),

@@ -407,8 +407,8 @@ describe('quiet settings rows', () => {
     expect(text(dependencies)).toContain('missing bwrap')
     expect(text(dependencies)).not.toContain('Sandbox dependencies ready')
 
-    const { unavailableReason: _unavailableReason, ...availableSnapshot } =
-      snapshot
+    const { unavailableReason, ...availableSnapshot } = snapshot
+    expect(unavailableReason).toBe('runtime unavailable')
     const ready = projectQuietSettingsRows(
       {
         kind: 'sandbox-panel',

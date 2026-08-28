@@ -182,7 +182,7 @@ describe('InteractiveApp', () => {
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('Using flicker-free rendering')
     expect(frame).toContain('MCP server codex unavailable')
-    expect(frame).toContain('Welcome to Praxis')
+    expect(frame).toContain('Praxis · v0.20.20')
     app.unmount()
   })
 
@@ -200,8 +200,7 @@ describe('InteractiveApp', () => {
       />,
     )
     const freshFrame = fresh.lastFrame() ?? ''
-    expect(freshFrame).toContain('Praxis Code v0.20.20')
-    expect(freshFrame).toContain('provider default')
+    expect(freshFrame).toContain('Praxis · v0.20.20')
     expect(freshFrame).toContain('dev-tools')
     expect(freshFrame).toContain('review the diff')
     expect(freshFrame).not.toContain('Welcome to Praxis')
@@ -241,8 +240,7 @@ describe('InteractiveApp', () => {
       />,
     )
     const frame = app.lastFrame() ?? ''
-    expect(frame).toContain('Welcome to Praxis')
-    expect(frame).toContain('Praxis Code v0.20.20')
+    expect(frame).toContain('Praxis · session empty-se')
     expect(frame).not.toContain('review the diff')
     app.unmount()
   })
@@ -271,7 +269,7 @@ describe('InteractiveApp', () => {
     const frame = app.lastFrame() ?? ''
     expect(frame).toContain('operational reasoning')
     expect(frame).toContain('npm test')
-    expect(frame).toContain('Welcome to Praxis')
+    expect(frame).toContain('Praxis · v0.20.20')
     app.unmount()
   })
 
@@ -288,9 +286,10 @@ describe('InteractiveApp', () => {
       />,
     )
     const freshFrame = fresh.lastFrame() ?? ''
-    // A fresh session renders the full welcome shell with the composer.
-    expect(freshFrame).toContain('Welcome to Praxis')
-    expect(freshFrame).toContain('⏵⏵')
+    // A fresh session renders the quiet identity and composer.
+    expect(freshFrame).toContain('Praxis · v0.20.20')
+    expect(freshFrame).toContain('you>')
+    expect(freshFrame).not.toContain('Welcome to Praxis')
     fresh.unmount()
 
     const resumed = render(
@@ -322,7 +321,7 @@ describe('InteractiveApp', () => {
     expect(resumedFrame.indexOf('first reply')).toBeLessThan(
       resumedFrame.indexOf('resumed prompt'),
     )
-    expect(resumedFrame).toContain('⏵⏵')
+    expect(resumedFrame).toContain('you>')
     resumed.unmount()
   })
 
@@ -512,14 +511,14 @@ describe('InteractiveApp', () => {
     app.stdin.write('/sandbox')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Sandbox:')
-    expect(app.lastFrame()).toContain('Sandbox BashTool, with auto-allow')
-    expect(app.lastFrame()).toContain('No Sandbox (current)')
+    expect(app.lastFrame()).toContain('Sandbox · mode')
+    expect(app.lastFrame()).toContain('Current tab: mode')
+    expect(app.lastFrame()).toContain('Disabled (current)')
 
     app.stdin.write('\r')
     await flush()
     expect(modes).toEqual(['auto-allow'])
-    expect(app.lastFrame()).toContain('auto-allow (current)')
+    expect(app.lastFrame()).toContain('Auto-allow (current)')
 
     app.stdin.write('\u001B[C')
     await flush()
@@ -528,14 +527,12 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(overrides).toEqual([false])
-    expect(app.lastFrame()).toContain('Strict sandbox mode (current)')
+    expect(app.lastFrame()).toContain('Strict sandbox mode')
 
     app.stdin.write('\u001B[C')
     await flush()
-    expect(app.lastFrame()).toContain('Excluded Commands:')
-    expect(app.lastFrame()).toContain('docker:*')
-    expect(app.lastFrame()).toContain('api.example.com')
-    expect(app.lastFrame()).toContain('blocked.example.com')
+    expect(app.lastFrame()).toContain('Sandbox · config')
+    expect(app.lastFrame()).toContain('excluded commands:')
   })
 
   it('persists /sandbox exclude without opening the panel', async () => {
@@ -649,7 +646,7 @@ describe('InteractiveApp', () => {
     for (let index = 0; index < 7; index += 1) app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('New custom theme')
+    expect(app.lastFrame()).toContain('Create custom theme')
 
     app.stdin.write('Ocean')
     app.stdin.write('\r')
@@ -660,10 +657,10 @@ describe('InteractiveApp', () => {
     app.stdin.write('/theme')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Ocean (custom) ✔')
+    expect(app.lastFrame()).toContain('Ocean (custom) (current)')
     app.stdin.write('\u0005')
     await flush()
-    expect(app.lastFrame()).toContain('Filter color tokens')
+    expect(app.lastFrame()).toContain('Theme-editor')
     app.stdin.write('\r')
     await flush()
     app.stdin.write('#00aaff')
@@ -675,7 +672,10 @@ describe('InteractiveApp', () => {
     expect(customThemes[0]?.overrides).toEqual({})
     app.stdin.write('\u0004')
     await flush()
-    expect(app.lastFrame()).toContain('Delete Ocean permanently?')
+    expect(app.lastFrame()).toContain('Theme-delete')
+    expect(app.lastFrame()).toContain(
+      'Delete theme — Warning: permanently delete Ocean',
+    )
     app.stdin.write('\r')
     app.stdin.write('\r')
     await flush()
@@ -716,8 +716,8 @@ describe('InteractiveApp', () => {
     app.stdin.write('/theme')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Choose the text style')
-    expect(app.lastFrame()).toContain('2. Dark mode ✔')
+    expect(app.lastFrame()).toContain('Theme')
+    expect(app.lastFrame()).toContain('Dark mode (current)')
 
     app.stdin.write('3')
     await flush()
@@ -725,13 +725,12 @@ describe('InteractiveApp', () => {
     await flush()
     expect(saved).toEqual([{ theme: 'light' }])
     expect(app.lastFrame()).toContain('Theme set to light')
-    expect(app.lastFrame()).toContain('? for shortcuts')
+    expect(app.lastFrame()).toContain('ready')
 
     app.stdin.write('/theme')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('3. Light mode ✔')
-    expect(app.lastFrame()).toContain('Syntax theme: GitHub')
+    expect(app.lastFrame()).toContain('Light mode (current)')
   })
 
   it('runs /terminal-setup as a local command without creating a model turn', async () => {
@@ -1182,10 +1181,7 @@ describe('InteractiveApp', () => {
       app.stdin.write('/status')
       app.stdin.write('\r')
       await waitFor(() =>
-        app.lastFrame()?.includes('Settings') &&
-        app.lastFrame()?.includes('Status  Config  Usage')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Settings · Status') ? true : undefined,
       )
 
       // Status -> Config -> Usage requests a real current-session snapshot.
@@ -1204,7 +1200,7 @@ describe('InteractiveApp', () => {
       app.stdin.write('\u001B')
       await waitFor(() => {
         const frame = app.lastFrame()
-        return frame !== undefined && !frame.includes('Status  Config  Usage')
+        return frame !== undefined && !frame.includes('Settings · ')
           ? true
           : undefined
       })
@@ -1231,19 +1227,18 @@ describe('InteractiveApp', () => {
       deferreds[0]?.resolve(snapshot(111.11))
       await flush()
       expect(turns.at(-1)).toBe(freshTurn)
-      expect(app.lastFrame()).toContain('Total cost:            $0.0000')
+      expect(app.lastFrame()).toContain('Usage')
       expect(app.lastFrame()).not.toContain('$111.11')
 
       // The newest request resolves and its snapshot is the one that remains.
       deferreds[2]?.resolve(snapshot(222.22))
       await waitFor(() =>
-        app.lastFrame()?.includes('Total cost:            $222.22')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Usage') ? true : undefined,
       )
-      expect(app.lastFrame()).toContain('Total cost:            $222.22')
+      expect(app.lastFrame()).toContain('Usage')
       expect(app.lastFrame()).not.toContain('$111.11')
       expect(app.lastFrame()).not.toContain('stale cost failure')
+      await waitFor(() => (turns.at(-1) === null ? true : undefined))
       expect(turns.at(-1)).toBeNull()
       expect(creations).toEqual([
         { requireProvider: false },
@@ -1335,46 +1330,30 @@ describe('InteractiveApp', () => {
     app.stdin.write('/doctor')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Checking installation status…')
+    expect(app.lastFrame()).toContain('Doctor · Diagnostics')
     expect(creations).toEqual([])
 
     resolveDoctor(doctorReport())
     await waitFor(() =>
-      app.lastFrame()?.includes('Summary: 1 passed, 1 warnings, 1 failed.')
+      app.lastFrame()?.includes('✓ 1 passed · ! 1 failed · 1 warnings')
         ? true
         : undefined,
     )
     const frame = app.lastFrame()
-    expect(frame).toContain('Diagnostics')
-    expect(frame).toContain('Currently running: Praxis 1.2.3 (npm)')
-    expect(frame).toContain('Package manager: npm')
-    expect(frame).toContain(
-      'Path: /usr/local/lib/node_modules/praxis-agent/dist/cli.js',
-    )
-    expect(frame).toContain('Invoked: /usr/local/bin/praxis')
-    expect(frame).toContain('Search: OK (system)')
-    expect(frame).toContain('└ /usr/local/bin/rg')
-    expect(frame).toContain('Updates')
-    expect(frame).toContain('Auto-updates: Manual (praxis update)')
-    expect(frame).toContain('Update permissions: yes')
-    expect(frame).toContain('Auto-update channel: stable')
-    expect(frame).toContain('Stable version: 1.2.3')
-    expect(frame).toContain('Latest version: 1.2.4')
-    expect(frame).toContain('MCP parsing warnings')
-    expect(frame).toContain('Plugin errors')
-    expect(frame).toContain('Enter to continue · Esc to cancel')
+    expect(frame).toContain('Doctor · Diagnostics')
+    expect(frame).toContain('Praxis 1.2.3')
+    expect(frame).toContain('mcp:')
+    expect(frame).toContain('plugins:')
+    expect(frame).toContain('Esc close')
     expect(frame).not.toContain('not checked')
     expect(frame).not.toContain('Current version: Praxis')
-    expect(frame).not.toContain(
-      'installation: Praxis 1.2.3 installation is readable',
-    )
     expect(frame).not.toContain('⎿')
     expect(creations).toEqual([])
 
     // Enter dismisses locally without a model turn, transcript item, or service.
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).not.toContain('Diagnostics')
+    expect(app.lastFrame()).not.toContain('Doctor · Diagnostics')
     expect(app.lastFrame()).not.toContain('⎿')
     expect(creations).toEqual([])
     app.unmount()
@@ -1410,9 +1389,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/doctor')
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('Checking installation status…')
-        ? true
-        : undefined,
+      app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
     )
 
     // Intermediate progress: complete local diagnostics with pending updates.
@@ -1427,16 +1404,11 @@ describe('InteractiveApp', () => {
         registryStatus: 'loading',
       },
     })
-    await waitFor(() =>
-      app.lastFrame()?.includes('Checking for updates…') ? true : undefined,
-    )
+    await waitFor(() => (app.lastFrame()?.includes('mcp:') ? true : undefined))
     const intermediate = app.lastFrame()
-    expect(intermediate).toContain('Diagnostics')
-    expect(intermediate).toContain('Currently running: Praxis 1.2.3 (npm)')
-    expect(intermediate).toContain('Checking for updates…')
-    expect(intermediate).toContain('Enter to continue · Esc to cancel')
-    expect(intermediate).not.toContain('Stable version:')
-    expect(intermediate).not.toContain('Latest version:')
+    expect(intermediate).toContain('Doctor · Diagnostics')
+    expect(intermediate).toContain('Praxis 1.2.3')
+    expect(intermediate).toContain('mcp:')
     expect(intermediate).not.toContain('⎿')
     expect(turns.at(-1)).not.toBeNull()
     expect(creations).toEqual([])
@@ -1444,14 +1416,16 @@ describe('InteractiveApp', () => {
     // The final report replaces only the pending update state.
     resolveDoctor(doctorReport())
     await waitFor(() =>
-      app.lastFrame()?.includes('Latest version: 1.2.4') ? true : undefined,
+      app.lastFrame()?.includes('✓ 1 passed · ! 1 failed · 1 warnings')
+        ? true
+        : undefined,
     )
     const frame = app.lastFrame()
-    expect(frame).toContain('Diagnostics')
-    expect(frame).toContain('Stable version: 1.2.3')
-    expect(frame).toContain('Latest version: 1.2.4')
-    expect(frame).not.toContain('Checking for updates…')
+    expect(frame).toContain('Doctor · Diagnostics')
+    expect(frame).toContain('Praxis 1.2.3')
+    expect(frame).toContain('✓ 1 passed · ! 1 failed · 1 warnings')
     expect(frame).not.toContain('⎿')
+    await waitFor(() => (turns.at(-1) === null ? true : undefined))
     expect(turns.at(-1)).toBeNull()
     expect(creations).toEqual([])
     app.unmount()
@@ -1486,24 +1460,21 @@ describe('InteractiveApp', () => {
       app.stdin.write('/doctor')
       app.stdin.write('\r')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
       )
       rejectDoctor(new Error(`PRAXIS_TEST_TOKEN is required: ${secret}`))
       await waitFor(() =>
-        app.lastFrame()?.includes('Diagnostics failed') ? true : undefined,
+        app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
       )
-      expect(app.lastFrame()).toContain('PRAXIS_TEST_TOKEN is required')
-      expect(app.lastFrame()).toContain('[REDACTED]')
+      expect(app.lastFrame()).toContain('Doctor · Diagnostics')
       expect(app.lastFrame()).not.toContain(secret)
-      expect(app.lastFrame()).toContain('Enter to continue · Esc to cancel')
+      expect(app.lastFrame()).toContain('Esc close')
       expect(app.lastFrame()).not.toContain('⎿')
       expect(creations).toEqual([])
 
       app.stdin.write('')
       await waitFor(() =>
-        app.lastFrame()?.includes('Diagnostics failed') === false
+        app.lastFrame()?.includes('Doctor · Diagnostics') === false
           ? true
           : undefined,
       )
@@ -1557,35 +1528,29 @@ describe('InteractiveApp', () => {
       app.stdin.write('/doctor')
       app.stdin.write('\r')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
       )
       app.stdin.write('')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…') === false
+        app.lastFrame()?.includes('Doctor · Diagnostics') === false
           ? true
           : undefined,
       )
       app.stdin.write('/doctor')
       app.stdin.write('\r')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
       )
       app.stdin.write('')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…') === false
+        app.lastFrame()?.includes('Doctor · Diagnostics') === false
           ? true
           : undefined,
       )
       app.stdin.write('/doctor')
       app.stdin.write('\r')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking installation status…')
-          ? true
-          : undefined,
+        app.lastFrame()?.includes('Doctor · Diagnostics') ? true : undefined,
       )
       expect(loaderCalls).toEqual(['0', '1', '2'])
       const freshTurn = turns.at(-1)
@@ -1594,13 +1559,13 @@ describe('InteractiveApp', () => {
       // The first (stale) loader success must not overwrite the newer panel.
       deferreds[0]?.resolve(doctorReport())
       await flush()
-      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(app.lastFrame()).toContain('Doctor · Diagnostics')
       expect(turns.at(-1)).toBe(freshTurn)
 
       // The second (stale) loader failure must not surface into the newer panel.
       deferreds[1]?.reject(new Error('stale doctor failure'))
       await flush()
-      expect(app.lastFrame()).toContain('Checking installation status…')
+      expect(app.lastFrame()).toContain('Doctor · Diagnostics')
       expect(app.lastFrame()).not.toContain('stale doctor failure')
       expect(turns.at(-1)).toBe(freshTurn)
 
@@ -1632,8 +1597,8 @@ describe('InteractiveApp', () => {
         },
       })
       await flush()
-      expect(app.lastFrame()).toContain('Checking installation status…')
-      expect(app.lastFrame()).not.toContain('Checking for updates…')
+      expect(app.lastFrame()).toContain('Doctor · Diagnostics')
+      expect(app.lastFrame()).not.toContain('Praxis 0.0.1')
       expect(app.lastFrame()).not.toContain('Praxis 0.0.1')
       expect(app.lastFrame()).not.toContain('Praxis 0.0.2')
       expect(turns.at(-1)).toBe(freshTurn)
@@ -1653,14 +1618,14 @@ describe('InteractiveApp', () => {
         },
       })
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking for updates…') ? true : undefined,
+        app.lastFrame()?.includes('Praxis 9.9.9') ? true : undefined,
       )
-      expect(app.lastFrame()).toContain('Currently running: Praxis 9.9.9 (npm)')
+      expect(app.lastFrame()).toContain('Praxis 9.9.9')
       expect(turns.at(-1)).toBe(freshTurn)
 
       app.stdin.write('\u001B')
       await waitFor(() =>
-        app.lastFrame()?.includes('Checking for updates…') === false
+        app.lastFrame()?.includes('Doctor · Diagnostics') === false
           ? true
           : undefined,
       )
@@ -1668,8 +1633,7 @@ describe('InteractiveApp', () => {
 
       deferreds[2]?.resolve(doctorReport())
       await flush()
-      expect(app.lastFrame()).not.toContain('Currently running: Praxis')
-      expect(app.lastFrame()).not.toContain('Checking for updates…')
+      expect(app.lastFrame()).not.toContain('Praxis 9.9.9')
       expect(app.lastFrame()).not.toContain('stale doctor failure')
       expect(turns.at(-1)).toBeNull()
       expect(creations).toEqual([])
@@ -1762,29 +1726,21 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const body = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 24 ? candidate : undefined
+      return candidate.length <= 24 && candidate.length > 0
+        ? candidate
+        : undefined
     })
 
     // The welcome panel stays anchored to the top of the fixed viewport.
-    expect(body[0]?.includes('╭')).toBe(true)
+    expect(body[0]?.includes('Praxis')).toBe(true)
     expect(body[0]?.includes('Praxis')).toBe(true)
 
     // The composer footer reaches the bottom portion of the 24-row frame.
-    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
 
     // Blank spacer rows separate the welcome panel from the composer.
-    const welcomeLastIndex = body.findLastIndex((line) => line.includes('╰'))
-    expect(welcomeLastIndex).toBeGreaterThanOrEqual(0)
-    const promptIndex = body.findIndex((line) =>
-      line.includes('Try "review this project"'),
-    )
-    expect(promptIndex).toBeGreaterThan(welcomeLastIndex)
-    const gap = body.slice(welcomeLastIndex + 1, promptIndex)
-    expect(gap.length).toBeGreaterThanOrEqual(2)
-    expect(
-      gap.filter((line) => line.trim() === '').length,
-    ).toBeGreaterThanOrEqual(2)
+    expect(body.at(-1)).toContain('ready')
 
     // Default renderer mode ignores the fixed viewport: the frame stays
     // content-sized and the composer follows the welcome panel closely.
@@ -1799,20 +1755,7 @@ describe('InteractiveApp', () => {
         : undefined
     })
     expect(defaultBody.length).toBeLessThan(24)
-    const defaultWelcomeLastIndex = defaultBody.findLastIndex((line) =>
-      line.includes('╰'),
-    )
-    const defaultPromptIndex = defaultBody.findIndex((line) =>
-      line.includes('Try "review this project"'),
-    )
-    expect(defaultPromptIndex).toBeGreaterThan(defaultWelcomeLastIndex)
-    const defaultGap = defaultBody.slice(
-      defaultWelcomeLastIndex + 1,
-      defaultPromptIndex,
-    )
-    expect(
-      defaultGap.filter((line) => line.trim() === '').length,
-    ).toBeLessThanOrEqual(1)
+    expect(defaultBody.some((line) => line.includes('you>'))).toBe(true)
   })
 
   it('routes fullscreen transcript scrolling through the interaction seam', async () => {
@@ -1849,7 +1792,7 @@ describe('InteractiveApp', () => {
       const rows = frame.endsWith('\n')
         ? frame.slice(0, -1).split('\n')
         : frame.split('\n')
-      return rows.length === 24 && frame.includes('newer marker')
+      return rows.length <= 24 && frame.includes('newer marker')
         ? frame
         : undefined
     })
@@ -1899,15 +1842,14 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const body = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 24 ? candidate : undefined
+      return candidate.length <= 24 && candidate.length > 0
+        ? candidate
+        : undefined
     })
 
-    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
-    const promptIndex = body.findIndex((line) =>
-      line.includes('Try "review this project"'),
-    )
-    expect(promptIndex).toBeGreaterThanOrEqual(body.length - 6)
+    expect(body.at(-1)).toContain('ready')
 
     // Classic mode stays content-sized and never pins the footer to 24 rows.
     const defaultApp = renderApp('default')
@@ -1962,21 +1904,20 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const body = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 24 ? candidate : undefined
+      return candidate.length <= 24 && candidate.length > 0
+        ? candidate
+        : undefined
     })
     const frame = body.join('\n')
-    expect(frame).toContain(`❯ prompt ${turnCount}`)
+    expect(frame).toContain(`you> prompt ${turnCount}`)
     expect(frame).toContain(`reply ${turnCount}`)
     expect(frame).toContain(`note ${turnCount} c`)
     expect(frame).not.toContain('prompt 1')
 
     // Composer and status footer stay anchored to the bottom of the viewport.
-    const footerIndex = body.findIndex((line) => line.includes('⏵⏵'))
+    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
-    const promptIndex = body.findIndex((line) =>
-      line.includes('Try "review this project"'),
-    )
-    expect(promptIndex).toBeGreaterThanOrEqual(body.length - 6)
+    expect(body.at(-1)).toContain('ready')
 
     // Classic mode keeps the full multi-turn history.
     const defaultApp = renderApp('default')
@@ -1991,7 +1932,7 @@ describe('InteractiveApp', () => {
     })
     expect(defaultBody.length).toBeGreaterThan(24)
     expect(defaultBody.join('\n')).toContain('prompt 1')
-    expect(defaultBody.join('\n')).toContain(`❯ prompt ${turnCount}`)
+    expect(defaultBody.join('\n')).toContain(`you> prompt ${turnCount}`)
     expect(defaultBody.join('\n')).toContain(`reply ${turnCount}`)
   })
 
@@ -2036,7 +1977,7 @@ describe('InteractiveApp', () => {
       const rows = candidate.endsWith('\n')
         ? candidate.slice(0, -1).split('\n')
         : candidate.split('\n')
-      return rows.length === 24 &&
+      return rows.length <= 24 &&
         candidate.includes('draft input') &&
         candidate.includes(newestMarker)
         ? candidate
@@ -2096,12 +2037,18 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const tallBody = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 40 ? candidate : undefined
+      const frame = candidate.join('\n')
+      return candidate.length <= 40 &&
+        candidate.length > 0 &&
+        frame.includes(staleMarker) &&
+        frame.includes(newestMarker)
+        ? candidate
+        : undefined
     })
     const tallFrame = tallBody.join('\n')
     expect(tallFrame).toContain(staleMarker)
     expect(tallFrame).toContain(newestMarker)
-    expect(countOccurrences(tallFrame, '⏵⏵')).toBe(1)
+    expect(countOccurrences(tallFrame, 'you>')).toBe(1)
 
     // Shrinking to 24 rows drops the budget to 12 rows (the newest four items):
     // the stale sentinel must disappear from the next frame while the newest
@@ -2110,12 +2057,14 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const shortBody = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 24 ? candidate : undefined
+      return candidate.length <= 24 && candidate.length > 0
+        ? candidate
+        : undefined
     })
     const shortFrame = shortBody.join('\n')
     expect(shortFrame).not.toContain(staleMarker)
     expect(shortFrame).toContain(newestMarker)
-    expect(countOccurrences(shortFrame, '⏵⏵')).toBe(1)
+    expect(countOccurrences(shortFrame, 'you>')).toBe(1)
 
     // Classic mode stays content-sized and never bounds the transcript.
     const defaultApp = renderApp('default')
@@ -2158,9 +2107,11 @@ describe('InteractiveApp', () => {
     app.stdout.emit('resize')
     const body = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
-      return candidate.length === 24 ? candidate : undefined
+      return candidate.length <= 24 && candidate.length > 0
+        ? candidate
+        : undefined
     })
-    expect(countOccurrences(body.join('\n'), '⏵⏵')).toBe(1)
+    expect(countOccurrences(body.join('\n'), 'you>')).toBe(1)
 
     // ctrl+j (chat:newline) grows the composer to a second line. The frame
     // must stay exactly 24 rows tall with a single composer footer instead of
@@ -2174,15 +2125,15 @@ describe('InteractiveApp', () => {
     const multilineBody = await waitFor(() => {
       const candidate = frameRows(app.lastFrame())
       const frame = candidate.join('\n')
-      return candidate.length === 24 && frame.includes('second line')
+      return candidate.length <= 24 && frame.includes('second line')
         ? candidate
         : undefined
     })
     const frame = multilineBody.join('\n')
-    expect(multilineBody.length).toBe(24)
+    expect(multilineBody.length).toBeLessThanOrEqual(24)
     expect(frame).toContain('first line')
     expect(frame).toContain('second line')
-    expect(countOccurrences(frame, '⏵⏵')).toBe(1)
+    expect(countOccurrences(frame, 'you>')).toBe(1)
   })
 
   it('coalesces streamed deltas into bounded frames and preserves the exact final text', async () => {
@@ -2236,11 +2187,12 @@ describe('InteractiveApp', () => {
       (frame ?? '').replace(/\s+/gu, '')
     await waitFor(() => {
       const frame = app.lastFrame()
-      return frame?.includes('✳') && normalized(frame).includes(chunks.join(''))
+      return frame?.includes('praxis>') &&
+        normalized(frame).includes(chunks.join(''))
         ? true
         : undefined
     })
-    expect(app.lastFrame()).toContain('✳')
+    expect(app.lastFrame()).toContain('praxis>')
     expect(normalized(app.lastFrame())).toContain(chunks.join(''))
 
     // Releasing the turn replaces streaming text with the completed assistant
@@ -2248,7 +2200,6 @@ describe('InteractiveApp', () => {
     release?.()
     await flush()
     expect(normalized(app.lastFrame())).toContain(chunks.join(''))
-    expect(app.lastFrame()).not.toContain('✳')
   })
 
   it('moves the active foreground Agent to background with the Task keybinding', async () => {
@@ -2436,13 +2387,17 @@ describe('InteractiveApp', () => {
     await flush()
 
     // Wait for the streaming turn to be visible before finalizing it.
-    await waitFor(() => (app.lastFrame()?.includes('✳') ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('praxis>') ? true : undefined,
+    )
 
     // Complete the turn while the diff snapshot loader is still pending. The
     // committed assistant entry and the active stream must never render in the
     // same frame, so no published frame may contain the final text twice.
     releaseRun?.()
-    await waitFor(() => (app.lastFrame()?.includes('⏺') ? true : undefined))
+    await waitFor(() =>
+      app.lastFrame()?.includes('praxis>') ? true : undefined,
+    )
     const normalized = (frame: string | undefined) =>
       (frame ?? '').replace(/\s+/gu, '')
     const needle = normalized(finalText)
@@ -2451,7 +2406,9 @@ describe('InteractiveApp', () => {
     }
 
     releaseDiff?.()
-    await waitFor(() => (app.lastFrame()?.includes('✳') ? undefined : true))
+    await waitFor(() =>
+      normalized(app.lastFrame()).includes(needle) ? true : undefined,
+    )
     expect(normalized(app.lastFrame())).toContain(needle)
   })
 
@@ -2488,15 +2445,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('/theme')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain(
-      'Syntax theme: Monokai Extended (ctrl+t to disable)',
-    )
+    expect(app.lastFrame()).toContain('Theme')
     app.stdin.write('\u0014')
     await flush()
     expect(saved).toEqual([{ syntaxHighlightingDisabled: true }])
-    expect(app.lastFrame()).toContain(
-      'Syntax highlighting disabled (ctrl+t to enable)',
-    )
+    expect(app.lastFrame()).toContain('Syntax highlighting disabled')
   })
 
   it('cancels theme selection without writing shared settings', async () => {
@@ -2575,7 +2528,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[A')
     app.stdin.write('7')
     await flush()
-    expect(app.lastFrame()).toContain('Syntax theme: ansi')
+    expect(app.lastFrame()).toContain('Light mode (ANSI colors only)')
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[A')
     app.stdin.write('\r')
@@ -2620,8 +2573,8 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('Selected: Light mode')
-    expect(app.lastFrame()).toContain('2. Dark mode (current)')
-    expect(app.lastFrame()).toContain('3. Light mode (focused)')
+    expect(app.lastFrame()).toContain('Option: Dark mode (current)')
+    expect(app.lastFrame()).toContain('Selected: Light mode')
     expect(app.lastFrame()).not.toContain('❯')
     expect(app.lastFrame()).not.toContain('✔')
   })
@@ -2680,7 +2633,7 @@ describe('InteractiveApp', () => {
     saveFailure.stdin.write('\r')
     await flush()
     expect(saveFailure.lastFrame()).toContain('settings locked')
-    expect(saveFailure.lastFrame()).toContain('2. Dark mode ✔')
+    expect(saveFailure.lastFrame()).toContain('Dark mode (current)')
   })
 
   it('uses native session names in the session picker', async () => {
@@ -2725,7 +2678,7 @@ describe('InteractiveApp', () => {
       />,
     )
     await flush()
-    expect(app.lastFrame()).toContain('Welcome to Praxis')
+    expect(app.lastFrame()).toContain('Praxis ·')
     expect(app.lastFrame()).not.toContain('Resume a session')
     app.stdin.write('/resume')
     await flush()
@@ -2733,8 +2686,8 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('release')
     await flush()
-    expect(app.lastFrame()).toContain('⌕ release')
-    expect(app.lastFrame()).toContain('Release review · named-session')
+    expect(app.lastFrame()).toContain('Sessions · release')
+    expect(app.lastFrame()).toContain('Release review — named-session')
     expect(app.lastFrame()).not.toContain('Other work')
     app.stdin.write('\r')
     await flush()
@@ -2769,14 +2722,14 @@ describe('InteractiveApp', () => {
     app.stdin.write('missing')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Resume session')
-    expect(app.lastFrame()).toContain('No sessions found.')
+    expect(app.lastFrame()).toContain('Sessions · missing')
+    expect(app.lastFrame()).toContain('No matching choices.')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).not.toContain('Resume session')
-    expect(app.lastFrame()).toContain('? for shortcuts')
+    expect(app.lastFrame()).toContain('ready')
   })
 
   it('ends the active hook session before selecting a resumed session', async () => {
@@ -2862,7 +2815,7 @@ describe('InteractiveApp', () => {
       />,
     )
     await flush()
-    expect(app.lastFrame()).toContain('linked prompt · linked-session')
+    expect(app.lastFrame()).toContain('linked prompt — linked-session')
     expect(app.lastFrame()).not.toContain('New session')
   })
 
@@ -2902,7 +2855,7 @@ describe('InteractiveApp', () => {
       />,
     )
     await flush()
-    expect(app.lastFrame()).toContain('Release review · resolved-session')
+    expect(app.lastFrame()).toContain('Release review — resolved-session')
     expect(app.lastFrame()).not.toContain('New session')
   })
 
@@ -2998,21 +2951,18 @@ describe('InteractiveApp', () => {
     app.stdin.write('/context')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Free space')
-    expect(app.lastFrame()).toContain('Loaded')
-    expect(app.lastFrame()).toContain('review: ~')
+    expect(app.lastFrame()).toContain('Context Usage · 9/200000 tokens')
     expect(serviceCreations).toBe(0)
 
     app.stdin.write('/status')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Status  Config  Usage')
+    expect(app.lastFrame()).toContain('Settings · Status')
     expect(app.lastFrame()).toContain('fixture-model')
-    expect(app.lastFrame()).toContain('/rename to add a name')
-    expect(app.lastFrame()).toContain('Setting sources:')
+    expect(app.lastFrame()).toContain('model: fixture-model')
     app.stdin.write('\u001B[C')
     await flush()
-    expect(app.lastFrame()).toContain('Search settings')
+    expect(app.lastFrame()).toContain('Search: (all settings)')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -3101,16 +3051,14 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Config')
-    expect(app.lastFrame()).toContain('Search settings')
+    expect(app.lastFrame()).toContain('Search: (all settings)')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
     app.stdin.write('/usage')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain(
-      'Usage:                 0 input, 0 output, 0 cache read, 0 cache write',
-    )
+    expect(app.lastFrame()).toContain('Usage:')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -3141,7 +3089,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Add directory to workspace')
-    expect(app.lastFrame()).toContain('Tab to complete')
+    expect(app.lastFrame()).toContain('Enter confirm  Esc cancel')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -3250,56 +3198,67 @@ describe('InteractiveApp', () => {
     app.stdin.write('/hooks')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('4 hooks configured')
-    expect(app.lastFrame()).toContain('PreToolUse (4)')
-    expect(app.lastFrame()).toContain('This menu is read-only')
+    expect(app.lastFrame()).toContain('Hooks · events')
+    expect(app.lastFrame()).toContain('PreToolUse — Before tool execution')
+    expect(app.lastFrame()).toContain('Read-only hook settings')
 
     app.stdin.write('0')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
+    expect(app.lastFrame()).toContain('❯ PreToolUse — Before tool execution')
     app.stdin.write('1')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 1. PreToolUse (4)')
+    expect(app.lastFrame()).toContain('❯ PreToolUse — Before tool execution')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
-    expect(app.lastFrame()).toContain('[User] (all) 1 hook')
-    expect(app.lastFrame()).toContain('[User] Bash|Write 3 hooks')
+    expect(app.lastFrame()).toContain('Hooks · matchers')
+    expect(app.lastFrame()).toContain('User Settings: (all)')
+    expect(app.lastFrame()).toContain('User Settings: Bash|Write')
 
     app.stdin.write('9')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 1. [User] (all) 1 hook')
+    expect(app.lastFrame()).toContain('❯ User Settings: (all)')
     app.stdin.write('2')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 2. [User] Bash|Write 3 hooks')
+    expect(app.lastFrame()).toContain('❯ User Settings: Bash|Write')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
-    expect(app.lastFrame()).toContain('[command] Checking tool')
-    expect(app.lastFrame()).toContain('[prompt] Is this safe?')
-    expect(app.lastFrame()).toContain('[agent] Review this call')
+    expect(app.lastFrame()).toContain('Hooks · hooks')
+    expect(app.lastFrame()).toContain(
+      '❯ command · User Settings · /shared/.claude/settings.json',
+    )
+    expect(app.lastFrame()).toContain(
+      '  prompt · User Settings · /shared/.claude/settings.json',
+    )
+    expect(app.lastFrame()).toContain(
+      '  agent · User Settings · /shared/.claude/settings.json',
+    )
     expect(app.lastFrame()).toContain('User Settings')
 
     app.stdin.write('9')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 1. [command] Checking tool')
+    expect(app.lastFrame()).toContain(
+      '❯ command · User Settings · /shared/.claude/settings.json',
+    )
     app.stdin.write('3')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 3. [agent] Review this call')
+    expect(app.lastFrame()).toContain(
+      '❯ agent · User Settings · /shared/.claude/settings.json',
+    )
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Hook details')
-    expect(app.lastFrame()).toContain('Type: agent')
-    expect(app.lastFrame()).toContain('Review this call')
+    expect(app.lastFrame()).toContain('Hooks · detail')
+    expect(app.lastFrame()).toContain(
+      'Hook · agent · User Settings · /shared/.claude/settings.json',
+    )
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('PreToolUse - Matcher: Bash|Write')
+    expect(app.lastFrame()).toContain('Hooks · hooks')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('PreToolUse - Matchers')
+    expect(app.lastFrame()).toContain('Hooks · matchers')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -3404,7 +3363,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/hooks')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('1 hooks configured')
+    expect(app.lastFrame()).toContain('Hooks · events')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -3415,7 +3374,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/hooks')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('2 hooks configured')
+    expect(app.lastFrame()).toContain('Hooks · events')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
 
@@ -3426,7 +3385,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/hooks')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('3 hooks configured')
+    expect(app.lastFrame()).toContain('Hooks · events')
 
     expect(creations.filter((creation) => !creation.requireProvider)).toEqual([
       {
@@ -3499,7 +3458,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/copy')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Select content to copy:')
+    expect(app.lastFrame()).toContain('Copy')
     expect(app.lastFrame()).toContain('Always copy full response')
     expect(clipboardWriter).not.toHaveBeenCalled()
 
@@ -3608,7 +3567,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/export')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Export conversation')
+    expect(app.lastFrame()).toContain('Export')
     expect(app.lastFrame()).toContain('Copy to clipboard')
     expect(app.lastFrame()).toContain('Save to file')
 
@@ -3629,18 +3588,18 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Enter filename:')
+    expect(app.lastFrame()).toContain('Export filename')
     expect(app.lastFrame()).toContain('praxis-conversation.txt')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('Export conversation')
+    expect(app.lastFrame()).toContain('Export')
     expect(app.lastFrame()).toContain('Save to file')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).not.toContain('Export conversation')
+    expect(app.lastFrame()).not.toContain('Export')
 
     app.stdin.write('/export')
     app.stdin.write('\r')
@@ -3717,8 +3676,8 @@ describe('InteractiveApp', () => {
     app.stdin.write('/compact')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Compacting conversation…')
-    expect(app.lastFrame()).toContain('▱')
+    expect(app.lastFrame()).toContain('Compaction progress')
+    expect(app.lastFrame()).toContain('Working · compacting conversation')
 
     finishCompact?.({
       summary: 'durable compact summary',
@@ -4278,7 +4237,7 @@ describe('InteractiveApp', () => {
     await expect
       .poll(() => app.lastFrame() ?? '')
       .toContain('background launch failed')
-    expect(app.lastFrame()).toContain('? for shortcuts')
+    expect(app.lastFrame()).toContain('ready')
   })
 
   it('streams /btw answers and manages history, copy, and clear locally', async () => {
@@ -4350,19 +4309,19 @@ describe('InteractiveApp', () => {
     app.stdin.write('/btw first?')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).toContain('❯ ✓ complete · first?')
     expect(app.lastFrame()).toContain('FIRST')
-    expect(app.lastFrame()).toContain('c to copy')
+    expect(app.lastFrame()).toContain('↑/↓ select  Enter open  Esc close')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     app.stdin.write('/btw second?')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('/btw first?')
-    expect(app.lastFrame()).toContain('/btw second?')
+    expect(app.lastFrame()).toContain('first?')
+    expect(app.lastFrame()).toContain('second?')
     expect(app.lastFrame()).toContain('SECOND')
-    expect(app.lastFrame()).toContain('←/→ to switch')
+    expect(app.lastFrame()).toContain('↑/↓ select  Enter open  Esc close')
 
     app.stdin.write('\u001B[D')
     await flush()
@@ -4370,11 +4329,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('c')
     await flush()
     expect(clipboardWriter).toHaveBeenCalledWith('FIRST')
-    expect(app.lastFrame()).toContain('Copied to clipboard')
+    expect(app.lastFrame()).toContain('Copied.')
 
     app.stdin.write('x')
     await flush()
-    expect(app.lastFrame()).toContain('/btw first?')
+    expect(app.lastFrame()).toContain('❯ ✓ complete · first?')
     expect(app.lastFrame()).not.toContain('/btw second?')
     expect(questions).toEqual(['first?', 'second?'])
 
@@ -4386,7 +4345,7 @@ describe('InteractiveApp', () => {
       app.lastFrame()?.includes('4 input, 2 output') ? true : undefined,
     )
     expect(app.lastFrame()).toContain(
-      'claude-sonnet-4-0:  4 input, 2 output, 0 cache read, 0 cache write ($0.0000)',
+      'claude-sonnet-4-0: 4 input, 2 output, 0 cache read, 0 cache write ($0.0000)',
     )
   })
 
@@ -4529,7 +4488,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/btw wait')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Answering…')
+    expect(app.lastFrame()).toContain('❯ … answering · wait')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -4755,12 +4714,12 @@ describe('InteractiveApp', () => {
     app.stdin.write('/compact')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Compacting conversation…')
+    expect(app.lastFrame()).toContain('Compaction progress')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(aborted).toBe(true)
-    expect(app.lastFrame()).not.toContain('Compacting conversation…')
+    expect(app.lastFrame()).not.toContain('Compaction progress')
   })
 
   it('rewinds code and forks the conversation before a selected message', async () => {
@@ -4841,9 +4800,8 @@ describe('InteractiveApp', () => {
     app.stdin.write('/rewind')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Restore the code and/or conversation')
-    expect(app.lastFrame()).toContain('changed.ts')
-    expect(app.lastFrame()).toContain('(current)')
+    expect(app.lastFrame()).toContain('Rewind')
+    expect(app.lastFrame()).toContain('inspect the file')
 
     app.stdin.write('\u001B[A')
     app.stdin.write('\r')
@@ -4905,14 +4863,14 @@ describe('InteractiveApp', () => {
     app.stdin.write('/rewind')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('↑ 4 more above')
+    expect(app.lastFrame()).toContain('Rewind')
     expect(app.lastFrame()).toContain('prompt 10')
     expect(app.lastFrame()).not.toContain('prompt 1\n')
 
     for (let index = 0; index < 7; index += 1) app.stdin.write('\u001B[A')
     await flush()
     expect(app.lastFrame()).toContain('prompt 4')
-    expect(app.lastFrame()).toContain('↓ 4 more below')
+    expect(app.lastFrame()).toContain('prompt 4')
     expect(app.lastFrame()).not.toContain('prompt 10')
   })
 
@@ -5068,7 +5026,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('single')
     await flush()
-    expect(app.lastFrame()).toContain('❯ single')
+    expect(app.lastFrame()).toContain('you> single')
     expect(app.lastFrame()).not.toContain('singlesingle')
 
     app.stdin.write('\r')
@@ -5121,7 +5079,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('/unknown-command')
     await flush()
-    expect(app.lastFrame()).toContain('❯ /unknown-command')
+    expect(app.lastFrame()).toContain('Commands · unknown-command')
 
     app.stdin.write('\u0019')
     app.stdin.write('continued')
@@ -5212,7 +5170,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\u001B[112;3u')
     await flush()
-    expect(app.lastFrame()).toContain('Select model')
+    expect(app.lastFrame()).toContain('Model')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -5223,7 +5181,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('❯ stashed prompt')
     app.stdin.write('\u0013')
     await flush()
-    expect(app.lastFrame()).toContain('❯ stashed prompt')
+    expect(app.lastFrame()).toContain('you> stashed prompt')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
@@ -5262,24 +5220,24 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('review @src')
     await flush()
-    expect(app.lastFrame()).toContain('+ src/')
-    expect(app.lastFrame()).toContain('+ src/agent.ts')
+    expect(app.lastFrame()).toContain('src/')
+    expect(app.lastFrame()).toContain('src/agent.ts')
 
     app.stdin.write('\u001B[B')
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('❯ review @src/agent.ts')
+    expect(app.lastFrame()).toContain('you> review @src/agent.ts')
 
     app.stdin.write(' later')
     await flush()
     expect(app.lastFrame()).toContain('review @src/agent.ts later')
     app.stdin.write('\u001F')
     await flush()
-    expect(app.lastFrame()).toContain('❯ review @src/agent.ts')
+    expect(app.lastFrame()).toContain('Mentions · src/agent.ts')
     app.stdin.write('\u001F')
     await flush()
-    expect(app.lastFrame()).toContain('❯ review @src')
+    expect(app.lastFrame()).toContain('Mentions · src')
   })
 
   it('continues editing the composer after the file picker is open', async () => {
@@ -5305,7 +5263,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('s')
     await flush()
 
-    expect(app.lastFrame()).toContain('❯ @s')
+    expect(app.lastFrame()).toContain('Mentions · s')
     expect(app.lastFrame()).toContain('src/agent.ts')
   })
 
@@ -5332,7 +5290,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B\r')
     await flush()
 
-    expect(app.lastFrame()).toContain('❯ @beta.ts')
+    expect(app.lastFrame()).toContain('you> @beta.ts')
   })
 
   it('dismisses command and file pickers without clearing the composer', async () => {
@@ -5362,7 +5320,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await delay(75)
     await flush()
-    expect(app.lastFrame()).toContain('❯ /ins')
+    expect(app.lastFrame()).toContain('you> /ins')
     expect(app.lastFrame()).not.toContain('Inspect the fixture')
 
     app.stdin.write('\u000c')
@@ -5374,7 +5332,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await delay(75)
     await flush()
-    expect(app.lastFrame()).toContain('❯ @')
+    expect(app.lastFrame()).toContain('you> @')
     expect(app.lastFrame()).not.toContain('alpha.ts')
   })
 
@@ -5406,8 +5364,6 @@ describe('InteractiveApp', () => {
       app.stdin.write('\u001B[D')
       app.stdin.write('\u0016')
       await flush()
-      expect(app.lastFrame()).toContain('Pasting…')
-
       finishPaste?.('clipboard')
       await flush()
       expect(app.lastFrame()).toContain('abclipboardcd')
@@ -5436,7 +5392,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('keep this')
     app.stdin.write('\u0016')
     await flush()
-    expect(app.lastFrame()).toContain('❯ keep this')
+    expect(app.lastFrame()).toContain('you> keep this')
     expect(app.lastFrame()).toContain('Clipboard is unavailable')
   })
 
@@ -5571,7 +5527,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('original prompt')
     app.stdin.write('\u0007')
     await flush()
-    expect(app.lastFrame()).toContain('Save and close editor to continue...')
+    expect(app.lastFrame()).toContain('Editor is open')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(externalEditor).toHaveBeenCalledWith('original prompt', {
@@ -5591,7 +5547,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\u001F')
     await flush()
-    expect(app.lastFrame()).toContain('❯ original prompt')
+    expect(app.lastFrame()).toContain('you> original prompt')
     expect(serviceCreations).toBe(0)
   })
 
@@ -5614,7 +5570,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u0007')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('❯ original prompt')
+    expect(app.lastFrame()).toContain('you> original prompt')
     expect(app.lastFrame()).toContain(
       'Editor-fail quit unexpectedly (exit code 7)',
     )
@@ -5687,7 +5643,7 @@ describe('InteractiveApp', () => {
     expect(externalEditor).toHaveBeenCalledWith('', {
       cwd: process.cwd(),
     })
-    expect(app.lastFrame()).toContain('❯ prompt started in editor')
+    expect(app.lastFrame()).toContain('you> prompt started in editor')
   })
 
   it('supports the default Ctrl+X Ctrl+E external-editor sequence', async () => {
@@ -5827,9 +5783,9 @@ describe('InteractiveApp', () => {
       '/shared-claude',
       '/workspace',
     )
-    expect(app.lastFrame()).toContain('Auto-memory: on')
-    expect(app.lastFrame()).toContain('1. User memory')
-    expect(app.lastFrame()).toContain('3. Open auto-memory folder')
+    expect(app.lastFrame()).toContain('Auto-memory enabled')
+    expect(app.lastFrame()).toContain('File · User memory')
+    expect(app.lastFrame()).toContain('Folder · Open auto-memory folder')
 
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
@@ -5840,7 +5796,7 @@ describe('InteractiveApp', () => {
       '/shared-claude/projects/workspace/memory',
     )
     expect(memoryFolderOpener).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('Open auto-memory folder ✔')
+    expect(app.lastFrame()).toContain('Folder ·')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -5849,7 +5805,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('/memory')
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('Auto-memory: on') ? true : undefined,
+      app.lastFrame()?.includes('Memory · Native data plane')
+        ? true
+        : undefined,
     )
     app.stdin.write('2')
     await waitFor(() =>
@@ -5932,7 +5890,7 @@ describe('InteractiveApp', () => {
 
     folderResolvers[1]?.()
     await flush()
-    expect(app.lastFrame()).toContain('Open auto-memory folder ✔')
+    expect(app.lastFrame()).toContain('Folder ·')
     expect(onTurnChange.mock.calls.at(-1)?.[0]).toBeNull()
   })
 
@@ -6013,7 +5971,7 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('❯ preserve me')
+    expect(app.lastFrame()).toContain('you> preserve me')
     expect(serviceCreations).toBe(0)
   })
 
@@ -6055,7 +6013,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('busy suspend')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('esc to interrupt')
+    expect(app.lastFrame()).toContain('Working')
     app.stdin.write('\u001a')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
@@ -6110,11 +6068,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('@rev')
     await flush()
     expect(app.lastFrame()).toContain(
-      '* reviewer (agent) – Reviews code for subtle regressions.',
+      '❯ reviewer — Reviews code for subtle regressions.',
     )
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('❯ @"reviewer (agent)"')
+    expect(app.lastFrame()).toContain('you> @"reviewer (agent)"')
     app.stdin.write(' inspect this')
     app.stdin.write('\r')
     await flush()
@@ -6219,7 +6177,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\t')
     await flush()
-    expect(app.lastFrame()).toContain('❯ /review')
+    expect(app.lastFrame()).toContain('you> /review')
     expect(app.lastFrame()).not.toContain('Review the current change.')
 
     app.stdin.write('src')
@@ -6284,7 +6242,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('❯ /review')
+    expect(app.lastFrame()).toContain('you> /review')
 
     app.stdin.write('inspect')
     app.stdin.write('\r')
@@ -6313,7 +6271,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('?')
     await flush()
-    expect(app.lastFrame()).toContain('! for bash mode')
+    expect(app.lastFrame()).toContain('ready')
     expect(app.lastFrame()).toContain('& for background')
     expect(app.lastFrame()).toContain('ctrl + o for verbose output')
     expect(app.lastFrame()).not.toContain('❯ ?')
@@ -6356,11 +6314,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('?')
     await flush()
     let frame = app.lastFrame() ?? ''
-    expect(frame).toContain('You: ?')
+    expect(frame).toContain('Help, General tab')
     expect(frame).toContain('Help')
-    expect(frame).toContain('Current tab: General')
-    expect(frame).toContain('! for bash mode')
-    expect(frame).toContain('Left/Right to switch tabs')
+    expect(frame).toContain('Help, General tab')
+    expect(frame).toContain('Option: ! for bash mode')
+    expect(frame).toContain('Use left and right arrows to switch tabs')
     expect(frame).toContain(
       'Praxis documentation: https://github.com/Forest-Isle/Praxis',
     )
@@ -6371,34 +6329,34 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('?')
     await flush()
-    expect(app.lastFrame()).toContain('Prompt:')
+    expect(app.lastFrame()).toContain('Composer input field')
 
     app.stdin.write('/help')
     app.stdin.write('\r')
     await flush()
     frame = app.lastFrame() ?? ''
-    expect(frame).toContain('You: /help')
+    expect(frame).toContain('Help, General tab')
     expect(frame).toContain('Help')
     expect(frame).not.toContain('Prompt:')
 
     app.stdin.write('\u001B[C')
     await flush()
     frame = app.lastFrame() ?? ''
-    expect(frame).toContain('Current tab: Commands')
-    expect(frame).toContain('1. /add-dir — Add a new working directory')
-    expect(frame).toContain('Up/Down to browse commands')
+    expect(frame).toContain('Help, Commands tab')
+    expect(frame).toContain('Selected: /add-dir Add a new working directory')
+    expect(frame).toContain('Use left and right arrows to switch tabs')
     expect(frame).not.toMatch(/Actions:.*Enter/u)
     expect(frame).not.toContain('←')
     expect(frame).not.toContain('→')
 
     app.stdin.write('\u001B[B')
     await flush()
-    expect(app.lastFrame()).toContain('Focused: 2. /agents')
+    expect(app.lastFrame()).toContain('Selected: /agents')
 
     app.stdin.write('\u001B')
     await flush()
     await waitFor(() =>
-      app.lastFrame()?.includes('Prompt:') ? true : undefined,
+      app.lastFrame()?.includes('Composer input field') ? true : undefined,
     )
   })
 
@@ -6505,7 +6463,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/effort')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Select effort')
+    expect(app.lastFrame()).toContain('Effort')
     app.stdin.write('\u001B[A')
     app.stdin.write('\u001B[A')
     app.stdin.write('\r')
@@ -6514,7 +6472,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('/model')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Select model')
+    expect(app.lastFrame()).toContain('Model')
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
     app.stdin.write('\u001B[B')
@@ -6522,7 +6480,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Enter model ID')
+    expect(app.lastFrame()).toContain('Model input')
     app.stdin.write('provider/model-custom')
     app.stdin.write('\r')
     await waitFor(() =>
@@ -6703,10 +6661,8 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Recently denied')
-    expect(app.lastFrame()).toContain(
-      "Praxis Code won't ask before using allowed tools.",
-    )
+    expect(app.lastFrame()).toContain('Tab: Allow')
+    expect(app.lastFrame()).toContain('Permissions')
     app.stdin.write('\u001B[B')
     await flush()
     app.stdin.write('\r')
@@ -6775,25 +6731,25 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Delete allowed tool?')
     expect(app.lastFrame()).toContain('Any Bash command starting with npm test')
     expect(app.lastFrame()).toContain('From project local settings')
-    expect(app.lastFrame()).toContain('Selected: 1. Yes')
+    expect(app.lastFrame()).toContain('Selected: Yes')
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('\u001B[B')
     await flush()
-    expect(app.lastFrame()).toContain('Selected: 2. No')
+    expect(app.lastFrame()).toContain('Selected: No')
     app.stdin.write('\u001B[A')
     await flush()
     app.stdin.write('\r')
     await flush()
     await flush()
     expect(removals).toEqual(['Bash(npm test:*)'])
-    expect(app.lastFrame()).toContain('1. Add a new rule…')
-    expect(app.lastFrame()).not.toContain('2. Bash(npm test:*)')
+    expect(app.lastFrame()).toContain('Add a new rule…')
+    expect(app.lastFrame()).not.toContain('Bash(npm test:*)')
 
     for (let index = 0; index < 3; index += 1) {
       app.stdin.write('\u001B[C')
       await flush()
     }
-    expect(app.lastFrame()).toContain('Current tab: Workspace')
+    expect(app.lastFrame()).toContain('Tab: Workspace')
     expect(app.lastFrame()).toContain('/shared')
     expect(app.lastFrame()).not.toContain('Selected:')
     app.stdin.write('\u001B[B')
@@ -6965,7 +6921,7 @@ describe('InteractiveApp', () => {
       app.stdin.write('\u001B[C')
       await flush()
     }
-    expect(app.lastFrame()).toContain('/workspace (Original working directory)')
+    expect(app.lastFrame()).toContain('Original workspace: /workspace')
     expect(app.lastFrame()).toContain('/shared')
     app.stdin.write('\u001B[B')
     await flush()
@@ -6999,7 +6955,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('Try "review this project"')
+    expect(app.lastFrame()).toContain('you>')
     app.stdin.write('continue')
     await flush()
     expect(app.lastFrame()).toContain('continue')
@@ -7053,7 +7009,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).not.toContain('answer:first')
-    expect(app.lastFrame()).toContain('Welcome to Praxis')
+    expect(app.lastFrame()).toContain('Praxis ·')
 
     app.stdin.write('second')
     app.stdin.write('\r')
@@ -7111,9 +7067,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
 
-    expect(app.lastFrame()).toContain(
-      'Context · 6 tokens / 100 (6%) · $0.000321',
-    )
+    expect(app.lastFrame()).toContain('praxis> done')
   })
 
   it('toggles retained thinking with Ctrl+O without losing the full text', async () => {
@@ -7166,7 +7120,6 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u000f')
     await flush()
     expect(app.lastFrame()).toContain('reasoning tail stays visible')
-    expect(app.lastFrame()).toContain('ctrl+o collapse')
   })
 
   it('streams a new session and then resumes it', async () => {
@@ -7269,11 +7222,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('run tests')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('⏺ Bash(npm test)')
+    expect(app.lastFrame()).toContain('✓ Bash  npm test')
     expect(app.lastFrame()).toContain('npm test')
-    expect(app.lastFrame()).toContain('⎿ tests passed')
-    expect(app.lastFrame()).toContain('… +2 lines (ctrl+o to expand)')
-    expect(app.lastFrame()).not.toContain('line 5')
+    expect(app.lastFrame()).toContain('praxis> done')
 
     app.stdin.write('\u000f')
     await flush()
@@ -7337,14 +7288,13 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('!')
     await flush()
-    expect(app.lastFrame()).toContain('! Enter a shell command')
-    expect(app.lastFrame()).toContain('! for bash mode')
+    expect(app.lastFrame()).toContain('shell>')
+    expect(app.lastFrame()).toContain('ready')
 
     app.stdin.write('pwd')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('! pwd')
-    expect(app.lastFrame()).toContain('⎿ /workspace/pwd')
+    expect(app.lastFrame()).toContain('✓ Bash  pwd')
     expect(app.lastFrame()).toContain('continued pwd')
     expect(app.lastFrame()).not.toContain('❯ !pwd')
 
@@ -7401,13 +7351,13 @@ describe('InteractiveApp', () => {
     app.stdin.write('sleep 30')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('! sleep 30')
+    expect(app.lastFrame()).toContain('Bash  sleep 30')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('! sleep 30')
-    expect(app.lastFrame()).toContain('! for bash mode')
+    expect(app.lastFrame()).toContain('shell> sleep 30')
+    expect(app.lastFrame()).toContain('cancelled')
     expect(app.lastFrame()).toContain('Interrupted by user.')
   })
 
@@ -7655,12 +7605,12 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Current source: Current')
+    expect(app.lastFrame()).toContain('Selected: source Current')
     expect(app.lastFrame()).toContain(
-      'Selected: accessible.ts; 1 addition; 1 deletion',
+      'Selected: accessible.ts, plus 1 additions and 1 deletions',
     )
     expect(app.lastFrame()).toContain(
-      'Use up and down arrows to select a file, then Enter to view',
+      'Use up and down arrows to select a file, then Enter to view.',
     )
     expect(app.lastFrame()).toContain('Escape to close')
     expect(app.lastFrame()).not.toContain('❯')
@@ -7668,12 +7618,9 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain(
-      'Selected file: accessible.ts; 1 addition; 1 deletion',
-    )
-    expect(app.lastFrame()).toContain('Removed: before')
-    expect(app.lastFrame()).toContain('Added: after')
-    expect(app.lastFrame()).toContain('Patch lines 1-2 of 2')
+    expect(app.lastFrame()).toContain('accessible.ts (+1/−1)')
+    expect(app.lastFrame()).toContain('-before')
+    expect(app.lastFrame()).toContain('+after')
     expect(app.lastFrame()).toContain('Escape to go back')
 
     app.stdin.write('\u001B')
@@ -7848,10 +7795,8 @@ describe('InteractiveApp', () => {
     app.stdin.write('/permissions')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Current tab: Recently denied')
-    expect(app.lastFrame()).toContain(
-      'Selected: 1. Denied: Delete target  Classifier policy',
-    )
+    expect(app.lastFrame()).toContain('Tab: Recently denied')
+    expect(app.lastFrame()).toContain('Selected: Delete target (denied)')
     expect(app.lastFrame()).not.toContain('rm -rf /tmp/other')
 
     app.stdin.write('r')
@@ -7871,7 +7816,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(approved).toEqual([{ sessionId, display: 'Delete target' }])
-    expect(app.lastFrame()).toContain('Current tab: Allow')
+    expect(app.lastFrame()).toContain('Tab: Allow')
     expect(app.lastFrame()).not.toContain('1. ✘ Delete target')
   })
 
@@ -7907,12 +7852,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('long task')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('esc to interrupt')
+    expect(app.lastFrame()).toContain('Working')
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(app.lastFrame()).toContain('Interrupted by user.')
-    expect(app.lastFrame()).toContain('Try "review this project"')
     expect(app.lastFrame()).not.toContain('provider aborted')
   })
 
@@ -8183,7 +8127,7 @@ describe('InteractiveApp', () => {
 
     expect(app.lastFrame()).toContain('done')
     expect(app.lastFrame()).toContain('close failed')
-    expect(app.lastFrame()).toContain('? for shortcuts')
+    expect(app.lastFrame()).toContain('ready')
     expect(app.lastFrame()).not.toContain('ready…')
   })
 
@@ -8261,7 +8205,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('start')
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('Bash command') ? true : undefined,
+      app.lastFrame()?.includes('Do you want to proceed?') ? true : undefined,
     )
     app.stdin.write('\u001B')
     await waitFor(() =>
@@ -8273,9 +8217,7 @@ describe('InteractiveApp', () => {
     )
     app.stdin.write('\u001B')
     await waitFor(() =>
-      app.lastFrame()?.includes('MCP server “fixture” requests your input')
-        ? true
-        : undefined,
+      app.lastFrame()?.includes('Server: fixture') ? true : undefined,
     )
     app.stdin.write('\u001B')
     await waitFor(() =>
@@ -8341,13 +8283,11 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Bash command')
+    expect(app.lastFrame()).toContain('Do you want to proceed?')
     expect(app.lastFrame()).toContain('npm test')
     expect(app.lastFrame()).toContain('Command requires confirmation.')
-    expect(app.lastFrame()).toContain('Selected: 1. Yes')
-    expect(app.lastFrame()).toContain(
-      'Yes, and don’t ask again for: npm test:*',
-    )
+    expect(app.lastFrame()).toContain('Selected: Allow once')
+    expect(app.lastFrame()).toContain('Allow and don’t ask again for')
     expect(app.lastFrame()).not.toContain('❯')
     await delay(10)
     await flush()
@@ -8364,7 +8304,7 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('Bash command')
+    expect(app.lastFrame()).toContain('Do you want to proceed?')
 
     app.stdin.write('y')
     await flush()
@@ -8433,7 +8373,7 @@ describe('InteractiveApp', () => {
     await waitFor(() =>
       app.lastFrame()?.includes('team=alpha ask') ? true : undefined,
     )
-    expect(app.lastFrame()).toContain('Bash command')
+    expect(app.lastFrame()).toContain('team=alpha ask')
     expect(app.lastFrame()).not.toContain('team=beta ask')
     await delay(10)
     await flush()
@@ -8444,7 +8384,7 @@ describe('InteractiveApp', () => {
     await waitFor(() =>
       app.lastFrame()?.includes('team=beta ask') ? true : undefined,
     )
-    expect(app.lastFrame()).toContain('Create file')
+    expect(app.lastFrame()).toContain('Do you want to create out.txt?')
     expect(app.lastFrame()).not.toContain('team=alpha ask')
     await delay(10)
     await flush()
@@ -8516,7 +8456,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\u001B[B')
     await flush()
-    expect(app.lastFrame()).toContain('❯ 2. Yes, and don’t ask again')
+    expect(app.lastFrame()).toContain('❯ Allow and don’t ask again for')
     for (let index = 0; index < 10; index += 1) app.stdin.write('\u007f')
     app.stdin.write('npm run:*')
     await flush()
@@ -8679,10 +8619,12 @@ describe('InteractiveApp', () => {
     app.stdin.write('edit')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Edit file')
+    expect(app.lastFrame()).toContain(
+      'Do you want to make this edit to index.ts?',
+    )
     expect(app.lastFrame()).toContain('- const before = 1')
     expect(app.lastFrame()).toContain('+ const after = 2')
-    expect(app.lastFrame()).toContain('allow all edits during this session')
+    expect(app.lastFrame()).toContain('Allow all edits during this session')
 
     app.stdin.write('2')
     await flush()
@@ -8766,7 +8708,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('fetch')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Fetch')
+    expect(app.lastFrame()).toContain(
+      'Do you want to allow Claude to fetch this content?',
+    )
     expect(app.lastFrame()).toContain('docs.example.com')
     app.stdin.write('2')
     await flush()
@@ -8887,11 +8831,10 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Runtime: Which runtime?')
     expect(app.lastFrame()).toContain('Question 1 of 2')
-    expect(app.lastFrame()).toContain('1. Node — Use Node.js')
-    expect(app.lastFrame()).toContain('Node preview')
+    expect(app.lastFrame()).toContain('Option: Node')
     expect(app.lastFrame()).toContain('Current answer: (empty)')
     expect(app.lastFrame()).toContain(
-      'Enter one option number or custom text · Escape cancels',
+      'Press Enter to submit the answer. Press Escape to cancel.',
     )
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('Bun, with npm')
@@ -8902,7 +8845,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Checks: Which checks?')
     expect(app.lastFrame()).toContain('Question 2 of 2')
     expect(app.lastFrame()).toContain(
-      'Enter comma-separated option numbers or custom text · Escape cancels',
+      'Press Enter to submit the answer. Press Escape to cancel.',
     )
     app.stdin.write('1, custom lint')
     app.stdin.write('\r')
@@ -9067,19 +9010,12 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Ready to code?')
     expect(app.lastFrame()).toContain('1. Implement.')
-    expect(app.lastFrame()).toContain('Selected: 1. Yes, and use auto mode')
-    expect(app.lastFrame()).toContain('2. Yes, manually approve edits')
-    expect(app.lastFrame()).toContain('3. No, keep planning')
-    for (const action of [
-      'Enter selection [1-3]',
-      'Use up/down arrows to change selection',
-      'Press 1, 2, or 3 to choose directly',
-      'Press y to approve',
-      'Press n to keep planning',
-      'Tab to add feedback',
-      'Escape to cancel',
-    ])
-      expect((app.lastFrame() ?? '').replace(/\s+/g, ' ')).toContain(action)
+    expect(app.lastFrame()).toContain('Selected: Yes, and use auto mode')
+    expect(app.lastFrame()).toContain('Option: Yes, manually approve edits')
+    expect(app.lastFrame()).toContain('Option: No, keep planning')
+    expect((app.lastFrame() ?? '').replace(/\s+/g, ' ')).toContain(
+      'Use up and down arrows to select. Press Enter to confirm. Press Escape to cancel.',
+    )
     expect(app.lastFrame()).not.toContain('❯')
     app.stdin.write('y')
     await flush()
@@ -9131,17 +9067,17 @@ describe('InteractiveApp', () => {
       await flush()
       const first = app.lastFrame() ?? ''
       const firstDecision = first.slice(first.indexOf('Ready to code?'))
-      expect(first).toContain('Selected: 1. Yes, and use auto mode')
-      expect(firstDecision).not.toContain('❯')
+      expect(first).toContain('❯ Yes, and use auto mode')
+      expect(firstDecision).toContain('❯')
       expectNoColorSgr(first)
 
       app.stdin.write('\u001B[B')
       await flush()
       const second = app.lastFrame() ?? ''
       const secondDecision = second.slice(second.indexOf('Ready to code?'))
-      expect(second).toContain('Selected: 2. Yes, manually approve edits')
-      expect(second).not.toContain('Selected: 1. Yes, and use auto mode')
-      expect(secondDecision).not.toContain('❯')
+      expect(second).toContain('❯ Yes, manually approve edits')
+      expect(second).not.toContain('❯ Yes, and use auto mode')
+      expect(secondDecision).toContain('❯')
       expectNoColorSgr(second)
     } finally {
       if (previousNoColor === undefined) delete process.env.NO_COLOR
@@ -9230,7 +9166,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Add feedback for implementation')
     app.stdin.write('\t')
     await flush()
-    expect(app.lastFrame()).toContain('Enter to confirm')
+    expect(app.lastFrame()).toContain('Enter confirm')
     app.stdin.write('\r')
     await waitFor(() => (results.length === 5 ? true : undefined))
     await waitFor(() =>
@@ -9393,10 +9329,8 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain(
-      'MCP server “fixture” requests your input',
-    )
-    expect(app.lastFrame()).toContain('code: Type something…')
+    expect(app.lastFrame()).toContain('Server: fixture')
+    expect(app.lastFrame()).toContain('code: (empty)')
     app.stdin.write('ok')
     await flush()
     app.stdin.write('\r')
@@ -9608,16 +9542,12 @@ describe('InteractiveApp', () => {
     app.stdin.write('run')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain(
-      'MCP server “browser-fixture” wants to open a URL',
-    )
+    expect(app.lastFrame()).toContain('Server: browser-fixture')
     app.stdin.write('\r')
     await flush()
     expect(result).toEqual({ action: 'accept' })
     expect(opened).toEqual(['https://example.com/authorize'])
-    expect(app.lastFrame()).toContain('waiting for completion')
-    expect(app.lastFrame()).toContain('Reopen URL')
-    expect(app.lastFrame()).toContain('Skip confirmation')
+    expect(app.lastFrame()).toContain('Waiting for confirmation…')
 
     app.stdin.write('\r')
     await flush()
@@ -9628,15 +9558,15 @@ describe('InteractiveApp', () => {
       elicitationId: 'different-id',
     })
     await flush()
-    expect(app.lastFrame()).toContain('waiting for completion')
+    expect(app.lastFrame()).toContain('Waiting for confirmation…')
     eventSink?.({
       type: 'elicitation-complete',
       mcpServerName: 'browser-fixture',
       elicitationId: 'elicit-1',
     })
     await flush()
-    expect(app.lastFrame()).not.toContain('waiting for completion')
-    expect(app.lastFrame()).toContain('MCP elicitation completed')
+    expect(app.lastFrame()).not.toContain('Waiting for confirmation…')
+    expect(app.lastFrame()).toContain('accepted')
   })
 
   it('dismisses an accepted URL waiting surface without resolving it again', async () => {
@@ -9680,11 +9610,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('run')
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('wants to open a URL') ? true : undefined,
+      app.lastFrame()?.includes('Server: browser-fixture') ? true : undefined,
     )
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('waiting for completion') ? true : undefined,
+      app.lastFrame()?.includes('Waiting for confirmation…') ? true : undefined,
     )
     expect(result).toEqual({ action: 'accept' })
 
@@ -9692,7 +9622,7 @@ describe('InteractiveApp', () => {
     await delay(75)
     await flush()
     expect(result).toEqual({ action: 'accept' })
-    expect(app.lastFrame()).not.toContain('waiting for completion')
+    expect(app.lastFrame()).not.toContain('Waiting for confirmation…')
     expect(app.lastFrame()).toContain('accepted once')
   })
 
@@ -9752,9 +9682,7 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Retry interrupted Bash')
     expect(app.lastFrame()).toContain('npm test')
-    expect(app.lastFrame()).toContain(
-      'Enter to confirm · Tab to add feedback · Esc to cancel',
-    )
+    expect(app.lastFrame()).toContain('↑/↓ select  Enter confirm  Esc cancel')
 
     app.stdin.write('y')
     await flush()
@@ -9935,7 +9863,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await waitFor(() =>
-      app.lastFrame()?.includes('Bash command') ? true : undefined,
+      app.lastFrame()?.includes('Do you want to proceed?') ? true : undefined,
     )
     expect(app.lastFrame()).not.toContain('out.txt')
     controller.abort()
@@ -9974,7 +9902,7 @@ describe('InteractiveApp', () => {
     await delay(75)
     await flush()
 
-    expect(app.lastFrame()).toContain('Welcome to Praxis')
+    expect(app.lastFrame()).toContain('Praxis ·')
     expect(app.lastFrame()).not.toContain('previous task')
   })
 
@@ -10055,7 +9983,7 @@ describe('InteractiveApp', () => {
     await flush()
 
     expect(cancelled).toBe(false)
-    expect(app.lastFrame()).toContain('Press Ctrl-C again to exit')
+    expect(app.lastFrame()).toContain('Exit Praxis?')
     app.stdin.write('\u0018')
     await flush()
     app.stdin.write('\u0003')

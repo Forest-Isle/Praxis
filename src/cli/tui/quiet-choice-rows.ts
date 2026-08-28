@@ -443,7 +443,7 @@ function picker(
     ),
   ]
   const { start, end } = surface.visibleRange
-  surface.rows.slice(start, end).forEach((item, i) => {
+  surface.rows.slice(start, end).forEach((item) => {
     const label =
       'path' in item
         ? item.path

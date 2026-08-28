@@ -128,8 +128,8 @@ describe('AnsiFullscreenRenderer', () => {
       ),
       cursor: { rowKey: 'a', column: 1 },
     })
-    expect(output.join('')).toMatch(
-      /^\u001b\[\?25l\u001b\[2;1H\u001b\[2Knext\u001b\[2;2H\u001b\[\?25h$/u,
+    expect(output.join('')).toBe(
+      '\u001b[?25l\u001b[2;1H\u001b[2Knext\u001b[2;2H\u001b[?25h',
     )
   })
 

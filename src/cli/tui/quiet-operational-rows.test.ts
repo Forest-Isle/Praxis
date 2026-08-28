@@ -25,6 +25,11 @@ const options = (
   ...overrides,
 })
 
+const required = <T>(value: T | undefined, label: string): T => {
+  if (value === undefined) throw new Error(`Missing ${label}`)
+  return value
+}
+
 function helpCommands(focusedIndex: number): TuiHelpSurfaceModel {
   return {
     kind: 'help',
@@ -91,7 +96,10 @@ describe('projectQuietOperationalRows', () => {
     )
     expect(
       minimal.some((row) =>
-        row.segments.some((segment) => /[\u001b\u009b]/u.test(segment.text)),
+        row.segments.some(
+          (segment) =>
+            segment.text.includes('\u001b') || segment.text.includes('\u009b'),
+        ),
       ),
     ).toBe(false)
 
@@ -208,7 +216,7 @@ describe('projectQuietOperationalRows', () => {
       ...surface,
       view: {
         kind: 'file-detail',
-        file: summary.files[3]!,
+        file: required(summary.files[3], 'diff file'),
         patchRows: [
           { id: 'plus', text: '+added', kind: 'added', absoluteIndex: 1 },
           { id: 'minus', text: '-removed', kind: 'removed', absoluteIndex: 2 },
@@ -272,7 +280,9 @@ describe('projectQuietOperationalRows', () => {
       options({ maxItems: 1, screenReader: true }),
     )
     const broken = listRows.find((row) => row.key.endsWith(':broken'))
-    expect(rowText(broken!)).toContain('Selected: ! broken')
+    expect(rowText(required(broken, 'broken MCP row'))).toContain(
+      'Selected: ! broken',
+    )
     expect(broken?.segments[0]?.role).toBe('error')
     expect(broken?.accessibleText).toBe('Selected: broken, failed')
 
@@ -342,7 +352,9 @@ describe('projectQuietOperationalRows', () => {
       options({ maxItems: 1, screenReader: true }),
     )
     const selected = listRows.find((row) => row.key === 'quiet:task:three')
-    expect(rowText(selected!)).toContain('Selected: ! workflow · failed')
+    expect(rowText(required(selected, 'selected task row'))).toContain(
+      'Selected: ! workflow · failed',
+    )
     expect(selected?.segments[0]?.role).toBe('error')
 
     const detail: TuiTaskSurfaceModel = {
@@ -380,7 +392,12 @@ describe('projectQuietOperationalRows', () => {
 
     const huge: TuiTaskSurfaceModel = {
       ...detail,
-      tasks: [{ ...detail.tasks[0]!, output: 'x'.repeat(40_000) }],
+      tasks: [
+        {
+          ...required(detail.tasks[0], 'detail task'),
+          output: 'x'.repeat(40_000),
+        },
+      ],
       state: { depth: 'detail', selectedIndex: 0, scrollOffset: 0 },
     }
     const hugeRows = projectQuietOperationalRows(huge, options({ maxItems: 2 }))
@@ -491,7 +508,7 @@ describe('projectQuietOperationalRows', () => {
       kind: 'rewind-panel',
       view: 'confirm',
       points,
-      point: points[0]!,
+      point: required(points[0], 'rewind point'),
       selectedIndex: 0,
       actions: [
         { action: 'conversation', label: 'Restore conversation' },
@@ -504,7 +521,9 @@ describe('projectQuietOperationalRows', () => {
       options({ maxItems: 1 }),
     )
     const restore = confirmRows.find((row) => row.key.endsWith(':conversation'))
-    expect(rowText(restore!)).toBe('❯ Restore conversation')
+    expect(rowText(required(restore, 'restore action row'))).toBe(
+      '❯ Restore conversation',
+    )
     expect(restore?.segments[0]?.role).toBe('warning')
 
     const cancelRows = projectQuietOperationalRows(
@@ -517,7 +536,7 @@ describe('projectQuietOperationalRows', () => {
       kind: 'rewind-panel',
       view: 'context',
       points,
-      point: points[0]!,
+      point: required(points[0], 'context rewind point'),
       direction: 'from',
       context: 'oldest\nmiddle\nnewest',
     }
