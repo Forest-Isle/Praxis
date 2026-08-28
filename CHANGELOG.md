@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.43.0](https://github.com/Forest-Isle/Praxis/compare/v0.42.1...v0.43.0) (2026-08-28)
+
+
+### Features
+
+* make self-updates transactional ([#486](https://github.com/Forest-Isle/Praxis/issues/486)) ([8eaa273](https://github.com/Forest-Isle/Praxis/commit/8eaa2730824fcd68e7ef1d9f061f6b5d0aba3cea)), closes [#182](https://github.com/Forest-Isle/Praxis/issues/182)
+
 ## [0.42.1](https://github.com/Forest-Isle/Praxis/compare/v0.42.0...v0.42.1) (2026-08-28)
 
 
