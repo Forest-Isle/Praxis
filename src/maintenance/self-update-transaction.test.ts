@@ -49,7 +49,8 @@ async function makeFixture(): Promise<Fixture> {
   await mkdir(join(packageRoot, 'dist'), { recursive: true })
   await mkdir(dirname(binPath), { recursive: true })
   const oldManifest = JSON.stringify({ name: packageName, version: oldVersion })
-  const oldCli = `export async function run(argv) { if (argv[0] === '--version') console.log(${JSON.stringify(oldVersion)}); return 0 }\n`
+  const oldCli =
+    "export async function run(argv) { if (argv[0] === '--version') console.log('1.0.0'); return 0 }\n"
   await writeFile(join(packageRoot, 'package.json'), oldManifest)
   await writeFile(join(packageRoot, 'dist', 'cli.js'), oldCli)
   await symlink(join(packageRoot, 'dist', 'cli.js'), binPath)
