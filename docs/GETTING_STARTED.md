@@ -121,6 +121,19 @@ treated as user-authorized. Tool permission bypass does not grant workspace
 trust. Safe and bare modes continue to suppress shared hooks and MCP regardless
 of stored trust.
 
+### Bound MCP operations
+
+MCP startup and discovery use a 10-second absolute bound by default. Set
+`MCP_TIMEOUT` to a strict positive safe-integer millisecond value to override
+it. MCP tool calls use a separate 60-second bound; override it with
+`MCP_TOOL_TIMEOUT`. Invalid values stop service construction before any
+configured MCP transport starts.
+
+When a server disconnects, stale tools, resources, prompts, and instructions
+are hidden. An invocation that has not dispatched yet may share a bounded
+reconnect; an already-dispatched tool call is never replayed. A later
+invocation can reconnect and try again.
+
 ## Resume and inspect work
 
 ```sh

@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, open, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -11,7 +10,6 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import {
   ElicitRequestSchema,
   ElicitationCompleteNotificationSchema,
-  PromptListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js'
 import type {
   ElicitRequest,
@@ -45,6 +43,11 @@ import {
   loadMcpOAuthProvider,
   mcpOAuthServerIdentity,
 } from './claude-mcp-oauth.js'
+import {
+  McpServerSession,
+  type McpServerCatalog,
+  parseMcpSessionTimeouts,
+} from './mcp-server-session.js'
 
 type McpServerConfig =
   | {
@@ -69,7 +72,7 @@ interface ConfiguredServer {
 }
 
 interface ConnectedTool {
-  client: Client
+  session: McpServerSession
   serverName: string
   toolName: string
   definition: ModelToolDefinition
@@ -79,13 +82,13 @@ interface ConnectedTool {
 }
 
 interface ConnectedResourceServer {
-  client: Client
+  session: McpServerSession
   resources: readonly Record<string, unknown>[]
   sensitiveValues: readonly string[]
 }
 
 interface ConnectedPrompt {
-  client: Client
+  session: McpServerSession
   serverName: string
   rawPromptName: string
   rawArgumentNames: readonly string[]
@@ -94,11 +97,6 @@ interface ConnectedPrompt {
   userFacingName: string
   description: string
   argumentNames: readonly string[]
-  sensitiveValues: readonly string[]
-}
-
-interface ReconnectableServer {
-  config: McpServerConfig
   sensitiveValues: readonly string[]
 }
 
@@ -179,6 +177,7 @@ export interface ClaudeMcpToolRegistryOptions {
   configRoot?: string
   onWarning?: (message: string) => void
   signal?: AbortSignal
+  environment?: NodeJS.ProcessEnv
   eventSink?: RuntimeEventSink
   onPromptsChanged?: (prompts: readonly ClaudeMcpPromptDefinition[]) => void
   onInstructionsChanged?: (
@@ -199,11 +198,6 @@ export interface ClaudeMcpToolRegistryOptions {
   }>
 }
 
-const MAX_TOOL_PAGES = 100
-const MAX_TOOLS = 10_000
-const MAX_RESOURCE_PAGES = 100
-const MAX_PROMPT_PAGES = 100
-
 function normalizeMcpName(name: string): string {
   return name.replace(/[^a-zA-Z0-9_-]/gu, '_')
 }
@@ -217,11 +211,7 @@ function sanitizeMcpUnicode(value: string): string {
       '',
     )
 }
-const MAX_RESOURCES = 10_000
-const MAX_PROMPTS = 10_000
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024
-const DISCOVERY_TIMEOUT_MS = 10_000
-const RESOURCE_TIMEOUT_MS = 30_000
 const NO_MCP_RESOURCES =
   'No resources found. MCP servers may still provide tools even if they have no resources.'
 
@@ -574,11 +564,12 @@ function parsePermissionResult(
 function configSensitiveValues(
   config: McpServerConfig,
   additional: readonly string[] = [],
+  environment: NodeJS.ProcessEnv = process.env,
 ): readonly string[] {
   return [
     ...new Set([
       ...sensitiveEnvironmentValues(
-        process.env,
+        environment,
         config.type === 'stdio' ? config.env : config.headers,
       ),
       ...additional,
@@ -606,11 +597,6 @@ function optionalString(
     throw new Error(`${name} must be a non-empty string`)
   }
   return value
-}
-
-function requestSignal(signal: AbortSignal | undefined, timeout: number) {
-  const timeoutSignal = AbortSignal.timeout(timeout)
-  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
 }
 
 function resourceExtension(mimeType: unknown): string {
@@ -1054,26 +1040,30 @@ async function resourceContent(
 
 export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   private readonly connectedTools = new Map<string, ConnectedTool>()
+  private readonly toolRoutes = new Map<string, ConnectedTool>()
   private readonly reservedTools = new Set<string>()
   private readonly resourceServers = new Map<string, ConnectedResourceServer>()
+  private readonly resourceRoutes = new Map<string, ConnectedResourceServer>()
   private readonly promptServers = new Map<string, readonly ConnectedPrompt[]>()
   private readonly statuses = new Map<string, ClaudeMcpServerStatus>()
-  private readonly clients = new Set<Client>()
-  private readonly serverClients = new Map<string, Client>()
-  private readonly reconnectableServers = new Map<string, ReconnectableServer>()
+  private readonly sessions = new Map<string, McpServerSession>()
+  private readonly serverSensitiveValues = new Map<string, readonly string[]>()
   private readonly serverCapabilities = new Map<
     string,
     readonly ('tools' | 'resources' | 'prompts')[]
   >()
   private readonly serverInstructions = new Map<string, string>()
-  private readonly reconnectingServers = new Map<string, Promise<void>>()
   private readonly promptOperations = new Set<Promise<unknown>>()
   private promptResultDirectoryPromise: Promise<string> | undefined
   private closePromise: Promise<void> | undefined
   private generation = 0
   private closed = false
 
-  private constructor(private readonly options: ClaudeMcpToolRegistryOptions) {}
+  private readonly timeouts: ReturnType<typeof parseMcpSessionTimeouts>
+
+  private constructor(private readonly options: ClaudeMcpToolRegistryOptions) {
+    this.timeouts = parseMcpSessionTimeouts(options.environment ?? process.env)
+  }
 
   static async connect(
     options: ClaudeMcpToolRegistryOptions,
@@ -1140,7 +1130,14 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   }
 
   async reconnect(name: string): Promise<void> {
-    await this.reconnectServer(name)
+    try {
+      await this.reconnectServer(name)
+    } catch (error) {
+      throw redactSensitiveError(
+        error,
+        this.serverSensitiveValues.get(name) ?? [],
+      )
+    }
   }
 
   async authenticate(name: string): Promise<void> {
@@ -1148,24 +1145,32 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     if (!this.options.authenticateServer) {
       throw new Error('MCP authentication is not available in this runtime')
     }
-    await this.options.authenticateServer(name)
-    await this.reconnectServer(name)
+    try {
+      await this.options.authenticateServer(name)
+      await this.reconnectServer(name)
+    } catch (error) {
+      throw redactSensitiveError(
+        error,
+        this.serverSensitiveValues.get(name) ?? [],
+      )
+    }
   }
 
   async reload(): Promise<void> {
     if (this.closed) throw new Error('MCP registry is closed')
     this.generation += 1
-    const clients = [...this.serverClients.values()]
-    this.serverClients.clear()
-    await Promise.allSettled(clients.map((client) => client.close()))
-    for (const client of clients) this.clients.delete(client)
+    const sessions = [...this.sessions.values()]
+    this.sessions.clear()
     this.connectedTools.clear()
-    this.reservedTools.clear()
+    this.toolRoutes.clear()
     this.resourceServers.clear()
+    this.resourceRoutes.clear()
     this.promptServers.clear()
-    this.statuses.clear()
-    this.reconnectableServers.clear()
     this.serverCapabilities.clear()
+    await Promise.allSettled(sessions.map((session) => session.close()))
+    this.reservedTools.clear()
+    this.statuses.clear()
+    this.serverSensitiveValues.clear()
     this.serverInstructions.clear()
     const ambientSensitiveValues = sensitiveEnvironmentValues(process.env)
     const warn = (message: string) =>
@@ -1241,6 +1246,9 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         ? { onElicitation: this.options.onElicitation }
         : {}),
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(this.options.environment
+        ? { environment: this.options.environment }
+        : {}),
     })
     return { tools, close: () => tools.close() }
   }
@@ -1270,10 +1278,14 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         )
         continue
       }
-      this.reconnectableServers.set(server.name, {
-        config,
-        sensitiveValues: server.sensitiveValues ?? [],
-      })
+      this.serverSensitiveValues.set(
+        server.name,
+        configSensitiveValues(
+          config,
+          server.sensitiveValues ?? [],
+          this.options.environment ?? process.env,
+        ),
+      )
       await this.connectServer(server.name, config, server.sensitiveValues)
     }
     this.publishPrompts()
@@ -1297,7 +1309,6 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
                 prompt,
                 argumentsText,
                 options?.signal,
-                true,
                 options?.toolResultDirectory,
               ),
             ),
@@ -1313,7 +1324,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     call: ModelToolCall,
     originalCall?: ModelToolCall,
   ) => Promise<PermissionApproval> {
-    if (!this.connectedTools.has(name)) {
+    if (!this.toolRoutes.has(name)) {
       const available = [...this.connectedTools.keys()].join(', ') || 'none'
       throw new Error(
         `MCP tool ${name} (from --permission-prompt-tool) not found. Available MCP tools: ${available}`,
@@ -1321,11 +1332,11 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     }
     this.reservedTools.add(name)
     return async (call, originalCall = call) => {
-      const tool = this.connectedTools.get(name)
+      const tool = this.toolRoutes.get(name)
       if (!tool) return invalidPermissionResult()
       let result
       try {
-        result = await tool.client.callTool(
+        result = await tool.session.callTool(
           {
             name: tool.toolName,
             arguments: {
@@ -1335,8 +1346,7 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
             },
             _meta: { 'claudecode/toolUseId': originalCall.id },
           },
-          undefined,
-          this.options.signal ? { signal: this.options.signal } : undefined,
+          this.options.signal,
         )
       } catch {
         return invalidPermissionResult()
@@ -1385,14 +1395,13 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     if (call.name === 'ReadMcpResourceTool') {
       return this.readResource(call.input, context)
     }
-    const tool = this.connectedTools.get(call.name)
+    const tool = this.toolRoutes.get(call.name)
     if (!tool) return this.options.base.execute(call, context)
     let result
     try {
-      result = await tool.client.callTool(
+      result = await tool.session.callTool(
         { name: tool.toolName, arguments: call.input },
-        undefined,
-        context.signal ? { signal: context.signal } : undefined,
+        context.signal,
       )
     } catch (error) {
       throw redactSensitiveError(error, tool.sensitiveValues)
@@ -1410,19 +1419,36 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   }
 
   private async finishClose(): Promise<void> {
-    await Promise.allSettled([...this.clients].map((client) => client.close()))
-    await Promise.allSettled([
-      ...this.reconnectingServers.values(),
-      ...this.promptOperations,
-    ])
-    await Promise.allSettled([...this.clients].map((client) => client.close()))
-    this.clients.clear()
-    this.serverClients.clear()
+    await Promise.allSettled(
+      [...this.sessions.values()].map((session) => session.close()),
+    )
+    await this.awaitPromptOperationsBounded()
+    this.sessions.clear()
+    this.connectedTools.clear()
+    this.toolRoutes.clear()
+    this.resourceServers.clear()
+    this.resourceRoutes.clear()
+    this.promptServers.clear()
+    this.serverCapabilities.clear()
     this.serverInstructions.clear()
     const directory = await this.promptResultDirectoryPromise?.catch(
       () => undefined,
     )
     if (directory) await rm(directory, { recursive: true, force: true })
+  }
+
+  private async awaitPromptOperationsBounded(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      let settled = false
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve()
+      }
+      const timer = setTimeout(finish, this.timeouts.connectionTimeoutMs)
+      void Promise.allSettled([...this.promptOperations]).then(finish, finish)
+    })
   }
 
   private listResources(input: Record<string, unknown>): ToolExecutionResult {
@@ -1465,16 +1491,16 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   ): Promise<ToolExecutionResult> {
     const serverName = requiredString(input, 'server')
     const uri = requiredString(input, 'uri')
-    const server = this.resourceServer(serverName)
+    const server =
+      this.resourceServers.get(serverName) ??
+      this.resourceRoutes.get(serverName)
+    if (!server) {
+      this.resourceServer(serverName)
+      throw new Error(`Server "${serverName}" is not connected`)
+    }
     let result
     try {
-      result = await server.client.readResource(
-        { uri },
-        {
-          timeout: RESOURCE_TIMEOUT_MS,
-          signal: requestSignal(context.signal, RESOURCE_TIMEOUT_MS),
-        },
-      )
+      result = await server.session.readResource({ uri }, context.signal)
     } catch (error) {
       if (context.signal?.aborted) throw error
       if (isMissingResourceError(error)) {
@@ -1523,170 +1549,90 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     const sensitiveValues = configSensitiveValues(
       config,
       additionalSensitiveValues,
+      this.options.environment ?? process.env,
     )
-    const client = new Client(
-      { name: 'praxis', version: '0.1.0' },
-      {
-        capabilities: {
-          elicitation: {
-            form: { applyDefaults: true },
-            url: {},
-          },
-        },
-      },
-    )
-    this.clients.add(client)
-    client.onclose = () => {
-      this.clients.delete(client)
-      if (this.closed || this.serverClients.get(serverName) !== client) return
-      this.serverCapabilities.delete(serverName)
-      this.serverInstructions.delete(serverName)
-      this.statuses.set(serverName, { name: serverName, status: 'failed' })
-      this.publishInstructions()
-    }
-    client.setRequestHandler(ElicitRequestSchema, async (request) => {
-      if (!this.options.onElicitation) return { action: 'decline' }
-      return (await this.options.onElicitation({
-        serverName,
-        message: redactSensitiveText(request.params.message, sensitiveValues),
-        ...(request.params.mode ? { mode: request.params.mode } : {}),
-        ...('url' in request.params
-          ? { url: redactSensitiveText(request.params.url, sensitiveValues) }
-          : {}),
-        ...('elicitationId' in request.params
-          ? { elicitationId: request.params.elicitationId }
-          : {}),
-        ...('requestedSchema' in request.params
-          ? {
-              requestedSchema: redactSensitiveValue(
-                request.params.requestedSchema,
-                sensitiveValues,
-              ),
-            }
-          : {}),
-      })) as ElicitResult
-    })
-    client.setNotificationHandler(
-      ElicitationCompleteNotificationSchema,
-      async (notification) => {
-        this.options.eventSink?.({
-          type: 'elicitation-complete',
-          mcpServerName: serverName,
-          elicitationId: notification.params.elicitationId,
-        })
-      },
-    )
-    const discoverySignal = requestSignal(
-      this.options.signal,
-      DISCOVERY_TIMEOUT_MS,
-    )
-    try {
-      const configRoot = this.options.configRoot ?? join(homedir(), '.praxis')
-      await client.connect(
-        (await transport(
+    const session = new McpServerSession({
+      serverName,
+      connectionTimeoutMs: this.timeouts.connectionTimeoutMs,
+      toolTimeoutMs: this.timeouts.toolTimeoutMs,
+      ...(this.options.signal ? { lifetimeSignal: this.options.signal } : {}),
+      createTransport: async () => {
+        const configRoot = this.options.configRoot ?? join(homedir(), '.praxis')
+        return (await transport(
           serverName,
           config,
           this.options.cwd,
           configRoot,
-        )) as Transport,
-        {
-          timeout: DISCOVERY_TIMEOUT_MS,
-          signal: discoverySignal,
-        },
-      )
-      const capabilities = client.getServerCapabilities()
-      const tools = capabilities?.tools
-        ? await this.discoverTools(client, serverName, sensitiveValues)
-        : []
-      const resources = capabilities?.resources
-        ? await this.discoverResources(client, serverName, sensitiveValues)
-        : []
-      const prompts = capabilities?.prompts
-        ? await this.discoverPrompts(client, serverName, sensitiveValues)
-        : []
-      const connectedTools = new Map<string, ConnectedTool>()
-      for (const tool of tools) {
-        const name = `mcp__${normalizeMcpName(serverName)}__${normalizeMcpName(tool.name)}`
-        if (redactSensitiveText(name, sensitiveValues) !== name) {
-          throw new Error('MCP tool name contains sensitive data')
-        }
-        if (this.connectedTools.has(name) || connectedTools.has(name)) {
-          throw new Error(`Duplicate MCP tool ${name}`)
-        }
-        const inputIsValid = schedulingInputValidator(tool.inputSchema)
-        connectedTools.set(name, {
-          client,
-          serverName,
-          toolName: tool.name,
-          readOnly: tool.annotations?.readOnlyHint === true,
-          ...(inputIsValid ? { schedulingInputIsValid: inputIsValid } : {}),
-          sensitiveValues,
-          definition: {
-            name,
-            description: redactSensitiveText(
-              tool.description ?? `MCP tool ${tool.name} from ${serverName}`,
+        )) as unknown as Transport
+      },
+      configureClient: (client) => {
+        client.setRequestHandler(ElicitRequestSchema, async (request) => {
+          if (!this.options.onElicitation) return { action: 'decline' }
+          return (await this.options.onElicitation({
+            serverName,
+            message: redactSensitiveText(
+              request.params.message,
               sensitiveValues,
             ),
-            inputSchema: redactSensitiveValue(
-              tool.inputSchema,
-              sensitiveValues,
-            ),
+            ...(request.params.mode ? { mode: request.params.mode } : {}),
+            ...('url' in request.params
+              ? {
+                  url: redactSensitiveText(request.params.url, sensitiveValues),
+                }
+              : {}),
+            ...('elicitationId' in request.params
+              ? { elicitationId: request.params.elicitationId }
+              : {}),
+            ...('requestedSchema' in request.params
+              ? {
+                  requestedSchema: redactSensitiveValue(
+                    request.params.requestedSchema,
+                    sensitiveValues,
+                  ),
+                }
+              : {}),
+          })) as ElicitResult
+        })
+        client.setNotificationHandler(
+          ElicitationCompleteNotificationSchema,
+          async (notification) => {
+            this.options.eventSink?.({
+              type: 'elicitation-complete',
+              mcpServerName: serverName,
+              elicitationId: notification.params.elicitationId,
+            })
           },
-        })
-      }
-      this.assertOpenGeneration(expectedGeneration)
-      this.serverClients.set(serverName, client)
-      this.serverCapabilities.set(serverName, [
-        ...(capabilities?.tools ? (['tools'] as const) : []),
-        ...(capabilities?.resources ? (['resources'] as const) : []),
-        ...(capabilities?.prompts ? (['prompts'] as const) : []),
-      ])
-      const serverInstruction = client.getInstructions()?.trim()
-      if (serverInstruction) {
-        this.serverInstructions.set(
-          serverName,
-          redactSensitiveText(serverInstruction, sensitiveValues),
         )
-      } else {
-        this.serverInstructions.delete(serverName)
-      }
-      for (const [name, tool] of connectedTools)
-        this.connectedTools.set(name, tool)
-      if (capabilities?.resources) {
-        this.resourceServers.set(serverName, {
-          client,
-          resources,
-          sensitiveValues,
-        })
-      }
-      if (capabilities?.prompts) {
-        this.promptServers.set(serverName, prompts)
-        if (capabilities.prompts.listChanged) {
-          client.setNotificationHandler(
-            PromptListChangedNotificationSchema,
-            async () => {
-              const refreshed = await this.discoverPrompts(
-                client,
-                serverName,
-                sensitiveValues,
-              )
-              if (this.closed || this.serverClients.get(serverName) !== client)
-                return
-              this.promptServers.set(serverName, refreshed)
-              this.publishPrompts()
-            },
-          )
-        }
-      }
+      },
+      onDisconnected: () => {
+        if (this.closed || this.sessions.get(serverName) !== session) return
+        this.removeServerPublication(serverName)
+        this.statuses.set(serverName, { name: serverName, status: 'failed' })
+        this.publishPrompts()
+        this.publishInstructions()
+      },
+      onCatalogChanged: (catalog) => {
+        if (
+          this.closed ||
+          expectedGeneration !== this.generation ||
+          this.sessions.get(serverName) !== session
+        )
+          return
+        this.publishCatalog(serverName, session, catalog, sensitiveValues)
+      },
+      onDiscoveryWarning: (kind, error) => {
+        this.warnDiscovery(serverName, kind, error, sensitiveValues)
+      },
+    })
+    this.sessions.set(serverName, session)
+    try {
+      await session.connect()
       this.statuses.set(serverName, {
         name: serverName,
         status: 'connected',
         statusDetail: 'connected',
       })
-      this.publishInstructions()
     } catch (error) {
-      await client.close().catch(() => undefined)
-      this.clients.delete(client)
       if (
         this.options.signal?.aborted ||
         this.closed ||
@@ -1713,148 +1659,18 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     }
   }
 
-  private async discoverTools(
-    client: Client,
-    serverName: string,
-    sensitiveValues: readonly string[],
-  ) {
-    try {
-      const tools = []
-      let cursor: string | undefined
-      const cursors = new Set<string>()
-      let pages = 0
-      do {
-        if (cursor && cursors.has(cursor)) {
-          throw new Error('Repeated MCP tools cursor')
-        }
-        if (cursor) cursors.add(cursor)
-        if (++pages > MAX_TOOL_PAGES) {
-          throw new Error('MCP tools page limit exceeded')
-        }
-        const page = await client.listTools(cursor ? { cursor } : undefined, {
-          timeout: DISCOVERY_TIMEOUT_MS,
-          signal: requestSignal(this.options.signal, DISCOVERY_TIMEOUT_MS),
-        })
-        tools.push(...page.tools)
-        if (tools.length > MAX_TOOLS) {
-          throw new Error('MCP tool limit exceeded')
-        }
-        cursor = page.nextCursor
-      } while (cursor)
-      return tools
-    } catch (error) {
-      if (this.options.signal?.aborted) throw error
-      this.warnDiscovery(serverName, 'tools', error, sensitiveValues)
-      return []
-    }
-  }
-
-  private async discoverResources(
-    client: Client,
-    serverName: string,
-    sensitiveValues: readonly string[],
-  ): Promise<readonly Record<string, unknown>[]> {
-    try {
-      const resources: Record<string, unknown>[] = []
-      let cursor: string | undefined
-      const cursors = new Set<string>()
-      let pages = 0
-      do {
-        if (cursor && cursors.has(cursor)) {
-          throw new Error('Repeated MCP resources cursor')
-        }
-        if (cursor) cursors.add(cursor)
-        if (++pages > MAX_RESOURCE_PAGES) {
-          throw new Error('MCP resources page limit exceeded')
-        }
-        const page = await client.listResources(
-          cursor ? { cursor } : undefined,
-          {
-            timeout: DISCOVERY_TIMEOUT_MS,
-            signal: requestSignal(this.options.signal, DISCOVERY_TIMEOUT_MS),
-          },
-        )
-        resources.push(...page.resources.map((resource) => ({ ...resource })))
-        if (resources.length > MAX_RESOURCES) {
-          throw new Error('MCP resource limit exceeded')
-        }
-        cursor = page.nextCursor
-      } while (cursor)
-      return resources
-    } catch (error) {
-      if (this.options.signal?.aborted) throw error
-      this.warnDiscovery(serverName, 'resources', error, sensitiveValues)
-      return []
-    }
-  }
-
-  private async discoverPrompts(
-    client: Client,
-    serverName: string,
-    sensitiveValues: readonly string[],
-  ): Promise<readonly ConnectedPrompt[]> {
-    try {
-      const prompts = []
-      let cursor: string | undefined
-      const cursors = new Set<string>()
-      let pages = 0
-      do {
-        if (cursor && cursors.has(cursor)) {
-          throw new Error('Repeated MCP prompts cursor')
-        }
-        if (cursor) cursors.add(cursor)
-        if (++pages > MAX_PROMPT_PAGES) {
-          throw new Error('MCP prompts page limit exceeded')
-        }
-        const page = await client.listPrompts(cursor ? { cursor } : undefined, {
-          timeout: DISCOVERY_TIMEOUT_MS,
-          signal: requestSignal(this.options.signal, DISCOVERY_TIMEOUT_MS),
-        })
-        prompts.push(...page.prompts)
-        if (prompts.length > MAX_PROMPTS) {
-          throw new Error('MCP prompt limit exceeded')
-        }
-        cursor = page.nextCursor
-      } while (cursor)
-      return prompts.map((prompt) => {
-        const promptName = sanitizeMcpUnicode(prompt.name)
-        const name = `mcp__${normalizeMcpName(serverName)}__${promptName}`
-        return {
-          client,
-          serverName,
-          rawPromptName: prompt.name,
-          rawArgumentNames: (prompt.arguments ?? []).map(
-            (argument) => argument.name,
-          ),
-          promptName,
-          name,
-          userFacingName: `${serverName}:${promptName} (MCP)`,
-          description: redactSensitiveText(
-            sanitizeMcpUnicode(prompt.description ?? ''),
-            sensitiveValues,
-          ),
-          argumentNames: (prompt.arguments ?? []).map((argument) =>
-            sanitizeMcpUnicode(argument.name),
-          ),
-          sensitiveValues,
-        }
-      })
-    } catch (error) {
-      if (this.options.signal?.aborted) throw error
-      this.warnDiscovery(serverName, 'prompts', error, sensitiveValues)
-      return []
-    }
-  }
-
   private async invokePrompt(
     prompt: ConnectedPrompt,
     argumentsText: string,
     signal?: AbortSignal,
-    allowReconnect = true,
     toolResultDirectory?: string,
   ): Promise<ClaudeMcpPromptResult> {
     if (this.closed) throw new Error('MCP registry is closed')
-    prompt = await this.ensurePromptConnected(prompt)
+    try {
+      prompt = await this.ensurePromptConnected(prompt)
+    } catch (error) {
+      throw redactSensitiveError(error, prompt.sensitiveValues)
+    }
     const values = argumentsText.split(' ')
     const argumentsRecord: Record<string, string> = {}
     const argumentCount = Math.min(
@@ -1870,32 +1686,11 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     }
     let result
     try {
-      result = await prompt.client.getPrompt(
+      result = await prompt.session.getPrompt(
         { name: prompt.rawPromptName, arguments: argumentsRecord },
-        {
-          timeout: RESOURCE_TIMEOUT_MS,
-          signal: requestSignal(
-            signal ?? this.options.signal,
-            RESOURCE_TIMEOUT_MS,
-          ),
-        },
+        signal ?? this.options.signal,
       )
     } catch (error) {
-      if (
-        !signal?.aborted &&
-        !this.options.signal?.aborted &&
-        this.statuses.get(prompt.serverName)?.status === 'failed' &&
-        allowReconnect
-      ) {
-        prompt = await this.ensurePromptConnected(prompt, true)
-        return this.invokePrompt(
-          prompt,
-          argumentsText,
-          signal,
-          false,
-          toolResultDirectory,
-        )
-      }
       throw redactSensitiveError(error, prompt.sensitiveValues)
     }
     const promptResultDirectory =
@@ -1921,26 +1716,18 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     prompt: ConnectedPrompt,
     force = false,
   ): Promise<ConnectedPrompt> {
-    const currentClient = this.serverClients.get(prompt.serverName)
+    const session = this.sessions.get(prompt.serverName)
     if (
       !force &&
-      currentClient === prompt.client &&
+      session === prompt.session &&
+      session?.isConnected() &&
       this.statuses.get(prompt.serverName)?.status === 'connected'
     ) {
       return prompt
     }
-    let reconnecting = this.reconnectingServers.get(prompt.serverName)
-    if (!reconnecting) {
-      reconnecting = this.reconnectServer(prompt.serverName)
-      this.reconnectingServers.set(prompt.serverName, reconnecting)
-      const clearReconnect = () => {
-        if (this.reconnectingServers.get(prompt.serverName) === reconnecting) {
-          this.reconnectingServers.delete(prompt.serverName)
-        }
-      }
-      void reconnecting.then(clearReconnect, clearReconnect)
-    }
-    await reconnecting
+    if (!session)
+      throw new Error(`MCP server ${prompt.serverName} cannot reconnect`)
+    await session.reconnect()
     const refreshed = this.promptServers
       .get(prompt.serverName)
       ?.find((candidate) => candidate.rawPromptName === prompt.rawPromptName)
@@ -1954,15 +1741,12 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
 
   private async reconnectServer(serverName: string): Promise<void> {
     if (this.closed) throw new Error('MCP registry is closed')
-    const expectedGeneration = this.generation
-    const reconnectable = this.reconnectableServers.get(serverName)
-    if (!reconnectable)
-      throw new Error(`MCP server ${serverName} cannot reconnect`)
-    const previous = this.serverClients.get(serverName)
-    this.serverClients.delete(serverName)
-    await previous?.close().catch(() => undefined)
-    if (previous) this.clients.delete(previous)
-    this.assertOpenGeneration(expectedGeneration)
+    const session = this.sessions.get(serverName)
+    if (!session) throw new Error(`MCP server ${serverName} cannot reconnect`)
+    await session.reconnect()
+  }
+
+  private removeServerPublication(serverName: string): void {
     for (const [name, tool] of this.connectedTools) {
       if (tool.serverName === serverName) this.connectedTools.delete(name)
     }
@@ -1970,16 +1754,107 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     this.promptServers.delete(serverName)
     this.serverCapabilities.delete(serverName)
     this.serverInstructions.delete(serverName)
-    await this.connectServer(
-      serverName,
-      reconnectable.config,
-      reconnectable.sensitiveValues,
-      expectedGeneration,
-    )
-    if (this.statuses.get(serverName)?.status !== 'connected') {
-      throw new Error(`MCP server ${serverName} could not reconnect`)
+  }
+
+  private removeServerRoutes(serverName: string): void {
+    for (const [name, tool] of this.toolRoutes) {
+      if (tool.serverName === serverName) this.toolRoutes.delete(name)
     }
+    this.resourceRoutes.delete(serverName)
+  }
+
+  private publishCatalog(
+    serverName: string,
+    session: McpServerSession,
+    catalog: McpServerCatalog,
+    sensitiveValues: readonly string[],
+  ): void {
+    const stagedTools = new Map<string, ConnectedTool>()
+    for (const tool of catalog.tools) {
+      const name = `mcp__${normalizeMcpName(serverName)}__${normalizeMcpName(tool.name)}`
+      if (redactSensitiveText(name, sensitiveValues) !== name) {
+        throw new Error('MCP tool name contains sensitive data')
+      }
+      if (
+        stagedTools.has(name) ||
+        [...this.connectedTools.entries()].some(
+          ([existingName, existingTool]) =>
+            existingName === name && existingTool.serverName !== serverName,
+        )
+      )
+        throw new Error(`Duplicate MCP tool ${name}`)
+      const inputIsValid = schedulingInputValidator(tool.inputSchema)
+      const connectedTool: ConnectedTool = {
+        session,
+        serverName,
+        toolName: tool.name,
+        readOnly: tool.annotations?.readOnlyHint === true,
+        ...(inputIsValid ? { schedulingInputIsValid: inputIsValid } : {}),
+        sensitiveValues,
+        definition: {
+          name,
+          description: redactSensitiveText(
+            tool.description ?? `MCP tool ${tool.name} from ${serverName}`,
+            sensitiveValues,
+          ),
+          inputSchema: redactSensitiveValue(tool.inputSchema, sensitiveValues),
+        },
+      }
+      stagedTools.set(name, connectedTool)
+    }
+    const stagedResource = catalog.capabilities.includes('resources')
+      ? { session, resources: catalog.resources, sensitiveValues }
+      : undefined
+    const stagedPrompts = catalog.capabilities.includes('prompts')
+      ? catalog.prompts.map((prompt) => {
+          const promptName = sanitizeMcpUnicode(prompt.name)
+          return {
+            session,
+            serverName,
+            rawPromptName: prompt.name,
+            rawArgumentNames: (prompt.arguments ?? []).map(
+              (argument) => argument.name,
+            ),
+            promptName,
+            name: `mcp__${normalizeMcpName(serverName)}__${promptName}`,
+            userFacingName: `${serverName}:${promptName} (MCP)`,
+            description: redactSensitiveText(
+              sanitizeMcpUnicode(prompt.description ?? ''),
+              sensitiveValues,
+            ),
+            argumentNames: (prompt.arguments ?? []).map((argument) =>
+              sanitizeMcpUnicode(argument.name),
+            ),
+            sensitiveValues,
+          }
+        })
+      : []
+
+    this.removeServerPublication(serverName)
+    this.removeServerRoutes(serverName)
+    for (const [name, tool] of stagedTools) {
+      this.connectedTools.set(name, tool)
+      this.toolRoutes.set(name, tool)
+    }
+    this.serverCapabilities.set(serverName, catalog.capabilities)
+    if (catalog.instructions)
+      this.serverInstructions.set(
+        serverName,
+        redactSensitiveText(catalog.instructions, sensitiveValues),
+      )
+    if (stagedResource) {
+      this.resourceServers.set(serverName, stagedResource)
+      this.resourceRoutes.set(serverName, stagedResource)
+    }
+    if (stagedPrompts.length > 0 || catalog.capabilities.includes('prompts'))
+      this.promptServers.set(serverName, stagedPrompts)
+    this.statuses.set(serverName, {
+      name: serverName,
+      status: 'connected',
+      statusDetail: 'connected',
+    })
     this.publishPrompts()
+    this.publishInstructions()
   }
 
   private publishPrompts(): void {
