@@ -12,8 +12,8 @@ const MISSING_FINGERPRINT = 'missing'
 const TRUST_VERSION = 1
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/u
 
-export interface WorkspaceExecutableOrigin {
-  readonly kind: 'hook' | 'mcp'
+export interface WorkspaceTrustOrigin {
+  readonly kind: 'hook' | 'mcp' | 'provider'
   readonly scope: 'project' | 'local'
   readonly path: string
   readonly label: string
@@ -22,7 +22,7 @@ export interface WorkspaceExecutableOrigin {
 export interface WorkspaceTrustInventory {
   readonly canonicalPath: string
   readonly fingerprint: string
-  readonly origins: readonly WorkspaceExecutableOrigin[]
+  readonly origins: readonly WorkspaceTrustOrigin[]
 }
 
 export type WorkspaceTrustStatus = 'not-required' | 'trusted' | 'untrusted'
@@ -86,12 +86,35 @@ export function canonicalizeWorkspaceTrust(
 
 function executableMap(
   resource: JsonResource,
-  kind: WorkspaceExecutableOrigin['kind'],
+  kind: 'hook' | 'mcp',
 ): Record<string, unknown> | null {
   if (!isRecord(resource.value)) return null
   const key = kind === 'hook' ? 'hooks' : 'mcpServers'
   const value = resource.value[key]
   return isRecord(value) && Object.keys(value).length > 0 ? value : null
+}
+
+function providerSelectionMap(
+  resource: JsonResource,
+): Record<string, unknown> | null {
+  if (
+    (resource.scope !== 'project' && resource.scope !== 'local') ||
+    !isRecord(resource.value)
+  )
+    return null
+  const value = resource.value
+  const selection = Object.fromEntries(
+    ['provider', 'providerProfile', 'model']
+      .filter((key) => Object.prototype.hasOwnProperty.call(value, key))
+      .map((key) => [key, value[key]]),
+  )
+  return Object.keys(selection).length > 0 ? selection : null
+}
+
+export function hasWorkspaceProviderSelection(
+  resources: readonly JsonResource[],
+): boolean {
+  return resources.some((resource) => providerSelectionMap(resource) !== null)
 }
 
 export function hasWorkspaceHooks(resource: JsonResource): boolean {
@@ -162,12 +185,12 @@ export async function workspaceTrustInventory(options: {
 }): Promise<WorkspaceTrustInventory> {
   const canonicalPath = await realpath(options.cwd)
   const requestedWorkspace = resolve(options.cwd)
-  const origins: WorkspaceExecutableOrigin[] = []
+  const origins: WorkspaceTrustOrigin[] = []
   const fingerprintEntries: unknown[] = []
 
   const collect = async (
     resources: readonly JsonResource[],
-    kind: WorkspaceExecutableOrigin['kind'],
+    kind: 'hook' | 'mcp',
   ): Promise<void> => {
     for (const resource of resources) {
       if (resource.scope === 'user') continue
@@ -197,6 +220,30 @@ export async function workspaceTrustInventory(options: {
 
   await collect(options.settings ?? [], 'hook')
   await collect(options.mcp ?? [], 'mcp')
+
+  for (const resource of options.settings ?? []) {
+    if (resource.scope === 'user') continue
+    const selection = providerSelectionMap(resource)
+    if (!selection) continue
+    const path = await resolvedResourcePath(
+      canonicalPath,
+      requestedWorkspace,
+      resource.path,
+    )
+    const entry = {
+      kind: 'provider' as const,
+      scope: resource.scope,
+      path,
+      selection,
+    }
+    fingerprintEntries.push(entry)
+    origins.push({
+      kind: 'provider',
+      scope: resource.scope,
+      path,
+      label: 'provider-selection',
+    })
+  }
 
   const sortedEntries = fingerprintEntries
     .map((entry) => canonicalizeWorkspaceTrust(entry))
@@ -234,7 +281,7 @@ function validateInventory(inventory: WorkspaceTrustInventory): void {
     throw new TypeError('Workspace trust fingerprint must be lowercase SHA-256')
   for (const origin of inventory.origins) {
     if (
-      (origin.kind !== 'hook' && origin.kind !== 'mcp') ||
+      !['hook', 'mcp', 'provider'].includes(origin.kind) ||
       (origin.scope !== 'project' && origin.scope !== 'local') ||
       origin.path.length === 0 ||
       origin.label.length === 0

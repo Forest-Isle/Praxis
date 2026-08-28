@@ -35,6 +35,10 @@ authoritative CLI surface.
   controls.
 - [Native-only ADR](adr/0002-native-only-removal.md) — why Praxis uses an
   independent native data plane and local-only product boundary.
+- [Workspace trust ADR](adr/0005-workspace-executable-trust.md) — canonical
+  fingerprint authorization for workspace-controlled resources.
+- [Provider authentication ADR](adr/0006-native-provider-authentication.md) —
+  native provider routing, credential Vault, and experimental Codex OAuth.
 - [Performance Budgets](PERFORMANCE.md) — release performance limits and gate.
 
 ## Maintainer operations

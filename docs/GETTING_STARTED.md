@@ -7,7 +7,8 @@ Praxis supports macOS and Linux and requires:
 - Node.js 24 or newer;
 - npm (included with supported Node.js releases);
 - `ripgrep` (`rg`) for the Grep tool;
-- an API key and model ID for an Anthropic or OpenAI-compatible provider.
+- an API key and model ID for a stable Anthropic or OpenAI-compatible provider,
+  or (experimentally) the Codex OAuth path with its explicit switch and model.
 
 Praxis does not authenticate with a Claude subscription. Claude Code is used
 only as a clean-room behavioral reference; Praxis owns and stores all runtime
@@ -73,6 +74,95 @@ Praxis bounds every direct, retried, and fallback provider attempt with a
 positive integer millisecond override such as
 `PRAXIS_PROVIDER_DEADLINE_MS=180000`.
 
+### Custom providers and profiles
+
+User provider configuration is `PRAXIS_HOME/settings.json` (default
+`~/.praxis/settings.json`). It contains provider metadata and credential
+references, never key or token values:
+
+```json
+{
+  "provider": "deepseek",
+  "providerProfile": "default",
+  "model": "deepseek-chat",
+  "providers": {
+    "deepseek": {
+      "protocol": "openai-compatible",
+      "profiles": {
+        "default": {
+          "baseUrl": "https://api.deepseek.com/v1",
+          "credential": { "source": "vault" }
+        }
+      }
+    }
+  }
+}
+```
+
+Custom protocols are `openai-compatible` and `anthropic-messages`. Credentials
+may reference an environment variable, an argv `command`, or a native Vault
+profile; these are alternative credential sources. Select a target per session
+with `--provider`, `--provider-profile`, and `--model` (or `PRAXIS_PROVIDER`,
+`PRAXIS_PROVIDER_PROFILE`, and `PRAXIS_MODEL`). Precedence is explicit CLI >
+environment > trusted local selection > trusted project selection > user
+settings > native defaults. Project `.praxis/settings.json` and
+`.praxis/settings.local.json` can select only a provider/profile/model after
+the canonical workspace configuration is trusted; their provider, profile,
+and model selection participates in the same exact canonical realpath
+fingerprint used for hooks and MCP. `--trust-project` approves that fingerprint
+in the same invocation. Symlink aliases reuse the canonical approval, while a
+change to provider/profile/model, scope, or source invalidates it. Project
+settings can select only built-in or globally user-defined profiles; they
+cannot define endpoints, credentials, or helpers. Native
+provider resolution never reads `.claude` settings or credentials.
+
+Store an API key without placing it in settings or command arguments:
+
+```sh
+praxis auth set-key deepseek
+praxis auth status deepseek
+praxis auth logout deepseek
+```
+
+The command reads interactively from the TTY. For automation, stdin is bounded
+and keeps the key out of argv: `printf '%s\n' "$DEEPSEEK_API_KEY" | praxis auth
+set-key deepseek`.
+
+`status` displays metadata only. On macOS Praxis defaults to Keychain and uses
+the file Vault at `$PRAXIS_HOME/.provider-credentials.json` only when Keychain
+is unavailable (directory `0700`, file `0600`, atomic writes). Linux uses the
+file store. `PRAXIS_PROVIDER_CREDENTIAL_STORE=file` explicitly bypasses
+Keychain; arbitrary Keychain errors fail closed.
+
+### Experimental ChatGPT-backed Codex subscription
+
+This is not OpenAI API-key access or Claude subscription authentication. Add
+the opt-in kill switch to `PRAXIS_HOME/settings.json`:
+
+```json
+{ "experimental": { "codexSubscription": true } }
+```
+
+Then use the browser loopback flow, or explicitly choose device authorization:
+
+```sh
+praxis auth login openai-codex --profile work
+praxis auth login openai-codex --profile work --device --no-browser
+PRAXIS_PROVIDER=openai-codex PRAXIS_PROVIDER_PROFILE=work \
+  PRAXIS_MODEL=your-codex-model-id praxis
+praxis auth logout openai-codex --profile work
+```
+
+The provider requires a Vault OAuth record, uses the fixed
+`https://chatgpt.com/backend-api` endpoint, and rejects API keys and base-URL
+overrides. Usage retains token and model usage, but `costUsd` is unavailable
+and omitted: API pricing does not apply. Numeric USD budgets and plugin-eval
+paid LLM judges fail before inference because numeric API-billed cost is
+unavailable; subscription usage is never treated as zero or free. The
+subscription OAuth/backend contract is not documented by OpenAI as a stable
+third-party API; expect it to change. The switch disables login and inference
+when false.
+
 ## Run the first session
 
 Start in a project directory:
@@ -99,15 +189,17 @@ praxis -p --output-format json "List the risky changes"
 Praxis asks before protected tool actions unless settings or CLI rules already
 allow or deny them. Review every command and write request before approving it.
 
-### Trust project executables
+### Trust workspace-controlled configuration
 
-Praxis discovers project/local hook and MCP configuration as inert data and
-blocks it by default. On interactive startup, review the canonical workspace
-path and every displayed executable origin. Accepting stores a grant for only
-that exact fingerprint; changing a hook or MCP definition, scope, source, or
-hook execution environment blocks it again. Rejection leaves the ordinary
-session, instructions, permissions, skills, commands, agents, and memory
-available.
+Praxis discovers project/local provider/profile/model selection, hook, and MCP
+configuration as inert data and blocks it by default. On interactive startup,
+review the canonical workspace path and every displayed origin. Accepting
+stores a grant for only that exact canonical realpath fingerprint; changing
+provider/profile/model, a hook or MCP definition, scope, source, or hook
+execution environment blocks it again. Rejection ignores project/local
+provider selection and blocks project/local hooks and MCP, while ordinary
+resources remain available. A legacy `projects[path].trusted: true` value is
+not authorization.
 
 Headless runs never prompt. After reviewing the project configuration, approve
 the current fingerprint explicitly:
@@ -219,15 +311,19 @@ See [RELEASE.md](RELEASE.md) for verification details.
 
 ### `PRAXIS_API_KEY and a model ... are required`
 
-Export `PRAXIS_API_KEY` and either `PRAXIS_MODEL` or pass `--model` in the shell
-that launches Praxis. Praxis does not read Claude subscription credentials as a
-model-provider key.
+For a stable API provider, export its key (or configure a Vault/env/helper
+reference) and either `PRAXIS_MODEL` or `--model`. For Codex, enable the
+experimental switch and complete `praxis auth login openai-codex`; do not set
+an API key or endpoint override. Praxis does not read Claude subscription
+credentials as a model-provider key.
 
 ### Provider or model request fails
 
-Check `PRAXIS_PROVIDER`, `PRAXIS_MODEL`, and `PRAXIS_BASE_URL`. The provider must
-match the endpoint protocol: `anthropic` for Anthropic Messages, `openai` for
-OpenAI-compatible Chat Completions.
+Run `praxis doctor` to resolve the final provider and credential source without
+network access or executing helpers; configured helpers are reported as
+skipped. Check provider/profile/model selection and protocol. `openai-codex`
+must have the experimental switch, a Vault OAuth record, and no API key or
+base-URL override.
 
 ### Grep is unavailable
 

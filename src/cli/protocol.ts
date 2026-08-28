@@ -76,6 +76,8 @@ export interface CliControls {
   rewindFiles?: string
   name: string | undefined
   sessionPersistence: boolean
+  provider?: string
+  providerProfile?: string
   model?: string
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   thinking?: CliThinkingMode
@@ -139,6 +141,9 @@ export interface CliInvocation extends CliControls {
   mcpClientSecret: boolean
   mcpNoBrowser: boolean
   mcpDebug: boolean
+  /** Auth-command-only profile selector; distinct from providerProfile. */
+  authProfile?: string
+  authDevice: boolean
 }
 
 export interface StreamUserMessage {
@@ -706,6 +711,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let worktreeRequested = false
   let tmux: 'native' | 'classic' | undefined
   let model: string | undefined
+  let provider: string | undefined
+  let providerProfile: string | undefined
   let effort: (typeof EFFORT_LEVELS)[number] | undefined
   let thinking: (typeof THINKING_MODES)[number] | undefined
   let maxThinkingTokens: number | undefined
@@ -723,6 +730,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   let mcpClientSecret = false
   let mcpNoBrowser = false
   let mcpDebug = false
+  let authProfile: string | undefined
+  let authDevice = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]
@@ -762,6 +771,34 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
         throw new Error('--model may only be specified once')
       model = selectedModel.value
       index += selectedModel.consumed
+      continue
+    }
+    const selectedProvider = optionValue(argv, index, '--provider')
+    if (selectedProvider) {
+      if (provider !== undefined)
+        throw new Error('--provider may only be specified once')
+      provider = selectedProvider.value
+      index += selectedProvider.consumed
+      continue
+    }
+    const selectedProviderProfile = optionValue(
+      argv,
+      index,
+      '--provider-profile',
+    )
+    if (selectedProviderProfile) {
+      if (providerProfile !== undefined)
+        throw new Error('--provider-profile may only be specified once')
+      providerProfile = selectedProviderProfile.value
+      index += selectedProviderProfile.consumed
+      continue
+    }
+    const selectedAuthProfile = optionValue(argv, index, '--profile')
+    if (selectedAuthProfile) {
+      if (authProfile !== undefined)
+        throw new Error('--profile may only be specified once')
+      authProfile = selectedAuthProfile.value
+      index += selectedAuthProfile.consumed
       continue
     }
     const selectedAutocompact = optionValue(argv, index, '--autocompact')
@@ -1487,6 +1524,10 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
       mcpNoBrowser = true
       continue
     }
+    if (value === '--device') {
+      authDevice = true
+      continue
+    }
     if (value === '--json') {
       legacyJson = true
       continue
@@ -1549,6 +1590,18 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
   if (debug !== undefined && args[0] === 'mcp' && args[1] === 'serve') {
     mcpDebug = true
   }
+  if (authProfile !== undefined && args[0] !== 'auth')
+    throw new Error('--profile is only valid with auth commands')
+  if (authDevice && !(args[0] === 'auth' && args[1] === 'login'))
+    throw new Error('--device is only valid with auth login')
+  if (
+    mcpNoBrowser &&
+    !(
+      (args[0] === 'mcp' && args[1] === 'login') ||
+      (args[0] === 'auth' && args[1] === 'login')
+    )
+  )
+    throw new Error('--no-browser is only valid with mcp login or auth login')
   if (background && print) {
     throw new Error(
       "--bg and --print conflict: --print never starts the interactive session that `claude agents` attaches to, so the job would be unattachable. The prompt is the positional — drop --print: `claude --bg '<task>'`.",
@@ -1600,6 +1653,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     'plugin',
     'doctor',
     'import',
+    'auth',
   ].includes(args[0] ?? '')
   if (
     promptSuggestions &&
@@ -1802,6 +1856,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     ...(worktreeRequested ? { worktreeRequested: true } : {}),
     ...(tmux === undefined ? {} : { tmux }),
     ...(model === undefined ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(providerProfile === undefined ? {} : { providerProfile }),
     ...(effort === undefined ? {} : { effort }),
     ...(thinking === undefined ? {} : { thinking }),
     ...(maxThinkingTokens === undefined ? {} : { maxThinkingTokens }),
@@ -1819,6 +1875,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
     mcpClientSecret,
     mcpNoBrowser,
     mcpDebug,
+    ...(authProfile === undefined ? {} : { authProfile }),
+    authDevice,
   }
 }
 

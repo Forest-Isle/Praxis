@@ -1,4 +1,4 @@
-import { chmod, mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp } from 'node:fs/promises'
@@ -6,6 +6,13 @@ import { mkdtemp } from 'node:fs/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run } from '../cli.js'
+import { ProviderCredentialVault } from '../persistence/provider-credential-vault.js'
+import { loadNativeSharedResources } from '../persistence/native-resources.js'
+import {
+  assessWorkspaceTrust,
+  persistWorkspaceTrust,
+  workspaceTrustInventory,
+} from '../security/workspace-trust.js'
 import {
   pluginRegistryPath,
   writePluginRegistry,
@@ -79,6 +86,392 @@ function deterministicDistTags(): {
 }
 
 describe('Praxis doctor', () => {
+  async function doctorFor(
+    value: Awaited<ReturnType<typeof fixture>>,
+    environment: NodeJS.ProcessEnv,
+  ) {
+    return runDoctor({
+      version: '0.1.0',
+      executablePath: value.executablePath,
+      nodeExecutablePath: process.execPath,
+      nodeVersion: 'v24.1.0',
+      configRoot: value.configRoot,
+      claudeStatePath: join(value.configRoot, 'state.json'),
+      cwd: value.projectRoot,
+      environment,
+      detectClaudeVersion: async () => '2.1.208',
+      ...deterministicDistTags(),
+    })
+  }
+
+  it('uses only an exact trusted project provider selection', async () => {
+    const value = await fixture()
+    const environment: NodeJS.ProcessEnv = {
+      NAMED_DOCTOR_KEY: 'doctor-secret',
+      PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+    }
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        provider: 'fallback',
+        providerProfile: 'user',
+        model: 'user-model',
+        providers: {
+          fallback: {
+            protocol: 'openai-compatible',
+            profiles: {
+              user: {
+                baseUrl: 'https://user.example/v1',
+                credential: { source: 'env', name: 'NAMED_DOCTOR_KEY' },
+              },
+              project: {
+                baseUrl: 'https://project.example/v1',
+                credential: { source: 'env', name: 'NAMED_DOCTOR_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await writeFile(
+      join(value.projectRoot, '.praxis', 'settings.json'),
+      JSON.stringify({
+        provider: 'fallback',
+        providerProfile: 'project',
+        model: 'project-model',
+      }),
+    )
+    const first = await doctorFor(value, environment)
+    expect(
+      first.checks.find((check) => check.id === 'provider')?.details,
+    ).toMatchObject({
+      profile: 'user',
+      model: 'user-model',
+      baseUrl: 'https://user.example/v1',
+    })
+    const shared = await loadNativeSharedResources({
+      root: value.configRoot,
+      cwd: value.projectRoot,
+      environment,
+      includeProjectMemory: false,
+    })
+    const assessment = await assessWorkspaceTrust(
+      await workspaceTrustInventory({
+        cwd: value.projectRoot,
+        settings: shared.settings,
+        mcp: shared.mcp,
+      }),
+      join(value.configRoot, 'state.json'),
+    )
+    await persistWorkspaceTrust(
+      assessment,
+      join(value.configRoot, 'state.json'),
+    )
+    const trusted = await doctorFor(value, environment)
+    expect(
+      trusted.checks.find((check) => check.id === 'provider')?.details,
+    ).toMatchObject({
+      profile: 'project',
+      model: 'project-model',
+      baseUrl: 'https://project.example/v1',
+    })
+    await writeFile(
+      join(value.projectRoot, '.praxis', 'settings.json'),
+      JSON.stringify({
+        provider: 'fallback',
+        providerProfile: 'project',
+        model: 'changed-model',
+      }),
+    )
+    const stale = await doctorFor(value, environment)
+    expect(
+      stale.checks.find((check) => check.id === 'provider')?.details,
+    ).toMatchObject({
+      profile: 'user',
+      model: 'user-model',
+    })
+    expect(JSON.stringify(stale)).not.toContain('doctor-secret')
+  })
+
+  it('diagnoses native custom providers and named environment credentials safely', async () => {
+    const value = await fixture()
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          vendor: {
+            protocol: 'openai-compatible',
+            profiles: {
+              named: {
+                baseUrl: 'https://vendor.example/v1?secret=query#hash',
+                credential: { source: 'env', name: 'VENDOR_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'vendor',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'vendor-model',
+      VENDOR_KEY: 'vendor-secret',
+    })
+    const provider = report.checks.find((check) => check.id === 'provider')
+    if (!provider) throw new Error('provider check missing')
+    expect(provider).toMatchObject({
+      status: 'warn',
+      details: {
+        provider: 'vendor',
+        profile: 'named',
+        model: 'vendor-model',
+        credential: { source: 'env', name: 'VENDOR_KEY' },
+      },
+    })
+    expect(JSON.stringify(report)).not.toContain('vendor-secret')
+    expect(JSON.stringify(report)).not.toContain('secret=query')
+    expect(JSON.stringify(report)).not.toContain('#hash')
+    expect(formatDoctorReport(report)).not.toContain('secret=query')
+  })
+
+  it('diagnoses file-backed Vault API keys without exposing vault data', async () => {
+    const value = await fixture()
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          vendor: {
+            protocol: 'openai-compatible',
+            profiles: {
+              vaulty: {
+                baseUrl: 'https://vendor.example/v1',
+                credential: { source: 'vault' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const vault = new ProviderCredentialVault({
+      configRoot: value.configRoot,
+      useKeychain: false,
+    })
+    await vault.modify({ providerId: 'vendor', profileId: 'vaulty' }, () => ({
+      type: 'api-key',
+      secret: 'vault-secret',
+    }))
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'vendor',
+      PRAXIS_PROVIDER_PROFILE: 'vaulty',
+      PRAXIS_MODEL: 'gpt-4o-mini',
+      PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+    })
+    const serialized = JSON.stringify(report)
+    expect(
+      report.checks.find((check) => check.id === 'provider'),
+    ).toMatchObject({ status: 'pass' })
+    expect(serialized).not.toContain('vault-secret')
+    expect(serialized).not.toContain('revision')
+    expect(serialized).not.toContain('provider-credentials.json')
+    expect(serialized).not.toContain('service')
+  })
+
+  it('diagnoses Codex OAuth without pricing parsing or network calls', async () => {
+    const value = await fixture()
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({ experimental: { codexSubscription: true } }),
+    )
+    const vault = new ProviderCredentialVault({
+      configRoot: value.configRoot,
+      useKeychain: false,
+    })
+    await vault.modify(
+      { providerId: 'openai-codex', profileId: 'named' },
+      () => ({
+        type: 'oauth',
+        accessToken: 'access-secret',
+        refreshToken: 'refresh-secret',
+        expiresAt: Date.now() + 86_400_000,
+        accountId: 'account-secret',
+      }),
+    )
+    const fetch = vi.fn(() => {
+      throw new Error('network must not run')
+    })
+    vi.stubGlobal('fetch', fetch)
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'openai-codex',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'codex-model',
+      PRAXIS_PRICING_JSON: '{malformed',
+      PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+    })
+    const provider = report.checks.find((check) => check.id === 'provider')
+    if (!provider) throw new Error('provider check missing')
+    expect(provider.status).toBe('pass')
+    expect(provider.details).not.toHaveProperty('pricing')
+    expect(provider.summary).not.toContain('pricing')
+    expect(fetch).not.toHaveBeenCalled()
+    const serialized = JSON.stringify(report)
+    for (const secret of [
+      'access-secret',
+      'refresh-secret',
+      'account-secret',
+      'revision',
+    ])
+      expect(serialized).not.toContain(secret)
+  })
+
+  it('skips command helpers and reports effective source precedence', async () => {
+    const value = await fixture()
+    const marker = join(value.root, 'helper-marker')
+    const command = [
+      'node',
+      '-e',
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`,
+    ] as const
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          helper: {
+            protocol: 'openai-compatible',
+            profiles: {
+              named: {
+                baseUrl: 'https://helper.example/v1',
+                credential: { source: 'command', command },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'helper',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'helper-model',
+    })
+    const provider = report.checks.find((check) => check.id === 'provider')
+    if (!provider) throw new Error('provider check missing')
+    expect(provider.status).toBe('warn')
+    expect(provider.summary).toContain(
+      'helper execution was intentionally skipped',
+    )
+    expect(provider.summary).not.toContain(marker)
+    expect(JSON.stringify(report)).not.toContain(marker)
+    expect(JSON.stringify(report)).not.toContain(
+      '__praxis_doctor_credential_placeholder__',
+    )
+    expect(formatDoctorReport(report)).not.toContain(command[2])
+    await expect(access(marker)).rejects.toThrow()
+
+    const legacy = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'helper',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'gpt-4o-mini',
+      PRAXIS_API_KEY: 'legacy-secret',
+    })
+    const legacyProvider = legacy.checks.find(
+      (check) => check.id === 'provider',
+    )
+    if (!legacyProvider) throw new Error('provider check missing')
+    expect(legacyProvider.summary).not.toContain('helper execution')
+    expect(JSON.stringify(legacy)).not.toContain('legacy-secret')
+  })
+
+  it('reports missing, wrong-type, and forbidden credentials safely', async () => {
+    const missing = await fixture()
+    await writeFile(
+      join(missing.configRoot, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          vendor: {
+            protocol: 'openai-compatible',
+            profiles: {
+              named: {
+                baseUrl: 'https://vendor.example/v1',
+                credential: { source: 'env', name: 'MISSING_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const missingReport = await doctorFor(missing, {
+      PRAXIS_PROVIDER: 'vendor',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'gpt-4o-mini',
+    })
+    expect(
+      missingReport.checks.find((check) => check.id === 'provider'),
+    ).toMatchObject({
+      status: 'fail',
+      summary: expect.stringContaining('MISSING_KEY'),
+    })
+
+    const wrong = await fixture()
+    await writeFile(
+      join(wrong.configRoot, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          vendor: {
+            protocol: 'openai-compatible',
+            profiles: {
+              named: {
+                baseUrl: 'https://vendor.example/v1',
+                credential: { source: 'vault' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const wrongVault = new ProviderCredentialVault({
+      configRoot: wrong.configRoot,
+      useKeychain: false,
+    })
+    await wrongVault.modify(
+      { providerId: 'vendor', profileId: 'named' },
+      () => ({
+        type: 'oauth',
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        expiresAt: Date.now() + 100000,
+      }),
+    )
+    const wrongReport = await doctorFor(wrong, {
+      PRAXIS_PROVIDER: 'vendor',
+      PRAXIS_PROVIDER_PROFILE: 'named',
+      PRAXIS_MODEL: 'gpt-4o-mini',
+      PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+    })
+    expect(
+      wrongReport.checks.find((check) => check.id === 'provider'),
+    ).toMatchObject({
+      status: 'fail',
+      summary: expect.stringContaining('vault API key'),
+    })
+
+    const codex = await fixture()
+    await writeFile(
+      join(codex.configRoot, 'settings.json'),
+      JSON.stringify({ experimental: { codexSubscription: true } }),
+    )
+    const codexReport = await doctorFor(codex, {
+      PRAXIS_PROVIDER: 'openai-codex',
+      PRAXIS_MODEL: 'codex-model',
+      PRAXIS_API_KEY: 'secret',
+    })
+    expect(
+      codexReport.checks.find((check) => check.id === 'provider'),
+    ).toMatchObject({
+      status: 'fail',
+      summary: expect.stringContaining('does not accept API keys'),
+    })
+    expect(JSON.stringify(codexReport)).not.toContain('secret')
+  })
+
   it('uses native resources without reading project Claude configuration', async () => {
     const value = await fixture()
     await mkdir(join(value.projectRoot, '.praxis'), { recursive: true })
@@ -294,6 +687,122 @@ describe('Praxis doctor', () => {
       },
     })
     expect(stdout).not.toContain('not checked')
+  })
+
+  it('reports the exact trusted project provider through the JSON CLI', async () => {
+    const value = await fixture()
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        provider: 'fallback',
+        providerProfile: 'user',
+        model: 'user-model',
+        providers: {
+          fallback: {
+            protocol: 'openai-compatible',
+            profiles: {
+              user: {
+                baseUrl: 'https://user.example/v1',
+                credential: { source: 'env', name: 'NAMED_DOCTOR_KEY' },
+              },
+              project: {
+                baseUrl: 'https://project.example/v1',
+                credential: { source: 'env', name: 'NAMED_DOCTOR_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await writeFile(
+      join(value.projectRoot, '.praxis', 'settings.json'),
+      JSON.stringify({
+        provider: 'fallback',
+        providerProfile: 'project',
+        model: 'project-model',
+      }),
+    )
+
+    const environmentKeys = [
+      'PRAXIS_HOME',
+      'PRAXIS_DATA_PLANE',
+      'PRAXIS_PROVIDER',
+      'PRAXIS_PROVIDER_PROFILE',
+      'PRAXIS_MODEL',
+      'PRAXIS_BASE_URL',
+      'PRAXIS_API_KEY',
+      'PRAXIS_SIMPLE',
+      'PRAXIS_PROVIDER_CREDENTIAL_STORE',
+      'NAMED_DOCTOR_KEY',
+    ] as const
+    const previousEnvironment = new Map(
+      environmentKeys.map((key) => [key, process.env[key]]),
+    )
+    const previousCwd = process.cwd()
+    let stdout = ''
+    let stderr = ''
+    try {
+      for (const key of environmentKeys) delete process.env[key]
+      process.env.PRAXIS_HOME = value.configRoot
+      process.env.PRAXIS_DATA_PLANE = 'native'
+      process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE = 'file'
+      process.env.NAMED_DOCTOR_KEY = 'doctor-cli-secret'
+      process.chdir(value.projectRoot)
+
+      const shared = await loadNativeSharedResources({
+        root: value.configRoot,
+        cwd: value.projectRoot,
+        environment: process.env,
+        includeProjectMemory: false,
+      })
+      const assessment = await assessWorkspaceTrust(
+        await workspaceTrustInventory({
+          cwd: value.projectRoot,
+          settings: shared.settings,
+          mcp: shared.mcp,
+        }),
+        join(value.configRoot, 'state.json'),
+      )
+      await persistWorkspaceTrust(
+        assessment,
+        join(value.configRoot, 'state.json'),
+      )
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => ({ ok: false })),
+      )
+
+      await run(['doctor', '--json'], {
+        stdout: (message) => {
+          stdout += message.toString()
+        },
+        stderr: (message) => {
+          stderr += message
+        },
+      })
+    } finally {
+      process.chdir(previousCwd)
+      for (const key of environmentKeys) {
+        const previous = previousEnvironment.get(key)
+        if (previous === undefined) delete process.env[key]
+        else process.env[key] = previous
+      }
+    }
+
+    expect(stderr).toBe('')
+    const report = JSON.parse(stdout) as {
+      checks: Array<{ id: string; details?: Record<string, unknown> }>
+    }
+    expect(
+      report.checks.find((check) => check.id === 'provider')?.details,
+    ).toMatchObject({
+      provider: 'fallback',
+      profile: 'project',
+      model: 'project-model',
+      baseUrl: 'https://project.example/v1',
+    })
+    expect(stdout).not.toContain('user-model')
+    expect(stdout).not.toContain('doctor-cli-secret')
   })
 
   it('validates hook matchers, permission rules, and MCP stdio prerequisites without execution', async () => {

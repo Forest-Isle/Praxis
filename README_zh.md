@@ -23,7 +23,8 @@ Praxis 只使用一个 native 数据平面，不读取或写入 Claude Code 会�
 - macOS 或 Linux
 - Node.js 24 或更高版本
 - 用于 Grep 工具的 [`ripgrep`](https://github.com/BurntSushi/ripgrep)（`rg`）
-- Anthropic 或 OpenAI 兼容提供商的 API 密钥和模型 ID
+- Anthropic 或 OpenAI 兼容提供商的 API 密钥和模型 ID（稳定路径），或显式启用的
+  实验性 ChatGPT-backed Codex 订阅集成
 
 Praxis 不使用 Claude 订阅认证。Claude-shaped 消息、工具和 CLI 协议形状在公开界面需要时仍受支持，
 但所有持久化状态都使用 Praxis native 格式。
@@ -66,6 +67,13 @@ cd /path/to/project
 praxis
 ```
 
+Praxis 还提供实验性的 `openai-codex` 提供商，用于 ChatGPT-backed Codex 订阅。
+它与 OpenAI API 密钥访问相互独立，需要设置
+`experimental.codexSubscription: true`，OAuth 凭据存放在 native Vault 中。
+从 `praxis auth login openai-codex` 开始；浏览器/设备流程及限制见[入门指南](docs/GETTING_STARTED.md)。
+该功能依赖 OpenAI 未正式记录为稳定的第三方订阅/后端契约，可能发生变化；它不是 Claude 订阅认证。
+订阅运行会保留 token 用量，但不提供 API 美元成本，也无法执行美元预算。
+
 常见的非交互操作：
 
 ```sh
@@ -92,7 +100,7 @@ praxis doctor
 
 - **内置工具** — read、write、edit、glob、search、shell、notebook、PDF、image、web、定时提示、工作流和 worktree。
 - **权限边界** — 本地 allow/ask/deny 规则、安全和 bare 模式、可搜索的作用域规则创建/删除、本地/项目/用户设置的原子写入、针对 Bash/PowerShell/文件/notebook/WebFetch/Skill 的工具专用批准对话框、可编辑且可复用的 shell 和 Skill 规则、感知源根的 Claude 文件规则匹配、原子会话权限更新、由有界 Bash AST 支持的复合 shell 规则建议、按源代码形态进行精确/前缀/通配符匹配、包装器和环境规范化、带控制流变量作用域感知的失败关闭 Bash 语义检查、声明和仅字面量算术分析、精确 `cat` heredoc 处理、基于 argv 的命令/重定向路径校验、完整符号链接链检查、危险删除/敏感文件/可疑 Windows 路径门禁、按源顺序的严格 sed 约束、内部自动记忆/会话/任务路径处理、复合 `cd` + Git 保护、按模式顺序处理 `acceptEdits`、外部目录的实时原始/解析路径授权、
-  兼容 Claude 的选择性 Bash sandbox（文件系统和网络隔离）、明确的 ask/deny 优先级、仅 sandbox 自动允许、写入允许列表及允许范围内拒绝执行、每命令覆盖和排除、违规报告及 bare repository 控制文件清理、安全属性 Skill 自动允许、交互式工作区目录添加/删除控制、路径限制、凭据脱敏、经过清理的子进程，以及基于精确指纹的 workspace trust；自动发现的 project/local hooks 和 MCP 服务器只有在用户明确接受 canonical workspace 配置后才能运行。
+  兼容 Claude 的选择性 Bash sandbox（文件系统和网络隔离）、明确的 ask/deny 优先级、仅 sandbox 自动允许、写入允许列表及允许范围内拒绝执行、每命令覆盖和排除、违规报告及 bare repository 控制文件清理、安全属性 Skill 自动允许、交互式工作区目录添加/删除控制、路径限制、凭据脱敏、经过清理的子进程，以及精确指纹 workspace trust：在用户接受 canonical workspace 配置前，自动发现的 project/local provider/profile/model 选择、hooks 和 MCP 都会被阻止。
 - **持久化本地工作** — 可恢复会话、完整历史分叉、文件检查点、任务、前台/后台 subagent、顶层 Agent，以及兼容 Claude 的主线程 Agent 定义，支持原生 prompt、model、tool、memory、first-turn 和 resume 行为。
   Agent 执行采用统一的持久生命周期术语，支持有界取消与排空、继续、通知及单一所有者的孤儿恢复。实验性本地 Team（`PRAXIS_ENABLE_TEAMS=true`）默认不会进入普通启动路径，
   并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。Team 仍是实验性功能，必须显式设置
@@ -100,7 +108,7 @@ praxis doctor
   Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
   原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前覆盖已有 fixture 证据的 delete/send；create 仅执行解码，无法表达原生 roster/task 声明时会拒绝；shutdown 和 plan-response 仍有 fixture 证据，task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
 - **原生资源生态** — 支持递归 `@` 导入的共享 Praxis 指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件，以及位于 `~/.praxis` 下的 append-only `praxis.transcript` JSONL 会话；MCP 连接、发现和工具操作均有明确时限，断开后可安全恢复，且绝不重放已派发的调用。
-- **提供商无关的模型** — 原生 Anthropic Messages 和 OpenAI 兼容的流式适配器，支持明确的能力检查、计量控制，并为每次提供商请求设置有界的绝对 deadline。
+- **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次请求有界的 deadline，以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。
 - **事务式自更新** — `praxis update` 会在安装前验证软件包，拒绝并发更新，并可在中断或崩溃后回滚。
 
 详细功能状态和可执行证据位于
@@ -138,7 +146,7 @@ Claude-shaped 消息和工具字段只描述协议形状，不改变 Praxis 的�
 
 Praxis 面向一名在多个仓库和会话间工作的本地操作系统用户。
 它仅提供 CLI，并感知提供商能力。
-组织、租户、RBAC、订阅认证和计费、企业网关、IDE/Desktop/mobile 客户端、Remote Control、
+组织、租户、RBAC、计费、企业网关、IDE/Desktop/mobile 客户端、Remote Control、
 Claude Desktop 导入以及托管评审产品界面均是永久的非目标。
 
 ## 安全与支持

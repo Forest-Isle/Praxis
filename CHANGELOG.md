@@ -68,7 +68,17 @@ this file from merged Conventional Commit pull requests.
 * bound every Anthropic/OpenAI provider attempt with a configurable absolute
   deadline and abort-aware fallback backoff
 * add exact-fingerprint workspace trust that blocks automatically discovered
-  project/local hooks and MCP servers until the canonical workspace is accepted
+  project/local hooks, MCP servers, and provider/profile/model routing until the
+  canonical workspace is accepted
+* add native multi-provider routing, credential Vault storage, `praxis auth`
+  actions, non-executing Doctor diagnostics, and the explicitly experimental
+  ChatGPT-backed `openai-codex` OAuth provider with a process-argument-safe
+  browser redirect bridge (#477)
+* preserve provider profile, deadline, Vault backend, and safely normalized
+  credentials in background workers; keep subscription accounting token-only
+  without API-dollar charges
+* document stable API-key setup, provider profiles, Vault controls, and Codex
+  OAuth limitations (#477)
 * add a responsive shared QuietFrame projection for every selectable
   interactive surface, rendered through ANSI or Ink adapters with full parity
 * adopt the terminal-native C+ Quiet Operator palette with mint, amber, and
