@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.41.0](https://github.com/Forest-Isle/Praxis/compare/v0.40.0...v0.41.0) (2026-08-28)
+
+
+### Features
+
+* gate workspace executables behind trust ([#478](https://github.com/Forest-Isle/Praxis/issues/478)) ([8c108a4](https://github.com/Forest-Isle/Praxis/commit/8c108a46665c44158474a060ef6db83a4ad98633)), closes [#475](https://github.com/Forest-Isle/Praxis/issues/475)
+
 ## [0.40.0](https://github.com/Forest-Isle/Praxis/compare/v0.39.0...v0.40.0) (2026-08-28)
 
 
