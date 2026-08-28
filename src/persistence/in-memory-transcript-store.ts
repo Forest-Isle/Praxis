@@ -8,7 +8,6 @@ import type {
   NativeTranscriptSnapshot,
   NativeTranscriptTail,
 } from './native-transcript-store.js'
-import { projectNativeTranscriptEntries } from './native-transcript-store.js'
 
 export class InMemoryTranscriptStore {
   private records: { event: TranscriptEvent }[] = []
@@ -62,12 +61,7 @@ export class InMemoryTranscriptStore {
   }
   private async load(): Promise<NativeTranscriptSnapshot> {
     const records = this.records.map((record) => ({ event: record.event }))
-    const snapshot = { records, tail: this.tail() }
-    Object.defineProperty(snapshot, 'entries', {
-      value: projectNativeTranscriptEntries(records),
-      enumerable: false,
-    })
-    return snapshot as unknown as NativeTranscriptSnapshot
+    return { records, tail: this.tail() }
   }
   private async appendMany(
     expected: NativeTranscriptTail,
