@@ -39,13 +39,13 @@ export async function promptWorkspaceTrust(
   const output = io.output ?? ((text: string) => process.stderr.write(text))
   if (io.signal?.aborted) return false
   output(
-    `Workspace executable resources found for ${safeWorkspaceTrustDisplayField(inventory.canonicalPath)}\n`,
+    `Workspace-controlled resources/configuration found for ${safeWorkspaceTrustDisplayField(inventory.canonicalPath)}\n`,
   )
   for (const origin of inventory.origins)
     output(
       `  ${origin.kind} (${origin.scope}) ${safeWorkspaceTrustDisplayField(origin.path)}: ${safeWorkspaceTrustDisplayField(origin.label)}\n`,
     )
-  output('Trust these workspace executables? [y/N] ')
+  output('Trust these workspace-controlled resources/configuration? [y/N] ')
   const input = io.input ?? (process.stdin as unknown as AsyncIterable<string>)
   const iterator = input[Symbol.asyncIterator]()
   const abortedResult = Symbol('workspace-trust-prompt-aborted')

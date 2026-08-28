@@ -83,6 +83,88 @@ describe('CLI protocol', () => {
     )
   })
 
+  it('parses provider, profile, and auth flow controls without positional leakage', () => {
+    expect(
+      parseCliInvocation([
+        '--provider',
+        'openai-codex',
+        '--provider-profile=work',
+        '--model',
+        'gpt-codex',
+        'run',
+        'hello',
+      ]),
+    ).toMatchObject({
+      provider: 'openai-codex',
+      providerProfile: 'work',
+      model: 'gpt-codex',
+      args: ['run', 'hello'],
+    })
+    expect(
+      parseCliInvocation([
+        'auth',
+        'login',
+        'openai-codex',
+        '--profile',
+        'work',
+        '--device',
+        '--no-browser',
+        '--json',
+      ]),
+    ).toMatchObject({
+      command: 'auth',
+      args: ['auth', 'login', 'openai-codex'],
+      authProfile: 'work',
+      authDevice: true,
+      mcpNoBrowser: true,
+      legacyJson: true,
+    })
+  })
+
+  it('rejects missing, duplicate, and out-of-scope provider auth controls', () => {
+    for (const argv of [
+      ['--provider'],
+      ['--provider='],
+      ['--provider-profile'],
+      ['--provider-profile='],
+      ['auth', 'status', '--profile'],
+      ['auth', 'status', '--profile='],
+    ]) {
+      expect(() => parseCliInvocation(argv)).toThrow(/is required/u)
+    }
+    expect(() =>
+      parseCliInvocation(['--provider', 'openai', '--provider=anthropic']),
+    ).toThrow('--provider may only be specified once')
+    expect(() =>
+      parseCliInvocation([
+        '--provider-profile',
+        'one',
+        '--provider-profile=two',
+      ]),
+    ).toThrow('--provider-profile may only be specified once')
+    expect(() =>
+      parseCliInvocation([
+        'auth',
+        'status',
+        '--profile',
+        'one',
+        '--profile=two',
+      ]),
+    ).toThrow('--profile may only be specified once')
+    expect(() => parseCliInvocation(['run', '--profile', 'work'])).toThrow(
+      '--profile is only valid with auth commands',
+    )
+    expect(() => parseCliInvocation(['auth', 'status', '--device'])).toThrow(
+      '--device is only valid with auth login',
+    )
+    expect(() =>
+      parseCliInvocation(['auth', 'status', '--no-browser']),
+    ).toThrow('--no-browser is only valid with mcp login or auth login')
+    expect(() => parseCliInvocation(['mcp', 'list', '--no-browser'])).toThrow(
+      '--no-browser is only valid with mcp login or auth login',
+    )
+  })
+
   it('parses Claude import command controls without treating them as plugin options', () => {
     expect(
       parseCliInvocation(['import', 'codex', '--dry-run', '--yes']),

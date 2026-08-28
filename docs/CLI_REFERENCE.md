@@ -31,8 +31,9 @@ praxis export <session-id> > session.jsonl
 praxis -p --safe-mode "Inspect without shared customizations"
 praxis -p --bare --tools Read,Grep "Read only"
 praxis -p --setting-sources project --add-dir ../shared "Inspect both roots"
-# Review the displayed project/local hook and MCP origins, then accept the
-# current canonical workspace executable fingerprint for this invocation.
+# Review the displayed project/local provider/profile/model selection and hook
+# and MCP origins, then accept the current canonical workspace-controlled
+# resource/configuration fingerprint.
 praxis --trust-project
 
 # Bound model execution
@@ -175,13 +176,30 @@ mutation, Workflow, Skill, scheduled, worktree, wrapper, dynamic, and MCP paths
 are denied. Custom Team agents receive their selected prompt but no MCP server
 or tool capability. Teams remain local-first, single-user, and non-remote.
 
+## Provider authentication
+
+```text
+praxis auth status [provider] [--profile <profile>] [--json]
+praxis auth set-key <provider> [--profile <profile>] [--json]
+praxis auth login openai-codex [--profile <profile>] [--device] [--no-browser] [--json]
+praxis auth logout <provider> [--profile <profile>] [--json]
+```
+
+`status` shows metadata only. `set-key` reads an API key from stdin/TTY into
+the native Vault. `login` is only for experimental `openai-codex`; `logout`
+deletes exactly one provider/profile credential. `--device` is valid only for
+`auth login`. `--no-browser` is valid for `auth login` and MCP login. `--json`
+is a general output flag; `--profile` selects an auth profile, while model
+sessions use `--provider-profile`.
+
 ## Provider environment
 
 | Variable                            | Required           | Meaning                                                                     |
 | ----------------------------------- | ------------------ | --------------------------------------------------------------------------- |
-| `PRAXIS_API_KEY`                    | Yes for model runs | Provider or compatible-gateway credential.                                  |
+| `PRAXIS_API_KEY`                    | No                 | Legacy highest-priority API secret override (never used by Codex).          |
 | `PRAXIS_MODEL`                      | Yes for model runs | Provider model identifier.                                                  |
-| `PRAXIS_PROVIDER`                   | No                 | `openai` (default) or `anthropic`.                                          |
+| `PRAXIS_PROVIDER`                   | No                 | Provider ID: `openai`, `anthropic`, `openai-codex`, or custom.              |
+| `PRAXIS_PROVIDER_PROFILE`           | No                 | Named provider profile.                                                     |
 | `PRAXIS_BASE_URL`                   | No                 | Provider base URL; defaults by selected provider.                           |
 | `PRAXIS_PROVIDER_DEADLINE_MS`       | No                 | Positive integer absolute deadline per provider attempt; defaults to 90000. |
 | `PRAXIS_MAX_OUTPUT_TOKENS`          | No                 | Positive Anthropic-only output-token limit.                                 |
@@ -193,13 +211,37 @@ or tool capability. Teams remain local-first, single-user, and non-remote.
 | `PRAXIS_CONTEXT_RESERVE_TOKENS`     | No                 | Positive reserve; requires an explicit context window.                      |
 | `PRAXIS_PRICING_JSON`               | No                 | JSON model-pricing overrides used for measured cost and budget enforcement. |
 | `PRAXIS_HOME`                       | No                 | Native Praxis root; defaults to `~/.praxis`.                                |
+| `PRAXIS_PROVIDER_CREDENTIAL_STORE`  | No                 | `file` explicitly selects the native file Vault.                            |
 | `PRAXIS_DISABLE_AUTO_MEMORY`        | No                 | `1` or `true`; disables every native Project-memory capability.             |
 | `PRAXIS_PROJECT_MEMORY_EXTRACTION`  | No                 | `1` or `true`; enables isolated background Project-memory extraction.       |
 | `PRAXIS_PROJECT_MEMORY_RECALL`      | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.        |
 | `PRAXIS_ENABLE_TEAMS`               | No                 | `true`; explicitly enables experimental local Team commands and tools.      |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
-`https://api.anthropic.com/v1` for `anthropic`.
+`https://api.anthropic.com/v1` for `anthropic`. `openai-codex` always uses
+`https://chatgpt.com/backend-api`; it rejects API keys and endpoint overrides.
+
+Native settings are `$PRAXIS_HOME/settings.json`. Built-ins are `openai`,
+`anthropic`, and experimental `openai-codex`; custom profiles use
+`openai-compatible` or `anthropic-messages` and credential references (`env`,
+argv `command`, or `vault`). Plaintext secrets are rejected. Selection
+precedence is explicit CLI > environment > trusted local selection > trusted
+project selection > user settings > native defaults.
+
+`openai-codex` requires `experimental.codexSubscription: true`, a Vault OAuth
+credential, and its private Responses/SSE transport. It is a ChatGPT-backed
+subscription integration, not a stable OpenAI API-compatible endpoint.
+
+Subscription usage retains token and model usage but omits `costUsd`; API
+pricing does not apply. Numeric USD budgets and plugin-eval paid LLM judges
+fail before inference because numeric API-billed cost is unavailable. Detached
+background agents inherit `PRAXIS_PROVIDER`, `PRAXIS_PROVIDER_PROFILE`,
+`PRAXIS_MODEL`, `PRAXIS_BASE_URL`, and `PRAXIS_PROVIDER_DEADLINE_MS` through the
+sanitized environment. The parent resolves the selected API-key credential and
+passes only a normalized `PRAXIS_API_KEY`; configured custom environment names
+and unrelated secrets are not inherited. Codex workers reopen the same Vault
+instead of receiving an OAuth token, and `PRAXIS_PROVIDER_CREDENTIAL_STORE` is
+preserved so parent and worker select the same storage backend.
 
 Every direct, retried, or fallback provider attempt has its own absolute
 deadline. Set `PRAXIS_PROVIDER_DEADLINE_MS` to a positive integer number of
@@ -244,7 +286,7 @@ controls include:
 - `--safe-mode` to disable shared customizations;
 - `--bare` to use only explicitly supplied context;
 - `--trust-project` to accept the current canonical workspace's exact
-  project/local hook and MCP fingerprint;
+  project/local provider/profile/model, hook, and MCP fingerprint;
 - `--system-prompt` and `--append-system-prompt` for prompt control;
 - `--add-dir` for additional canonical filesystem roots;
 - `--allowed-tools`, `--disallowed-tools`, and `--permission-mode` for local
@@ -291,13 +333,17 @@ praxis -p --resume <session-id> --rewind-files <user-message-uuid>
 
 ## Security-sensitive controls
 
-- Automatically discovered project/local hooks and MCP servers are blocked by
-  default. Interactive startup shows their canonical origins and defaults to
-  reject; headless startup never prompts. An explicit acceptance or
-  `--trust-project` stores only the current executable fingerprint in native
-  `state.json`. Changing a command, argument, environment grant, header,
-  transport, scope, or resolved source invalidates it. User-scope resources and
-  explicit `--settings`/`--mcp-config` inputs retain their existing behavior.
+- Automatically discovered project/local provider/profile/model selection,
+  hooks, and MCP servers are blocked by default. Interactive startup shows the
+  canonical workspace and origins and defaults to reject; headless startup
+  never prompts. An explicit acceptance or `--trust-project` stores only the
+  current canonical configuration fingerprint in native `state.json`.
+  Changing provider/profile/model, a command, argument, environment grant,
+  header, transport, scope, or resolved source invalidates it. User-scope
+  resources and explicit `--settings`/`--mcp-config` inputs retain their
+  existing behavior. Rejection ignores project/local provider selection and
+  removes project/local hooks and MCP resources; ordinary resources remain
+  usable. A legacy `projects[path].trusted: true` value is not authorization.
   `--dangerously-skip-permissions` never grants workspace trust, and safe/bare
   modes still suppress shared executables.
 - `--dangerously-skip-permissions` bypasses normal checks except explicit deny

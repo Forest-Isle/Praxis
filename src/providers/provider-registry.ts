@@ -1,0 +1,295 @@
+import type { ModelProvider, ModelThinkingConfig } from '../core/runtime.js'
+import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
+import { OpenAICompatibleProvider } from './openai-compatible.js'
+import { CodexSubscriptionProvider } from './codex-subscription.js'
+import { DeadlineModelProvider } from './deadline-provider.js'
+import {
+  CodexOAuthCredentialManager,
+  type CodexOAuthVault,
+} from './codex-oauth.js'
+import {
+  resolveProviderTarget,
+  type ProviderTarget,
+} from './provider-settings.js'
+import type {
+  ProviderCredentialSourceMetadata,
+  ProviderCredentialReader,
+  ResolvedProviderCredential,
+} from './provider-auth.js'
+import {
+  ProviderAuthenticationError,
+  resolveProviderCredential,
+} from './provider-auth.js'
+import {
+  parseContextEnvironment,
+  parseProviderEnvironment,
+  type ContextEnvironment,
+} from './environment.js'
+import {
+  createAnthropicPromptCachePolicyResolver,
+  type AnthropicPromptCachePolicy,
+} from './anthropic-prompt-cache.js'
+
+export type ProviderRegistryErrorCode = 'unsupported_provider'
+
+export class ProviderRegistryError extends Error {
+  readonly code: ProviderRegistryErrorCode
+
+  constructor(code: ProviderRegistryErrorCode, message: string) {
+    super(message)
+    this.name = 'ProviderRegistryError'
+    this.code = code
+  }
+}
+
+export interface ProviderRegistryOptions {
+  target: ProviderTarget
+  credential: ResolvedProviderCredential
+  context?: ContextEnvironment
+  anthropicThinking?: ModelThinkingConfig
+  openAiThinking?: ModelThinkingConfig
+  codexThinking?: ModelThinkingConfig
+  anthropicPromptCacheResolver?: (target: {
+    baseUrl: string
+    model: string
+  }) => AnthropicPromptCachePolicy
+  fetchImplementation?: typeof fetch
+  providerEnvironment?: ReturnType<typeof parseProviderEnvironment>
+  vault?: CodexOAuthVault
+}
+
+export interface ResolveProviderRegistryOptions {
+  configRoot: string
+  cwd: string
+  environment?: Readonly<Record<string, string | undefined>>
+  provider?: string
+  profile?: string
+  model?: string
+  includeSettings?: boolean
+  includeProjectSettings?: boolean
+  apiKey?: string
+  context?: ContextEnvironment
+  anthropicThinking?: ModelThinkingConfig
+  openAiThinking?: ModelThinkingConfig
+  codexThinking?: ModelThinkingConfig
+  vault: ProviderCredentialReader & CodexOAuthVault
+  fetchImplementation?: typeof fetch
+}
+
+export type ProviderRegistrySourceMetadata = ProviderCredentialSourceMetadata
+
+export interface ProviderRegistry {
+  readonly target: ProviderTarget
+  readonly credentialSource: ProviderRegistrySourceMetadata
+  create(modelId?: string): ModelProvider
+}
+
+export async function resolveProviderRegistry(
+  options: ResolveProviderRegistryOptions,
+): Promise<ProviderRegistry> {
+  const environment = options.environment ?? process.env
+  const target = await resolveProviderTarget({
+    configRoot: options.configRoot,
+    cwd: options.cwd,
+    environment,
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(options.profile === undefined ? {} : { profile: options.profile }),
+    ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.includeSettings === undefined
+      ? {}
+      : { includeSettings: options.includeSettings }),
+    ...(options.includeProjectSettings === undefined
+      ? {}
+      : { includeProjectSettings: options.includeProjectSettings }),
+  })
+  const credential = await resolveProviderCredential({
+    target,
+    environment,
+    vault: options.vault,
+    ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+  })
+  const context =
+    options.context ?? parseContextEnvironment(environment as NodeJS.ProcessEnv)
+  const controlsEnvironment = {
+    ...environment,
+    PRAXIS_PROVIDER:
+      target.protocol === 'anthropic-messages' ? 'anthropic' : 'openai',
+    PRAXIS_BASE_URL: target.baseUrl,
+  } as NodeJS.ProcessEnv
+  const providerEnvironment = parseProviderEnvironment(controlsEnvironment)
+  const promptCacheResolver =
+    target.protocol === 'anthropic-messages'
+      ? createAnthropicPromptCachePolicyResolver(controlsEnvironment)
+      : undefined
+  return createProviderRegistry({
+    target,
+    credential,
+    context,
+    ...(options.anthropicThinking === undefined
+      ? {}
+      : { anthropicThinking: options.anthropicThinking }),
+    ...(options.openAiThinking === undefined
+      ? {}
+      : { openAiThinking: options.openAiThinking }),
+    ...(options.codexThinking === undefined
+      ? {}
+      : { codexThinking: options.codexThinking }),
+    ...(promptCacheResolver === undefined
+      ? {}
+      : { anthropicPromptCacheResolver: promptCacheResolver }),
+    ...(options.fetchImplementation === undefined
+      ? {}
+      : { fetchImplementation: options.fetchImplementation }),
+    providerEnvironment,
+    vault: options.vault,
+  })
+}
+
+export function createProviderRegistry(
+  options: ProviderRegistryOptions,
+): ProviderRegistry {
+  return new NativeProviderRegistry(options)
+}
+
+class NativeProviderRegistry implements ProviderRegistry {
+  readonly target: ProviderTarget
+  readonly credentialSource: ProviderRegistrySourceMetadata
+  private readonly codexManager: CodexOAuthCredentialManager | undefined
+
+  constructor(private readonly options: ProviderRegistryOptions) {
+    this.target = options.target
+    this.credentialSource = options.credential.source
+    if (options.target.protocol === 'codex-subscription') {
+      if (options.credential.type !== 'oauth') {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: Codex subscription requires an OAuth credential',
+        )
+      }
+      if (!options.vault) {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: Codex subscription requires a credential vault',
+        )
+      }
+      this.codexManager = new CodexOAuthCredentialManager(
+        options.vault,
+        options.target.profileId,
+        options.fetchImplementation === undefined
+          ? {}
+          : { fetchImplementation: options.fetchImplementation },
+      )
+    }
+  }
+
+  create(modelId = this.target.modelId): ModelProvider {
+    const target = { ...this.target, modelId }
+    if (target.protocol === 'codex-subscription') {
+      if (!this.codexManager)
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: Codex subscription credentials are unavailable',
+        )
+      return this.withDeadline(
+        new CodexSubscriptionProvider({
+          model: target.modelId,
+          access: this.codexManager.access.bind(this.codexManager),
+          ...(this.options.fetchImplementation === undefined
+            ? {}
+            : { fetchImplementation: this.options.fetchImplementation }),
+          ...(this.options.codexThinking === undefined
+            ? {}
+            : { thinking: this.options.codexThinking }),
+        }),
+      )
+    }
+    if (target.protocol === 'openai-compatible') {
+      if (this.options.credential.type !== 'api-key') {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: an API key is required',
+        )
+      }
+      return this.withDeadline(
+        new OpenAICompatibleProvider({
+          baseUrl: target.baseUrl,
+          model: target.modelId,
+          apiKey: this.options.credential.secret,
+          ...(this.options.context?.contextWindowTokens === undefined
+            ? {}
+            : {
+                contextWindowTokens: this.options.context.contextWindowTokens,
+              }),
+          ...(this.options.openAiThinking === undefined
+            ? {}
+            : { thinking: this.options.openAiThinking }),
+          ...(this.options.fetchImplementation === undefined
+            ? {}
+            : { fetchImplementation: this.options.fetchImplementation }),
+        }),
+      )
+    }
+    if (target.protocol === 'anthropic-messages') {
+      if (this.options.credential.type !== 'api-key') {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: an API key is required',
+        )
+      }
+      return this.withDeadline(
+        new AnthropicCompatibleProvider({
+          baseUrl: target.baseUrl,
+          model: target.modelId,
+          apiKey: this.options.credential.secret,
+          ...(this.options.context?.contextWindowTokens === undefined
+            ? {}
+            : {
+                contextWindowTokens: this.options.context.contextWindowTokens,
+              }),
+          ...(this.options.anthropicThinking === undefined
+            ? {}
+            : {
+                thinking: this.options.anthropicThinking,
+              }),
+          ...(this.options.anthropicPromptCacheResolver === undefined
+            ? {}
+            : {
+                promptCaching: this.options.anthropicPromptCacheResolver({
+                  baseUrl: target.baseUrl,
+                  model: target.modelId,
+                }),
+              }),
+          ...(this.options.providerEnvironment?.maxOutputTokens === undefined
+            ? {}
+            : {
+                maxOutputTokens:
+                  this.options.providerEnvironment.maxOutputTokens,
+              }),
+          ...(this.options.providerEnvironment?.anthropicVersion === undefined
+            ? {}
+            : {
+                anthropicVersion:
+                  this.options.providerEnvironment.anthropicVersion,
+              }),
+          ...(this.options.providerEnvironment?.webSearch === undefined
+            ? {}
+            : { webSearch: this.options.providerEnvironment.webSearch }),
+          ...(this.options.fetchImplementation === undefined
+            ? {}
+            : { fetchImplementation: this.options.fetchImplementation }),
+        }),
+      )
+    }
+    throw new ProviderRegistryError(
+      'unsupported_provider',
+      `Unsupported provider protocol: ${target.protocol}`,
+    )
+  }
+
+  private withDeadline(provider: ModelProvider): ModelProvider {
+    const deadlineMs = this.options.providerEnvironment?.deadlineMs
+    return deadlineMs === undefined
+      ? provider
+      : new DeadlineModelProvider({ provider, deadlineMs })
+  }
+}

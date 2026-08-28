@@ -131,9 +131,11 @@ import {
   allowedWorkspaceHookSettings,
   allowedWorkspaceMcpResources,
   assessWorkspaceTrust,
+  hasWorkspaceProviderSelection,
   persistWorkspaceTrust,
   workspaceTrustDecisionKey,
   workspaceTrustInventory,
+  type WorkspaceTrustAssessment,
   type WorkspaceTrustInventory,
 } from './security/workspace-trust.js'
 import {
@@ -162,20 +164,30 @@ import {
 import { servePraxisMcpStdio } from './mcp/praxis-mcp-server.js'
 const VERIFIED_CLAUDE_SCHEMA_VERSION = 'native'
 const isClaudeSessionId = isSessionId
+
+function truthyEnvironmentValue(value: string | undefined): boolean {
+  return /^(?:1|true|yes|on)$/iu.test((value ?? '').trim())
+}
 import { writeFileAtomically } from './platform/atomic-write.js'
 import {
   redactSensitiveText,
   sensitiveEnvironmentValues,
 } from './platform/sensitive-data.js'
-import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
-import { createAnthropicPromptCachePolicyResolver } from './providers/anthropic-prompt-cache.js'
 import { FallbackModelProvider } from './providers/fallback-provider.js'
-import { DeadlineModelProvider } from './providers/deadline-provider.js'
-import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
+import { ProviderCredentialVault } from './persistence/provider-credential-vault.js'
 import {
   parseContextEnvironment,
   parseProviderEnvironment,
 } from './providers/environment.js'
+import {
+  ProviderAuthenticationError,
+  resolveProviderCredential,
+} from './providers/provider-auth.js'
+import { resolveProviderRegistry } from './providers/provider-registry.js'
+import {
+  ProviderSettingsError,
+  resolveProviderTarget,
+} from './providers/provider-settings.js'
 import { ModelPricingRegistry, usageCostUsd } from './core/usage.js'
 import { LocalToolRegistry } from './tools/local-tools.js'
 import { ClaudeLspToolManager } from './tools/claude-lsp-tool.js'
@@ -187,6 +199,7 @@ import { nativeBackgroundTaskParent } from './application/background-bash-manage
 import {
   runTopLevelAgentWorker,
   TopLevelAgentManager,
+  type ProviderEnvironmentOverride,
   type TopLevelAgentSummary,
 } from './application/top-level-agent-manager.js'
 import { FilteredToolRegistry } from './tools/filtered-tool-registry.js'
@@ -217,6 +230,7 @@ import {
   type StreamJsonMessage,
   type StreamControlResponse,
 } from './cli/protocol.js'
+import { executeProviderAuthCommand } from './cli/provider-auth-command.js'
 import {
   describeClaudePlugin,
   type ClaudePluginInitComponent,
@@ -312,80 +326,6 @@ function fileResourceHeaders(
   }
 }
 
-interface ProviderFactoryOptions {
-  apiKey: string
-  environment: NodeJS.ProcessEnv
-  dataPlane: DataPlane
-  provider: ReturnType<typeof parseProviderEnvironment>
-  context: ReturnType<typeof parseContextEnvironment>
-  controls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>
-  explicitThinkingControls: Pick<CliControls, 'thinking' | 'maxThinkingTokens'>
-}
-
-function createProviderForModel({
-  apiKey,
-  environment,
-  provider,
-  context,
-  controls,
-  explicitThinkingControls,
-}: ProviderFactoryOptions): (selectedModel: string) => ModelProvider {
-  const resolvePromptCachePolicy =
-    createAnthropicPromptCachePolicyResolver(environment)
-  return (selectedModel) => {
-    const providerOptions = {
-      apiKey,
-      model: selectedModel,
-      baseUrl: provider.baseUrl,
-      ...('contextWindowTokens' in context
-        ? { contextWindowTokens: context.contextWindowTokens }
-        : {}),
-    }
-    const concrete =
-      provider.provider === 'anthropic'
-        ? new AnthropicCompatibleProvider({
-            ...providerOptions,
-            promptCaching: resolvePromptCachePolicy({
-              baseUrl: provider.baseUrl,
-              model: selectedModel,
-            }),
-            thinking: {
-              mode: controls.thinking ?? 'enabled',
-              ...(controls.maxThinkingTokens === undefined
-                ? {}
-                : { maxTokens: controls.maxThinkingTokens }),
-            },
-            ...('maxOutputTokens' in provider
-              ? { maxOutputTokens: provider.maxOutputTokens }
-              : {}),
-            ...('anthropicVersion' in provider
-              ? { anthropicVersion: provider.anthropicVersion }
-              : {}),
-            ...('webSearch' in provider
-              ? { webSearch: provider.webSearch }
-              : {}),
-          })
-        : new OpenAICompatibleProvider({
-            ...providerOptions,
-            ...(explicitThinkingControls.thinking === undefined &&
-            explicitThinkingControls.maxThinkingTokens === undefined
-              ? {}
-              : {
-                  thinking: {
-                    mode: controls.thinking ?? 'enabled',
-                    ...(controls.maxThinkingTokens === undefined
-                      ? {}
-                      : { maxTokens: controls.maxThinkingTokens }),
-                  },
-                }),
-          })
-    return new DeadlineModelProvider({
-      provider: concrete,
-      deadlineMs: provider.deadlineMs,
-    })
-  }
-}
-
 const HELP = `Praxis — local-first general agent
 
 Usage:
@@ -409,6 +349,7 @@ Usage:
   praxis auto-mode <config|defaults|critique>
   praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|prune|tag|validate|marketplace> ...
   praxis doctor [--json]
+  praxis auth <status|set-key|login|logout> ...
   praxis import [options] [source]
   praxis install [--force] [stable|latest|version]
   praxis update|upgrade
@@ -424,6 +365,8 @@ Options:
   --resume-session-at <message-id>    Resume at an active conversation message
   --session-id <uuid>                 Use an explicit ID for a new session
   -n, --name <name>                   Set session display name
+  --provider <id>                     Select provider for this session
+  --provider-profile <id>             Select provider profile for this session
   --model <model>                     Select model for this session
   --effort <level>                    low, medium, high, xhigh, or max
   --environment <environment_id>      Unsupported: Praxis runs sessions locally
@@ -460,7 +403,7 @@ Options:
   --setting-sources <sources>         user, project, local, or an empty list
   --safe-mode                         Disable shared customizations
   --bare                              Use only explicitly supplied context
-  --trust-project                     Trust current workspace executables
+  --trust-project                     Trust current workspace-controlled resources/configuration
   --system-prompt <prompt>            Set system prompt
   --append-system-prompt <prompt>     Append system prompt
   --exclude-dynamic-system-prompt-sections
@@ -494,13 +437,67 @@ Options:
   --tmux[=classic]                    Launch worktree in an iTerm2 native pane when available; classic forces tmux
 
 Provider environment:
-  PRAXIS_PROVIDER=openai|anthropic, PRAXIS_API_KEY, PRAXIS_MODEL
+  PRAXIS_PROVIDER=<provider-id>, PRAXIS_API_KEY, PRAXIS_MODEL
+  PRAXIS_PROVIDER_PROFILE
   PRAXIS_BASE_URL, PRAXIS_MAX_OUTPUT_TOKENS, PRAXIS_ANTHROPIC_VERSION
   PRAXIS_ANTHROPIC_WEB_SEARCH=true|false
   PRAXIS_ANTHROPIC_PROMPT_CACHING=true|false
   PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL=5m|1h
   PRAXIS_CONTEXT_WINDOW_TOKENS, PRAXIS_CONTEXT_RESERVE_TOKENS
 `
+
+const AUTH_HELP = `Usage: praxis auth <command>
+
+Commands:
+  status [provider] [--profile <profile>] [--json]
+  set-key <provider> [--profile <profile>] [--json]
+  login openai-codex [--profile <profile>] [--device] [--no-browser] [--json]
+  logout <provider> [--profile <profile>] [--json]
+
+Options:
+  -h, --help  Display help for command
+`
+
+const AUTH_ACTION_HELP: Record<string, string> = {
+  status: `Usage: praxis auth status [provider] [--profile <profile>] [--json]
+
+List credential metadata without exposing secrets.
+
+Options:
+  --profile <profile>  Filter by provider profile
+  --json               Output machine-readable metadata
+  -h, --help           Display help for command
+`,
+  'set-key': `Usage: praxis auth set-key <provider> [--profile <profile>] [--json]
+
+Read an API key securely from the terminal or stdin and store it in the native Vault.
+
+Options:
+  --profile <profile>  Select provider profile (default: default)
+  --json               Output a machine-readable confirmation
+  -h, --help           Display help for command
+`,
+  login: `Usage: praxis auth login openai-codex [--profile <profile>] [--device] [--no-browser] [--json]
+
+Authorize an experimental Codex subscription profile with OpenAI OAuth.
+
+Options:
+  --profile <profile>  Select Codex profile (default: default)
+  --device             Use the device authorization flow
+  --no-browser         Print instructions without opening a browser
+  --json               Keep stdout machine-readable
+  -h, --help           Display help for command
+`,
+  logout: `Usage: praxis auth logout <provider> [--profile <profile>] [--json]
+
+Delete exactly one native Vault credential.
+
+Options:
+  --profile <profile>  Select provider profile (default: default)
+  --json               Output a machine-readable confirmation
+  -h, --help           Display help for command
+`,
+}
 
 const AGENTS_HELP = `Usage: praxis agents [options]
 
@@ -532,6 +529,10 @@ Options:
                                         dispatched sessions (repeatable)
   --model <model>                       Default model for sessions dispatched
                                         from agent view
+  --provider <id>                       Default provider for sessions dispatched
+                                        from agent view
+  --provider-profile <id>               Default provider profile for dispatched
+                                        sessions
   --permission-mode <mode>              Default permission mode for sessions
                                         dispatched from agent view
   --plugin-dir <path>                   Load plugins from specified directory
@@ -1043,6 +1044,7 @@ export interface CliIO {
   stderr(message: string): void
   isTTY?: boolean
   readStdinLines?: () => AsyncIterable<string | Uint8Array>
+  readSecret?: (prompt: string, signal?: AbortSignal) => Promise<string>
 }
 
 interface SessionCommands {
@@ -1238,6 +1240,8 @@ export interface CliDependencies extends InteractiveServiceFactory {
   }): Promise<SessionCommands>
   createAutoModeCritic?(options: {
     model?: string
+    provider?: string
+    providerProfile?: string
     dataPlane?: DataPlane
     configRoot?: string
     statePath?: string
@@ -1260,6 +1264,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
   launchTmux?: typeof launchTmuxWorktree
   mcpAuthenticate?: typeof authenticateMcpServer
   mcpServe?: typeof servePraxisMcpStdio
+  executeProviderAuthCommand?: typeof executeProviderAuthCommand
   selfUpdate?: (options: {
     operation: 'install' | 'update'
     target?: string
@@ -1268,11 +1273,130 @@ export interface CliDependencies extends InteractiveServiceFactory {
   }) => Promise<SelfUpdateResult>
 }
 
+interface ConsoleSecretInput extends AsyncIterable<string | Uint8Array> {
+  readonly isTTY?: boolean
+  readonly isRaw?: boolean
+  isPaused(): boolean
+  setRawMode?(enabled: boolean): unknown
+  pause(): unknown
+  resume(): unknown
+  on(event: 'data', listener: (chunk: Buffer | string) => void): unknown
+  removeListener(
+    event: 'data',
+    listener: (chunk: Buffer | string) => void,
+  ): unknown
+}
+
+interface ConsoleSecretOutput {
+  write(message: string): unknown
+}
+
+export async function readConsoleSecret(
+  prompt: string,
+  signal?: AbortSignal,
+  input: ConsoleSecretInput = process.stdin,
+  output: ConsoleSecretOutput = process.stderr,
+): Promise<string> {
+  const limit = 64 * 1024
+  if (signal?.aborted) throw new Error('Credential input cancelled')
+  if (!input.isTTY || typeof input.setRawMode !== 'function') {
+    const chunks: Buffer[] = []
+    let size = 0
+    for await (const chunk of input) {
+      if (signal?.aborted) throw new Error('Credential input cancelled')
+      const bytes =
+        typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk)
+      size += bytes.byteLength
+      if (size > limit) throw new Error('Credential exceeds the 64 KiB limit')
+      chunks.push(bytes)
+    }
+    if (signal?.aborted) throw new Error('Credential input cancelled')
+    return Buffer.concat(chunks, size).toString('utf8')
+  }
+  output.write(prompt)
+  const wasRaw = input.isRaw
+  const wasPaused = input.isPaused()
+  const value: number[] = []
+  return await new Promise<string>((resolveSecret, reject) => {
+    let settled = false
+    let rawModeChanged = false
+    let listenerAttached = false
+    const restore = (): Error | undefined => {
+      let failure: Error | undefined
+      if (listenerAttached) {
+        input.removeListener('data', onData)
+        listenerAttached = false
+      }
+      signal?.removeEventListener('abort', onAbort)
+      if (rawModeChanged) {
+        try {
+          input.setRawMode?.(Boolean(wasRaw))
+        } catch (error) {
+          failure = error instanceof Error ? error : new Error(String(error))
+        }
+        rawModeChanged = false
+      }
+      if (wasPaused) {
+        try {
+          input.pause()
+        } catch (error) {
+          failure ??= error instanceof Error ? error : new Error(String(error))
+        }
+      }
+      return failure
+    }
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      const restorationError = restore()
+      let outputError: Error | undefined
+      try {
+        output.write('\n')
+      } catch (writeError) {
+        outputError =
+          writeError instanceof Error
+            ? writeError
+            : new Error(String(writeError))
+      }
+      const failure = error ?? restorationError ?? outputError
+      if (failure) reject(failure)
+      else resolveSecret(Buffer.from(value).toString('utf8'))
+    }
+    const onAbort = () => finish(new Error('Credential input cancelled'))
+    const onData = (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      for (const byte of bytes) {
+        if (byte === 3) return finish(new Error('Credential input cancelled'))
+        if (byte === 13 || byte === 10) return finish()
+        if (byte === 8 || byte === 127) {
+          value.pop()
+          continue
+        }
+        value.push(byte)
+        if (value.length > limit)
+          return finish(new Error('Credential exceeds the 64 KiB limit'))
+      }
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) return onAbort()
+    try {
+      input.setRawMode?.(true)
+      rawModeChanged = true
+      input.resume()
+      input.on('data', onData)
+      listenerAttached = true
+    } catch (error) {
+      finish(error instanceof Error ? error : new Error(String(error)))
+    }
+  })
+}
+
 const consoleIO: CliIO = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
   isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
   readStdinLines: () => process.stdin,
+  readSecret: readConsoleSecret,
 }
 
 function warningEventSink(io: Pick<CliIO, 'stderr'>): RuntimeEventSink {
@@ -1324,6 +1448,46 @@ export function resolveInteractiveRuntimeSettingsLocation(
     configRoot,
     statePath: join(configRoot, 'state.json'),
   }
+}
+
+async function assessCurrentWorkspaceProviderSelection(options: {
+  configRoot: string
+  statePath: string
+  cwd: string
+  environment: NodeJS.ProcessEnv
+  pluginDirectories?: readonly string[]
+  pluginUrls?: readonly string[]
+  strictMcpConfig?: boolean
+}): Promise<WorkspaceTrustAssessment | undefined> {
+  const shared = await loadNativeSharedResources({
+    root: options.configRoot,
+    cwd: options.cwd,
+    environment: options.environment,
+    includeProjectMemory: false,
+  })
+  const plugins = await loadClaudePlugins({
+    configRoot: options.configRoot,
+    cwd: options.cwd,
+    pluginDirectories: options.pluginDirectories ?? [],
+    pluginUrls: options.pluginUrls ?? [],
+    strictPluginDirectories:
+      (options.pluginDirectories?.length ?? 0) +
+        (options.pluginUrls?.length ?? 0) >
+      0,
+    loadInstalled: true,
+    readOnlyExecutables: true,
+    environment: options.environment,
+  })
+  const settings = [...shared.settings, ...plugins.settings]
+  if (!hasWorkspaceProviderSelection(settings)) return undefined
+  return assessWorkspaceTrust(
+    await workspaceTrustInventory({
+      cwd: options.cwd,
+      settings,
+      mcp: options.strictMcpConfig ? [] : [...shared.mcp, ...plugins.mcp],
+    }),
+    options.statePath,
+  )
 }
 
 export function resolveUnknownCostSidecarPath(
@@ -1381,9 +1545,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const claudeStatePath = join(configRoot, 'state.json')
   const simpleMode =
     controls.bare ||
-    /^(?:1|true|yes|on)$/iu.test(
-      (runtimeEnvironment.CLAUDE_CODE_SIMPLE ?? '').trim(),
-    )
+    truthyEnvironmentValue(runtimeEnvironment.CLAUDE_CODE_SIMPLE)
   const runtimeSettings =
     controls.safeMode || simpleMode
       ? undefined
@@ -1457,19 +1619,18 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let provider: ModelProvider | undefined
   let providerForModel: ((model: string) => ModelProvider) | undefined
   let providerForMainModel: ((model: string) => ModelProvider) | undefined
+  let providerBillingMode: 'api' | 'subscription' | undefined
   const context = parseContextEnvironment(runtimeEnvironment)
   const apiKey = runtimeEnvironment.PRAXIS_API_KEY
-  const model = resolveRuntimeModel(
+  let model = resolveRuntimeModel(
     interactiveModel ?? controls.model,
     runtimeEnvironment,
     runtimeSettings,
   )
   const providerEnvironment =
-    apiKey && model
+    cli.fileResources.length > 0
       ? parseProviderEnvironment(runtimeEnvironment)
-      : cli.fileResources.length > 0
-        ? parseProviderEnvironment(runtimeEnvironment)
-        : undefined
+      : undefined
   const fileCredential =
     runtimeEnvironment.PRAXIS_FILES_BEARER_TOKEN ??
     runtimeEnvironment.PRAXIS_FILES_API_KEY ??
@@ -1479,37 +1640,148 @@ const createDefaultService: CliDependencies['createService'] = async ({
       '--file requires PRAXIS_FILES_BEARER_TOKEN, PRAXIS_FILES_API_KEY, or PRAXIS_API_KEY',
     )
   }
-  if (requireProvider && (!apiKey || !model)) {
-    throw new Error(
-      'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
-    )
+  const warnedWorkspaceFingerprints = new Set<string>()
+  let trustProjectRequestAvailable = cli.trustProject
+  const authorizeWorkspaceResources = async (
+    automaticSettings: readonly JsonResource[],
+    automaticMcp: readonly JsonResource[],
+    runtimeCwd: string,
+    precomputedAssessment?: WorkspaceTrustAssessment,
+  ): Promise<boolean> => {
+    if (cli.safeMode || simpleMode) return true
+    const trustRequested = trustProjectRequestAvailable
+    trustProjectRequestAvailable = false
+    const assessment =
+      precomputedAssessment ??
+      (await assessWorkspaceTrust(
+        await workspaceTrustInventory({
+          cwd: runtimeCwd,
+          settings: automaticSettings,
+          mcp: automaticMcp,
+        }),
+        claudeStatePath,
+      ))
+    if (assessment.status !== 'untrusted') return true
+
+    let approved = trustRequested
+    if (!approved && approveWorkspaceTrust) {
+      try {
+        approved = await approveWorkspaceTrust(assessment)
+      } catch (error) {
+        if (!(
+          error instanceof Error &&
+          (error.name === 'AbortError' || error.name === 'CancellationError')
+        )) {
+          throw error
+        }
+        approved = false
+      }
+    }
+    if (approved) {
+      await persistWorkspaceTrust(assessment, claudeStatePath)
+      return true
+    }
+
+    const warningKey = workspaceTrustDecisionKey(assessment)
+    if (!warnedWorkspaceFingerprints.has(warningKey)) {
+      warnedWorkspaceFingerprints.add(warningKey)
+      runtimeEventSink({
+        type: 'warning',
+        message: `Workspace-controlled resources/configuration blocked for ${safeWorkspaceTrustDisplayField(assessment.canonicalPath)}; restart to review them interactively, or rerun with --trust-project to approve the current fingerprint.`,
+      })
+    }
+    return false
   }
-  if (!hooksOnly && apiKey && model) {
-    if (!providerEnvironment) {
-      throw new Error('Provider environment is unavailable')
-    }
-    providerForModel = createProviderForModel({
-      apiKey,
+  let workspaceProviderSettingsTrusted = false
+  if (!hooksOnly && !cli.safeMode && !simpleMode) {
+    const assessment = await assessCurrentWorkspaceProviderSelection({
+      configRoot,
+      statePath: claudeStatePath,
+      cwd,
       environment: runtimeEnvironment,
-      dataPlane,
-      provider: providerEnvironment,
-      context,
-      controls: cli,
-      explicitThinkingControls: controls,
+      pluginDirectories: cli.pluginDirectories,
+      pluginUrls: cli.pluginUrls,
+      strictMcpConfig: cli.strictMcpConfig,
     })
-    const createProvider = providerForModel
-    providerForMainModel = (primaryModel: string) => {
-      const models = [primaryModel, ...(cli.fallbackModels ?? [])].filter(
-        (candidate, index, all) => all.indexOf(candidate) === index,
+    if (assessment) {
+      workspaceProviderSettingsTrusted = await authorizeWorkspaceResources(
+        [],
+        [],
+        cwd,
+        assessment,
       )
-      const providers = models.map((candidate) => createProvider(candidate))
-      const selected = providers[0]
-      if (!selected) throw new Error('A primary model is required')
-      return providers.length > 1
-        ? new FallbackModelProvider({ providers })
-        : selected
     }
-    provider = providerForMainModel(model)
+  }
+  if (!hooksOnly) {
+    try {
+      const registry = await resolveProviderRegistry({
+        configRoot,
+        cwd,
+        environment: runtimeEnvironment,
+        ...((interactiveModel ?? controls.model) === undefined
+          ? {}
+          : { model: interactiveModel ?? controls.model }),
+        ...(controls.provider === undefined
+          ? {}
+          : { provider: controls.provider }),
+        ...(controls.providerProfile === undefined
+          ? {}
+          : { profile: controls.providerProfile }),
+        includeSettings: !(controls.safeMode || simpleMode),
+        includeProjectSettings: workspaceProviderSettingsTrusted,
+        context,
+        vault: new ProviderCredentialVault({
+          configRoot,
+          environment: runtimeEnvironment,
+        }),
+        anthropicThinking: {
+          mode: cli.thinking ?? 'enabled',
+          ...(cli.maxThinkingTokens === undefined
+            ? {}
+            : { maxTokens: cli.maxThinkingTokens }),
+        },
+        codexThinking: {
+          mode: cli.thinking ?? 'enabled',
+          ...(cli.maxThinkingTokens === undefined
+            ? {}
+            : { maxTokens: cli.maxThinkingTokens }),
+        },
+        ...(controls.thinking === undefined &&
+        controls.maxThinkingTokens === undefined
+          ? {}
+          : {
+              openAiThinking: {
+                mode: cli.thinking ?? 'enabled',
+                ...(cli.maxThinkingTokens === undefined
+                  ? {}
+                  : { maxTokens: cli.maxThinkingTokens }),
+              },
+            }),
+      })
+      model = registry.target.modelId
+      providerBillingMode = registry.target.billingMode
+      providerForModel = (selectedModel: string) =>
+        registry.create(selectedModel)
+      const createProvider = providerForModel
+      providerForMainModel = (primaryModel: string) => {
+        const models = [primaryModel, ...(cli.fallbackModels ?? [])].filter(
+          (candidate, index, all) => all.indexOf(candidate) === index,
+        )
+        const providers = models.map((candidate) => createProvider(candidate))
+        const selected = providers[0]
+        if (!selected) throw new Error('A primary model is required')
+        return providers.length > 1
+          ? new FallbackModelProvider({ providers })
+          : selected
+      }
+      provider = providerForMainModel(model)
+    } catch (error) {
+      const optionalProviderError =
+        error instanceof ProviderAuthenticationError ||
+        (error instanceof ProviderSettingsError &&
+          error.code === 'model_required')
+      if (requireProvider || !optionalProviderError) throw error
+    }
   }
 
   const costStateStore = new ClaudeCostStateStore({
@@ -1552,9 +1824,13 @@ const createDefaultService: CliDependencies['createService'] = async ({
     ...(cli.maxBudgetUsd === undefined
       ? {}
       : { maxBudgetUsd: cli.maxBudgetUsd }),
-    pricing: ModelPricingRegistry.fromEnvironment(
-      runtimeEnvironment.PRAXIS_PRICING_JSON,
-    ),
+    ...(providerBillingMode === 'subscription'
+      ? {}
+      : {
+          pricing: ModelPricingRegistry.fromEnvironment(
+            runtimeEnvironment.PRAXIS_PRICING_JSON,
+          ),
+        }),
     collectMetrics: true,
     ...(!experimentalNativeTranscriptWrites && sessionMemoryProviderFactory
       ? { sessionMemoryProviderFactory }
@@ -1589,53 +1865,6 @@ const createDefaultService: CliDependencies['createService'] = async ({
         }
       : {}),
   }
-  const warnedWorkspaceFingerprints = new Set<string>()
-  let trustProjectRequestAvailable = cli.trustProject
-  const authorizeWorkspaceExecutables = async (
-    automaticSettings: readonly JsonResource[],
-    automaticMcp: readonly JsonResource[],
-    runtimeCwd: string,
-  ): Promise<boolean> => {
-    if (cli.safeMode || simpleMode) return true
-    const trustRequested = trustProjectRequestAvailable
-    trustProjectRequestAvailable = false
-    const inventory = await workspaceTrustInventory({
-      cwd: runtimeCwd,
-      settings: automaticSettings,
-      mcp: automaticMcp,
-    })
-    const assessment = await assessWorkspaceTrust(inventory, claudeStatePath)
-    if (assessment.status !== 'untrusted') return true
-
-    let approved = trustRequested
-    if (!approved && approveWorkspaceTrust) {
-      try {
-        approved = await approveWorkspaceTrust(assessment)
-      } catch (error) {
-        if (!(
-          error instanceof Error &&
-          (error.name === 'AbortError' || error.name === 'CancellationError')
-        )) {
-          throw error
-        }
-        approved = false
-      }
-    }
-    if (approved) {
-      await persistWorkspaceTrust(assessment, claudeStatePath)
-      return true
-    }
-
-    const warningKey = workspaceTrustDecisionKey(assessment)
-    if (!warnedWorkspaceFingerprints.has(warningKey)) {
-      warnedWorkspaceFingerprints.add(warningKey)
-      runtimeEventSink({
-        type: 'warning',
-        message: `Workspace executable resources blocked for ${safeWorkspaceTrustDisplayField(assessment.canonicalPath)}; restart to review them interactively, or rerun with --trust-project to approve the current fingerprint.`,
-      })
-    }
-    return false
-  }
   const hookConfiguration = async () => {
     const [sharedResources, pluginResources] = await Promise.all([
       cli.safeMode || simpleMode
@@ -1665,7 +1894,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const automaticMcp = cli.strictMcpConfig
       ? []
       : [...sharedResources.mcp, ...pluginResources.mcp]
-    const trusted = await authorizeWorkspaceExecutables(
+    const trusted = await authorizeWorkspaceResources(
       automaticSettings,
       automaticMcp,
       cwd,
@@ -1773,7 +2002,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   const trustMcp = cli.strictMcpConfig
     ? []
     : [...loadedResources.mcp, ...executablePluginResources.mcp]
-  const workspaceExecutablesTrusted = await authorizeWorkspaceExecutables(
+  const workspaceExecutablesTrusted = await authorizeWorkspaceResources(
     trustSettings,
     trustMcp,
     cwd,
@@ -2054,7 +2283,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         ...pluginResources.settings,
       ]
       const refreshedMcp = [...refreshed.mcp, ...pluginResources.mcp]
-      const trusted = await authorizeWorkspaceExecutables(
+      const trusted = await authorizeWorkspaceResources(
         refreshedSettings,
         refreshedMcp,
         workspace.cwd(),
@@ -2791,32 +3020,38 @@ const createDefaultService: CliDependencies['createService'] = async ({
 
 const createDefaultAutoModeCritic: NonNullable<
   CliDependencies['createAutoModeCritic']
-> = async ({ model, dataPlane, configRoot, statePath }) => {
-  const apiKey = process.env.PRAXIS_API_KEY
+> = async ({
+  model,
+  provider,
+  providerProfile,
+  dataPlane,
+  configRoot,
+  statePath,
+}) => {
   const resolvedDataPlane = dataPlane ?? resolveDataPlane()
   const location = resolveInteractiveRuntimeSettingsLocation(resolvedDataPlane)
   const resolvedConfigRoot = configRoot ?? location.configRoot
-  const resolvedStatePath = statePath ?? location.statePath
-  const runtimeSettings = await loadRuntimeSettings({
+  const assessment = await assessCurrentWorkspaceProviderSelection({
     configRoot: resolvedConfigRoot,
-    statePath: resolvedStatePath,
-  })
-  const selectedModel = resolveRuntimeModel(model, process.env, runtimeSettings)
-  if (!apiKey || !selectedModel) {
-    throw new Error(
-      'PRAXIS_API_KEY and a model (--model or PRAXIS_MODEL) are required',
-    )
-  }
-  const providerEnvironment = parseProviderEnvironment(process.env)
-  return createProviderForModel({
-    apiKey,
+    statePath: statePath ?? join(resolvedConfigRoot, 'state.json'),
+    cwd: process.cwd(),
     environment: process.env,
-    dataPlane: resolvedDataPlane,
-    provider: providerEnvironment,
+  })
+  const registry = await resolveProviderRegistry({
+    configRoot: resolvedConfigRoot,
+    cwd: process.cwd(),
+    environment: process.env,
+    ...(model === undefined ? {} : { model }),
+    ...(provider === undefined ? {} : { provider }),
+    ...(providerProfile === undefined ? {} : { profile: providerProfile }),
+    includeProjectSettings: assessment?.status === 'trusted',
     context: parseContextEnvironment(process.env),
-    controls: {},
-    explicitThinkingControls: {},
-  })(selectedModel)
+    vault: new ProviderCredentialVault({
+      configRoot: resolvedConfigRoot,
+      environment: process.env,
+    }),
+  })
+  return registry.create(model ?? registry.target.modelId)
 }
 
 const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] =
@@ -2918,19 +3153,31 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
 const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
   vote: async ({ criteria, focus, baseline, model, signal }) => {
     const environment = process.env
-    const apiKey = environment.PRAXIS_API_KEY
-    if (!apiKey)
-      throw new Error('PRAXIS_API_KEY is required for paid eval graders')
-    const providerEnvironment = parseProviderEnvironment(environment)
-    const provider = createProviderForModel({
-      apiKey,
+    const configRoot = resolveDataPlaneRoot({ environment })
+    const assessment = await assessCurrentWorkspaceProviderSelection({
+      configRoot,
+      statePath: join(configRoot, 'state.json'),
+      cwd: process.cwd(),
       environment,
-      dataPlane: resolveDataPlane(environment),
-      provider: providerEnvironment,
+    })
+    const registry = await resolveProviderRegistry({
+      configRoot,
+      cwd: process.cwd(),
+      environment,
+      ...(model === undefined ? {} : { model }),
+      includeProjectSettings: assessment?.status === 'trusted',
       context: parseContextEnvironment(environment),
-      controls: {},
-      explicitThinkingControls: {},
-    })(model)
+      vault: new ProviderCredentialVault({
+        configRoot,
+        environment,
+      }),
+    })
+    if (registry.target.billingMode === 'subscription') {
+      throw new Error(
+        'Plugin eval LLM judges require API-billed cost; subscription cost is unavailable',
+      )
+    }
+    const provider = registry.create(model ?? registry.target.modelId)
     const prompt = `You are an eval judge. Return only JSON matching {"passed":boolean,"explanation":string}.
 
 Criteria:
@@ -2980,6 +3227,160 @@ ${focus}${baseline === undefined ? '' : `\n\nBaseline:\n${baseline}`}`
   },
 }
 
+async function resolveDetachedWorkerProviderEnvironment(request: {
+  cwd: string
+  argv: readonly string[]
+}): Promise<ProviderEnvironmentOverride> {
+  const environment = process.env
+  const invocation = parseCliInvocation(request.argv)
+  const configRoot = resolveDataPlaneRoot({ environment })
+  const statePath = join(configRoot, 'state.json')
+  const safe =
+    invocation.safeMode ||
+    invocation.bare ||
+    truthyEnvironmentValue(environment.CLAUDE_CODE_SIMPLE)
+  let includeProjectSettings = false
+  if (!safe) {
+    const assessment = await assessCurrentWorkspaceProviderSelection({
+      configRoot,
+      statePath,
+      cwd: request.cwd,
+      environment,
+      pluginDirectories: invocation.pluginDirectories,
+      pluginUrls: invocation.pluginUrls,
+      strictMcpConfig: invocation.strictMcpConfig,
+    })
+    if (assessment?.status === 'trusted') includeProjectSettings = true
+    else if (assessment?.status === 'untrusted' && invocation.trustProject) {
+      await persistWorkspaceTrust(assessment, statePath)
+      includeProjectSettings = true
+    }
+  }
+  const target = await resolveProviderTarget({
+    configRoot,
+    cwd: request.cwd,
+    environment,
+    ...(invocation.model === undefined ? {} : { model: invocation.model }),
+    ...(invocation.provider === undefined
+      ? {}
+      : { provider: invocation.provider }),
+    ...(invocation.providerProfile === undefined
+      ? {}
+      : { profile: invocation.providerProfile }),
+    includeSettings: !safe,
+    includeProjectSettings,
+  })
+  const credential = await resolveProviderCredential({
+    target,
+    environment,
+    vault: new ProviderCredentialVault({ configRoot, environment }),
+  })
+  return credential.type === 'api-key'
+    ? { PRAXIS_API_KEY: credential.secret }
+    : {}
+}
+
+export async function resolveInteractiveProviderStartup(options: {
+  controls: CliControls
+  configRoot: string
+  statePath: string
+  cwd: string
+  environment?: NodeJS.ProcessEnv
+  approveWorkspaceTrust?: (
+    assessment: WorkspaceTrustAssessment,
+  ) => boolean | Promise<boolean>
+}): Promise<{
+  effectiveModel: string | undefined
+  trustProjectRequestAvailable: boolean
+}> {
+  const environment = options.environment ?? process.env
+  const disabled =
+    options.controls.safeMode ||
+    options.controls.bare ||
+    truthyEnvironmentValue(environment.CLAUDE_CODE_SIMPLE)
+  if (disabled) {
+    let effectiveModel: string | undefined
+    try {
+      effectiveModel = (
+        await resolveProviderTarget({
+          configRoot: options.configRoot,
+          cwd: options.cwd,
+          environment,
+          ...(options.controls.model === undefined
+            ? {}
+            : { model: options.controls.model }),
+          ...(options.controls.provider === undefined
+            ? {}
+            : { provider: options.controls.provider }),
+          ...(options.controls.providerProfile === undefined
+            ? {}
+            : { profile: options.controls.providerProfile }),
+          includeSettings: false,
+        })
+      ).modelId
+    } catch (error) {
+      if (!(
+        error instanceof ProviderSettingsError &&
+        error.code === 'model_required'
+      ))
+        throw error
+    }
+    return {
+      effectiveModel,
+      trustProjectRequestAvailable: options.controls.trustProject,
+    }
+  }
+  const assessment = await assessCurrentWorkspaceProviderSelection({
+    configRoot: options.configRoot,
+    statePath: options.statePath,
+    cwd: options.cwd,
+    environment,
+    pluginDirectories: options.controls.pluginDirectories,
+    pluginUrls: options.controls.pluginUrls,
+    strictMcpConfig: options.controls.strictMcpConfig,
+  })
+  let includeProjectSettings = false
+  let trustProjectRequestAvailable = options.controls.trustProject
+  if (assessment) {
+    trustProjectRequestAvailable = false
+    if (assessment.status === 'trusted') includeProjectSettings = true
+    else if (
+      options.controls.trustProject ||
+      (await options.approveWorkspaceTrust?.(assessment))
+    ) {
+      await persistWorkspaceTrust(assessment, options.statePath)
+      includeProjectSettings = true
+    }
+  }
+  let effectiveModel: string | undefined
+  try {
+    effectiveModel = (
+      await resolveProviderTarget({
+        configRoot: options.configRoot,
+        cwd: options.cwd,
+        environment,
+        ...(options.controls.model === undefined
+          ? {}
+          : { model: options.controls.model }),
+        ...(options.controls.provider === undefined
+          ? {}
+          : { provider: options.controls.provider }),
+        ...(options.controls.providerProfile === undefined
+          ? {}
+          : { profile: options.controls.providerProfile }),
+        includeSettings: true,
+        includeProjectSettings,
+      })
+    ).modelId
+  } catch (error) {
+    if (!(
+      error instanceof ProviderSettingsError && error.code === 'model_required'
+    ))
+      throw error
+  }
+  return { effectiveModel, trustProjectRequestAvailable }
+}
+
 export function createDefaultDependencies(
   entrypoint: string = fileURLToPath(import.meta.url),
 ): CliDependencies {
@@ -3024,18 +3425,15 @@ export function createDefaultDependencies(
         configRoot: interactiveConfigRoot,
         statePath: interactiveStatePath,
       } = resolveInteractiveRuntimeSettingsLocation(interactiveDataPlane)
-      const interactiveRuntimeSettings =
-        interactiveControls.safeMode || interactiveControls.bare
-          ? undefined
-          : await loadRuntimeSettings({
-              configRoot: interactiveConfigRoot,
-              statePath: interactiveStatePath,
-            })
-      const effectiveModel = resolveRuntimeModel(
-        interactiveControls.model,
-        process.env,
-        interactiveRuntimeSettings,
-      )
+      const startup = await resolveInteractiveProviderStartup({
+        controls: interactiveControls,
+        configRoot: interactiveConfigRoot,
+        statePath: interactiveStatePath,
+        cwd: process.cwd(),
+        approveWorkspaceTrust: cachedWorkspaceTrustDecision,
+      })
+      const effectiveModel = startup.effectiveModel
+      const trustProjectRequestAvailable = startup.trustProjectRequestAvailable
       const resumePath =
         typeof resume?.sessionSelector === 'string' &&
         isResumePathSelector(resume.sessionSelector)
@@ -3063,7 +3461,7 @@ export function createDefaultDependencies(
           controls: {
             ...interactiveControls,
             trustProject:
-              workspaceTrustPreflightOpen && interactiveControls.trustProject,
+              workspaceTrustPreflightOpen && trustProjectRequestAvailable,
             addDirectories:
               options.additionalDirectories ??
               interactiveControls.addDirectories,
@@ -3083,9 +3481,7 @@ export function createDefaultDependencies(
         statePath: interactiveStatePath,
         factory: {
           createService: createInteractiveService,
-          scheduledPrompts: Boolean(
-            process.env.PRAXIS_API_KEY && effectiveModel,
-          ),
+          scheduledPrompts: Boolean(effectiveModel),
         },
         ...(signal ? { signal } : {}),
         ...(initialPrompt === undefined ? {} : { initialPrompt }),
@@ -3168,6 +3564,7 @@ export function createDefaultDependencies(
         dataPlane,
         cwd: process.cwd(),
         cliPath: entrypoint,
+        resolveProviderEnvironment: resolveDetachedWorkerProviderEnvironment,
         version: VERSION,
       }),
     launchTmux: launchTmuxWorktree,
@@ -3671,6 +4068,12 @@ async function executeAutoModeCommand(
       dependencies.createAutoModeCritic ?? createDefaultAutoModeCritic
     )({
       ...(invocation.model === undefined ? {} : { model: invocation.model }),
+      ...(invocation.provider === undefined
+        ? {}
+        : { provider: invocation.provider }),
+      ...(invocation.providerProfile === undefined
+        ? {}
+        : { providerProfile: invocation.providerProfile }),
       dataPlane,
       configRoot,
       statePath,
@@ -3759,26 +4162,27 @@ async function executeDoctorCommand(
     configRoot,
     statePath: claudeStatePath,
   })
-  const effectiveModel = resolveRuntimeModel(
-    invocation.model,
-    process.env,
-    runtimeSettings,
-  )
   const report = await runDoctor({
     version: VERSION,
     executablePath: fileURLToPath(import.meta.url),
     nodeExecutablePath: process.execPath,
     nodeVersion: process.version,
     configRoot,
+    claudeStatePath,
     cwd: process.cwd(),
-    environment:
-      effectiveModel === undefined
-        ? { ...process.env, PRAXIS_DATA_PLANE: dataPlane }
-        : {
-            ...process.env,
-            PRAXIS_DATA_PLANE: dataPlane,
-            PRAXIS_MODEL: effectiveModel,
-          },
+    environment: {
+      ...process.env,
+      PRAXIS_DATA_PLANE: dataPlane,
+      ...(invocation.provider === undefined
+        ? {}
+        : { PRAXIS_PROVIDER: invocation.provider }),
+      ...(invocation.providerProfile === undefined
+        ? {}
+        : { PRAXIS_PROVIDER_PROFILE: invocation.providerProfile }),
+      ...(invocation.model === undefined
+        ? {}
+        : { PRAXIS_MODEL: invocation.model }),
+    },
     autoUpdateChannel: runtimeSettings.autoUpdatesChannel,
     ...(process.argv[1] === undefined
       ? {}
@@ -5170,10 +5574,16 @@ function backgroundWorkerArgv(argv: readonly string[]): string[] {
   return filtered
 }
 
-function agentDashboardWorkerArgv(
+export function agentDashboardWorkerArgv(
   invocation: CliControls & { agent: string | undefined },
 ): string[] {
   const argv: string[] = []
+  if (invocation.safeMode) argv.push('--safe-mode')
+  if (invocation.bare) argv.push('--bare')
+  if (invocation.provider !== undefined)
+    argv.push('--provider', invocation.provider)
+  if (invocation.providerProfile !== undefined)
+    argv.push('--provider-profile', invocation.providerProfile)
   if (invocation.model !== undefined) argv.push('--model', invocation.model)
   if (invocation.effort !== undefined) argv.push('--effort', invocation.effort)
   if (invocation.permissionMode !== 'default') {
@@ -5202,6 +5612,7 @@ function agentDashboardWorkerArgv(
   for (const directory of invocation.pluginDirectories) {
     argv.push('--plugin-dir', directory)
   }
+  for (const url of invocation.pluginUrls) argv.push('--plugin-url', url)
   return argv
 }
 
@@ -5230,6 +5641,8 @@ function assertAgentsOptionAllowlist(argv: readonly string[]): void {
     '--effort',
     '--mcp-config',
     '--model',
+    '--provider',
+    '--provider-profile',
     '--permission-mode',
     '--plugin-dir',
     '--setting-sources',
@@ -5453,6 +5866,7 @@ function printCommandHelp(argv: readonly string[], io: CliIO): boolean {
       'auto-mode',
       'project',
       'import',
+      'auth',
       'team',
     ].includes(value),
   )
@@ -5541,6 +5955,19 @@ function printCommandHelp(argv: readonly string[], io: CliIO): boolean {
   if (command === 'import') {
     if (!hasHelpFlag) return false
     io.stdout(IMPORT_HELP)
+    return true
+  }
+  if (command === 'auth') {
+    const action = helpActionAt(argv, commandIndex, [
+      'help',
+      ...Object.keys(AUTH_ACTION_HELP),
+    ])
+    if (!hasHelpFlag && action?.value !== 'help') return false
+    const target =
+      action?.value === 'help'
+        ? helpActionAt(argv, action.index, Object.keys(AUTH_ACTION_HELP))
+        : action
+    io.stdout(AUTH_ACTION_HELP[target?.value ?? ''] ?? AUTH_HELP)
     return true
   }
   if (command === 'team') {
@@ -6014,7 +6441,27 @@ async function execute(
     'upgrade',
     'project',
     'import',
+    'auth',
   ].includes(command ?? '')
+  if (command === 'auth') {
+    return (
+      dependencies.executeProviderAuthCommand ?? executeProviderAuthCommand
+    )(args, {
+      io,
+      configRoot: resolveDataPlaneRoot({ environment: process.env }),
+      environment: process.env,
+      ...(signal === undefined ? {} : { signal }),
+      ...(invocation.authProfile === undefined
+        ? {}
+        : { profile: invocation.authProfile }),
+      ...(invocation.providerProfile === undefined
+        ? {}
+        : { providerProfile: invocation.providerProfile }),
+      noBrowser: invocation.mcpNoBrowser,
+      json: invocation.legacyJson,
+      device: invocation.authDevice,
+    })
+  }
   if (args[0] === 'agents') assertAgentsOptionAllowlist(argv)
   const interactiveResume =
     invocation.resumeSelector !== undefined &&

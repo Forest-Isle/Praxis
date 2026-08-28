@@ -13,9 +13,15 @@ import {
   validateClaudePermissionSettings,
 } from '../permissions/claude-permission-resolver.js'
 import {
+  loadClaudePlugins,
   readPluginRegistry,
   validateClaudePlugin,
 } from '../plugins/claude-plugin-runtime.js'
+import {
+  assessWorkspaceTrust,
+  hasWorkspaceProviderSelection,
+  workspaceTrustInventory,
+} from '../security/workspace-trust.js'
 import {
   loadNativeContextResources,
   loadNativeSettings,
@@ -25,6 +31,9 @@ import {
   parseContextEnvironment,
   parseProviderEnvironment,
 } from '../providers/environment.js'
+import { resolveProviderCredential } from '../providers/provider-auth.js'
+import { ProviderCredentialVault } from '../persistence/provider-credential-vault.js'
+import { resolveProviderTarget } from '../providers/provider-settings.js'
 import { ContextBudget } from '../core/context-budget.js'
 import { ModelPricingRegistry } from '../core/usage.js'
 type VersionCommand = (
@@ -234,6 +243,9 @@ async function capture(
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const configRoot = resolve(options.configRoot)
   const cwd = resolve(options.cwd)
+  const claudeStatePath = resolve(
+    options.claudeStatePath ?? resolve(configRoot, 'state.json'),
+  )
   const sensitiveValues = sensitiveEnvironmentValues(options.environment)
   const diagnosticOptions: DoctorDiagnosticOptions = {
     version: options.version,
@@ -271,6 +283,34 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       includeProjectMemory,
     })
     return nativeResources
+  }
+  const providerTrustAssessment = async () => {
+    const shared = await loadNativeSharedResources({
+      root: configRoot,
+      cwd,
+      environment: options.environment,
+      includeProjectMemory: false,
+    })
+    const plugins = await loadClaudePlugins({
+      configRoot,
+      cwd,
+      pluginDirectories: [],
+      pluginUrls: [],
+      loadInstalled: true,
+      readOnlyExecutables: true,
+      environment: options.environment,
+    })
+    const settings = [...shared.settings, ...plugins.settings]
+    if (!hasWorkspaceProviderSelection(settings)) return false
+    const assessment = await assessWorkspaceTrust(
+      await workspaceTrustInventory({
+        cwd,
+        settings,
+        mcp: [...shared.mcp, ...plugins.mcp],
+      }),
+      claudeStatePath,
+    )
+    return assessment.status === 'trusted'
   }
   const checks: DoctorCheck[] = []
 
@@ -318,17 +358,20 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   )
   checks.push(
     await capture('provider', async () => {
-      const provider = parseProviderEnvironment(options.environment)
+      const target = await resolveProviderTarget({
+        configRoot,
+        cwd,
+        environment: options.environment,
+        includeProjectSettings: await providerTrustAssessment(),
+      })
+      const controlsEnvironment = {
+        ...options.environment,
+        PRAXIS_PROVIDER:
+          target.protocol === 'anthropic-messages' ? 'anthropic' : 'openai',
+        PRAXIS_BASE_URL: target.baseUrl,
+      } as NodeJS.ProcessEnv
+      const provider = parseProviderEnvironment(controlsEnvironment)
       parseContextEnvironment(options.environment)
-      const apiKey = options.environment.PRAXIS_API_KEY
-      const model = options.environment.PRAXIS_MODEL
-      if (!apiKey || apiKey.trim().length === 0) {
-        throw new Error('PRAXIS_API_KEY is required')
-      }
-      if (!model || model.trim().length === 0) {
-        throw new Error('PRAXIS_MODEL is required')
-      }
-      const baseUrl = safeBaseUrl(provider.baseUrl)
       const contextWindow = options.environment.PRAXIS_CONTEXT_WINDOW_TOKENS
       const contextReserve = options.environment.PRAXIS_CONTEXT_RESERVE_TOKENS
       if (contextWindow !== undefined) {
@@ -342,21 +385,67 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
             : { reserveTokens: parsedReserve }),
         })
       }
-      const pricing = ModelPricingRegistry.fromEnvironment(
-        options.environment.PRAXIS_PRICING_JSON,
-      )
-      const pricingDiagnosis = pricing.diagnose(model.trim())
-      const knownPricing = pricingDiagnosis.source !== 'unknown'
+      const vault = new ProviderCredentialVault({
+        configRoot,
+        environment: options.environment,
+      })
+      const credential = await resolveProviderCredential({
+        target,
+        environment: options.environment,
+        vault,
+        commandRunner: async () => ({
+          stdout: '__praxis_doctor_credential_placeholder__',
+          exitCode: 0,
+        }),
+      })
+      const pricingDiagnosis = (() => {
+        if (target.billingMode !== 'api') return undefined
+        return ModelPricingRegistry.fromEnvironment(
+          options.environment.PRAXIS_PRICING_JSON,
+        ).diagnose(target.modelId)
+      })()
+      const helperSkipped = credential.source.source === 'command'
+      const safeCredential = {
+        type: credential.type,
+        source: credential.source.source,
+        ...(credential.source.source === 'env'
+          ? { name: credential.source.name }
+          : {}),
+        ...(credential.type === 'oauth'
+          ? {
+              expiry:
+                credential.expiresAt > Date.now()
+                  ? ('valid' as const)
+                  : ('expired' as const),
+            }
+          : {}),
+      }
+      const warnings = [
+        ...(helperSkipped
+          ? ['credential helper execution was intentionally skipped']
+          : []),
+        ...(pricingDiagnosis?.source === 'unknown'
+          ? ['model pricing is unavailable and fail-closed']
+          : []),
+      ]
       return {
-        ...(knownPricing ? {} : { status: 'warn' as const }),
-        summary: knownPricing
-          ? `${provider.provider} provider environment is valid; model pricing is ${pricingDiagnosis.source}`
-          : `${provider.provider} provider environment is valid; model pricing is unavailable and fail-closed`,
+        ...(warnings.length === 0 ? {} : { status: 'warn' as const }),
+        summary:
+          warnings.length === 0
+            ? `${target.providerId} provider target is valid`
+            : `${target.providerId} provider target is valid; ${warnings.join('; ')}`,
         details: {
-          provider: provider.provider,
-          model,
-          baseUrl,
-          pricing: pricingDiagnosis,
+          provider: target.providerId,
+          profile: target.profileId,
+          model: target.modelId,
+          protocol: target.protocol,
+          baseUrl: safeBaseUrl(provider.baseUrl),
+          billingMode: target.billingMode,
+          experimental: target.experimental,
+          credential: safeCredential,
+          ...(pricingDiagnosis === undefined
+            ? {}
+            : { pricing: pricingDiagnosis }),
         },
       }
     }),

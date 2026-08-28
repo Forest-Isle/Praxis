@@ -74,7 +74,15 @@ export interface TopLevelAgentManagerOptions {
   cliPath: string
   executablePath?: string
   environment?: NodeJS.ProcessEnv
+  resolveProviderEnvironment?: (request: {
+    cwd: string
+    argv: readonly string[]
+  }) => Promise<ProviderEnvironmentOverride>
   version: string
+}
+
+export interface ProviderEnvironmentOverride {
+  PRAXIS_API_KEY?: string
 }
 
 interface WireMessage {
@@ -102,8 +110,11 @@ const SOCKET_RETRY_INTERVAL_MS = 25
 // own provider from the same CLI/environment contract.
 const WORKER_RUNTIME_ENVIRONMENT = [
   'PRAXIS_API_KEY',
+  'CLAUDE_CODE_SIMPLE',
   'PRAXIS_MODEL',
   'PRAXIS_PROVIDER',
+  'PRAXIS_PROVIDER_PROFILE',
+  'PRAXIS_PROVIDER_DEADLINE_MS',
   'PRAXIS_BASE_URL',
   'PRAXIS_MAX_OUTPUT_TOKENS',
   'PRAXIS_ANTHROPIC_VERSION',
@@ -116,6 +127,7 @@ const WORKER_RUNTIME_ENVIRONMENT = [
   'PRAXIS_FILES_BASE_URL',
   'PRAXIS_FILES_BEARER_TOKEN',
   'PRAXIS_FILES_API_KEY',
+  'PRAXIS_PROVIDER_CREDENTIAL_STORE',
   'PRAXIS_MCP_OAUTH_STORE',
   'CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING',
 ] as const
@@ -123,6 +135,7 @@ const WORKER_RUNTIME_ENVIRONMENT = [
 function workerEnvironment(
   source: NodeJS.ProcessEnv,
   configRoot: string,
+  resolved?: ProviderEnvironmentOverride,
 ): Record<string, string> {
   const environment = sanitizeChildEnvironment({ PATH: source.PATH }, {})
   for (const name of WORKER_RUNTIME_ENVIRONMENT) {
@@ -131,6 +144,8 @@ function workerEnvironment(
   }
   environment.PRAXIS_DATA_PLANE = 'native'
   environment.PRAXIS_HOME = configRoot
+  if (resolved?.PRAXIS_API_KEY !== undefined)
+    environment.PRAXIS_API_KEY = resolved.PRAXIS_API_KEY
   return environment
 }
 
@@ -398,10 +413,17 @@ export class TopLevelAgentManager {
 
     const allocatedExecution = execution
     let child: ChildProcess | undefined
+    let resolvedProviderEnvironment: ProviderEnvironmentOverride | undefined
     const failLaunch = async (error: unknown): Promise<never> => {
+      const sensitiveValues = [
+        ...sensitiveEnvironmentValues(this.options.environment ?? process.env),
+        ...(resolvedProviderEnvironment?.PRAXIS_API_KEY === undefined
+          ? []
+          : [resolvedProviderEnvironment.PRAXIS_API_KEY]),
+      ]
       const message = redactSensitiveText(
         error instanceof Error ? error.message : String(error),
-        sensitiveEnvironmentValues(this.options.environment ?? process.env),
+        sensitiveValues,
       )
       const secondary: unknown[] = []
       if (child?.pid !== undefined) {
@@ -437,6 +459,11 @@ export class TopLevelAgentManager {
       )
     }
     try {
+      resolvedProviderEnvironment =
+        await this.options.resolveProviderEnvironment?.({
+          cwd,
+          argv: options.argv,
+        })
       child = spawn(
         this.options.executablePath ?? process.execPath,
         [this.options.cliPath, '__background-worker', identity.id],
@@ -445,6 +472,7 @@ export class TopLevelAgentManager {
           env: workerEnvironment(
             this.options.environment ?? process.env,
             this.options.configRoot,
+            resolvedProviderEnvironment,
           ),
           detached: true,
           stdio: 'ignore',

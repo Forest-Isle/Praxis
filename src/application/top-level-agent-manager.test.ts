@@ -1733,6 +1733,11 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         PATH: process.env.PATH ?? '',
         PRAXIS_API_KEY: 'worker-provider-secret',
         PRAXIS_MODEL: 'worker-model',
+        PRAXIS_PROVIDER_PROFILE: 'worker-profile',
+        PRAXIS_PROVIDER_DEADLINE_MS: '45000',
+        PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+        CLAUDE_CODE_SIMPLE: 'true',
+        CUSTOM_PROVIDER_SECRET: 'ambient-custom-secret',
         PRAXIS_ANTHROPIC_PROMPT_CACHING: 'true',
         PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
         [legacyDisableSonnet]: '1',
@@ -1741,6 +1746,9 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         BASH_ENV: '/tmp/untrusted-startup',
         PRAXIS_TEST_SECRET: 'unrelated-secret',
       },
+      resolveProviderEnvironment: async () => ({
+        PRAXIS_API_KEY: 'resolved-provider-secret',
+      }),
       version: '0.1.0',
     })
 
@@ -1760,14 +1768,19 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
       string,
       string | undefined
     >
-    expect(environment.PRAXIS_API_KEY).toBe('worker-provider-secret')
+    expect(environment.PRAXIS_API_KEY).toBe('resolved-provider-secret')
     expect(environment.PRAXIS_MODEL).toBe('worker-model')
+    expect(environment.PRAXIS_PROVIDER_PROFILE).toBe('worker-profile')
+    expect(environment.PRAXIS_PROVIDER_DEADLINE_MS).toBe('45000')
+    expect(environment.PRAXIS_PROVIDER_CREDENTIAL_STORE).toBe('file')
+    expect(environment.CLAUDE_CODE_SIMPLE).toBe('true')
     expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHING).toBe('true')
     expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL).toBe('1h')
     expect(environment.PATH).toBe(process.env.PATH ?? '')
     expect(environment.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(environment.BASH_ENV).toBeUndefined()
     expect(environment.PRAXIS_TEST_SECRET).toBeUndefined()
+    expect(environment.CUSTOM_PROVIDER_SECRET).toBeUndefined()
     expect(environment.PRAXIS_HOME).toBe(configRoot)
     expect(environment[legacyDisableSonnet]).toBeUndefined()
     expect(environment[legacyForceFiveMinutes]).toBeUndefined()

@@ -35,7 +35,7 @@ src/
 ├── mcp/           shared MCP config, clients, and tool adapter
 ├── persistence/   native storage, sessions, transcripts, and indexes
 ├── sandbox/       settings conversion and OS sandbox runtime adapter
-├── security/      workspace executable trust and other authorization policy
+├── security/      workspace trust and other authorization policy
 └── platform/      filesystem, process, keychain, and OS adapters
 ```
 
@@ -66,6 +66,34 @@ build:native` emits the implemented core/provider/native transcript and
   credential redactor; shell startup files cannot repopulate stripped values.
 - No tenant, organization, role, entitlement, billing, remote-control, or
   telemetry domain exists.
+
+## Provider configuration and routing
+
+The CLI composition root resolves configuration in a fixed sequence:
+
+```text
+user settings + CLI/environment + project/local selection as inert data
+  -> canonical exact-fingerprint trust preflight for project/local selection
+  -> Provider Registry (credential resolver + native Vault; adapter + billing mode)
+  -> capability-aware protocol Adapter
+  -> existing ModelProvider port -> Agent runtime consumers
+```
+
+The Registry creates OpenAI-compatible Chat Completions, Anthropic Messages,
+or the private experimental Codex subscription adapter. All runtime consumers
+use this factory, including main sessions, fallback models, auto-mode critics,
+eval judges, scheduled work, and background agents. Provider wire payloads do
+not enter core or transcripts; unsupported capabilities fail closed.
+
+The Registry's billing mode composes metering behavior: API mode receives
+pricing, cost, and budget enforcement, while subscription mode retains token
+and model usage and omits API `costUsd`, rejecting numeric USD budget and
+paid-judge paths before inference.
+
+Codex OAuth, token refresh, account identity, fixed endpoint, Responses/SSE
+mapping, and streaming parsing remain private to `CodexSubscriptionProvider`.
+This keeps the existing core port small and prevents subscription-specific
+behavior from spreading into the Agent loop.
 
 The Ink interactive CLI is an event adapter under `src/cli`: it renders
 `RuntimeEvent` state and streaming deltas, requests user decisions through the
@@ -109,16 +137,18 @@ turns retain one service so session-only scheduled prompts survive. Unknown
 provider cost and API-only duration values stay `null` until provider ports
 expose verified metering.
 
-Automatically discovered executable workspace configuration crosses a separate
-trust preflight before hook runners or MCP transports are constructed.
+Automatically discovered workspace configuration crosses a separate canonical
+exact-fingerprint trust preflight before project/local selection reaches the
+Provider Registry and before hook runners or MCP transports are constructed.
 `security/workspace-trust.ts` canonicalizes the workspace with `realpath`,
-fingerprints only project/local hook and MCP definitions plus their resolved
+fingerprints project/local provider selection, hook, and MCP definitions plus their resolved
 origins and hook execution environment, and compares that fingerprint with the
 record under `projects[canonicalPath].workspaceTrust` in native `state.json`.
 The mutation shares the native state lease, no-follow read, compare-before-
 commit, and atomic `0600` replacement conventions. User-scope and explicit CLI
-resources remain authorized; rejection removes only project/local executable
-resources. Interactive approval occurs before the renderer owns stdin, while a
+resources remain authorized; rejection ignores project/local provider selection
+and removes project/local hook and MCP resources. Interactive approval occurs
+before the renderer owns stdin, while a
 new fingerprint discovered after renderer startup is blocked until restart.
 Headless runs never prompt and emit the `--trust-project` remediation warning.
 Tool permission bypass, sandbox mode, and stored path identity do not broaden
@@ -127,6 +157,15 @@ references contribute an archive hash and remote references contribute their
 exact HTTPS URL. Workspace MCPB downloads, extraction, and cache writes occur
 only after that fingerprint is trusted; user-scope MCPB remains explicitly
 authorized.
+
+Detached workers receive `PRAXIS_PROVIDER`, `PRAXIS_PROVIDER_PROFILE`,
+`PRAXIS_MODEL`, `PRAXIS_BASE_URL`, and `PRAXIS_PROVIDER_DEADLINE_MS` through
+the sanitized environment and use the same provider resolver. Before spawn,
+the parent resolves an API-key credential through the selected target and
+passes only normalized `PRAXIS_API_KEY`; it never forwards the configured
+custom credential variable. Codex OAuth remains in the shared Vault, while
+the credential-store selector and safe/bare/simple policy survive the worker
+boundary.
 
 Interrupted-tool recovery uses a separate `approveRecovery` port. The runtime
 invokes it after tool/hook preparation so the UI displays the input that would

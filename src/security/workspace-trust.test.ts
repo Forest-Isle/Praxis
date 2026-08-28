@@ -26,6 +26,7 @@ import {
   allowedWorkspaceMcpResources,
   assessWorkspaceTrust,
   canonicalizeWorkspaceTrust,
+  hasWorkspaceProviderSelection,
   persistWorkspaceTrust,
   workspaceTrustInventory,
   type WorkspaceTrustAssessment,
@@ -86,7 +87,6 @@ describe('workspace executable trust', () => {
       cwd,
       settings: [
         resource(join(cwd, '.praxis/settings.json'), 'project', {
-          model: 'provider/changed',
           permissions: { allow: ['Read'] },
         }),
         resource(join(cwd, 'user.json'), 'user', hook('user-hook')),
@@ -95,6 +95,83 @@ describe('workspace executable trust', () => {
     })
     expect(unrelated.origins).toEqual([])
     expect(unrelated.fingerprint).toBe(empty.fingerprint)
+  })
+
+  it('fingerprints provider selection without unrelated settings', async () => {
+    const { root, cwd } = await fixture()
+    const path = join(cwd, '.praxis/settings.json')
+    const empty = await workspaceTrustInventory({ cwd })
+    expect(
+      hasWorkspaceProviderSelection([
+        resource(join(root, 'user.json'), 'user', { model: 'user-model' }),
+        resource(path, 'project', { permissions: { allow: ['Read'] } }),
+      ]),
+    ).toBe(false)
+    const first = await workspaceTrustInventory({
+      cwd,
+      settings: [resource(path, 'project', { model: 'project-model' })],
+    })
+    expect(first.origins).toEqual([
+      {
+        kind: 'provider',
+        scope: 'project',
+        path: join(await realpath(cwd), '.praxis/settings.json'),
+        label: 'provider-selection',
+      },
+    ])
+    expect(first.fingerprint).not.toBe(empty.fingerprint)
+    const reordered = await workspaceTrustInventory({
+      cwd,
+      settings: [
+        resource(path, 'project', {
+          unrelated: true,
+          model: 'project-model',
+        }),
+      ],
+    })
+    expect(reordered.fingerprint).toBe(first.fingerprint)
+    for (const selection of [
+      { model: 'changed' },
+      { provider: 'anthropic', model: 'project-model' },
+      { providerProfile: 'other', model: 'project-model' },
+    ]) {
+      const changed = await workspaceTrustInventory({
+        cwd,
+        settings: [resource(path, 'project', selection)],
+      })
+      expect(changed.fingerprint).not.toBe(first.fingerprint)
+    }
+    const local = await workspaceTrustInventory({
+      cwd,
+      settings: [resource(path, 'local', { model: 'project-model' })],
+    })
+    expect(local.fingerprint).not.toBe(first.fingerprint)
+  })
+
+  it('shares provider trust across symlink workspace aliases', async () => {
+    const { root, cwd } = await fixture()
+    const alias = join(root, 'alias')
+    await symlink(cwd, alias, 'dir')
+    const direct = await workspaceTrustInventory({
+      cwd,
+      settings: [
+        resource(join(cwd, '.praxis/settings.json'), 'project', {
+          provider: 'openai',
+          model: 'project-model',
+        }),
+      ],
+    })
+    const linked = await workspaceTrustInventory({
+      cwd: alias,
+      settings: [
+        resource(join(alias, '.praxis/settings.json'), 'project', {
+          provider: 'openai',
+          model: 'project-model',
+        }),
+      ],
+    })
+    expect(linked.canonicalPath).toBe(direct.canonicalPath)
+    expect(linked.fingerprint).toBe(direct.fingerprint)
   })
 
   it('is stable across object key order and sensitive to arrays, source, and scope', async () => {

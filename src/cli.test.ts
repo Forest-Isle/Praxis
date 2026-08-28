@@ -3,9 +3,12 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +23,10 @@ import type { ClaudeSessionCostSnapshot } from './application/session-cost-track
 import { ClaudeSessionService } from './application/session-service.js'
 import { resolveDataPlanePaths } from './persistence/data-plane.js'
 import {
+  providerCredentialFilePath,
+  ProviderCredentialVault,
+} from './persistence/provider-credential-vault.js'
+import {
   createBackgroundWorkerRuntime,
   parseContextEnvironment,
   parseProviderEnvironment,
@@ -30,8 +37,11 @@ import {
 import { DEFAULT_CLI_CONTROLS } from './cli/controls.js'
 import type { CliControls } from './cli/protocol.js'
 import {
+  agentDashboardWorkerArgv,
   createDefaultDependencies,
   createSessionMemoryProviderFactory,
+  readConsoleSecret,
+  resolveInteractiveProviderStartup,
   resolveRuntimeModel,
 } from './cli-runtime.js'
 import { projectRuntimeSettings } from './cli/tui/runtime-settings.js'
@@ -62,6 +72,43 @@ function captureStreamIO(...chunks: string[]) {
       for (const chunk of chunks) yield chunk
     })()
   return capture
+}
+
+class SecretInputFixture extends EventEmitter {
+  isTTY = true
+  isRaw = false
+  paused = true
+  readonly rawModes: boolean[] = []
+  failRawEnable = false
+
+  constructor(private readonly chunks: readonly (string | Uint8Array)[] = []) {
+    super()
+  }
+
+  isPaused(): boolean {
+    return this.paused
+  }
+
+  setRawMode(enabled: boolean): this {
+    this.rawModes.push(enabled)
+    if (enabled && this.failRawEnable) throw new Error('raw mode unavailable')
+    this.isRaw = enabled
+    return this
+  }
+
+  pause(): this {
+    this.paused = true
+    return this
+  }
+
+  resume(): this {
+    this.paused = false
+    return this
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<string | Uint8Array> {
+    for (const chunk of this.chunks) yield chunk
+  }
 }
 
 function dependencies(
@@ -346,6 +393,64 @@ function costDependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('reads console secrets without echo and restores terminal state', async () => {
+    const input = new SecretInputFixture()
+    const output: string[] = []
+    const reading = readConsoleSecret('API key: ', undefined, input, {
+      write: (message) => output.push(message),
+    })
+    input.emit('data', Buffer.from('secrex\x7ft\n'))
+    await expect(reading).resolves.toBe('secret')
+    expect(output).toEqual(['API key: ', '\n'])
+    expect(output.join('')).not.toContain('secret')
+    expect(input.rawModes).toEqual([true, false])
+    expect(input.isRaw).toBe(false)
+    expect(input.isPaused()).toBe(true)
+    expect(input.listenerCount('data')).toBe(0)
+
+    const cancelled = new SecretInputFixture()
+    const controller = new AbortController()
+    const cancelledReading = readConsoleSecret(
+      'API key: ',
+      controller.signal,
+      cancelled,
+      { write: () => undefined },
+    )
+    controller.abort()
+    await expect(cancelledReading).rejects.toThrow('cancelled')
+    expect(cancelled.rawModes).toEqual([true, false])
+    expect(cancelled.isPaused()).toBe(true)
+    expect(cancelled.listenerCount('data')).toBe(0)
+
+    const unavailable = new SecretInputFixture()
+    unavailable.failRawEnable = true
+    await expect(
+      readConsoleSecret('API key: ', undefined, unavailable, {
+        write: () => undefined,
+      }),
+    ).rejects.toThrow('raw mode unavailable')
+    expect(unavailable.isPaused()).toBe(true)
+    expect(unavailable.listenerCount('data')).toBe(0)
+  })
+
+  it('keeps complete bounded non-TTY secret input for single-line validation', async () => {
+    const multiline = new SecretInputFixture(['secret\n', 'second'])
+    multiline.isTTY = false
+    await expect(
+      readConsoleSecret('unused', undefined, multiline, {
+        write: () => undefined,
+      }),
+    ).resolves.toBe('secret\nsecond')
+
+    const oversized = new SecretInputFixture(['x'.repeat(64 * 1024 + 1)])
+    oversized.isTTY = false
+    await expect(
+      readConsoleSecret('unused', undefined, oversized, {
+        write: () => undefined,
+      }),
+    ).rejects.toThrow('64 KiB')
+  })
+
   it('runs release notes provider-free in text, JSON, and stream JSON modes', async () => {
     let serviceCreations = 0
     const localDependencies: CliDependencies = {
@@ -1821,6 +1926,11 @@ describe('Praxis CLI', () => {
       [['project', 'purge', '--help'], 'Usage: praxis project purge'],
       [['project', 'help', 'purge'], 'Usage: praxis project purge'],
       [['import', '--help'], 'Usage: praxis import'],
+      [['auth', '--help'], 'Usage: praxis auth <command>'],
+      [['auth', 'status', '--help'], 'Usage: praxis auth status'],
+      [['auth', 'set-key', '--help'], 'Usage: praxis auth set-key'],
+      [['auth', 'login', '--help'], 'Usage: praxis auth login'],
+      [['auth', 'logout', '--help'], 'Usage: praxis auth logout'],
     ]
 
     for (const [argv, usage] of routes) {
@@ -1850,6 +1960,221 @@ describe('Praxis CLI', () => {
       expect(capture.stdout.join('')).toContain(detail)
     }
     expect(constructions).toBe(0)
+  })
+
+  it('keeps provider auth help side-effect free', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auth-help-'))
+    const configRoot = join(root, 'config')
+    const previousHome = process.env.PRAXIS_HOME
+    process.env.PRAXIS_HOME = configRoot
+    let authCalls = 0
+    let serviceCalls = 0
+    const unavailable: CliDependencies = {
+      async createService() {
+        serviceCalls += 1
+        throw new Error('service must not be created for auth help')
+      },
+      async executeProviderAuthCommand() {
+        authCalls += 1
+        throw new Error('auth implementation must not run for help')
+      },
+    }
+    try {
+      for (const argv of [
+        ['auth', '--help'],
+        ['auth', 'login', '--help'],
+        ['--help'],
+      ]) {
+        const capture = captureIO()
+        capture.io.readSecret = async () => {
+          throw new Error('secret reader must not run for help')
+        }
+        await expect(run(argv, capture.io, unavailable)).resolves.toBe(0)
+      }
+      expect(authCalls).toBe(0)
+      expect(serviceCalls).toBe(0)
+      await expect(
+        access(providerCredentialFilePath(configRoot)),
+      ).rejects.toThrow()
+    } finally {
+      if (previousHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousHome
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('dispatches provider auth flags before service creation', async () => {
+    const capture = captureIO()
+    let received:
+      | {
+          args: readonly string[]
+          profile: string | undefined
+          providerProfile: string | undefined
+          noBrowser: boolean | undefined
+          device: boolean | undefined
+          json: boolean | undefined
+        }
+      | undefined
+    let serviceCalls = 0
+    const isolated: CliDependencies = {
+      async createService() {
+        serviceCalls += 1
+        throw new Error('auth must not create a provider service')
+      },
+      async executeProviderAuthCommand(args, options) {
+        received = {
+          args,
+          profile: options.profile,
+          providerProfile: options.providerProfile,
+          noBrowser: options.noBrowser,
+          device: options.device,
+          json: options.json,
+        }
+        return 0
+      },
+    }
+    await expect(
+      run(
+        [
+          'auth',
+          'login',
+          'openai-codex',
+          '--profile',
+          'work',
+          '--device',
+          '--no-browser',
+          '--json',
+        ],
+        capture.io,
+        isolated,
+      ),
+    ).resolves.toBe(0)
+    expect(received).toEqual({
+      args: ['auth', 'login', 'openai-codex'],
+      profile: 'work',
+      providerProfile: undefined,
+      noBrowser: true,
+      device: true,
+      json: true,
+    })
+    expect(serviceCalls).toBe(0)
+  })
+
+  it('stores, lists, and deletes native provider credentials without argv secrets', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auth-cli-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    const previous = {
+      home: process.env.PRAXIS_HOME,
+      store: process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE,
+    }
+    process.env.PRAXIS_HOME = configRoot
+    process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE = 'file'
+    let serviceCalls = 0
+    const unavailable: CliDependencies = {
+      async createService() {
+        serviceCalls += 1
+        throw new Error('auth must not create a provider service')
+      },
+    }
+    const workSecret = `work-secret-${Date.now()}`
+    const defaultSecret = `default-secret-${Date.now()}`
+    try {
+      for (const [profile, secret] of [
+        ['work', workSecret],
+        ['default', defaultSecret],
+      ] as const) {
+        const capture = captureIO()
+        let prompt = ''
+        capture.io.readSecret = async (value) => {
+          prompt = value
+          return `${secret}\n`
+        }
+        const argv = [
+          'auth',
+          'set-key',
+          'openai',
+          '--profile',
+          profile,
+          '--json',
+        ]
+        expect(argv).not.toContain(secret)
+        await expect(run(argv, capture.io, unavailable)).resolves.toBe(0)
+        expect(prompt).toBe('API key: ')
+        expect(capture.stdout.join('')).not.toContain(secret)
+        expect(capture.stderr.join('')).not.toContain(secret)
+      }
+
+      const status = captureIO()
+      await expect(
+        run(['auth', 'status', 'openai', '--json'], status.io, unavailable),
+      ).resolves.toBe(0)
+      const payload = JSON.parse(status.stdout.join('')) as {
+        type: string
+        credentials: Array<Record<string, unknown>>
+      }
+      expect(payload.type).toBe('provider-auth-status')
+      expect(payload.credentials).toHaveLength(2)
+      expect(payload.credentials.map((item) => item.profile).sort()).toEqual([
+        'default',
+        'work',
+      ])
+      const serialized = JSON.stringify(payload)
+      for (const forbidden of [
+        workSecret,
+        defaultSecret,
+        'accessToken',
+        'refreshToken',
+        'accountId',
+        'revision',
+        'keychain',
+      ]) {
+        expect(serialized).not.toContain(forbidden)
+      }
+
+      const disabledLogin = captureIO()
+      await expect(
+        run(['auth', 'login', 'openai-codex'], disabledLogin.io, unavailable),
+      ).resolves.toBe(1)
+      expect(disabledLogin.stderr.join('')).toContain(
+        'experimental.codexSubscription=true',
+      )
+
+      const logout = captureIO()
+      await expect(
+        run(
+          ['auth', 'logout', 'openai', '--profile', 'work', '--json'],
+          logout.io,
+          unavailable,
+        ),
+      ).resolves.toBe(0)
+      await expect(
+        run(
+          ['auth', 'logout', 'openai', '--profile', 'work', '--json'],
+          captureIO().io,
+          unavailable,
+        ),
+      ).resolves.toBe(0)
+      const vault = new ProviderCredentialVault({
+        configRoot,
+        useKeychain: false,
+        environment: { PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file' },
+      })
+      await expect(
+        vault.read({ providerId: 'openai', profileId: 'work' }),
+      ).resolves.toBeUndefined()
+      await expect(
+        vault.read({ providerId: 'openai', profileId: 'default' }),
+      ).resolves.toMatchObject({ type: 'api-key', secret: defaultSecret })
+      expect(serviceCalls).toBe(0)
+    } finally {
+      if (previous.home === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previous.home
+      if (previous.store === undefined)
+        delete process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE
+      else process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE = previous.store
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('rejects import without constructing providers or changing files', async () => {
@@ -1974,7 +2299,7 @@ describe('Praxis CLI', () => {
     )
   })
 
-  it('streams provider-backed auto-mode critiques and propagates --model', async () => {
+  it('streams provider-backed auto-mode critiques and propagates provider selection', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-auto-mode-cli-'))
     const configRoot = join(root, 'config')
     const previousConfigRoot = process.env.PRAXIS_HOME
@@ -1994,7 +2319,11 @@ describe('Praxis CLI', () => {
     process.env.PRAXIS_HOME = configRoot
     process.env.PRAXIS_HOME = configRoot
     try {
-      const models: Array<string | undefined> = []
+      const criticOptions: Array<{
+        model?: string
+        provider?: string
+        providerProfile?: string
+      }> = []
       const requests: Parameters<ModelProvider['complete']>[0][] = []
       const critic: ModelProvider = {
         capabilities: { streaming: true, usage: true, tools: false },
@@ -2009,20 +2338,35 @@ describe('Praxis CLI', () => {
         async createService() {
           throw new Error('service must not be created for critique')
         },
-        async createAutoModeCritic({ model }) {
-          models.push(model)
+        async createAutoModeCritic(options) {
+          criticOptions.push(options)
           return critic
         },
       }
 
       await expect(
         run(
-          ['auto-mode', 'critique', '--model', 'fixture-haiku'],
+          [
+            'auto-mode',
+            'critique',
+            '--provider',
+            'fixture-provider',
+            '--provider-profile',
+            'work',
+            '--model',
+            'fixture-haiku',
+          ],
           capture.io,
           dependencies,
         ),
       ).resolves.toBe(0)
-      expect(models).toEqual(['fixture-haiku'])
+      expect(criticOptions).toEqual([
+        expect.objectContaining({
+          model: 'fixture-haiku',
+          provider: 'fixture-provider',
+          providerProfile: 'work',
+        }),
+      ])
       expect(requests).toHaveLength(1)
       expect(requests[0]?.thinking).toEqual({ mode: 'disabled' })
       expect(JSON.stringify(requests[0])).toContain('Praxis auto-mode critique')
@@ -2080,6 +2424,10 @@ describe('Praxis CLI', () => {
           'manual',
           '--agent',
           'reviewer',
+          '--provider',
+          'fixture-provider',
+          '--provider-profile',
+          'work',
           '--exclude-dynamic-system-prompt-sections',
         ],
         capture.io,
@@ -2091,6 +2439,8 @@ describe('Praxis CLI', () => {
       agent: 'reviewer',
       controls: {
         permissionMode: 'manual',
+        provider: 'fixture-provider',
+        providerProfile: 'work',
         excludeDynamicSystemPromptSections: true,
       },
     })
@@ -2492,6 +2842,10 @@ describe('Praxis CLI', () => {
           'agents',
           '--model',
           'fixture-model',
+          '--provider',
+          'fixture-provider',
+          '--provider-profile',
+          'work',
           '--effort',
           'xhigh',
           '--permission-mode',
@@ -2530,6 +2884,10 @@ describe('Praxis CLI', () => {
       defaults: {
         cwd: '/workspace',
         argv: [
+          '--provider',
+          'fixture-provider',
+          '--provider-profile',
+          'work',
           '--model',
           'fixture-model',
           '--effort',
@@ -2577,6 +2935,8 @@ describe('Praxis CLI', () => {
       agent: 'reviewer',
       sessionKind: 'bg',
       controls: {
+        provider: 'fixture-provider',
+        providerProfile: 'work',
         model: 'fixture-model',
         effort: 'xhigh',
         permissionMode: 'plan',
@@ -2590,6 +2950,113 @@ describe('Praxis CLI', () => {
         pluginDirectories: ['/plugins/one', '/plugins/two'],
       },
     })
+  })
+
+  it('preserves dashboard worker isolation and plugin inputs without reusing trust approval', () => {
+    expect(
+      agentDashboardWorkerArgv({
+        ...DEFAULT_CLI_CONTROLS,
+        safeMode: true,
+        bare: true,
+        trustProject: true,
+        pluginUrls: [
+          'https://plugins.example/one.zip',
+          'https://plugins.example/two.zip',
+        ],
+        agent: undefined,
+      }),
+    ).toEqual([
+      '--safe-mode',
+      '--bare',
+      '--plugin-url',
+      'https://plugins.example/one.zip',
+      '--plugin-url',
+      'https://plugins.example/two.zip',
+    ])
+  })
+
+  it('normalizes a configured custom credential for default detached workers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-worker-provider-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const outputPath = join(root, 'worker-environment.json')
+    const scriptPath = join(root, 'capture-worker.mjs')
+    const customCredentialName = 'PRAXIS_WORKER_CUSTOM_CREDENTIAL'
+    const environmentNames = [
+      'PRAXIS_HOME',
+      'PRAXIS_PROVIDER_CREDENTIAL_STORE',
+      'PRAXIS_API_KEY',
+      'PRAXIS_PROVIDER',
+      'PRAXIS_PROVIDER_PROFILE',
+      'PRAXIS_MODEL',
+      'CLAUDE_CODE_SIMPLE',
+      customCredentialName,
+    ] as const
+    const previousEnvironment = Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    )
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(cwd, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'fixture',
+          providerProfile: 'work',
+          model: 'fixture-model',
+          providers: {
+            fixture: {
+              protocol: 'openai-compatible',
+              profiles: {
+                work: {
+                  baseUrl: 'https://fixture.example/v1',
+                  credential: {
+                    source: 'env',
+                    name: customCredentialName,
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ),
+      writeFile(
+        scriptPath,
+        `import { writeFile } from 'node:fs/promises'
+await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
+  apiKey: process.env.PRAXIS_API_KEY,
+  customCredential: process.env[${JSON.stringify(customCredentialName)}],
+  credentialStore: process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE,
+}))
+`,
+      ),
+    ])
+    try {
+      for (const name of environmentNames) delete process.env[name]
+      process.env.PRAXIS_HOME = configRoot
+      process.env.PRAXIS_PROVIDER_CREDENTIAL_STORE = 'file'
+      process.env[customCredentialName] = 'selected-worker-secret'
+      const manager =
+        createDefaultDependencies(scriptPath).createTopLevelAgents?.('native')
+      if (!manager) throw new Error('top-level agent manager unavailable')
+
+      await manager.launch({ prompt: 'capture provider environment', argv: [] })
+      await vi.waitFor(async () => {
+        expect(JSON.parse(await readFile(outputPath, 'utf8'))).toEqual({
+          apiKey: 'selected-worker-secret',
+          credentialStore: 'file',
+        })
+      })
+    } finally {
+      for (const name of environmentNames) {
+        const value = previousEnvironment[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('rejects print-mode background sessions with Claude-compatible guidance', async () => {
@@ -2681,6 +3148,605 @@ describe('Praxis CLI', () => {
         await cliWins.close?.()
       }
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes custom env, vault, safe/bare, and legacy providers through the default service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-routes-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    const requests: Array<{
+      url: string
+      authorization: string
+      model: string
+    }> = []
+    let codexRequest:
+      | {
+          url: string
+          headers: Headers
+          body: Record<string, unknown>
+        }
+      | undefined
+    const currentCodexRequest = () => codexRequest
+    let codexFetchCalls = 0
+    const previousFetch = globalThis.fetch
+    globalThis.fetch = (async (input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      const url = String(input)
+      if (url.endsWith('/codex/responses')) {
+        codexFetchCalls += 1
+        codexRequest = {
+          url,
+          headers: new Headers(init?.headers),
+          body,
+        }
+        return new Response(
+          'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\nevent: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      }
+      requests.push({
+        url,
+        authorization: String(new Headers(init?.headers).get('authorization')),
+        model: String(body.model),
+      })
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    }) as typeof fetch
+    const runService = async (
+      environment: Record<string, string>,
+      controls: CliControls = { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' },
+    ) => {
+      const service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment: environment,
+        controls,
+      })
+      try {
+        return await service.run('hello')
+      } finally {
+        await service.close?.()
+      }
+    }
+    let ambientBaseUrl: string | undefined
+    let ambientApiKey: string | undefined
+    try {
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'custom',
+          model: 'env-model',
+          providers: {
+            custom: {
+              protocol: 'openai-compatible',
+              profiles: {
+                default: {
+                  baseUrl: 'https://custom.example/v1',
+                  credential: { source: 'env', name: 'CUSTOM_KEY' },
+                },
+              },
+            },
+          },
+        }),
+      )
+      const apiResult = await runService({
+        PRAXIS_HOME: configRoot,
+        CUSTOM_KEY: 'env-secret',
+        PRAXIS_PRICING_JSON: JSON.stringify({
+          'env-model': {
+            inputPerMillionUsd: 1_000_000,
+            outputPerMillionUsd: 2_000_000,
+          },
+        }),
+      })
+      expect(apiResult.usage).toMatchObject({ inputTokens: 1, outputTokens: 1 })
+      expect(apiResult.costUsd).toBe(3)
+      expect(requests.at(-1)).toEqual({
+        url: 'https://custom.example/v1/chat/completions',
+        authorization: 'Bearer env-secret',
+        model: 'env-model',
+      })
+
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'custom',
+          model: 'vault-model',
+          providers: {
+            custom: {
+              protocol: 'openai-compatible',
+              profiles: {
+                default: {
+                  baseUrl: 'https://vault.example/v1',
+                  credential: { source: 'vault' },
+                },
+              },
+            },
+          },
+        }),
+      )
+      const vault = new ProviderCredentialVault({
+        configRoot,
+        useKeychain: false,
+        environment: { PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file' },
+      })
+      await vault.modify(
+        { providerId: 'custom', profileId: 'default' },
+        () => ({ type: 'api-key', secret: 'vault-secret' }),
+      )
+      await runService({
+        PRAXIS_HOME: configRoot,
+        PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+      })
+      expect(requests.at(-1)).toEqual({
+        url: 'https://vault.example/v1/chat/completions',
+        authorization: 'Bearer vault-secret',
+        model: 'vault-model',
+      })
+
+      await writeFile(join(configRoot, 'settings.json'), '{malformed')
+      for (const mode of ['safeMode', 'bare'] as const) {
+        await runService(
+          {
+            PRAXIS_HOME: configRoot,
+            PRAXIS_PROVIDER: 'openai',
+            PRAXIS_MODEL: `${mode}-model`,
+            PRAXIS_API_KEY: 'safe-secret',
+          },
+          { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native', [mode]: true },
+        )
+        expect(requests.at(-1)?.model).toBe(`${mode}-model`)
+      }
+
+      await writeFile(join(configRoot, 'settings.json'), '{}')
+      await runService({
+        PRAXIS_HOME: configRoot,
+        PRAXIS_PROVIDER: 'openai',
+        PRAXIS_MODEL: 'legacy-model',
+        PRAXIS_API_KEY: 'legacy-secret',
+      })
+      expect(requests.at(-1)).toMatchObject({
+        url: 'https://api.openai.com/v1/chat/completions',
+        authorization: 'Bearer legacy-secret',
+        model: 'legacy-model',
+      })
+
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'openai',
+          model: 'settings-fallback-model',
+          experimental: { codexSubscription: true },
+        }),
+      )
+      const codexVault = new ProviderCredentialVault({
+        configRoot,
+        useKeychain: false,
+        environment: { PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file' },
+      })
+      await codexVault.modify(
+        { providerId: 'openai-codex', profileId: 'work' },
+        () => ({
+          type: 'oauth',
+          accessToken: 'fixture-access-token',
+          refreshToken: 'fixture-refresh-token',
+          expiresAt: Date.now() + 60 * 60_000,
+          accountId: 'fixture-account-id',
+        }),
+      )
+      const codexControls = {
+        ...DEFAULT_CLI_CONTROLS,
+        dataPlane: 'native' as const,
+        provider: 'openai-codex',
+        providerProfile: 'work',
+        model: 'gpt-codex-fixture',
+      }
+      const codexEnvironment = {
+        PRAXIS_HOME: configRoot,
+        PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
+        PRAXIS_PRICING_JSON: JSON.stringify({
+          'gpt-codex-fixture': {
+            inputPerMillionUsd: 1_000_000,
+            outputPerMillionUsd: 2_000_000,
+          },
+        }),
+      }
+      const codexResult = await runService(codexEnvironment, codexControls)
+      expect(codexResult.usage).toMatchObject({
+        inputTokens: 1,
+        outputTokens: 1,
+      })
+      expect(codexResult.modelUsage).toMatchObject({
+        'gpt-codex-fixture': { inputTokens: 1, outputTokens: 1 },
+      })
+      expect(codexResult.costUsd).toBeUndefined()
+      expect(codexRequest?.url).toBe(
+        'https://chatgpt.com/backend-api/codex/responses',
+      )
+      expect(codexRequest?.headers.get('authorization')).toBe(
+        'Bearer fixture-access-token',
+      )
+      expect(codexRequest?.headers.get('chatgpt-account-id')).toBe(
+        'fixture-account-id',
+      )
+      expect(codexRequest?.headers.get('originator')).toBe('praxis')
+      expect(codexRequest?.headers.get('openai-beta')).toBe(
+        'responses=experimental',
+      )
+      expect(codexRequest?.body).toMatchObject({
+        model: 'gpt-codex-fixture',
+        store: false,
+        stream: true,
+        include: ['reasoning.encrypted_content'],
+        reasoning: { effort: 'high', summary: 'auto' },
+      })
+      codexRequest = undefined
+      await runService(codexEnvironment, {
+        ...codexControls,
+        thinking: 'disabled',
+      })
+      expect(currentCodexRequest()?.body).not.toHaveProperty('reasoning')
+
+      const callsBeforeUnsupportedBudget = codexFetchCalls
+      await expect(
+        runService(codexEnvironment, {
+          ...codexControls,
+          maxThinkingTokens: 1024,
+        }),
+      ).rejects.toThrow('does not support thinking token budgets')
+      expect(codexFetchCalls).toBe(callsBeforeUnsupportedBudget)
+      const callsBeforeBudget = codexFetchCalls
+      await expect(
+        runService(codexEnvironment, {
+          ...codexControls,
+          maxBudgetUsd: 1,
+        }),
+      ).rejects.toThrow(
+        'Cannot enforce --max-budget-usd: no pricing is configured',
+      )
+      expect(codexFetchCalls).toBe(callsBeforeBudget)
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'openai-codex',
+          providerProfile: 'work',
+          model: 'gpt-codex-fixture',
+          experimental: { codexSubscription: true },
+        }),
+      )
+      ambientBaseUrl = process.env.PRAXIS_BASE_URL
+      ambientApiKey = process.env.PRAXIS_API_KEY
+      delete process.env.PRAXIS_BASE_URL
+      delete process.env.PRAXIS_API_KEY
+      vi.stubEnv('PRAXIS_HOME', configRoot)
+      vi.stubEnv('PRAXIS_PROVIDER_CREDENTIAL_STORE', 'file')
+      vi.stubEnv('PRAXIS_PROVIDER', 'openai-codex')
+      vi.stubEnv('PRAXIS_PROVIDER_PROFILE', 'work')
+      vi.stubEnv('PRAXIS_MODEL', 'gpt-codex-fixture')
+      vi.stubEnv('PRAXIS_PRICING_JSON', '{not-json')
+      const judge = createDefaultDependencies().pluginEval?.judge
+      if (!judge) throw new Error('Plugin eval judge unavailable')
+      const callsBeforeJudge = codexFetchCalls
+      await expect(
+        judge.vote({
+          criteria: 'return true',
+          focus: 'fixture',
+          model: 'gpt-codex-fixture',
+        }),
+      ).rejects.toThrow(/API-billed.*subscription cost is unavailable/u)
+      expect(codexFetchCalls).toBe(callsBeforeJudge)
+      expect(
+        requests.every(
+          (request) => new URL(request.url).hostname !== 'chatgpt.com',
+        ),
+      ).toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+      if (ambientBaseUrl === undefined) delete process.env.PRAXIS_BASE_URL
+      else process.env.PRAXIS_BASE_URL = ambientBaseUrl
+      if (ambientApiKey === undefined) delete process.env.PRAXIS_API_KEY
+      else process.env.PRAXIS_API_KEY = ambientApiKey
+      globalThis.fetch = previousFetch
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('persists explicit interactive provider trust and uses it in the same startup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-startup-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    const statePath = join(configRoot, 'state.json')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'openai',
+          model: 'user-model',
+        }),
+      ),
+      writeFile(
+        join(projectRoot, 'settings.json'),
+        JSON.stringify({ provider: 'openai', model: 'project-model' }),
+      ),
+    ])
+    try {
+      const prompt = vi.fn(() => false)
+      const accepted = await resolveInteractiveProviderStartup({
+        controls: { ...DEFAULT_CLI_CONTROLS, trustProject: true },
+        configRoot,
+        statePath,
+        cwd,
+        environment: {},
+        approveWorkspaceTrust: prompt,
+      })
+      expect(accepted).toEqual({
+        effectiveModel: 'project-model',
+        trustProjectRequestAvailable: false,
+      })
+      expect(prompt).not.toHaveBeenCalled()
+
+      const canonicalCwd = await realpath(cwd)
+      const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+        projects?: Record<
+          string,
+          { workspaceTrust?: { version?: number; fingerprint?: string } }
+        >
+      }
+      expect(state.projects?.[canonicalCwd]?.workspaceTrust).toMatchObject({
+        version: 1,
+        fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      })
+
+      const reused = await resolveInteractiveProviderStartup({
+        controls: DEFAULT_CLI_CONTROLS,
+        configRoot,
+        statePath,
+        cwd,
+        environment: {},
+        approveWorkspaceTrust: () => {
+          throw new Error('persisted trust must not prompt again')
+        },
+      })
+      expect(reused.effectiveModel).toBe('project-model')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps interactive safe, bare, and simple startup isolated from malformed settings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-isolated-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    const statePath = join(configRoot, 'state.json')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(join(configRoot, 'settings.json'), '{malformed'),
+      writeFile(join(projectRoot, 'settings.json'), '{malformed'),
+    ])
+    const approveWorkspaceTrust = vi.fn(() => true)
+    try {
+      const cases: Array<{
+        name: string
+        controls: CliControls
+        environment: NodeJS.ProcessEnv
+      }> = [
+        {
+          name: 'safe',
+          controls: { ...DEFAULT_CLI_CONTROLS, safeMode: true },
+          environment: {},
+        },
+        {
+          name: 'bare',
+          controls: { ...DEFAULT_CLI_CONTROLS, bare: true },
+          environment: {},
+        },
+        {
+          name: 'simple',
+          controls: DEFAULT_CLI_CONTROLS,
+          environment: { CLAUDE_CODE_SIMPLE: 'true' },
+        },
+      ]
+      for (const fixture of cases) {
+        await expect(
+          resolveInteractiveProviderStartup({
+            controls: fixture.controls,
+            configRoot,
+            statePath,
+            cwd,
+            environment: {
+              ...fixture.environment,
+              PRAXIS_PROVIDER: 'openai',
+              PRAXIS_MODEL: `${fixture.name}-model`,
+            },
+            approveWorkspaceTrust,
+          }),
+        ).resolves.toMatchObject({
+          effectiveModel: `${fixture.name}-model`,
+        })
+      }
+      expect(approveWorkspaceTrust).not.toHaveBeenCalled()
+      await expect(access(statePath)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('routes trusted project selections through auto critic and eval judge consumers', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-consumers-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    const criticStatePath = join(root, 'critic-state.json')
+    const evalStatePath = join(configRoot, 'state.json')
+    const previousCwd = process.cwd()
+    const previousFetch = globalThis.fetch
+    const environmentNames = [
+      'PRAXIS_HOME',
+      'PRAXIS_API_KEY',
+      'PRAXIS_PROVIDER',
+      'PRAXIS_PROVIDER_PROFILE',
+      'PRAXIS_MODEL',
+      'PRAXIS_BASE_URL',
+      'PRAXIS_DATA_PLANE',
+      'PRAXIS_PRICING_JSON',
+      'CLAUDE_CODE_SIMPLE',
+      'TRUSTED_PROVIDER_KEY',
+    ] as const
+    const previousEnvironment = Object.fromEntries(
+      environmentNames.map((name) => [name, process.env[name]]),
+    )
+    const requests: Array<{
+      url: string
+      authorization: string | null
+      model: string
+    }> = []
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'fixture',
+          providerProfile: 'default',
+          model: 'user-model',
+          providers: {
+            fixture: {
+              protocol: 'openai-compatible',
+              profiles: {
+                default: {
+                  baseUrl: 'https://user.example/v1',
+                  credential: {
+                    source: 'env',
+                    name: 'TRUSTED_PROVIDER_KEY',
+                  },
+                },
+                work: {
+                  baseUrl: 'https://project.example/v1',
+                  credential: {
+                    source: 'env',
+                    name: 'TRUSTED_PROVIDER_KEY',
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ),
+      writeFile(
+        join(projectRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'fixture',
+          providerProfile: 'work',
+          model: 'project-model',
+        }),
+      ),
+    ])
+    try {
+      for (const name of environmentNames) delete process.env[name]
+      process.env.PRAXIS_HOME = configRoot
+      process.env.TRUSTED_PROVIDER_KEY = 'trusted-provider-secret'
+      process.env.PRAXIS_PRICING_JSON = JSON.stringify({
+        'judge-model': {
+          inputPerMillionUsd: 1_000_000,
+          outputPerMillionUsd: 2_000_000,
+        },
+      })
+      process.chdir(cwd)
+      globalThis.fetch = (async (input, init) => {
+        const body = JSON.parse(String(init?.body)) as { model?: unknown }
+        const model = String(body.model)
+        requests.push({
+          url: String(input),
+          authorization: new Headers(init?.headers).get('authorization'),
+          model,
+        })
+        const content =
+          model === 'judge-model'
+            ? JSON.stringify({ passed: true, explanation: 'trusted route' })
+            : 'trusted critique'
+        return new Response(
+          `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } })}\n\ndata: [DONE]\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      }) as typeof fetch
+
+      await resolveInteractiveProviderStartup({
+        controls: { ...DEFAULT_CLI_CONTROLS, trustProject: true },
+        configRoot,
+        statePath: criticStatePath,
+        cwd,
+        environment: process.env,
+      })
+      const dependencies = createDefaultDependencies()
+      const createCritic = dependencies.createAutoModeCritic
+      if (!createCritic) throw new Error('auto-mode critic unavailable')
+      const critic = await createCritic({
+        configRoot,
+        statePath: criticStatePath,
+      })
+      let critique = ''
+      for await (const event of critic.complete({
+        messages: [{ role: 'user', content: 'review' }],
+      })) {
+        if (event.type === 'text-delta') critique += event.delta
+      }
+      expect(critique).toBe('trusted critique')
+      expect(requests.at(-1)).toEqual({
+        url: 'https://project.example/v1/chat/completions',
+        authorization: 'Bearer trusted-provider-secret',
+        model: 'project-model',
+      })
+
+      await resolveInteractiveProviderStartup({
+        controls: { ...DEFAULT_CLI_CONTROLS, trustProject: true },
+        configRoot,
+        statePath: evalStatePath,
+        cwd,
+        environment: process.env,
+      })
+      const judge = dependencies.pluginEval?.judge
+      if (!judge) throw new Error('plugin eval judge unavailable')
+      await expect(
+        judge.vote({
+          criteria: 'return true',
+          focus: 'fixture',
+          model: 'judge-model',
+        }),
+      ).resolves.toEqual({
+        passed: true,
+        explanation: 'trusted route',
+        costUsd: 3,
+      })
+      expect(requests.at(-1)).toEqual({
+        url: 'https://project.example/v1/chat/completions',
+        authorization: 'Bearer trusted-provider-secret',
+        model: 'judge-model',
+      })
+    } finally {
+      process.chdir(previousCwd)
+      globalThis.fetch = previousFetch
+      for (const name of environmentNames) {
+        const value = previousEnvironment[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
       await rm(root, { recursive: true, force: true })
     }
   })
@@ -2904,6 +3970,103 @@ describe('Praxis CLI', () => {
       )
       const stale = await configuration(DEFAULT_CLI_CONTROLS)
       expect(labels(stale)).toEqual(['user-hook'])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('trusts provider-only project selection for the current fingerprint and alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-trust-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const projectRoot = join(cwd, '.praxis')
+    const alias = join(root, 'alias')
+    await Promise.all([
+      mkdir(configRoot, { recursive: true }),
+      mkdir(projectRoot, { recursive: true }),
+    ])
+    const projectSettingsPath = join(projectRoot, 'settings.json')
+    await Promise.all([
+      writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'fixture',
+          model: 'global-model',
+          providers: {
+            fixture: {
+              protocol: 'openai-compatible',
+              profiles: {
+                default: {
+                  baseUrl: 'https://fixture.example/v1',
+                  credential: { source: 'env', name: 'PRAXIS_API_KEY' },
+                },
+              },
+            },
+          },
+        }),
+      ),
+      writeFile(
+        projectSettingsPath,
+        JSON.stringify({ model: 'project-model' }),
+      ),
+      writeFile(
+        join(configRoot, 'state.json'),
+        JSON.stringify({
+          projects: {
+            [await realpath(cwd)]: { trusted: true },
+          },
+        }),
+      ),
+      symlink(cwd, alias, 'dir'),
+    ])
+    const warnings: string[] = []
+    const create = async (location: string, trustProject = false) => {
+      const service = await createDefaultDependencies().createService({
+        eventSink: (event) => {
+          if (event.type === 'warning') warnings.push(event.message)
+        },
+        requireProvider: false,
+        cwd: location,
+        configRoot,
+        providerEnvironment: { PRAXIS_API_KEY: 'fixture-key' },
+        controls: { ...DEFAULT_CLI_CONTROLS, trustProject },
+      })
+      return service
+    }
+    try {
+      const blocked = await create(cwd)
+      try {
+        expect(blocked.runtimeInfo?.().model).toBe('global-model')
+        expect(warnings.at(-1)).toContain('rerun with --trust-project')
+      } finally {
+        await blocked.close?.()
+      }
+
+      const accepted = await create(cwd, true)
+      try {
+        expect(accepted.runtimeInfo?.().model).toBe('project-model')
+      } finally {
+        await accepted.close?.()
+      }
+
+      const reused = await create(alias)
+      try {
+        expect(reused.runtimeInfo?.().model).toBe('project-model')
+      } finally {
+        await reused.close?.()
+      }
+
+      await writeFile(
+        projectSettingsPath,
+        JSON.stringify({ model: 'changed-model' }),
+      )
+      const stale = await create(cwd)
+      try {
+        expect(stale.runtimeInfo?.().model).toBe('global-model')
+        expect(warnings.at(-1)).toContain('rerun with --trust-project')
+      } finally {
+        await stale.close?.()
+      }
     } finally {
       await rm(root, { recursive: true, force: true })
     }
