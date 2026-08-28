@@ -200,7 +200,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`.
 - **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
-  streaming adapters with explicit capability checks and metering controls.
+  streaming adapters with explicit capability checks, metering controls, and
+  a bounded absolute deadline for every provider attempt.
 
 Detailed feature status and executable evidence live in the
 [parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md),

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   AgentRuntime,
@@ -7,6 +7,7 @@ import {
   type ModelStreamEvent,
 } from '../core/runtime.js'
 import { FallbackModelProvider } from './fallback-provider.js'
+import { DeadlineModelProvider } from './deadline-provider.js'
 
 function provider(
   model: string,
@@ -25,6 +26,102 @@ const text = (value: string): ModelStreamEvent => ({
 })
 
 describe('FallbackModelProvider', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('cancels before starting an attempt', async () => {
+    const controller = new AbortController()
+    controller.abort('cancelled')
+    const primary = vi.fn(async function* () {
+      yield text('must not run')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary)],
+    })
+
+    const completion = routed.complete({
+      messages: [],
+      signal: controller.signal,
+    })
+    const iterator = completion[Symbol.asyncIterator]()
+    await expect(iterator.next()).rejects.toMatchObject({
+      kind: 'cancelled',
+      retryable: false,
+    })
+    expect(primary).not.toHaveBeenCalled()
+  })
+
+  it('cancels an abort-aware retry delay without starting another attempt', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    let attempts = 0
+    const primary = vi.fn(async function* () {
+      attempts += 1
+      throw new ModelProviderError('overloaded', {
+        kind: 'server_error',
+        retryable: true,
+      })
+      yield text('unreachable')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary)],
+      retryDelayMs: 1000,
+    })
+    const completion = routed.complete({
+      messages: [],
+      signal: controller.signal,
+    })
+    const iterator = completion[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { type: 'api-retry' },
+      done: false,
+    })
+    const pending = iterator.next()
+    controller.abort('cancelled')
+    await expect(pending).rejects.toMatchObject({
+      kind: 'cancelled',
+      retryable: false,
+    })
+    await vi.runOnlyPendingTimersAsync()
+    expect(attempts).toBe(1)
+  })
+
+  it('discards timed-out partial attempts before fallback succeeds', async () => {
+    vi.useFakeTimers()
+    let attempts = 0
+    const primary = new DeadlineModelProvider({
+      provider: provider('primary', async function* () {
+        attempts += 1
+        yield text(`discarded-${attempts}`)
+        await new Promise<void>(() => {})
+      }),
+      deadlineMs: 50,
+    })
+    const fallback = provider('fallback', async function* () {
+      yield text('recovered')
+      yield { type: 'terminal', reason: 'end_turn' }
+    })
+    const routed = new FallbackModelProvider({
+      providers: [primary, fallback],
+      retryDelayMs: 0,
+    })
+    const events: ModelStreamEvent[] = []
+    const consuming = (async () => {
+      for await (const item of routed.complete({ messages: [] }))
+        events.push(item)
+    })()
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(50)
+      await Promise.resolve()
+    }
+    await consuming
+    expect(attempts).toBe(3)
+    expect(events.filter((item) => item.type === 'text-delta')).toEqual([
+      text('recovered'),
+    ])
+  })
+
   it('preserves one terminal event from the successful buffered attempt', async () => {
     let attempts = 0
     const routed = new FallbackModelProvider({

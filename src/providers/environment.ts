@@ -1,8 +1,10 @@
 import { createAnthropicPromptCachePolicyResolver } from './anthropic-prompt-cache.js'
+import { DEFAULT_PROVIDER_DEADLINE_MS } from './deadline-provider.js'
 
 export interface ProviderEnvironment {
   provider: 'openai' | 'anthropic'
   baseUrl: string
+  deadlineMs: number
   maxOutputTokens?: number
   anthropicVersion?: string
   webSearch?: boolean
@@ -20,6 +22,21 @@ export function parseProviderEnvironment(
   if (provider !== 'openai' && provider !== 'anthropic') {
     throw new Error('PRAXIS_PROVIDER must be openai or anthropic')
   }
+  const rawDeadlineMs = environment.PRAXIS_PROVIDER_DEADLINE_MS
+  if (
+    rawDeadlineMs !== undefined &&
+    (!/^\d+$/.test(rawDeadlineMs) ||
+      Number(rawDeadlineMs) <= 0 ||
+      !Number.isSafeInteger(Number(rawDeadlineMs)))
+  ) {
+    throw new Error(
+      'PRAXIS_PROVIDER_DEADLINE_MS must be a positive safe integer',
+    )
+  }
+  const deadlineMs =
+    rawDeadlineMs === undefined
+      ? DEFAULT_PROVIDER_DEADLINE_MS
+      : Number(rawDeadlineMs)
   const maxOutputTokens = environment.PRAXIS_MAX_OUTPUT_TOKENS
   if (
     maxOutputTokens !== undefined &&
@@ -74,6 +91,7 @@ export function parseProviderEnvironment(
       (provider === 'anthropic'
         ? 'https://api.anthropic.com/v1'
         : 'https://api.openai.com/v1'),
+    deadlineMs,
     ...(maxOutputTokens === undefined
       ? {}
       : { maxOutputTokens: Number(maxOutputTokens) }),

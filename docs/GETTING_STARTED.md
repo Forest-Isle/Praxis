@@ -68,6 +68,11 @@ Do not commit provider credentials to a repository, settings file, transcript,
 or shell script. Prefer your shell's private environment or a local secret
 manager.
 
+Praxis bounds every direct, retried, and fallback provider attempt with a
+90-second absolute deadline. For slower local or compatible endpoints, set a
+positive integer millisecond override such as
+`PRAXIS_PROVIDER_DEADLINE_MS=180000`.
+
 ## Run the first session
 
 Start in a project directory:
