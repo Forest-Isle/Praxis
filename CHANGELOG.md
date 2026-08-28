@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.43.1](https://github.com/Forest-Isle/Praxis/compare/v0.43.0...v0.43.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* require output tty for fullscreen renderer ([#496](https://github.com/Forest-Isle/Praxis/issues/496)) ([06e18e4](https://github.com/Forest-Isle/Praxis/commit/06e18e4083a52a1ee402d6bcc64630bbd16e278d)), closes [#494](https://github.com/Forest-Isle/Praxis/issues/494)
+
 ## [0.43.0](https://github.com/Forest-Isle/Praxis/compare/v0.42.1...v0.43.0) (2026-08-28)
 
 
