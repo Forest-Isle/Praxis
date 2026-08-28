@@ -79,6 +79,32 @@ export function coverageContractDiagnostics(
       diagnostics.push('Coverage job must run npm ci')
     if (!job.steps?.some((step) => step.run === 'npm run test:coverage'))
       diagnostics.push('Coverage job must run npm run test:coverage')
+    const prerequisites = job.steps?.find(
+      (step) => step.name === 'Install terminal and Linux sandbox test tools',
+    )
+    if (!prerequisites) {
+      diagnostics.push(
+        'Coverage job must include the Linux test tools prerequisite step',
+      )
+    } else {
+      const run = prerequisites.run ?? ''
+      for (const command of ['rg', 'expect', 'tmux', 'bwrap', 'socat']) {
+        if (!run.includes(`command -v ${command} >/dev/null`))
+          diagnostics.push(
+            `Coverage prerequisite must verify command -v ${command}`,
+          )
+      }
+      if (
+        !run.includes('apt-get install -y ripgrep expect tmux bubblewrap socat')
+      )
+        diagnostics.push(
+          'Coverage prerequisite must install the Linux test tools',
+        )
+      if (!run.includes('kernel.apparmor_restrict_unprivileged_userns'))
+        diagnostics.push(
+          'Coverage prerequisite must handle AppArmor user namespaces',
+        )
+    }
   }
   if (!required?.needs?.includes('coverage'))
     diagnostics.push('Required CI aggregate must depend on coverage')

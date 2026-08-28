@@ -44,6 +44,15 @@ describe('CI coverage contract verifier', () => {
       coverageContractDiagnostics(invalid, config, workflow).join('\n'),
     ).toContain('scripts.check must invoke npm run verify:ci-coverage')
   })
+  it('rejects a Coverage job without Linux test tools', () => {
+    const invalid = JSON.parse(JSON.stringify(workflow))
+    invalid.jobs.coverage.steps = invalid.jobs.coverage.steps.filter(
+      (step) => step.name !== 'Install terminal and Linux sandbox test tools',
+    )
+    expect(
+      coverageContractDiagnostics(packageData, config, invalid).join('\n'),
+    ).toContain('Linux test tools prerequisite')
+  })
   it.each([
     [
       'missing Coverage job',
