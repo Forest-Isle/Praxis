@@ -1394,6 +1394,7 @@ describe('Praxis CLI', () => {
     expect(parseProviderEnvironment({})).toEqual({
       provider: 'openai',
       baseUrl: 'https://api.openai.com/v1',
+      deadlineMs: 90_000,
     })
     expect(
       parseProviderEnvironment({
@@ -1405,6 +1406,7 @@ describe('Praxis CLI', () => {
     ).toEqual({
       provider: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
+      deadlineMs: 90_000,
       maxOutputTokens: 4096,
       anthropicVersion: '2023-06-01',
       webSearch: true,
@@ -1412,6 +1414,14 @@ describe('Praxis CLI', () => {
     expect(() =>
       parseProviderEnvironment({ PRAXIS_PROVIDER: 'unknown' }),
     ).toThrow('openai or anthropic')
+    expect(
+      parseProviderEnvironment({ PRAXIS_PROVIDER_DEADLINE_MS: '1234' }),
+    ).toMatchObject({ deadlineMs: 1234 })
+    for (const value of ['0', '-1', '1.5', 'Infinity', '9007199254740992']) {
+      expect(() =>
+        parseProviderEnvironment({ PRAXIS_PROVIDER_DEADLINE_MS: value }),
+      ).toThrow('PRAXIS_PROVIDER_DEADLINE_MS')
+    }
     expect(() =>
       parseProviderEnvironment({ PRAXIS_MAX_OUTPUT_TOKENS: '4096' }),
     ).toThrow('requires PRAXIS_PROVIDER=anthropic')
@@ -1468,6 +1478,138 @@ describe('Praxis CLI', () => {
     expect(() =>
       parseContextEnvironment({ PRAXIS_CONTEXT_RESERVE_TOKENS: '8192' }),
     ).toThrow('requires PRAXIS_CONTEXT_WINDOW_TOKENS')
+  })
+
+  it('enforces the provider deadline for environment and CLI-selected models', async () => {
+    for (const testCase of [
+      {
+        label: 'environment',
+        expectedModel: 'environment-model',
+        controls: undefined,
+      },
+      {
+        label: 'CLI override',
+        expectedModel: 'override-model',
+        controls: { ...DEFAULT_CLI_CONTROLS, model: 'override-model' },
+      },
+    ] as const) {
+      const root = await mkdtemp(join(tmpdir(), 'praxis-provider-deadline-'))
+      const configRoot = join(root, 'config')
+      const requestedModels: string[] = []
+      let notifyFetchStarted!: () => void
+      const fetchStarted = new Promise<void>((resolve) => {
+        notifyFetchStarted = resolve
+      })
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { model: string }
+          requestedModels.push(body.model)
+          notifyFetchStarted()
+          return new Response(
+            new ReadableStream<Uint8Array>({ start: () => undefined }),
+            { status: 200 },
+          )
+        })
+      let service:
+        Awaited<ReturnType<CliDependencies['createService']>> | undefined
+      try {
+        service = await createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: true,
+          cwd: root,
+          configRoot,
+          providerEnvironment: {
+            PRAXIS_API_KEY: 'test-key',
+            PRAXIS_MODEL: 'environment-model',
+            PRAXIS_PROVIDER: 'openai',
+            PRAXIS_PROVIDER_DEADLINE_MS: '20',
+          },
+          ...(testCase.controls === undefined
+            ? {}
+            : { controls: testCase.controls }),
+        })
+        vi.useFakeTimers()
+        const execution = service.run(`wait for ${testCase.label} deadline`)
+        const failed = expect(execution).rejects.toMatchObject({
+          kind: 'timeout',
+          retryable: true,
+        })
+        await fetchStarted
+        await vi.advanceTimersByTimeAsync(20)
+        await failed
+        expect(requestedModels).toEqual([testCase.expectedModel])
+      } finally {
+        await service?.close?.()
+        fetchMock.mockRestore()
+        vi.useRealTimers()
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  })
+
+  it('gives every composition-root fallback attempt an independent deadline', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-fallback-deadline-'))
+    const configRoot = join(root, 'config')
+    const requestedModels: string[] = []
+    let notifyFetchStarted!: () => void
+    const fetchStarted = new Promise<void>((resolve) => {
+      notifyFetchStarted = resolve
+    })
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as { model: string }
+        requestedModels.push(body.model)
+        notifyFetchStarted()
+        return new Response(
+          new ReadableStream<Uint8Array>({ start: () => undefined }),
+          { status: 200 },
+        )
+      })
+    let service:
+      Awaited<ReturnType<CliDependencies['createService']>> | undefined
+    try {
+      service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment: {
+          PRAXIS_API_KEY: 'test-key',
+          PRAXIS_MODEL: 'environment-model',
+          PRAXIS_PROVIDER: 'openai',
+          PRAXIS_PROVIDER_DEADLINE_MS: '20',
+        },
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          model: 'primary-model',
+          fallbackModels: ['fallback-model'],
+        },
+      })
+      vi.useFakeTimers()
+      const execution = service.run('wait for every fallback deadline')
+      const failed = expect(execution).rejects.toMatchObject({
+        kind: 'timeout',
+        retryable: true,
+      })
+      await fetchStarted
+      await vi.advanceTimersByTimeAsync(10_000)
+      await failed
+      expect(requestedModels).toEqual([
+        'primary-model',
+        'primary-model',
+        'primary-model',
+        'fallback-model',
+        'fallback-model',
+        'fallback-model',
+      ])
+    } finally {
+      await service?.close?.()
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('prints help and version without creating runtime dependencies', async () => {

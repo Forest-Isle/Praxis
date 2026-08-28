@@ -17,6 +17,41 @@ function retryable(error: unknown): boolean {
   )
 }
 
+function cancellationError(signal: AbortSignal): ModelProviderError {
+  return new ModelProviderError('Provider request cancelled', {
+    kind: 'cancelled',
+    retryable: false,
+    cause: signal.reason,
+  })
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw cancellationError(signal)
+}
+
+async function waitForRetry(
+  delayMs: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  throwIfAborted(signal)
+  if (delayMs <= 0) return
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const finish = (result: () => void): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      result()
+    }
+    const onAbort = (): void =>
+      finish(() => reject(cancellationError(signal as AbortSignal)))
+    const timer = setTimeout(() => finish(resolve), delayMs)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
+  })
+}
+
 export interface FallbackModelProviderOptions {
   providers: readonly ModelProvider[]
   retryDelayMs?: number
@@ -50,6 +85,7 @@ export class FallbackModelProvider implements ModelProvider {
     let lastError: unknown
     for (const provider of this.providers()) {
       for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt += 1) {
+        throwIfAborted(request.signal)
         this.active = provider
         const attemptStartedAt = performance.now()
         try {
@@ -104,6 +140,7 @@ export class FallbackModelProvider implements ModelProvider {
           yield* events
           return
         } catch (error) {
+          throwIfAborted(request.signal)
           lastError = error
           if (!retryable(error)) throw error
           if (attempt + 1 < MAX_ATTEMPTS_PER_MODEL) {
@@ -119,8 +156,7 @@ export class FallbackModelProvider implements ModelProvider {
                 error: modelProviderErrorKind(error),
               }
             }
-            if (delay > 0)
-              await new Promise((resolve) => setTimeout(resolve, delay))
+            await waitForRetry(delay, request.signal)
           }
         }
       }

@@ -157,6 +157,7 @@ or tool capability. Teams remain local-first, single-user, and non-remote.
 | `PRAXIS_MODEL`                      | Yes for model runs | Provider model identifier.                                                  |
 | `PRAXIS_PROVIDER`                   | No                 | `openai` (default) or `anthropic`.                                          |
 | `PRAXIS_BASE_URL`                   | No                 | Provider base URL; defaults by selected provider.                           |
+| `PRAXIS_PROVIDER_DEADLINE_MS`       | No                 | Positive integer absolute deadline per provider attempt; defaults to 90000. |
 | `PRAXIS_MAX_OUTPUT_TOKENS`          | No                 | Positive Anthropic-only output-token limit.                                 |
 | `PRAXIS_ANTHROPIC_VERSION`          | No                 | Non-empty Anthropic API version override.                                   |
 | `PRAXIS_ANTHROPIC_WEB_SEARCH`       | No                 | `true` or `false`; enables provider-native Anthropic WebSearch capability.  |
@@ -173,6 +174,10 @@ or tool capability. Teams remain local-first, single-user, and non-remote.
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`.
+
+Every direct, retried, or fallback provider attempt has its own absolute
+deadline. Set `PRAXIS_PROVIDER_DEADLINE_MS` to a positive integer number of
+milliseconds to override the 90-second default.
 
 Prompt caching defaults to five minutes on the official Anthropic endpoint and
 to disabled on compatible gateways. Configure it with the native

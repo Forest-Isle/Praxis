@@ -28,6 +28,8 @@ this file from merged Conventional Commit pull requests.
 
 ### Added
 
+* bound every Anthropic/OpenAI provider attempt with a configurable absolute
+  deadline and abort-aware fallback backoff
 * add exact-fingerprint workspace trust that blocks automatically discovered
   project/local hooks and MCP servers until the canonical workspace is accepted
 * add a reusable P-loop + spark Praxis TUI logo with semantic theme styling

@@ -170,6 +170,7 @@ import {
 import { AnthropicCompatibleProvider } from './providers/anthropic-compatible.js'
 import { createAnthropicPromptCachePolicyResolver } from './providers/anthropic-prompt-cache.js'
 import { FallbackModelProvider } from './providers/fallback-provider.js'
+import { DeadlineModelProvider } from './providers/deadline-provider.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js'
 import {
   parseContextEnvironment,
@@ -340,41 +341,48 @@ function createProviderForModel({
         ? { contextWindowTokens: context.contextWindowTokens }
         : {}),
     }
-    return provider.provider === 'anthropic'
-      ? new AnthropicCompatibleProvider({
-          ...providerOptions,
-          promptCaching: resolvePromptCachePolicy({
-            baseUrl: provider.baseUrl,
-            model: selectedModel,
-          }),
-          thinking: {
-            mode: controls.thinking ?? 'enabled',
-            ...(controls.maxThinkingTokens === undefined
+    const concrete =
+      provider.provider === 'anthropic'
+        ? new AnthropicCompatibleProvider({
+            ...providerOptions,
+            promptCaching: resolvePromptCachePolicy({
+              baseUrl: provider.baseUrl,
+              model: selectedModel,
+            }),
+            thinking: {
+              mode: controls.thinking ?? 'enabled',
+              ...(controls.maxThinkingTokens === undefined
+                ? {}
+                : { maxTokens: controls.maxThinkingTokens }),
+            },
+            ...('maxOutputTokens' in provider
+              ? { maxOutputTokens: provider.maxOutputTokens }
+              : {}),
+            ...('anthropicVersion' in provider
+              ? { anthropicVersion: provider.anthropicVersion }
+              : {}),
+            ...('webSearch' in provider
+              ? { webSearch: provider.webSearch }
+              : {}),
+          })
+        : new OpenAICompatibleProvider({
+            ...providerOptions,
+            ...(explicitThinkingControls.thinking === undefined &&
+            explicitThinkingControls.maxThinkingTokens === undefined
               ? {}
-              : { maxTokens: controls.maxThinkingTokens }),
-          },
-          ...('maxOutputTokens' in provider
-            ? { maxOutputTokens: provider.maxOutputTokens }
-            : {}),
-          ...('anthropicVersion' in provider
-            ? { anthropicVersion: provider.anthropicVersion }
-            : {}),
-          ...('webSearch' in provider ? { webSearch: provider.webSearch } : {}),
-        })
-      : new OpenAICompatibleProvider({
-          ...providerOptions,
-          ...(explicitThinkingControls.thinking === undefined &&
-          explicitThinkingControls.maxThinkingTokens === undefined
-            ? {}
-            : {
-                thinking: {
-                  mode: controls.thinking ?? 'enabled',
-                  ...(controls.maxThinkingTokens === undefined
-                    ? {}
-                    : { maxTokens: controls.maxThinkingTokens }),
-                },
-              }),
-        })
+              : {
+                  thinking: {
+                    mode: controls.thinking ?? 'enabled',
+                    ...(controls.maxThinkingTokens === undefined
+                      ? {}
+                      : { maxTokens: controls.maxThinkingTokens }),
+                  },
+                }),
+          })
+    return new DeadlineModelProvider({
+      provider: concrete,
+      deadlineMs: provider.deadlineMs,
+    })
   }
 }
 
