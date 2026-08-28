@@ -48,4 +48,36 @@ describe('resolveAnsiTextStyles', () => {
       ),
     ).toEqual({})
   })
+
+  it('maps every row role through the shared semantic theme contract', () => {
+    const styles = resolveAnsiTextStyles(
+      theme({
+        body: { color: 'white' },
+        heading: { bold: true },
+        muted: { dimColor: true },
+        focusMarker: { color: 'cyanBright', bold: true },
+        success: { color: 'greenBright' },
+        warning: { color: 'yellowBright' },
+        error: { color: 'redBright' },
+        info: { color: 'blueBright' },
+        inputMarker: { color: 'cyan' },
+        diffAdded: { color: 'green' },
+        diffRemoved: { color: 'red' },
+      }),
+    )
+    expect(styles).toMatchObject({
+      body: '\u001b[37m',
+      heading: '\u001b[1m',
+      muted: '\u001b[2m',
+      accent: '\u001b[96;1m',
+      selection: '\u001b[96;1m',
+      input: '\u001b[36m',
+      tool: '\u001b[94m',
+      success: '\u001b[92m',
+      warning: '\u001b[93m',
+      error: '\u001b[91m',
+      diffAdded: '\u001b[32m',
+      diffRemoved: '\u001b[31m',
+    })
+  })
 })

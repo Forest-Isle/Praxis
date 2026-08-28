@@ -57,7 +57,7 @@ describe('projectTuiRows', () => {
     })
     expect(rows[1]?.segments[0]?.role).toBe('body')
     expect(rows[3]?.segments[0]?.role).toBe('muted')
-    expect(rows[5]?.segments[0]?.role).toBe('error')
+    expect(rows[5]?.segments[0]?.role).toBe('warning')
     expect(rows.slice(6).map((row) => row.segments[0])).toEqual([
       { text: 'visible', role: 'body' },
       { text: '+added', role: 'body' },
@@ -99,5 +99,56 @@ describe('projectTuiRows', () => {
     })
     expect(rows[0]?.segments).toEqual([{ text: 'visible', role: 'body' }])
     expect(rows[1]?.segments[0]?.role).toBe('heading')
+  })
+
+  it('assigns semantic operation roles for running, success, and failure', () => {
+    const rows = projectTuiRows({
+      entries: [
+        {
+          kind: 'tool',
+          key: 'tool-running',
+          item: {
+            kind: 'tool',
+            call: { id: 'running', name: 'Bash', input: { command: 'pwd' } },
+            detail: '',
+          },
+        },
+        {
+          kind: 'tool',
+          key: 'tool-success',
+          item: {
+            kind: 'tool',
+            call: { id: 'success', name: 'Bash', input: { command: 'pwd' } },
+            detail: '',
+          },
+          result: {
+            kind: 'tool-result',
+            callId: 'success',
+            text: 'ok',
+            isError: false,
+          },
+        },
+        {
+          kind: 'shell',
+          key: 'shell-failure',
+          item: { kind: 'shell', callId: 'failure', command: 'false' },
+          result: {
+            kind: 'shell-result',
+            callId: 'failure',
+            stdout: '',
+            stderr: 'failed',
+            isError: true,
+          },
+        },
+      ],
+      width: 80,
+      mode: 'normal',
+    })
+    expect(rows.map((row) => row.segments[0]?.role)).toEqual([
+      'muted',
+      'success',
+      'error',
+      'error',
+    ])
   })
 })

@@ -9,8 +9,9 @@ import { resolveAnsiTextStyles } from './ansi-theme.js'
 import { useTuiTheme } from './theme.js'
 import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
 import type { TuiScreenModel } from './tui-screen-model.js'
+import type { QuietFrame } from './quiet-frame.js'
 
-export interface TuiAnsiSurfaceProps {
+export interface TuiAnsiSurfaceLegacyProps {
   screen: TuiScreenModel
   width: number
   rows: number | undefined
@@ -28,6 +29,23 @@ export interface TuiAnsiSurfaceProps {
   sessionLabel?: string
   cursor?: number
   onError: (error: unknown) => void
+}
+
+export interface TuiAnsiSurfaceFrameProps {
+  readonly frame: QuietFrame
+  readonly onError: (error: unknown) => void
+}
+
+export type TuiAnsiSurfaceProps =
+  TuiAnsiSurfaceLegacyProps | TuiAnsiSurfaceFrameProps
+
+export function projectAnsiQuietFrame(frame: QuietFrame): AnsiFrame {
+  return {
+    columns: frame.columns,
+    rows: frame.rows,
+    lines: frame.lines,
+    ...(frame.cursor === undefined ? {} : { cursor: frame.cursor }),
+  }
 }
 
 // Keep line breaks long enough for active stream projection to split them;
@@ -71,7 +89,7 @@ function activeRows(
     .map((line, index) => row(`${key}:${index}`, line, role))
 }
 
-function headerRows(props: TuiAnsiSurfaceProps): TuiRow[] {
+function headerRows(props: TuiAnsiSurfaceLegacyProps): TuiRow[] {
   const display = props.display
   const identity = `Praxis${display?.version ? ` ${safeText(display.version)}` : ''}${props.sessionLabel ? ` · session ${safeText(props.sessionLabel)}` : ''}`
   const metadata = [
@@ -146,7 +164,9 @@ export function supportsAnsiSurface(screen: TuiScreenModel): boolean {
   )
 }
 
-export function projectAnsiSurfaceFrame(props: TuiAnsiSurfaceProps): AnsiFrame {
+export function projectAnsiSurfaceFrame(
+  props: TuiAnsiSurfaceLegacyProps,
+): AnsiFrame {
   const body = props.screen.body
   const lines: TuiRow[] = [...surfaceRows(props.screen)]
   const headers = body.kind === 'conversation' ? headerRows(props) : []
@@ -241,7 +261,11 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
     const renderer = rendererRef.current
     if (renderer === null) return
     try {
-      renderer.draw(projectAnsiSurfaceFrame(props))
+      renderer.draw(
+        'frame' in props
+          ? projectAnsiQuietFrame(props.frame)
+          : projectAnsiSurfaceFrame(props),
+      )
     } catch (error) {
       failedRef.current = true
       props.onError(error)

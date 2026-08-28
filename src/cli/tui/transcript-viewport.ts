@@ -325,16 +325,77 @@ function inputString(
   return typeof value === 'string' ? value : ''
 }
 
+function oneLine(value: string, max = 160): string {
+  const text = stripVTControlCharacters(value)
+    .replace(/[\r\n\t]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  return text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text
+}
+
 function toolHeading(
   entry: Extract<TranscriptPresentationEntry, { kind: 'tool' }>,
 ): string {
   if (entry.item.call.name === 'Edit')
-    return `Update(${inputString(entry, 'file_path')})`
+    return `Edit  ${oneLine(inputString(entry, 'file_path'))}`.trimEnd()
   if (entry.item.call.name === 'Read')
-    return `Read(${inputString(entry, 'file_path')})`
+    return `Read  ${oneLine(inputString(entry, 'file_path'))}`.trimEnd()
   if (entry.item.call.name === 'Bash')
-    return `Bash(${inputString(entry, 'command')})`
-  return entry.item.call.name
+    return `Bash  ${oneLine(inputString(entry, 'command'))}`.trimEnd()
+  return oneLine(entry.item.call.name)
+}
+
+function toolSummary(
+  entry: Extract<TranscriptPresentationEntry, { kind: 'tool' }>,
+  mode: TranscriptPresentationMode,
+): string {
+  const state = !entry.result
+    ? 'running'
+    : entry.result.isError
+      ? 'failed'
+      : 'completed'
+  const prefix =
+    mode === 'screen-reader'
+      ? state === 'running'
+        ? 'Running tool: '
+        : state === 'failed'
+          ? 'Failed tool: '
+          : 'Completed tool: '
+      : state === 'running'
+        ? '… '
+        : state === 'failed'
+          ? '! '
+          : '✓ '
+  const detail =
+    !['Bash', 'Read', 'Edit'].includes(entry.item.call.name) &&
+    entry.item.detail
+      ? ` · ${oneLine(entry.item.detail, 120)}`
+      : ''
+  return `${prefix}${toolHeading(entry)}${detail}`
+}
+
+function shellSummary(
+  entry: Extract<TranscriptPresentationEntry, { kind: 'shell' }>,
+  mode: TranscriptPresentationMode,
+): string {
+  const state = !entry.result
+    ? 'running'
+    : entry.result.isError
+      ? 'failed'
+      : 'completed'
+  const prefix =
+    mode === 'screen-reader'
+      ? state === 'running'
+        ? 'Running shell command: '
+        : state === 'failed'
+          ? 'Failed shell command: '
+          : 'Completed shell command: '
+      : state === 'running'
+        ? '… Bash  '
+        : state === 'failed'
+          ? '! Bash  '
+          : '✓ Bash  '
+  return `${prefix}${oneLine(entry.item.command)}`.trimEnd()
 }
 
 function visibleOutputLineCount(
@@ -524,7 +585,7 @@ function estimateRenderedTranscriptEntryLines(
 ): number {
   if (entry.kind === 'read-summary')
     return wrappedLineCount(
-      `  Read ${entry.count} file${entry.count === 1 ? '' : 's'} (ctrl+o to expand)`,
+      `✓ Read ${entry.count} file${entry.count === 1 ? '' : 's'}`,
       width,
     )
   if (entry.kind === 'item') {
@@ -534,7 +595,7 @@ function estimateRenderedTranscriptEntryLines(
         1 +
         (mode === 'screen-reader' ? 1 : 0) +
         wrappedLineCount(
-          `${mode === 'screen-reader' ? 'You: ' : '❯ '}${item.text}`,
+          `${mode === 'screen-reader' ? 'You: ' : 'you> '}${item.text}`,
           width,
         )
       )
@@ -542,12 +603,7 @@ function estimateRenderedTranscriptEntryLines(
       return (
         1 +
         (mode === 'screen-reader' ? 1 : 0) +
-        wrappedLineCount(
-          item.text,
-          mode === 'screen-reader'
-            ? Math.max(1, width - 7)
-            : markdownContentWidth(width),
-        )
+        assistantMarkdownProjectionRows(item.text, width, mode).length
       )
     if (item.kind === 'thinking') {
       const summary = item.text.replace(/\s+/gu, ' ').trim()
@@ -622,12 +678,19 @@ function estimateRenderedTranscriptEntryLines(
       !entry.result.isError
     )
       return 1
-    let rows = 1 + wrappedLineCount(`⏺ ${toolHeading(entry)}`, width)
-    if (
-      !['Bash', 'Read', 'Edit'].includes(entry.item.call.name) &&
-      entry.item.detail
-    )
-      rows += wrappedLineCount(` ${entry.item.detail}`, width)
+    const summaryRows = wrappedLineCount(toolSummary(entry, mode), width)
+    if (mode === 'normal') {
+      if (!entry.result || !entry.result.isError) return summaryRows
+      return (
+        summaryRows +
+        viewportOutputRows(
+          `Error: ${bounded(entry.result.text, 500)}`,
+          width,
+          mode,
+        ).length
+      )
+    }
+    let rows = 1 + summaryRows
     if (!entry.result) return rows
     if (entry.result.isError)
       return (
@@ -644,36 +707,34 @@ function estimateRenderedTranscriptEntryLines(
         `⎿ Added ${newLines.length} line${newLines.length === 1 ? '' : 's'}, removed ${oldLines.length} line${oldLines.length === 1 ? '' : 's'}`,
         Math.max(1, width - 2),
       )
-      if (mode !== 'normal') {
-        rows += oldLines.reduce(
-          (total, line, index) =>
-            total +
-            wrappedLineCount(
-              `   ${index + 1} -${line}`,
-              Math.max(1, width - 2),
-            ),
-          0,
-        )
-        rows += newLines.reduce(
-          (total, line, index) =>
-            total +
-            wrappedLineCount(
-              `   ${index + 1} +${line}`,
-              Math.max(1, width - 2),
-            ),
-          0,
-        )
-      }
+      rows += oldLines.reduce(
+        (total, line, index) =>
+          total +
+          wrappedLineCount(`   ${index + 1} -${line}`, Math.max(1, width - 2)),
+        0,
+      )
+      rows += newLines.reduce(
+        (total, line, index) =>
+          total +
+          wrappedLineCount(`   ${index + 1} +${line}`, Math.max(1, width - 2)),
+        0,
+      )
       return rows
     }
     return rows + visibleOutputLineCount(entry.result.text, width, mode)
   }
-  let rows =
-    1 +
-    wrappedLineCount(
-      `${mode === 'screen-reader' ? 'Shell command: ' : '! '}${entry.item.command}`,
-      width,
+  const summaryRows = wrappedLineCount(shellSummary(entry, mode), width)
+  if (mode === 'normal') {
+    if (!entry.result || !entry.result.isError) return summaryRows
+    const output = combinedShellOutput(entry.result.stdout, entry.result.stderr)
+    return (
+      summaryRows +
+      (output
+        ? viewportOutputRows(output, width, mode).length
+        : wrappedLineCount('⎿ ', Math.max(1, width - 2)))
     )
+  }
+  let rows = 1 + summaryRows
   if (!entry.result) return rows
   const output = combinedShellOutput(entry.result.stdout, entry.result.stderr)
   const lines = contentLines(output)
@@ -739,7 +800,7 @@ function entryViewportRows(
 ): readonly string[] | undefined {
   if (entry.kind === 'read-summary')
     return textVisualRows(
-      `  Read ${entry.count} file${entry.count === 1 ? '' : 's'} (ctrl+o to expand)`,
+      `✓ Read ${entry.count} file${entry.count === 1 ? '' : 's'}`,
       width,
     )
   if (entry.kind === 'item') {
@@ -750,7 +811,7 @@ function entryViewportRows(
         '',
         ...(mode === 'screen-reader' ? [''] : []),
         ...textVisualRows(
-          `${mode === 'screen-reader' ? 'You: ' : '❯ '}${item.text}`,
+          `${mode === 'screen-reader' ? 'You: ' : 'you> '}${item.text}`,
           width,
         ),
       ]
@@ -758,11 +819,8 @@ function entryViewportRows(
       return [
         '',
         ...(mode === 'screen-reader' ? ['Praxis:'] : []),
-        ...textVisualRows(
-          item.text,
-          mode === 'screen-reader'
-            ? Math.max(1, width - 7)
-            : markdownContentWidth(width),
+        ...assistantMarkdownProjectionRows(item.text, width, mode).map(
+          (row) => row.text,
         ),
       ]
     if (item.kind === 'thinking') {
@@ -818,13 +876,21 @@ function entryViewportRows(
       width,
     )
   if (entry.kind === 'shell') {
-    const rows = [
-      '',
-      ...textVisualRows(
-        `${mode === 'screen-reader' ? 'Shell command: ' : '! '}${entry.item.command}`,
-        width,
-      ),
-    ]
+    const summaryRows = textVisualRows(shellSummary(entry, mode), width)
+    if (mode === 'normal') {
+      if (!entry.result || !entry.result.isError) return summaryRows
+      const output = combinedShellOutput(
+        entry.result.stdout,
+        entry.result.stderr,
+      )
+      return [
+        ...summaryRows,
+        ...(output
+          ? viewportOutputRows(output, width, mode)
+          : textVisualRows('⎿ ', Math.max(1, width - 2))),
+      ]
+    }
+    const rows = ['', ...summaryRows]
     if (!entry.result) return rows
     const output = combinedShellOutput(entry.result.stdout, entry.result.stderr)
     return [
@@ -840,13 +906,20 @@ function entryViewportRows(
     entry.result &&
     !entry.result.isError
   )
-    return textVisualRows('  Read 1 file (ctrl+o to expand)', width)
-  const rows = ['', ...textVisualRows(`⏺ ${toolHeading(entry)}`, width)]
-  if (
-    !['Bash', 'Read', 'Edit'].includes(entry.item.call.name) &&
-    entry.item.detail
-  )
-    rows.push(...textVisualRows(` ${entry.item.detail}`, width))
+    return textVisualRows('✓ Read 1 file', width)
+  const summaryRows = textVisualRows(toolSummary(entry, mode), width)
+  if (mode === 'normal') {
+    if (!entry.result || !entry.result.isError) return summaryRows
+    return [
+      ...summaryRows,
+      ...viewportOutputRows(
+        `Error: ${bounded(entry.result.text, 500)}`,
+        width,
+        mode,
+      ),
+    ]
+  }
+  const rows = ['', ...summaryRows]
   if (!entry.result) return rows
   if (entry.result.isError) {
     rows.push(
@@ -866,16 +939,14 @@ function entryViewportRows(
         Math.max(1, width - 2),
       ),
     )
-    if (mode !== 'normal') {
-      for (const [index, line] of oldLines.entries())
-        rows.push(
-          ...textVisualRows(`   ${index + 1} -${line}`, Math.max(1, width - 2)),
-        )
-      for (const [index, line] of newLines.entries())
-        rows.push(
-          ...textVisualRows(`   ${index + 1} +${line}`, Math.max(1, width - 2)),
-        )
-    }
+    for (const [index, line] of oldLines.entries())
+      rows.push(
+        ...textVisualRows(`   ${index + 1} -${line}`, Math.max(1, width - 2)),
+      )
+    for (const [index, line] of newLines.entries())
+      rows.push(
+        ...textVisualRows(`   ${index + 1} +${line}`, Math.max(1, width - 2)),
+      )
     return rows
   }
   rows.push(...viewportOutputRows(entry.result.text, width, mode))
@@ -928,6 +999,29 @@ function markdownViewportRows(
   return rows
 }
 
+function assistantMarkdownProjectionRows(
+  text: string,
+  width: number,
+  mode: TranscriptPresentationMode,
+): readonly MarkdownViewportRow[] {
+  const contentWidth =
+    mode === 'screen-reader'
+      ? Math.max(1, width - 7)
+      : markdownContentWidth(width)
+  const rows = markdownViewportRows(text, contentWidth)
+  if (mode === 'screen-reader') return rows
+  const first = rows[0] ?? {
+    text: '',
+    fenceBefore: false,
+    fenceAfter: false,
+    fenceLabel: 'code',
+  }
+  const prefixed = textVisualRows(`praxis> ${first.text.trimEnd()}`, width).map(
+    (rowText) => ({ ...first, text: rowText }),
+  )
+  return [...prefixed, ...rows.slice(1)]
+}
+
 /** Immutable visual-row index retained only for oversized presentation rows. */
 export interface TranscriptEntryViewportIndex {
   readonly entry: TranscriptPresentationEntry
@@ -943,13 +1037,10 @@ export function createTranscriptEntryViewportIndex(
   mode: TranscriptPresentationMode,
 ): TranscriptEntryViewportIndex | undefined {
   if (entry.kind === 'item' && entry.item.kind === 'assistant') {
-    const contentWidth =
-      mode === 'screen-reader'
-        ? Math.max(1, width - 7)
-        : markdownContentWidth(width)
-    const assistantMarkdownRows = markdownViewportRows(
+    const assistantMarkdownRows = assistantMarkdownProjectionRows(
       entry.item.text,
-      contentWidth,
+      width,
+      mode,
     )
     return {
       entry,
@@ -992,14 +1083,10 @@ function projectAssistantMarkdownSlice(
   const marginTop: 0 | 1 = startRow <= 0 ? 1 : 0
   const projectedChromeRows = marginTop + (mode === 'screen-reader' ? 1 : 0)
   const contentBudget = Math.max(1, limit - projectedChromeRows)
-  const contentWidth =
-    mode === 'screen-reader'
-      ? Math.max(1, width - 7)
-      : markdownContentWidth(width)
   const sourceRows =
     matchingViewportIndex(viewportIndex, source, width, mode)
       ?.assistantMarkdownRows ??
-    markdownViewportRows(sourceText ?? '', contentWidth)
+    assistantMarkdownProjectionRows(sourceText ?? '', width, mode)
   const contentStart = Math.min(
     Math.max(0, startRow - sourceChromeRows + (startRow > 0 ? 1 : 0)),
     sourceRows.length,

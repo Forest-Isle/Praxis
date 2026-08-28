@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from 'node:util'
 
+import type { QuietFrameCursor } from './quiet-frame.js'
 import type { TuiRow, TuiTextRole } from './tui-row-ir.js'
 
 export interface AnsiFrameWriter {
@@ -10,12 +11,17 @@ export interface AnsiFrame {
   readonly columns: number
   readonly rows: number
   readonly lines: readonly TuiRow[]
+  readonly cursor?: QuietFrameCursor
 }
 
 export interface AnsiFullscreenRendererOptions {
   readonly writer: AnsiFrameWriter
   readonly synchronizedOutput?: boolean
   readonly styles?: Partial<Record<TuiTextRole, string>>
+}
+
+interface ResolvedAnsiCursor extends QuietFrameCursor {
+  readonly row: number
 }
 
 const ALTERNATE_SCREEN_ENTER = '\u001b[?1049h'
@@ -38,6 +44,21 @@ function validateFrame(frame: AnsiFrame): void {
   }
   if (!Array.isArray(frame.lines)) {
     throw new TypeError('ANSI frame lines must be an array')
+  }
+  if (frame.cursor !== undefined) {
+    if (
+      frame.cursor === null ||
+      typeof frame.cursor !== 'object' ||
+      typeof frame.cursor.rowKey !== 'string' ||
+      frame.cursor.rowKey.length === 0 ||
+      !Number.isFinite(frame.cursor.column) ||
+      !Number.isInteger(frame.cursor.column) ||
+      frame.cursor.column < 0
+    ) {
+      throw new TypeError(
+        'ANSI frame cursor must have a non-empty row key and non-negative integer column',
+      )
+    }
   }
 }
 
@@ -76,6 +97,7 @@ export class AnsiFullscreenRenderer {
   #styles: Partial<Record<TuiTextRole, string>> | undefined
   #mounted = false
   #previousLines: readonly string[] = []
+  #previousCursor: ResolvedAnsiCursor | undefined
 
   constructor(options: AnsiFullscreenRendererOptions) {
     this.#writer = options.writer
@@ -110,21 +132,46 @@ export class AnsiFullscreenRenderer {
     const changed =
       lines.length !== previousLines.length ||
       lines.some((line, index) => line !== previousLines[index])
-    if (!changed) return
+    const cursorRow = frame.cursor
+      ? frame.lines.findIndex((row) => row.key === frame.cursor?.rowKey)
+      : -1
+    const nextCursor =
+      cursorRow >= 0 && frame.cursor !== undefined
+        ? {
+            rowKey: frame.cursor.rowKey,
+            column: Math.min(frame.cursor.column, frame.columns - 1),
+            row: cursorRow,
+          }
+        : undefined
+    const cursorChanged =
+      nextCursor?.rowKey !== this.#previousCursor?.rowKey ||
+      nextCursor?.column !== this.#previousCursor?.column ||
+      nextCursor?.row !== this.#previousCursor?.row
+    if (!changed && !cursorChanged) return
 
     if (this.#synchronizedOutput) this.#writer.write(SYNCHRONIZED_BEGIN)
     try {
-      const commonLength = Math.max(lines.length, previousLines.length)
-      for (let index = 0; index < commonLength; index += 1) {
-        const line = lines[index]
-        if (line !== undefined) {
-          if (line === previousLines[index]) continue
-          this.#writer.write(`\u001b[${index + 1};1H\u001b[2K${line}`)
-        } else {
-          this.#writer.write(`\u001b[${index + 1};1H\u001b[2K`)
+      if (changed) {
+        if (this.#previousCursor !== undefined || nextCursor !== undefined)
+          this.#writer.write(HIDE_CURSOR)
+        const commonLength = Math.max(lines.length, previousLines.length)
+        for (let index = 0; index < commonLength; index += 1) {
+          const line = lines[index]
+          if (line !== undefined) {
+            if (line === previousLines[index]) continue
+            this.#writer.write(`\u001b[${index + 1};1H\u001b[2K${line}`)
+          } else {
+            this.#writer.write(`\u001b[${index + 1};1H\u001b[2K`)
+          }
         }
+        this.#previousLines = lines
       }
-      this.#previousLines = lines
+      if (nextCursor !== undefined) {
+        this.#writer.write(`\u001b[${cursorRow + 1};${nextCursor.column + 1}H`)
+        this.#writer.write(SHOW_CURSOR)
+      } else if (this.#previousCursor !== undefined)
+        this.#writer.write(HIDE_CURSOR)
+      this.#previousCursor = nextCursor
     } finally {
       if (this.#synchronizedOutput) this.#writer.write(SYNCHRONIZED_END)
     }
@@ -139,6 +186,7 @@ export class AnsiFullscreenRenderer {
     } finally {
       this.#mounted = false
       this.#previousLines = []
+      this.#previousCursor = undefined
     }
   }
 }

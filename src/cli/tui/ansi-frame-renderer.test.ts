@@ -58,6 +58,81 @@ describe('AnsiFullscreenRenderer', () => {
     expect(output.join('')).toContain('\u001b[?2026l')
   })
 
+  it('moves or hides the cursor without redrawing unchanged rows', () => {
+    const output: string[] = []
+    const renderer = new AnsiFullscreenRenderer({
+      writer: { write: (x) => output.push(x) },
+    })
+    renderer.mount()
+    renderer.draw({
+      ...frame([row('first'), row('second')]),
+      cursor: { rowKey: 'first', column: 2 },
+    })
+    output.length = 0
+
+    renderer.draw({
+      ...frame([row('first'), row('second')]),
+      cursor: { rowKey: 'first', column: 3 },
+    })
+    expect(output.join('')).toBe('\u001b[1;4H\u001b[?25h')
+    expect(output.join('')).not.toContain('\u001b[2K')
+
+    output.length = 0
+    renderer.draw({
+      ...frame([row('first'), row('second')]),
+      cursor: { rowKey: 'first', column: 3 },
+    })
+    expect(output).toHaveLength(0)
+
+    renderer.draw({
+      ...frame([row('first'), row('second')]),
+      cursor: { rowKey: 'missing', column: 3 },
+    })
+    expect(output.join('')).toBe('\u001b[?25l')
+    expect(output.join('')).not.toContain('\u001b[2K')
+  })
+
+  it('tracks cursor physical rows, clamps columns, and restores it after writes', () => {
+    const output: string[] = []
+    const renderer = new AnsiFullscreenRenderer({
+      writer: { write: (x) => output.push(x) },
+    })
+    const keyed = (key: string): TuiRow => ({
+      key,
+      segments: [{ text: 'same', role: 'body' }],
+      height: 1,
+    })
+    renderer.mount()
+    renderer.draw({
+      ...frame([keyed('a'), keyed('b')], 4),
+      cursor: { rowKey: 'a', column: 99 },
+    })
+    expect(output.join('')).toContain('\u001b[1;4H\u001b[?25h')
+
+    output.length = 0
+    renderer.draw({
+      ...frame([keyed('b'), keyed('a')], 4),
+      cursor: { rowKey: 'a', column: 99 },
+    })
+    expect(output.join('')).toBe('\u001b[2;4H\u001b[?25h')
+    expect(output.join('')).not.toContain('\u001b[2K')
+
+    output.length = 0
+    renderer.draw({
+      ...frame(
+        [
+          keyed('b'),
+          { ...keyed('a'), segments: [{ text: 'next', role: 'body' }] },
+        ],
+        4,
+      ),
+      cursor: { rowKey: 'a', column: 1 },
+    })
+    expect(output.join('')).toMatch(
+      /^\u001b\[\?25l\u001b\[2;1H\u001b\[2Knext\u001b\[2;2H\u001b\[\?25h$/u,
+    )
+  })
+
   it('erases stale rows and sanitizes, styles, and clips text', () => {
     const output: string[] = []
     const renderer = new AnsiFullscreenRenderer({
@@ -95,6 +170,14 @@ describe('AnsiFullscreenRenderer', () => {
     })
     renderer.mount()
     expect(() => renderer.draw(frame([], 0))).toThrow(TypeError)
+    output.length = 0
+    expect(() =>
+      renderer.draw({
+        ...frame([]),
+        cursor: { rowKey: 'row', column: Number.NaN },
+      }),
+    ).toThrow(TypeError)
+    expect(output).toHaveLength(0)
     let fail = true
     const failing = new AnsiFullscreenRenderer({
       writer: {

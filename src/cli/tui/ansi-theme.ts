@@ -1,4 +1,5 @@
 import type { TuiSemanticTheme, TuiTextRole, TuiTextStyle } from './theme.js'
+import type { TuiTextRole as RowIrTextRole } from './tui-row-ir.js'
 
 const ANSI_COLORS: Readonly<Record<string, number>> = {
   black: 0,
@@ -71,15 +72,36 @@ function styleSequence(style: TuiTextStyle): string | undefined {
 
 export function resolveAnsiTextStyles(
   theme: Pick<TuiSemanticTheme, 'text' | 'noColor' | 'screenReader'>,
-): Partial<Record<TuiTextRole, string>> {
+): Partial<Record<RowIrTextRole | 'link', string>> {
   if (theme.noColor || theme.screenReader) return {}
-  const styles: Partial<Record<TuiTextRole, string>> = {}
-  for (const [role, style] of Object.entries(theme.text) as [
+  const styles: Partial<Record<RowIrTextRole | 'link', string>> = {}
+  const roleMap: Readonly<Record<RowIrTextRole, TuiTextRole>> = {
+    body: 'body',
+    heading: 'heading',
+    muted: 'muted',
+    accent: 'focusMarker',
+    success: 'success',
+    warning: 'warning',
+    error: 'error',
+    tool: 'info',
+    selection: 'focusMarker',
+    input: 'inputMarker',
+    diffAdded: 'diffAdded',
+    diffRemoved: 'diffRemoved',
+  }
+  for (const [role, semanticRole] of Object.entries(roleMap) as [
+    RowIrTextRole,
     TuiTextRole,
-    TuiTextStyle,
   ][]) {
+    const style =
+      (theme.text[semanticRole] as TuiTextStyle | undefined) ??
+      (theme.text[role as unknown as TuiTextRole] as TuiTextStyle | undefined)
+    if (style === undefined) continue
     const sequence = styleSequence(style)
     if (sequence !== undefined) styles[role] = sequence
   }
+  const link =
+    theme.text.link === undefined ? undefined : styleSequence(theme.text.link)
+  if (link !== undefined) styles.link = link
   return styles
 }
