@@ -184,7 +184,7 @@ describe('projectTuiView', () => {
       resume: true,
     })
     const full = projectTranscriptPresentation(history, 'normal')
-    expect(view.transcriptEntries).toEqual([full.at(-1)])
+    expect(view.transcriptEntries).toEqual(full.slice(-2))
     expect(full.map((entry) => entry.key)).toEqual(
       projectTranscriptPresentation(history, 'normal').map(
         (entry) => entry.key,

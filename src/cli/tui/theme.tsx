@@ -534,6 +534,7 @@ function resolveRawPalette(
         profile === 'dark-daltonized' ||
         profile === 'dark-ansi'
   const ansiOnly = profile.endsWith('-ansi')
+  const basicColor = terminalColorCapability(environment) === 'ansi16'
   const daltonized = profile.endsWith('-daltonized')
   const syntaxBase: TuiSyntaxPalette = ansiOnly
     ? {
@@ -585,15 +586,26 @@ function resolveRawPalette(
     ansiOnly,
     syntaxHighlightingDisabled,
     sessionColors,
-    brand: ansiOnly ? 'redBright' : '#D97757',
-    accent: ansiOnly ? 'redBright' : '#D97757',
-    info: ansiOnly ? 'cyanBright' : dark ? '#5fd7ff' : '#005f87',
-    link: ansiOnly ? 'blueBright' : dark ? '#5fafff' : '#005faf',
-    error: ansiOnly ? 'redBright' : dark ? '#ff5f5f' : '#af0000',
-    success: ansiOnly ? 'greenBright' : dark ? '#5fd75f' : '#008700',
-    warning: ansiOnly ? 'yellowBright' : dark ? '#ffd75f' : '#875f00',
-    muted: ansiOnly ? (dark ? 'white' : 'black') : dark ? '#a8a8a8' : '#585858',
-    selectionText: dark ? 'black' : 'white',
+    brand: ansiOnly || basicColor ? 'cyanBright' : dark ? '#5EE6B5' : '#087F5B',
+    accent:
+      ansiOnly || basicColor ? 'cyanBright' : dark ? '#5EE6B5' : '#087F5B',
+    info: ansiOnly || basicColor ? 'cyanBright' : dark ? '#9AA7B8' : '#475467',
+    link: ansiOnly || basicColor ? 'cyanBright' : dark ? '#5EE6B5' : '#087F5B',
+    error: ansiOnly || basicColor ? 'redBright' : dark ? '#FF6B6B' : '#C92A2A',
+    success:
+      ansiOnly || basicColor ? 'greenBright' : dark ? '#5EE6B5' : '#087F5B',
+    warning:
+      ansiOnly || basicColor ? 'yellowBright' : dark ? '#F2C14E' : '#9A6700',
+    muted:
+      ansiOnly || basicColor
+        ? dark
+          ? 'white'
+          : 'black'
+        : dark
+          ? '#8B949E'
+          : '#667085',
+    selectionText:
+      ansiOnly || basicColor ? 'cyanBright' : dark ? '#5EE6B5' : '#087F5B',
     syntaxTheme: ansiOnly ? 'ansi' : dark ? 'Monokai Extended' : 'GitHub',
     syntax: syntaxBase,
   }
@@ -731,7 +743,6 @@ function buildSemanticTheme(
   const successColor = palette.success
   const warningColor = palette.warning
   const mutedColor = palette.muted
-  const selectionTextColor = palette.selectionText
   const syntaxPalette = palette.syntax
   const sessionColors = palette.sessionColors
   const color = (value: string): string | undefined =>
@@ -745,12 +756,10 @@ function buildSemanticTheme(
     }),
     heading: semanticText(undefined, options, { bold: true }),
     navigation: semanticText(color(focusColor), options, { bold: true }),
-    selectedRow: semanticText(color(selectionTextColor), options, {
-      ...(suppressColor ? {} : { backgroundColor: focusColor }),
+    selectedRow: semanticText(color(focusColor), options, {
       bold: true,
     }),
-    selectedTab: semanticText(color(selectionTextColor), options, {
-      ...(suppressColor ? {} : { backgroundColor: focusColor }),
+    selectedTab: semanticText(color(focusColor), options, {
       bold: true,
     }),
     focusMarker: semanticText(color(focusColor), options, { bold: true }),
@@ -772,15 +781,11 @@ function buildSemanticTheme(
     const resolved = color(value)
     return resolved === undefined ? {} : { borderColor: resolved }
   }
-  const background = (value: string): TuiSurfaceStyle => {
-    const resolved = color(value)
-    return resolved === undefined ? {} : { backgroundColor: resolved }
-  }
   const surface = {
     neutralBorder: semanticSurface(border(mutedColor), options),
     separator: semanticSurface(border(mutedColor), options),
-    selectedRow: semanticSurface(background(focusColor), options),
-    selectedTab: semanticSurface(background(focusColor), options),
+    selectedRow: semanticSurface({}, options),
+    selectedTab: semanticSurface({}, options),
     input: semanticSurface(border(focusColor), options),
     decision: semanticSurface(border(warningColor), options),
     error: semanticSurface(border(errorColor), options),

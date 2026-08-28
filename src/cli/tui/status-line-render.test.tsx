@@ -3,14 +3,61 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
+import { Text } from 'ink'
 import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createClaudeStatusLineInput, StatusLine } from './status-line.js'
+import {
+  createClaudeStatusLineInput,
+  useClaudeStatusLine,
+  type UseClaudeStatusLineOptions,
+} from './status-line.js'
 
 afterEach(cleanup)
 
-describe('StatusLine', () => {
+function HookProbe(props: UseClaudeStatusLineOptions) {
+  const state = useClaudeStatusLine(props)
+  return <Text>{`${state.padding}|${state.text ?? ''}`}</Text>
+}
+
+describe('useClaudeStatusLine', () => {
+  it('publishes configured output and padding from the lifecycle hook', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-hook-'))
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'workspace')
+    await Promise.all([mkdir(configRoot), mkdir(cwd)])
+    await writeFile(
+      join(configRoot, 'settings.json'),
+      JSON.stringify({
+        statusLine: {
+          type: 'command',
+          command: 'printf hook-output',
+          padding: 3,
+        },
+      }),
+    )
+    const input = createClaudeStatusLineInput({
+      configRoot,
+      cwd,
+      projectDir: cwd,
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      version: '2.1.208',
+      outputStyle: 'default',
+      additionalDirectories: [],
+    })
+    const app = render(
+      <HookProbe
+        configRoot={configRoot}
+        cwd={cwd}
+        input={input}
+        refreshKey="hook"
+      />,
+    )
+    await vi.waitFor(() => expect(app.lastFrame()).toBe('3|hook-output'), {
+      timeout: 3_000,
+    })
+  })
+
   it('renders configured output and hot reloads shared settings', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-statusline-ui-'))
     const configRoot = join(root, 'config')
@@ -33,7 +80,7 @@ describe('StatusLine', () => {
       additionalDirectories: [],
     })
     const app = render(
-      <StatusLine
+      <HookProbe
         configRoot={configRoot}
         cwd={cwd}
         input={input}
@@ -78,7 +125,7 @@ describe('StatusLine', () => {
       additionalDirectories: [],
     })
     const app = render(
-      <StatusLine
+      <HookProbe
         configRoot={configRoot}
         cwd={cwd}
         input={input}

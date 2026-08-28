@@ -7,20 +7,23 @@ these budgets.
 
 ## Budgets
 
-| Path                       | Fixture                                                                       | Budget                                         |
-| -------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------- |
-| CLI process startup        | `praxis --version`, seven measured processes after one warmup                 | p95 <= 1,000 ms                                |
-| Session discovery          | 500 native session files, five measured scans after one warmup                | p95 <= 500 ms                                  |
-| Transcript load            | 20,000 JSONL entries and at least 8 MiB, five measured loads after one warmup | p95 <= 750 ms                                  |
-| Transcript memory          | same large transcript, forced GC before and after retained load               | heap growth <= 96 MiB                          |
-| Transcript append          | three leased tail appends to same large transcript                            | p95 <= 750 ms                                  |
-| Syntax rendering           | 200 transcript responses containing 4,000 highlighted TypeScript lines        | p95 <= 1,500 ms                                |
-| TUI cold projection        | 120,000 retained assistant entries, deterministic local fixture               | median <= 1,000 ms                             |
-| TUI retained append        | Fullscreen tail append and Read-result grouping on 120,000 retained entries   | p95 <= 50 ms                                   |
-| TUI retained scroll        | 120,000-entry oldest window and one 120,000-row entry's middle window         | p95 <= 25 ms                                   |
-| TUI retained heap          | 120,000-entry retained projection, forced GC before and after                 | growth <= 128 MiB                              |
-| Interactive render cadence | Fullscreen/classic/screen-reader Ink frames with the presentation environment | max 30 FPS                                     |
-| Fullscreen PTY writes      | Deterministic 120x40→80x24 resize fixture with a 48-update burst              | <= 24 committed frames and <= 18,000 raw bytes |
+| Path                                | Fixture                                                                                   | Budget                                         |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| CLI process startup                 | `praxis --version`, seven measured processes after one warmup                             | p95 <= 1,000 ms                                |
+| Session discovery                   | 500 native session files, five measured scans after one warmup                            | p95 <= 500 ms                                  |
+| Transcript load                     | 20,000 JSONL entries and at least 8 MiB, five measured loads after one warmup             | p95 <= 750 ms                                  |
+| Transcript memory                   | same large transcript, forced GC before and after retained load                           | heap growth <= 96 MiB                          |
+| Transcript append                   | three leased tail appends to same large transcript                                        | p95 <= 750 ms                                  |
+| Syntax rendering                    | 200 transcript responses containing 4,000 highlighted TypeScript lines                    | p95 <= 1,500 ms                                |
+| TUI cold projection                 | 120,000 retained assistant entries, deterministic local fixture                           | median <= 1,000 ms                             |
+| TUI retained append                 | Fullscreen tail append and Read-result grouping on 120,000 retained entries               | p95 <= 50 ms                                   |
+| TUI retained scroll                 | 120,000-entry oldest window and one 120,000-row entry's middle window                     | p95 <= 25 ms                                   |
+| TUI retained heap                   | 120,000-entry retained projection, forced GC before and after                             | growth <= 128 MiB                              |
+| Interactive render cadence          | Fullscreen/classic/screen-reader Ink frames with the presentation environment             | max 30 FPS                                     |
+| Fullscreen PTY writes               | Deterministic 120x40→80x24 resize fixture with a 48-update burst                          | <= 24 committed frames and <= 18,000 raw bytes |
+| Quiet Operator input echo           | 120x40 conversation fixture, one mounted in-memory ANSI renderer, 12 warmups + 40 samples | p95 < 50 ms                                    |
+| Quiet Operator normal frame         | Same fixture, new mounted renderer per sample, representative truecolor rows              | p95 < 16.7 ms                                  |
+| Quiet Operator low-capability frame | Same fixture, new mounted renderer per sample, ANSI16-compatible rows                     | p95 < 33 ms                                    |
 
 The transcript fixture is currently about 11 MiB. The gate also asserts exact
 entry and session counts and the final long-render marker, so an accidentally
@@ -41,6 +44,17 @@ and a real terminal resize; it must settle on the final 80x24 marker without
 more than 24 committed frame markers or 18,000 raw terminal bytes. These are
 fixture-specific ceilings with headroom for the deterministic Ink redraw
 sequence, not estimates derived from product output at runtime.
+
+The Quiet Operator frame gate uses a deterministic 120-column by 40-row
+conversation containing stable semantic transcript rows, composer text/cursor,
+and status markers. It times production `projectQuietFrame` plus
+`AnsiFullscreenRenderer.draw` with an in-memory writer: input echo reuses one
+mounted renderer and must update only dirty rows, while normal and
+low-capability full frames mount a fresh renderer for each sample. Each path
+uses at least 12 warmups and 40 measured samples, checks representative
+transcript/composer/status output, and enforces the strict input echo, truecolor
+frame, and ANSI16 frame p95 budgets above. No PTY, provider, network, or sleep
+is involved.
 
 ## Running the gate
 

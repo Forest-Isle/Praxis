@@ -14,13 +14,6 @@ const injectionMs = Number.parseFloat(
 if (!Number.isFinite(injectionMs) || injectionMs < 0)
   throw new Error('PRAXIS_PROJECTION_INJECT_MS must be non-negative')
 
-function busyWait(ms) {
-  const deadline = performance.now() + ms
-  while (performance.now() < deadline) {
-    // Deliberately consume synchronous time for the regression harness.
-  }
-}
-
 const fixtures = sizes.map((size) =>
   Array.from({ length: size }, (_, index) => ({
     kind: 'assistant',
@@ -45,7 +38,6 @@ for (let fixtureIndex = 0; fixtureIndex < sizes.length; fixtureIndex += 1) {
       scrollOffset: 0,
       detailedTranscript: false,
     })
-    if (injectionMs > 0 && size === 120_000) busyWait(injectionMs)
     const visibleRows = transcriptPresentationLineCount(
       result.transcriptEntries,
       100,
@@ -60,7 +52,8 @@ for (let fixtureIndex = 0; fixtureIndex < sizes.length; fixtureIndex += 1) {
       )
     )
       throw new Error(`Projection lost newest marker for ${size}`)
-    return performance.now() - startedAt
+    const durationMs = performance.now() - startedAt
+    return durationMs + (size === 120_000 ? injectionMs : 0)
   }
   for (let index = 0; index < warmupSampleCount; index += 1) project()
   if (typeof globalThis.gc === 'function') globalThis.gc()

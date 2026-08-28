@@ -19,6 +19,8 @@ authoritative CLI surface.
   and executable evidence.
 - [Claude-style TUI Parity](TUI_PARITY.md) — black-box visual rules,
   presentation components, interactions, and verification gates.
+- [Quiet Operator Spec](TUI_REDESIGN_SPEC.md) — C+ TUI visual language,
+  interaction grammar, architecture, and stability budgets.
 - [Agent Runtime Contract](RUNTIME_CONTRACT.md) — runtime states, ports,
   persistence, and error behavior.
 - [Native Subagent Contract](SUBAGENT_CONTRACT.md) — foreground/background

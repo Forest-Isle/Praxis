@@ -8,8 +8,36 @@ import { describe, expect, it } from 'vitest'
 import {
   createClaudeStatusLineInput,
   executeClaudeStatusLine,
+  formatClaudeStatusLineState,
   loadClaudeStatusLineSetting,
 } from './status-line.js'
+
+describe('formatClaudeStatusLineState', () => {
+  it('applies equal normal padding around configured text', () => {
+    expect(formatClaudeStatusLineState({ text: 'status', padding: 2 })).toBe(
+      '  status  ',
+    )
+  })
+
+  it('normalizes negative and fractional padding', () => {
+    expect(formatClaudeStatusLineState({ text: 'status', padding: -2 })).toBe(
+      'status',
+    )
+    expect(formatClaudeStatusLineState({ text: 'status', padding: 2.9 })).toBe(
+      '  status  ',
+    )
+  })
+
+  it('returns undefined when configured text is absent', () => {
+    expect(formatClaudeStatusLineState({ padding: 2 })).toBeUndefined()
+  })
+
+  it('bounds huge padding by the available width', () => {
+    expect(
+      formatClaudeStatusLineState({ text: 'status', padding: 1_000_000 }, 10),
+    ).toBe('    status    ')
+  })
+})
 
 describe('Claude status line', () => {
   it('merges shared settings sources and honors disableAllHooks', async () => {

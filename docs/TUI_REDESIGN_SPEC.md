@@ -1,153 +1,209 @@
-# Praxis TUI Hybrid Redesign Spec
+# Praxis TUI C+ Quiet Operator Spec
 
-## 目标
+## Goal
 
-将 Praxis 交互 TUI 改造成高性能、简洁美观、稳定易用的本地 Agent 工作台，
-同时保持现有命令、快捷键、权限语义、screen-reader 输出、Claude 兼容行为和
-native append-only JSONL transcript 不变。
+Rebuild the interactive Praxis TUI as a quiet, high-density local operator
+surface: visually restrained, fast under long transcripts and streaming, stable
+through terminal lifecycle changes, and easy to use without learning decorative
+chrome.
 
-非目标：加入账户、组织、RBAC、远程控制、IDE/Desktop surface、遥测控制面，
-或把 Claude Code 源码引入实现。
+Preserve every existing CLI command, keybinding action, runtime event,
+permission outcome, provider capability, session lifecycle, screen-reader
+meaning, Claude compatibility behavior, and native append-only JSONL transcript.
 
-## 方案选择与理由
+## Selected Direction
 
-采用 Hybrid 双渲染器，按 A → B 渐进迁移：
+Use **C+ Quiet Operator** as the single visual language for both renderers:
 
-- 共享无框架 TuiKernel、语义 ScreenModel、Row IR 和布局引擎。
-- Ink renderer 继续负责 classic、screen-reader、测试和能力不足时的 fallback。
-- ANSI fullscreen renderer 负责交互 TTY 的高性能 cell/row diff 绘制。
+- linear `you>` / `praxis>` conversation instead of cards;
+- no decorative panels, persistent sidebar, glow, or ornamental borders;
+- successful tools collapse to one stable row, running tools keep one stable
+  status row, and failures disclose the useful error detail;
+- a minimal composer and one concise status line;
+- dense text lists for Team, Tasks, Audit, settings, and diagnostics;
+- near-monochrome text with mint accent, amber warning, and red error;
+- English-only permission settings and permission decisions;
+- `❯` marks selection; `↑/↓` moves; `Enter` confirms; `Esc` cancels.
 
-理由：仅拆分 Ink 可降低风险但保留大范围 reconciliation；全量重写会破坏
-现有兼容性和可访问性。Hybrid 可以先验证行为不变，再按性能证据替换 fullscreen。
-
-## 架构设计
+## Architecture
 
 ```text
-RuntimeEvent / KeyInput
-          ↓
-       TuiStore
-  reducer + effect runner + focus stack + lifecycle
-          ↓
-   Semantic ScreenModel
-          ↓
-     Layout / Row IR
-          ↓
- Ink classic/sr  │  ANSI fullscreen
+Runtime state / input
+        ↓
+interactive.tsx controller
+        ↓
+TuiScreenModel (semantic application state)
+        ↓
+Presentation projection
+  transcript viewport helpers
+  surface serializers
+  final QuietFrame composition
+        ↓
+ANSI fullscreen adapter │ Ink classic / screen-reader adapter
 ```
 
-### TuiKernel
+`interactive.tsx` owns runtime orchestration, input routing, and adapter
+selection only. It must not keep independent visual JSX branches for each
+surface.
 
-`TuiKernel` 位于 `src/cli/tui/kernel/`，不依赖 React 或 Ink。状态域：
+The presentation projection is framework-free and collectively owns responsive
+presentation, stable semantic row identity, disclosure, and adapter-neutral
+content. Transcript viewport helpers own transcript row windowing and
+transcript tool success/running/error disclosure. Surface serializers own the
+selected surface semantics, stable surface row keys, English permission
+labels, selection markers, and density-specific optional detail. Final
+`QuietFrame` composition owns final region ordering, viewport row budgeting,
+identity/chrome rows, focus/composer/status placement, sanitization, clipping,
+and cursor metadata.
 
-- `session`：会话身份、resume/fork、cwd、模型和 effort。
-- `transcript`：原始 `TranscriptItem[]`、增量 revision、可见窗口。
-- `composer`：文本、cursor、shell/vim 模式、clipboard image marker。
-- `overlays`：palette、picker、permission、question、plan、MCP、dashboard。
-- `runtime`：busy、streaming、usage、cost、theme、renderer 能力。
-- `viewport`：columns、rows、scroll offset、resize revision。
-- `notifications`：错误、提示、外部编辑器和终端通知。
+ANSI and Ink consume only the completed `QuietFrame`. They may translate
+styles, cursor placement, and accessibility wording, but may not invent
+content, information architecture, or permission semantics.
 
-Reducer 只做同步、纯状态转换。service、文件、剪贴板、外部编辑器、MCP、
-通知和 renderer 生命周期全部由可取消的 effect runner 执行，并带有 generation
-token，过期结果不得提交。
+## Frame Contract
 
-### Row IR 与布局
+A frame contains ordered semantic rows plus cursor metadata. Each row has a
+stable key, region, semantic role, plain text segments, and an optional
+screen-reader label. Rows never contain terminal control sequences.
 
-布局引擎是唯一的换行和裁剪实现，取代“估算一套、渲染一套”的重复逻辑：
+Required regions, in order:
 
-```ts
-type TuiRow = {
-  key: string
-  segments: readonly { text: string; role: TuiTextRole }[]
-  height: number
-  source?: string
-}
+1. optional compact identity for a new or resumed session;
+2. transcript and active stream;
+3. one focused surface: permission/decision, secondary view, or composer;
+4. status.
+
+Responsive density is deterministic:
+
+- `>= 100`: full metadata and useful descriptions;
+- `80–99`: standard layout;
+- `60–79`: omit secondary descriptions and redundant hints;
+- `40–59`: one-column compact rows;
+- `< 40`: preserve prompt, selection, decision, error, and status meaning only.
+
+Row keys derive from transcript identity, surface identity plus item identity,
+or stable chrome identity. Resize, selection movement, streaming append, and
+status updates must not churn unrelated keys.
+
+## Visual Language
+
+- Background is terminal-native; normal text is neutral gray/white.
+- Mint is limited to Praxis identity, active focus, and positive completion.
+- Amber represents caution or waiting; red represents failure or destructive
+  impact. Color never carries meaning alone.
+- Headings use weight and spacing, not boxes.
+- Separators appear only where two adjacent regions would otherwise be
+  ambiguous.
+- Animation is limited to low-frequency text state changes. No spinner may
+  cause full-frame redraw or unstable row width.
+- Screen-reader output provides textual accessible labels. `NO_COLOR` suppresses
+  terminal styling only; it preserves the terminal-safe `❯` selection marker.
+
+Transcript grammar:
+
+```text
+you> explain this diff
+praxis> I will inspect the changed module.
+✓ Read  src/core/example.ts
+… Bash  npm test
+! Edit  src/core/example.ts
+  permission denied: workspace rule
 ```
 
-Row IR 负责 grapheme 宽度、Markdown/diff/tool output、截断标记、responsive
-断点和 viewport slice。Row key 必须由源 transcript identity 或明确的临时事件
-identity 派生，resize 和 append 不得导致无意义的 key 变化。
+Successful tool output is hidden in normal mode and available in Audit mode.
+Failed tool output is shown with a bounded useful excerpt in normal mode and
+full projected detail in Audit mode. Active thinking is muted and only shown
+when the existing detailed-thinking control allows it.
 
-现有 `transcript-window-model.ts` 的持久化树、`transcript-viewport.ts` 的
-Unicode 宽度能力和 `streaming-frame-buffer.ts` 的 33 ms 合并策略继续复用，
-但输出统一转换为 Row IR。
+## Permission and Decision UX
 
-### 视觉系统
+All permission-management and permission-decision copy is English.
 
-- Logo/glyph：采用原创的「P-loop + spark」标识。几何环形表达抽象 `P` 和执行
-  路径，下方斜带表达推进，四角火花表达智能响应。默认使用黑白单色；彩色
-  主题使用 indigo/cyan；ANSI16、ASCII 和 no-color 使用稳定的简化 glyph。
-  PNG 只用于文档/应用图标预览，TUI 不依赖位图。
-- 语义 token：`body`、`heading`、`accent`、`muted`、`success`、`warning`、
-  `error`、`tool`、`selection`、`input`、`diffAdded`、`diffRemoved`。
-- primitive token：颜色、间距、边框、glyph、圆角和动画级别。
-- 默认黑白/灰阶加单一品牌强调色；所有颜色满足高对比度目标，禁止组件内硬编码。
-- Unicode glyph 必须有 ANSI16、ASCII 和 no-color fallback。
-- transcript 默认无边框；dialog、危险操作、选择器才使用边框。
-- 顶部显示 session/cwd/model/effort/status；底部显示 composer 和少量状态 chip。
+Every choice surface uses the same linear grammar:
 
-响应式断点：≥100 列完整信息，80–99 常规布局，60–79 隐藏次要提示，
-40–59 单列压缩，<40 只保留核心输入/状态语义。
+```text
+Allow Bash to run `npm test`?
 
-### 输入与焦点
+❯ Allow once
+  Always allow for this project
+  Deny
 
-统一 `Action` 枚举和 `FocusStack`：`composer → overlay → dialog`。
+↑/↓ select  Enter confirm  Esc cancel
+```
 
-- `Esc`：关闭当前焦点层；连续退出行为保持现有语义。
-- `Enter`：提交或确认当前选择。
-- `Tab`：在字段、操作和补充输入之间切换。
-- `/`：命令 palette；`@`：文件/agent picker；`!`：shell mode。
-- 现有 keybindings 文件、动作名和快捷键保持兼容；新增快捷键只能作为别名。
+Number, `y`/`n`, Tab-feedback, and screen-reader shortcuts remain compatible
+where they already exist, but the visible default teaches only arrows, Enter,
+and Esc. Destructive choices include a short amber/red consequence line.
+Permission queue order, provenance, persistence destinations, and returned
+approval values remain unchanged.
 
-## 数据流
+## Data Flow and Lifecycle
 
-1. `RuntimeEvent` 进入 kernel reducer，streaming delta 先进入 frame buffer。
-2. reducer 生成新的语义状态和 dirty region，不直接创建 ReactElement 或 ANSI 字符串。
-3. selector 按区域读取状态，布局引擎生成受宽度、模式和 viewport 约束的 Row IR。
-4. renderer 仅绘制可见 rows：Ink 使用现有测试适配器，ANSI 只提交 dirty rows/cells。
-5. 所有 transcript 写入仍由 application/persistence 负责；TUI 只保留显示 projection。
+1. Runtime events update existing controller state and transcript projection.
+2. `TuiScreenModel` selects exactly one foreground surface.
+3. The presentation projection composes transcript, surface, composer, status,
+   and display metadata into stable semantic rows for the current viewport and
+   accessibility mode.
+4. The selected adapter renders only the frame it receives.
+5. ANSI performs row/cell diff output; Ink renders the same ordered rows.
 
-## 错误处理与生命周期
+Renderer failure falls back to Ink without changing controller state or
+transcript data. Mount, suspend, resume, resize, failure, and exit preserve
+exactly-once raw-mode, cursor, alternate-screen, and listener cleanup.
 
-- kernel 生命周期为 `mount → active → suspending → closing → closed`，每个退出路径
-  exactly-once 恢复 raw mode、cursor、alternate screen 和 resize listener。
-- effect 统一使用 `AbortSignal`；卸载、换 session、换 cwd、换 provider 或 renderer
-  时取消旧 effect，旧 generation 的结果丢弃。
-- ANSI renderer 初始化失败、终端能力不足或绘制异常时回退 Ink classic，并保留
-  当前内存状态；不得修改 transcript。
-- 布局异常只影响当前 surface，显示可读的 warning；权限拒绝、服务错误和持久化
-  错误沿现有语义进入 transcript/通知路径。
-- screen-reader 和 no-color 路径不依赖颜色、动画、边框或光标位置表达语义。
+Screen-reader mode always uses Ink, linearizes every meaningful label, does not
+depend on cursor placement or color, and preserves current input announcements.
 
-## 性能预算
+## Performance and Stability Budgets
 
-- 输入回显 p95 < 50 ms。
-- ANSI fullscreen 普通帧 p95 < 16.7 ms；低能力终端至少 < 33 ms。
-- 120k transcript 冷投影 < 100 ms，单条 append < 5 ms。
-- streaming 不丢字、不重复、不倒序；resize 在 100 ms 内稳定。
-- 可见行之外不得创建视觉组件；Row/Markdown/Syntax cache 使用有上限的 LRU。
+- input echo p95 `< 50 ms`;
+- normal fullscreen frame p95 `< 16.7 ms`, low-capability terminal `< 33 ms`;
+- 120k-item transcript cold projection median `<1000 ms`, with doubling ratios
+  `<=3.25`;
+- sub-100 ms to low-hundreds-ms local measurements are performance targets and
+  evidence, not normative budget limits;
+- single transcript append projection `< 5 ms`;
+- resize settles within `100 ms`;
+- no dropped, duplicated, or reordered streaming text;
+- bounded visible-row projection and bounded failure excerpts;
+- unchanged rows do not emit ANSI output.
 
-## 测试策略
+## Error Handling
 
-- 纯函数：reducer、selector、layout、Row IR、focus transition、theme token。
-- Ink fixtures：宽度 40/60/80/100/120、菜单栈、权限、错误、screen-reader。
-- PTY：alternate screen、raw mode、cursor、SIGTSTP/SIGCONT、resize、ANSI diff。
-- 性能：projection scaling、append、streaming frame、dirty-row 输出字节数。
-- 兼容：现有 TUI/interactive 测试、Claude 2.1.208 黑盒基线、native transcript
-  字节不变性和 keybindings 行为。
+- Unsafe control characters are removed before they reach either adapter.
+- Missing or malformed optional display data degrades to concise neutral text.
+- Projection failures retain an English error row and do not mutate runtime
+  state.
+- ANSI initialization/draw failure switches to Ink for the current session.
+- No fallback may silently approve a permission, submit input, or alter a
+  stored permission rule.
 
-## 验收门槛
+## Test Strategy
 
-必须通过：
+- Pure tests: frame ordering, stable keys, breakpoints, tool disclosure,
+  selection grammar, English permission copy, no-control-character invariant.
+- Adapter parity: ANSI and Ink expose the same ordered semantic content.
+- Focused Ink tests: permission, plan/question, composer/status, Team/Tasks/
+  Audit, narrow widths, no-color, and screen-reader output.
+- PTY: alternate screen, cursor/raw mode cleanup, resize, streaming, focused
+  decisions, and ANSI-to-Ink fallback.
+- Performance: cold projection, append, stable-row diff bytes, and streaming
+  coalescing, including a deterministic injected-threshold self-test that
+  protects both the doubling-ratio and absolute 120k median limits.
+- Compatibility: existing interactive behavior tests and byte-identical native
+  transcript behavior.
+
+## Acceptance Gates
 
 ```sh
-npm run build
-npm test
 npm run test:tui:pty
 npm run test:performance
+npm run test:package
+npm audit --omit=dev
 npm run check
 ```
 
-并完成真实终端人工检查：首次启动、长 transcript、连续工具调用、权限等待、
-MCP elicitation、resume/fork、窄终端、无色模式、screen-reader、挂起恢复和
-renderer fallback。
+Manual terminal acceptance covers fresh/resumed sessions, long transcripts,
+streaming, successful and failed tools, permission queue and settings, plan and
+question decisions, Team/Tasks/Audit views, narrow terminal, no-color,
+screen-reader, suspend/resume, and renderer fallback.

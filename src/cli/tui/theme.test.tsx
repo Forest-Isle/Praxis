@@ -149,13 +149,15 @@ describe('TUI semantic theme palettes', () => {
       },
     )
     expect(theme.text.productIdentity.color).toBe('#010203')
-    expect(theme.text.selectedRow.backgroundColor).toBe('#040506')
+    expect(theme.text.focusMarker.color).toBe('#040506')
+    expect(theme.text.selectedRow.color).toBe('#040506')
+    expect(theme.text.selectedRow.backgroundColor).toBeUndefined()
     expect(theme.text.info.color).toBe('#070809')
     expect(theme.text.permission.color).toBe('#0a0b0c')
     expect(theme.text.diffAdded.color).toBe('#0d0e0f')
   })
 
-  it('keeps body default, coral focus, distinct flags, and ANSI16 custom safety', () => {
+  it('keeps body native, mint focus, distinct flags, and ANSI16 custom safety', () => {
     const theme = resolveTuiTheme(
       { theme: 'dark', syntaxHighlightingDisabled: false },
       {
@@ -163,8 +165,16 @@ describe('TUI semantic theme palettes', () => {
       },
     )
     expect(theme.text.body).toEqual({})
-    expect(theme.text.productIdentity.color).toBe('#D97757')
-    expect(theme.text.focusMarker.color).toBe('#D97757')
+    expect(theme.text.productIdentity.color).toBe('#5EE6B5')
+    expect(theme.text.focusMarker.color).toBe('#5EE6B5')
+    expect(theme.text.selectedRow).toMatchObject({
+      color: '#5EE6B5',
+      bold: true,
+    })
+    expect(theme.text.selectedRow.backgroundColor).toBeUndefined()
+    expect(theme.text.warning.color).toBe('#F2C14E')
+    expect(theme.text.error.color).toBe('#FF6B6B')
+    expect(theme.text.info.color).toBe('#9AA7B8')
     expect(theme.text.inputCursor).toEqual({ inverse: true })
     const ansiTheme = resolveTuiTheme(
       {
@@ -356,7 +366,7 @@ describe('TUI semantic theme palettes', () => {
       </TuiThemeProvider>,
     )
     expect(app.lastFrame()).toBe(
-      'light-daltonized|#D97757|GitHub|#af005f|#d7ffff',
+      'light-daltonized|#087F5B|GitHub|#af005f|#d7ffff',
     )
     expect(
       tuiPalette('light-daltonized', true, TRUECOLOR_ENV)
@@ -386,15 +396,15 @@ describe('TUI semantic theme palettes', () => {
       dark: true,
       ansiOnly: false,
       syntaxHighlightingDisabled: false,
-      brand: 'redBright',
-      accent: 'redBright',
+      brand: 'cyanBright',
+      accent: 'cyanBright',
       info: 'cyanBright',
       link: 'cyanBright',
       error: 'redBright',
       success: 'greenBright',
       warning: 'yellowBright',
       muted: 'white',
-      selectionText: 'black',
+      selectionText: 'cyanBright',
       sessionColors: {
         red: 'redBright',
         blue: 'blueBright',
@@ -553,7 +563,8 @@ describe('TUI semantic theme palettes', () => {
     )
     expect(ansi256Theme.terminalColorCapability).toBe('ansi256')
     expect(ansi256Theme.text.productIdentity.color).toBe('ansi256(196)')
-    expect(ansi256Theme.text.selectedRow.backgroundColor).toBe('ansi256(46)')
+    expect(ansi256Theme.text.selectedRow.color).toBe('ansi256(46)')
+    expect(ansi256Theme.text.selectedRow.backgroundColor).toBeUndefined()
     expect(ansi256Theme.text.info.color).toBe('ansi256(21)')
     expect(ansi256Theme.text.warning.color).toBe('yellowBright')
     expect(ansi256Theme.text.error.color).toBe('ansi256(1)')
@@ -568,7 +579,8 @@ describe('TUI semantic theme palettes', () => {
       { environment: TRUECOLOR_ENV },
     )
     expect(truecolorTheme.text.productIdentity.color).toBe('#ff0000')
-    expect(truecolorTheme.text.selectedRow.backgroundColor).toBe('#00ff00')
+    expect(truecolorTheme.text.selectedRow.color).toBe('#00ff00')
+    expect(truecolorTheme.text.selectedRow.backgroundColor).toBeUndefined()
     expect(truecolorTheme.text.info.color).toBe('rgb(0,0,255)')
     expect(truecolorTheme.text.warning.color).toBe('yellowBright')
     expect(truecolorTheme.text.link.color).toBe('ansi256(0)')

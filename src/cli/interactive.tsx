@@ -5,16 +5,9 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import {
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-} from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
-import { Box, Text, render, useApp, useInput } from 'ink'
+import { render, useApp, useInput } from 'ink'
 
 import type {
   ForkResult,
@@ -67,26 +60,6 @@ import {
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
 import {
-  CommandPalette,
-  BtwPanel,
-  Composer,
-  DiffDashboard,
-  DialogFrame,
-  LeafSurface,
-  ExternalEditorWait,
-  HelpMenu,
-  HookDashboard,
-  ListDashboard,
-  MemoryDashboard,
-  MentionPicker,
-  ModelMenu,
-  EffortMenu,
-  SessionPicker,
-  ThemePicker,
-  CustomThemeEditor,
-  SessionIdentity,
-  Transcript,
-  WelcomePanel,
   type TranscriptItem,
   type TuiDisplayMetadata,
 } from './tui/claude-style.js'
@@ -129,7 +102,11 @@ import {
 import { StreamingFrameBuffer } from './tui/streaming-frame-buffer.js'
 import { createTuiStoreState, reduceTuiStore } from './tui/kernel/tui-store.js'
 import { TuiEffectRunner } from './tui/kernel/tui-effect-runner.js'
-import { createClaudeStatusLineInput, StatusLine } from './tui/status-line.js'
+import {
+  createClaudeStatusLineInput,
+  formatClaudeStatusLineState,
+  useClaudeStatusLine,
+} from './tui/status-line.js'
 import { createTuiAppendHistoryChange } from './tui/transcript-window-model.js'
 import {
   createTuiHistoryChange,
@@ -141,11 +118,14 @@ import {
   type TuiScreenInput,
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
-import { supportsAnsiSurface, TuiAnsiSurface } from './tui/ansi-surface.js'
+import { TuiAnsiSurface } from './tui/ansi-surface.js'
+import { QuietInkFrame } from './tui/quiet-frame-adapter.js'
 import {
-  projectTuiHelpSurface,
-  type TuiHelpSurfaceModel,
-} from './tui/help-surface-model.js'
+  projectQuietScreenFrame,
+  type QuietScreenSurfaces,
+  type QuietSecondarySurface,
+} from './tui/quiet-screen-projector.js'
+import { projectTuiHelpSurface } from './tui/help-surface-model.js'
 import {
   projectTuiHooksSurface,
   type TuiHooksSurfaceModel,
@@ -190,7 +170,6 @@ import {
 import {
   projectTuiCommandPalette,
   tuiCommandPaletteCommandId,
-  type TuiCommandPaletteModel,
 } from './tui/command-palette-model.js'
 import {
   runDoctor,
@@ -286,7 +265,6 @@ import {
   DEFAULT_TUI_THEME_SETTINGS,
   TUI_THEMES,
   TuiThemeProvider,
-  useTuiTheme,
   type TuiThemeSettings,
 } from './tui/theme.js'
 import {
@@ -310,7 +288,6 @@ import {
   elicitationTextValue,
   expandElicitationOptions,
   focusedElicitationField,
-  ElicitationSurface,
   moveElicitationFocus,
   moveElicitationOption,
   selectElicitationOption,
@@ -330,18 +307,15 @@ import {
   projectTuiPermissionSurface,
   type TuiPermissionSurfaceModel,
 } from './tui/permission-surface-model.js'
-import { PermissionSurface } from './tui/permission-surface.js'
 import {
   projectTuiDecisionSurface,
   type TuiDecisionSurfaceModel,
 } from './tui/decision-surface-model.js'
-import { DecisionSurface } from './tui/decision-surface.js'
-import { ConfigDashboard, projectConfigRows } from './tui/config-dashboard.js'
+import { projectConfigRows } from './tui/config-dashboard.js'
 import {
   projectTuiConfigSurface,
   type TuiConfigSurfaceModel,
 } from './tui/config-surface-model.js'
-import { DoctorDashboard } from './tui/doctor-dashboard.js'
 import {
   projectTuiDoctorSurface,
   type TuiDoctorSurfaceModel,
@@ -350,7 +324,7 @@ import {
   projectTuiMemorySurface,
   type TuiMemorySurfaceModel,
 } from './tui/memory-surface-model.js'
-import { SandboxDashboard, tuiSandboxTabs } from './tui/sandbox-dashboard.js'
+import { tuiSandboxTabs } from './tui/sandbox-dashboard.js'
 import {
   projectTuiSandboxSurface,
   type TuiSandboxSurfaceModel,
@@ -376,7 +350,6 @@ import {
   autoUpdateTarget,
   copyCandidates,
   externalEditorInitialContent,
-  formatTurnDuration,
   questionTimeoutMilliseconds,
   sessionRecap,
   spinnerTip,
@@ -387,7 +360,6 @@ import {
   notifyTerminal,
   type TuiNotificationWriter,
 } from './tui/terminal-notifications.js'
-import { McpPanel } from './tui/mcp-panel.js'
 import {
   McpPanelController,
   mcpRuntimeFromSession,
@@ -408,7 +380,6 @@ import type {
 import type { ConfigDashboardTab } from './tui/config-dashboard.js'
 import type { ConfigValue } from './tui/config-settings.js'
 import {
-  TaskPanel,
   initialTuiTaskPanelState,
   projectTuiTasks,
   reconcileTuiTaskPanelState,
@@ -1071,49 +1042,6 @@ const HIDDEN_TUI_SLASH_COMMANDS = new Set([
   'usage',
 ])
 
-function RewindWarning() {
-  const theme = useTuiTheme()
-  return (
-    <Text {...theme.text.warning}>
-      ⚠ Rewinding does not affect files edited manually or via bash.
-    </Text>
-  )
-}
-
-function ExitWarning() {
-  const theme = useTuiTheme()
-  return <Text {...theme.text.warning}>Press Ctrl-C again to exit</Text>
-}
-
-function DecisionOption({
-  selected,
-  screenReader,
-  children,
-  selectedPrefix = '❯ ',
-  unselectedPrefix = '  ',
-}: {
-  selected: boolean
-  screenReader: boolean
-  children: ReactNode
-  selectedPrefix?: string
-  unselectedPrefix?: string
-}) {
-  const theme = useTuiTheme()
-  const accessible = screenReader || theme.noColor
-  return (
-    <Text {...(selected ? theme.text.selectedRow : {})}>
-      {selected
-        ? accessible
-          ? 'Selected: '
-          : selectedPrefix
-        : accessible
-          ? ''
-          : unselectedPrefix}
-      {children}
-    </Text>
-  )
-}
-
 export interface InteractiveHistoryState {
   readonly items: TranscriptItem[]
   readonly change: TuiHistoryChange
@@ -1345,7 +1273,6 @@ export function InteractiveApp({
       : { viewportOverride: { columns: terminalWidth } }),
   })
   const width = presentation.viewport.columns
-  const rows = presentation.viewport.rows
   const fixedViewport = presentation.fixedViewport
   const runtimeSettingsRef = useRef(runtimeSettings)
   runtimeSettingsRef.current = runtimeSettings
@@ -1388,18 +1315,17 @@ export function InteractiveApp({
   const statusLineSessionId = useRef(resume?.sessionId ?? randomUUID())
   const sessionIdRef = useRef<string | null>(resume?.sessionId ?? null)
   sessionIdRef.current = sessionId
-  const [sessionColor, setSessionColor] = useState<AgentColorName | undefined>(
+  const [, setSessionColor] = useState<AgentColorName | undefined>(
     initialSessionColor,
   )
   const [sessionName, setSessionName] = useState<string | null>(null)
-  const [activeSessionSummary, setActiveSessionSummary] = useState<
-    SessionSummary | undefined
-  >(() =>
-    resume?.sessionId
-      ? initialSessions.find(
-          (session) => session.sessionId === resume.sessionId,
-        )
-      : undefined,
+  const [, setActiveSessionSummary] = useState<SessionSummary | undefined>(
+    () =>
+      resume?.sessionId
+        ? initialSessions.find(
+            (session) => session.sessionId === resume.sessionId,
+          )
+        : undefined,
   )
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const inputRef = useRef('')
@@ -1418,7 +1344,7 @@ export function InteractiveApp({
   const themeEffectRunnerRef = useRef<TuiEffectRunner | null>(null)
   if (themeEffectRunnerRef.current === null)
     themeEffectRunnerRef.current = new TuiEffectRunner()
-  const [clipboardBusy, setClipboardBusy] = useState(false)
+  const [, setClipboardBusy] = useState(false)
   const stashedInputRef = useRef('')
   const lastEscapeAtRef = useRef(0)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
@@ -1511,7 +1437,7 @@ export function InteractiveApp({
     })
   }
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
-  const [turnDuration, setTurnDuration] = useState<number | undefined>()
+  const [, setTurnDuration] = useState<number | undefined>()
   const [usage, setUsage] = useState<ModelUsage | undefined>()
   const [costUsd, setCostUsd] = useState<number | undefined>()
   const [contextWindowTokens, setContextWindowTokens] = useState(
@@ -1756,16 +1682,6 @@ export function InteractiveApp({
       }),
     [allSlashCommands, commandQuery, commandSelection],
   )
-  const commandArgumentHint = useMemo(() => {
-    if (shellMode || !input.startsWith('/')) return undefined
-    if (inputCursor !== input.length) return undefined
-    const match = /^\/(\S+) $/u.exec(input)
-    if (!match?.[1]) return undefined
-    const command = allSlashCommands.find(
-      (candidate) => candidate.name === match[1],
-    )
-    return command?.argumentHint
-  }, [allSlashCommands, input, inputCursor, shellMode])
   const commandPaletteVisible =
     !busy &&
     !permission &&
@@ -1982,24 +1898,6 @@ export function InteractiveApp({
         : null,
     [menu, runtimePreferences.effort],
   )
-  type InteractiveSecondarySurface =
-    | TuiHelpSurfaceModel
-    | TuiPermissionSurfaceModel
-    | TuiDiffSurfaceModel
-    | TuiMcpSurfaceModel
-    | TuiTaskSurfaceModel
-    | TuiDoctorSurfaceModel
-    | TuiMemorySurfaceModel
-    | TuiHooksSurfaceModel
-    | TuiConfigSurfaceModel
-    | TuiSandboxSurfaceModel
-    | TuiListSurfaceModel
-    | TuiBtwSurfaceModel
-    | TuiRewindSurfaceModel
-    | TuiModelSurfaceModel
-    | TuiEffortSurfaceModel
-    | TuiThemeSurfaceModel
-    | TuiLeafSurfaceModel
   const helpMenu = menu?.kind === 'help' ? menu : null
   const helpSurface = useMemo(
     () =>
@@ -2326,9 +2224,11 @@ export function InteractiveApp({
       })
     return null
   }, [menu, input, compactProgress])
-  const secondarySurface: InteractiveSecondarySurface | undefined =
+  const secondarySurface: QuietSecondarySurface | undefined =
     menu === null
-      ? undefined
+      ? shortcutsVisible
+        ? shortcutHelpSurface
+        : undefined
       : menu.kind === 'help'
         ? (helpSurface ?? undefined)
         : menu.kind === 'diff'
@@ -2368,27 +2268,8 @@ export function InteractiveApp({
                                     : (leafSurface ??
                                       permissionManagementSurface ??
                                       undefined)
-  type InteractiveTuiScreenSurfaces = {
-    readonly sessionPicker: TuiSessionPickerModel
-    readonly priority:
-      | { readonly kind: 'editor-wait' }
-      | {
-          readonly kind: 'permission'
-          readonly surface: TuiPermissionSurfaceModel
-        }
-      | TuiDecisionSurfaceModel
-      | {
-          readonly kind: 'elicitation'
-          readonly surface: TuiElicitationSurfaceModel
-        }
-    readonly overlay:
-      | TuiCommandPaletteModel
-      | TuiMentionPickerModel
-      | { readonly kind: 'exit-confirmation' }
-    readonly secondary: InteractiveSecondarySurface
-  }
   const screenSurfaces = useMemo<
-    TuiScreenInput<InteractiveTuiScreenSurfaces>['surfaces']
+    TuiScreenInput<QuietScreenSurfaces>['surfaces']
   >(
     () => ({
       ...(selectingSession ? { sessionPicker: sessionPickerSurface } : {}),
@@ -2451,11 +2332,11 @@ export function InteractiveApp({
     ],
   )
   const previousTuiScreenRef = useRef<
-    TuiScreenModel<InteractiveTuiScreenSurfaces> | undefined
+    TuiScreenModel<QuietScreenSurfaces> | undefined
   >(undefined)
   const screen = useMemo(
     () =>
-      projectTuiScreen<InteractiveTuiScreenSurfaces>(
+      projectTuiScreen<QuietScreenSurfaces>(
         {
           presentation,
           conversation: {
@@ -2488,33 +2369,12 @@ export function InteractiveApp({
       screenSurfaces,
     ],
   )
-  const ansiActive = ansiRequested && supportsAnsiSurface(screen)
+  const ansiActive = ansiRequested
   useEffect(() => {
     previousTuiScreenRef.current = screen
   }, [screen])
   const conversationScreen =
     screen.body.kind === 'conversation' ? screen.body : undefined
-  const selectedPriority =
-    conversationScreen?.foreground.kind === 'priority'
-      ? conversationScreen.foreground.surface
-      : undefined
-  const selectedSecondarySurface =
-    conversationScreen?.foreground.kind === 'secondary'
-      ? (conversationScreen.foreground.surface ?? null)
-      : null
-  const selectedOverlays =
-    conversationScreen?.foreground.kind === 'compose'
-      ? conversationScreen.foreground.overlays
-      : []
-  const selectedCommandPalette = selectedOverlays.find(
-    (overlay) => overlay.kind === 'command-palette',
-  )
-  const selectedFilePicker = selectedOverlays.find(
-    (overlay) => overlay.kind === 'mention-picker',
-  )
-  const selectedExitConfirmation = selectedOverlays.find(
-    (overlay) => overlay.kind === 'exit-confirmation',
-  )
   const transcriptPageRows = conversationScreen?.transcript.pageRows ?? 2
   const maxTranscriptScrollOffset =
     conversationScreen?.transcript.maxScrollOffset ?? 0
@@ -8289,472 +8149,117 @@ export function InteractiveApp({
     }
   })
 
+  const statusLineInput = useMemo(
+    () =>
+      createClaudeStatusLineInput({
+        configRoot: keybindingsRoot,
+        cwd: runtimeCwd,
+        projectDir: display.cwd,
+        sessionId: sessionId ?? statusLineSessionId.current,
+        sessionName,
+        ...(runtimeDisplay.model === undefined
+          ? {}
+          : { model: runtimeDisplay.model }),
+        version: runtimeDisplay.version,
+        outputStyle: runtimeSettings.outputStyle,
+        permissionMode: runtimePreferences.permissionMode,
+        additionalDirectories: runtimePreferences.additionalDirectories,
+        dataPlane,
+        ...(usage === undefined ? {} : { usage }),
+        ...(costUsd === undefined ? {} : { costUsd }),
+        ...(runtimeDisplay.contextWindowTokens === undefined
+          ? {}
+          : { contextWindowTokens: runtimeDisplay.contextWindowTokens }),
+        ...(runtimeSettings.editor === 'vim'
+          ? { vimMode: vimInsertMode ? 'INSERT' : 'NORMAL' }
+          : {}),
+      }),
+    [
+      keybindingsRoot,
+      runtimeCwd,
+      display.cwd,
+      sessionId,
+      sessionName,
+      runtimeDisplay.model,
+      runtimeDisplay.version,
+      runtimeSettings.outputStyle,
+      runtimePreferences.permissionMode,
+      runtimePreferences.additionalDirectories,
+      dataPlane,
+      usage,
+      costUsd,
+      runtimeDisplay.contextWindowTokens,
+      runtimeSettings.editor,
+      vimInsertMode,
+    ],
+  )
+  const statusLineRefreshKey = [
+    history.length,
+    runtimePreferences.permissionMode,
+    runtimeDisplay.model,
+    runtimeSettings.outputStyle,
+    vimInsertMode,
+    sessionName,
+    usage?.inputTokens,
+    usage?.outputTokens,
+  ].join(':')
+  const configuredStatusLine = useClaudeStatusLine({
+    configRoot: keybindingsRoot,
+    cwd: runtimeCwd,
+    dataPlane,
+    input: statusLineInput,
+    refreshKey: statusLineRefreshKey,
+    width,
+    ...(settingSources === undefined ? {} : { settingSources }),
+  })
+  const configuredStatusText = formatClaudeStatusLineState(
+    configuredStatusLine,
+    width,
+  )
+  const conciseStatus = [
+    status,
+    editorFooterMessage
+      ? `${editorFooterMessage.isError ? 'Error: ' : ''}${editorFooterMessage.text}`
+      : undefined,
+    configuredStatusText,
+  ]
+    .filter(
+      (value, index, values) =>
+        Boolean(value) && (index === 0 || value !== values[index - 1]),
+    )
+    .join(' · ')
+  const quietFrame = useMemo(
+    () =>
+      projectQuietScreenFrame({
+        screen,
+        composerText: shellMode ? input.slice(1) : input,
+        composerCursor: shellMode ? Math.max(0, inputCursor - 1) : inputCursor,
+        shellMode,
+        busy,
+        status: conciseStatus,
+        display: runtimeDisplay,
+      }),
+    [
+      screen,
+      shellMode,
+      input,
+      inputCursor,
+      busy,
+      conciseStatus,
+      runtimeDisplay,
+    ],
+  )
+
   return (
     <TuiThemeProvider settings={themeSettings} screenReader={axScreenReader}>
-      <Box
-        flexDirection="column"
-        {...(!fixedViewport
-          ? {}
-          : { height: rows, overflowY: 'hidden' as const })}
-      >
-        {ansiActive ? (
-          <TuiAnsiSurface
-            screen={screen}
-            width={width}
-            rows={rows}
-            input={shellMode ? input.slice(1) : input}
-            busy={busy}
-            status={status}
-            display={runtimeDisplay}
-            {...(conversationScreen?.sessionLabel === undefined
-              ? {}
-              : { sessionLabel: conversationScreen.sessionLabel })}
-            cursor={shellMode ? Math.max(0, inputCursor - 1) : inputCursor}
-            screenReader={axScreenReader}
-            onError={() => setAnsiRendererFailed(true)}
-          />
-        ) : screen.body.kind === 'session-picker' ? (
-          <SessionPicker
-            model={screen.body.surface}
-            screenReader={axScreenReader}
-          />
-        ) : (
-          <>
-            {screen.body.intro === 'welcome' ? (
-              <WelcomePanel
-                display={runtimeDisplay}
-                width={width}
-                showTips={runtimeSettings.tips}
-              />
-            ) : null}
-            {screen.body.sessionLabel ? (
-              <Text dimColor>Session {screen.body.sessionLabel}</Text>
-            ) : null}
-            {screen.body.intro === 'identity' ? (
-              <SessionIdentity display={runtimeDisplay} width={width} />
-            ) : null}
-            <Box
-              {...(fixedViewport
-                ? {
-                    flexShrink: 1,
-                    minHeight: 0,
-                    overflowY: 'hidden' as const,
-                  }
-                : {})}
-            >
-              <Transcript
-                entries={screen.body.transcript.entries}
-                activeText={screen.body.transcript.active.text}
-                activeThinking={screen.body.transcript.active.thinking}
-                activeStreamVisible={screen.body.transcript.active.visible}
-                thinkingExpanded={thinkingExpanded}
-                detailedTranscript={
-                  screen.body.transcript.readingMode !== 'normal'
-                }
-                screenReader={axScreenReader}
-              />
-            </Box>
-            {selectedPriority?.kind === 'editor-wait' ? (
-              <ExternalEditorWait screenReader={axScreenReader} />
-            ) : selectedPriority?.kind === 'permission' ? (
-              <PermissionSurface
-                model={selectedPriority.surface}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : selectedPriority?.kind === 'plan-approval' ? (
-              <DecisionSurface
-                model={selectedPriority}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : selectedPriority?.kind === 'question' ? (
-              <DecisionSurface
-                model={selectedPriority}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : selectedPriority?.kind === 'elicitation' ? (
-              <ElicitationSurface
-                model={selectedPriority.surface}
-                screenReader={axScreenReader}
-              />
-            ) : selectedSecondarySurface?.kind === 'model-input' ||
-              selectedSecondarySurface?.kind === 'export' ||
-              selectedSecondarySurface?.kind === 'copy' ||
-              selectedSecondarySurface?.kind === 'export-filename' ||
-              selectedSecondarySurface?.kind === 'compact-progress' ? (
-              <LeafSurface
-                surface={selectedSecondarySurface}
-                width={width}
-                screenReader={axScreenReader}
-              />
-            ) : selectedSecondarySurface?.kind === 'rewind-panel' ? (
-              selectedSecondarySurface.view === 'points' ? (
-                <Box flexDirection="column">
-                  <Text bold> Rewind</Text>
-                  <Text> </Text>
-                  <Text>
-                    {' '}
-                    Restore the code and/or conversation to the point before…
-                  </Text>
-                  <Text> </Text>
-                  {selectedSecondarySurface.window.start > 0 ? (
-                    <Text dimColor>
-                      {' '}
-                      ↑ {selectedSecondarySurface.window.start} more above
-                    </Text>
-                  ) : null}
-                  {selectedSecondarySurface.points
-                    .slice(
-                      selectedSecondarySurface.window.start,
-                      selectedSecondarySurface.window.end,
-                    )
-                    .map((point, offset) => {
-                      const index =
-                        selectedSecondarySurface.window.start + offset
-                      return (
-                        <Box
-                          key={point.messageId}
-                          flexDirection="column"
-                          marginBottom={1}
-                        >
-                          <DecisionOption
-                            selected={
-                              selectedSecondarySurface.selectedIndex === index
-                            }
-                            screenReader={axScreenReader}
-                            selectedPrefix=" ❯ "
-                            unselectedPrefix="   "
-                          >
-                            {point.prompt.replace(/\s+/gu, ' ').slice(0, 72)}
-                          </DecisionOption>
-                          <Text dimColor>
-                            {'     '}
-                            {point.fileChanges.length > 0
-                              ? point.fileChanges
-                                  .map((path) =>
-                                    path.startsWith(`${runtimeCwd}/`)
-                                      ? path.slice(runtimeCwd.length + 1)
-                                      : path,
-                                  )
-                                  .join(', ')
-                              : point.fileRestoreAvailable
-                                ? 'No code changes'
-                                : '⚠ No code restore'}
-                          </Text>
-                        </Box>
-                      )
-                    })}
-                  {selectedSecondarySurface.window.end <
-                  selectedSecondarySurface.points.length ? (
-                    <Text dimColor>
-                      {' '}
-                      ↓{' '}
-                      {selectedSecondarySurface.points.length -
-                        selectedSecondarySurface.window.end}{' '}
-                      more below
-                    </Text>
-                  ) : null}
-                  <DecisionOption
-                    selected={
-                      selectedSecondarySurface.selectedIndex ===
-                      selectedSecondarySurface.points.length
-                    }
-                    screenReader={axScreenReader}
-                    selectedPrefix=" ❯ "
-                    unselectedPrefix="   "
-                  >
-                    (current)
-                  </DecisionOption>
-                  <Text> </Text>
-                  <Text dimColor> Enter to continue · Esc to cancel</Text>
-                </Box>
-              ) : selectedSecondarySurface.view === 'confirm' ? (
-                <DialogFrame
-                  title="Confirm restore point"
-                  screenReader={axScreenReader}
-                >
-                  <Text>│ {selectedSecondarySurface.point.prompt}</Text>
-                  <Text> </Text>
-                  <Text>The conversation will be forked.</Text>
-                  <Text>
-                    The code will{' '}
-                    {selectedSecondarySurface.point.fileChanges.length > 0
-                      ? `restore ${selectedSecondarySurface.point.fileChanges.join(', ')}.`
-                      : 'be unchanged.'}
-                  </Text>
-                  <Text> </Text>
-                  {selectedSecondarySurface.actions.map((option, index) => (
-                    <DecisionOption
-                      key={option.action}
-                      selected={
-                        selectedSecondarySurface.selectedIndex === index
-                      }
-                      screenReader={axScreenReader}
-                    >
-                      {index + 1}. {option.label}
-                    </DecisionOption>
-                  ))}
-                  <Text> </Text>
-                  <RewindWarning />
-                </DialogFrame>
-              ) : (
-                <DialogFrame
-                  title={`Summarize ${selectedSecondarySurface.direction === 'from' ? 'from' : 'up to'} here`}
-                  screenReader={axScreenReader}
-                >
-                  <Text>
-                    {selectedSecondarySurface.direction === 'from'
-                      ? 'Messages after this point will be summarized.'
-                      : 'Messages up to this point will be summarized.'}
-                  </Text>
-                  <Text> </Text>
-                  <Text>
-                    add context (optional): {selectedSecondarySurface.context}
-                  </Text>
-                  <Text dimColor>Enter to summarize · Esc to go back</Text>
-                </DialogFrame>
-              )
-            ) : selectedSecondarySurface !== null && menu !== null ? (
-              selectedSecondarySurface.kind === 'permission-dashboard' ||
-              selectedSecondarySurface.kind === 'permission-rule-input' ||
-              selectedSecondarySurface.kind === 'permission-scope' ||
-              selectedSecondarySurface.kind === 'permission-delete' ||
-              selectedSecondarySurface.kind === 'workspace-directory-input' ||
-              selectedSecondarySurface.kind === 'workspace-directory-delete' ? (
-                <PermissionSurface
-                  model={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'mcp-panel' ? (
-                <McpPanel
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'help' ? (
-                <HelpMenu
-                  model={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'diff' ? (
-                <DiffDashboard
-                  model={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'tasks-panel' ? (
-                <TaskPanel
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'doctor-panel' ? (
-                <DoctorDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'memory-panel' ? (
-                <MemoryDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'hooks-panel' ? (
-                <HookDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'config-panel' ? (
-                <ConfigDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'sandbox-panel' ? (
-                <SandboxDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'list-panel' ? (
-                <ListDashboard
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'btw-panel' ? (
-                <BtwPanel
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'model-panel' ? (
-                <ModelMenu
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'effort-panel' ? (
-                <EffortMenu
-                  surface={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'theme-panel' ? (
-                <ThemePicker
-                  model={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'custom-theme-create' ? (
-                <DialogFrame
-                  title="New custom theme"
-                  screenReader={axScreenReader}
-                >
-                  <Text>
-                    Name: {selectedSecondarySurface.name || 'my-theme'}
-                  </Text>
-                  <Text>
-                    based on {selectedSecondarySurface.base} · saved to ~/
-                    {settingsDirectory}
-                    /themes/theme.json
-                  </Text>
-                  <Text dimColor>Enter to create · Esc to cancel</Text>
-                </DialogFrame>
-              ) : selectedSecondarySurface.kind === 'custom-theme-editor' ||
-                selectedSecondarySurface.kind === 'custom-theme-token' ? (
-                <CustomThemeEditor
-                  model={selectedSecondarySurface}
-                  width={width}
-                  screenReader={axScreenReader}
-                />
-              ) : selectedSecondarySurface.kind === 'custom-theme-delete' ? (
-                <DialogFrame
-                  title="Delete custom theme"
-                  screenReader={axScreenReader}
-                >
-                  <Text>
-                    Delete {selectedSecondarySurface.theme.name} permanently?
-                  </Text>
-                  <Text dimColor>Enter to confirm · Esc to cancel</Text>
-                </DialogFrame>
-              ) : null
-            ) : (
-              <>
-                {selectedCommandPalette !== undefined ? (
-                  <CommandPalette
-                    model={selectedCommandPalette}
-                    width={width}
-                    screenReader={axScreenReader}
-                  />
-                ) : null}
-                {selectedFilePicker !== undefined ? (
-                  <MentionPicker
-                    model={selectedFilePicker}
-                    width={width}
-                    screenReader={axScreenReader}
-                  />
-                ) : null}
-                {selectedExitConfirmation !== undefined ? (
-                  <ExitWarning />
-                ) : null}
-                {fixedViewport ? <Box flexGrow={1} /> : null}
-                <Composer
-                  input={shellMode ? input.slice(1) : input}
-                  cursor={
-                    shellMode ? Math.max(0, inputCursor - 1) : inputCursor
-                  }
-                  shellMode={shellMode}
-                  {...(sessionColor === undefined ? {} : { sessionColor })}
-                  {...(commandArgumentHint === undefined
-                    ? {}
-                    : { commandArgumentHint })}
-                  busy={busy}
-                  clipboardBusy={clipboardBusy}
-                  status={status}
-                  display={runtimeDisplay}
-                  {...(usage === undefined ? {} : { usage })}
-                  {...(costUsd === undefined ? {} : { costUsd })}
-                  width={width}
-                  screenReader={axScreenReader}
-                  hasThinking={hasDetailedTranscript}
-                  thinkingExpanded={thinkingExpanded}
-                  reduceMotion={runtimeSettings.reduceMotion}
-                  progressBar={runtimeSettings.progressBar}
-                  {...(runtimeSettings.turnDuration
-                    ? (() => {
-                        const duration = formatTurnDuration(turnDuration)
-                        return duration === undefined
-                          ? {}
-                          : { turnDuration: duration }
-                      })()
-                    : {})}
-                  editorMode={runtimeSettings.editor}
-                  {...(runtimeSettings.prStatus &&
-                  activeSessionSummary?.prNumber
-                    ? { prStatus: `PR #${activeSessionSummary.prNumber}` }
-                    : {})}
-                  shortcutsVisible={shortcutsVisible}
-                  shortcutHelp={shortcutHelpSurface}
-                  {...(editorFooterMessage === undefined
-                    ? {}
-                    : { footerMessage: editorFooterMessage })}
-                />
-                <StatusLine
-                  configRoot={keybindingsRoot}
-                  cwd={runtimeCwd}
-                  dataPlane={dataPlane}
-                  input={createClaudeStatusLineInput({
-                    configRoot: keybindingsRoot,
-                    cwd: runtimeCwd,
-                    projectDir: display.cwd,
-                    sessionId: sessionId ?? statusLineSessionId.current,
-                    sessionName,
-                    ...(runtimeDisplay.model === undefined
-                      ? {}
-                      : { model: runtimeDisplay.model }),
-                    version: runtimeDisplay.version,
-                    outputStyle: runtimeSettings.outputStyle,
-                    permissionMode: runtimePreferences.permissionMode,
-                    additionalDirectories:
-                      runtimePreferences.additionalDirectories,
-                    dataPlane,
-                    ...(usage === undefined ? {} : { usage }),
-                    ...(costUsd === undefined ? {} : { costUsd }),
-                    ...(runtimeDisplay.contextWindowTokens === undefined
-                      ? {}
-                      : {
-                          contextWindowTokens:
-                            runtimeDisplay.contextWindowTokens,
-                        }),
-                    ...(runtimeSettings.editor === 'vim'
-                      ? { vimMode: vimInsertMode ? 'INSERT' : 'NORMAL' }
-                      : {}),
-                  })}
-                  refreshKey={[
-                    history.length,
-                    runtimePreferences.permissionMode,
-                    runtimeDisplay.model,
-                    runtimeSettings.outputStyle,
-                    vimInsertMode,
-                    sessionName,
-                    usage?.inputTokens,
-                    usage?.outputTokens,
-                  ].join(':')}
-                  width={width}
-                  {...(settingSources === undefined ? {} : { settingSources })}
-                />
-              </>
-            )}
-          </>
-        )}
-      </Box>
+      {ansiActive ? (
+        <TuiAnsiSurface
+          frame={quietFrame}
+          onError={() => setAnsiRendererFailed(true)}
+        />
+      ) : (
+        <QuietInkFrame frame={quietFrame} screenReader={axScreenReader} />
+      )}
     </TuiThemeProvider>
   )
 }

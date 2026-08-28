@@ -55,7 +55,7 @@ function entryText(entry: TranscriptPresentationEntry): StyledText {
   if (entry.kind === 'read-summary')
     return {
       text: `Read ${entry.count} file${entry.count === 1 ? '' : 's'}`,
-      role: 'muted',
+      role: 'success',
     }
   if (entry.kind === 'item') {
     const item = entry.item
@@ -66,7 +66,7 @@ function entryText(entry: TranscriptPresentationEntry): StyledText {
       return { text: `✻ ${item.text}`, role: 'muted' }
     if (item.kind === 'notice') return { text: `· ${item.text}`, role: 'muted' }
     if (item.kind === 'warning')
-      return { text: `⚠ ${item.text}`, role: 'error' }
+      return { text: `⚠ ${item.text}`, role: 'warning' }
     if (item.kind === 'local-result')
       return { text: `⎿ ${item.text}`, role: 'muted' }
     if (item.kind === 'compact')
@@ -89,7 +89,7 @@ function entryText(entry: TranscriptPresentationEntry): StyledText {
       : ''
     return {
       text: `⏺ ${toolHeading(entry.item)}${entry.item.detail ? `\n ${entry.item.detail}` : ''}${output}`,
-      role: result?.isError ? 'error' : 'tool',
+      role: result ? (result.isError ? 'error' : 'success') : 'muted',
     }
   }
   if (entry.kind === 'shell') {
@@ -99,7 +99,7 @@ function entryText(entry: TranscriptPresentationEntry): StyledText {
       : ''
     return {
       text: `! ${entry.item.command}${output}`,
-      role: result?.isError ? 'error' : 'tool',
+      role: result ? (result.isError ? 'error' : 'success') : 'muted',
     }
   }
   if (entry.kind === 'orphan-tool-result')

@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process'
 import { watchFile, unwatchFile } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-import { Box, Text } from 'ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { ResourceScope } from '../../core/resources.js'
@@ -275,7 +274,39 @@ export function createClaudeStatusLineInput(options: {
   }
 }
 
-export function StatusLine({
+export interface ClaudeStatusLineState {
+  readonly text?: string
+  readonly padding: number
+}
+
+export function formatClaudeStatusLineState(
+  state: ClaudeStatusLineState,
+  width?: number,
+): string | undefined {
+  if (!state.text) return undefined
+  const padding = Number.isFinite(state.padding)
+    ? Math.max(0, Math.trunc(state.padding))
+    : 0
+  const maxPadding =
+    width !== undefined && Number.isFinite(width) && width > 0
+      ? Math.floor((width - 1) / 2)
+      : 256
+  const boundedPadding = Math.min(padding, maxPadding)
+  const spaces = ' '.repeat(boundedPadding)
+  return `${spaces}${state.text}${spaces}`
+}
+
+export interface UseClaudeStatusLineOptions {
+  readonly configRoot: string
+  readonly cwd: string
+  readonly input: ClaudeStatusLineInput
+  readonly refreshKey: string
+  readonly width?: number
+  readonly settingSources?: readonly ResourceScope[]
+  readonly dataPlane?: DataPlane
+}
+
+export function useClaudeStatusLine({
   configRoot,
   cwd,
   input,
@@ -283,15 +314,7 @@ export function StatusLine({
   width,
   settingSources,
   dataPlane: _dataPlane = 'native',
-}: {
-  configRoot: string
-  cwd: string
-  input: ClaudeStatusLineInput
-  refreshKey: string
-  width?: number
-  settingSources?: readonly ResourceScope[]
-  dataPlane?: DataPlane
-}) {
+}: UseClaudeStatusLineOptions): ClaudeStatusLineState {
   void _dataPlane
   const [text, setText] = useState<string>()
   const [padding, setPadding] = useState(0)
@@ -355,12 +378,5 @@ export function StatusLine({
     }
   }, [configRoot, cwd, schedule])
 
-  if (!text) return null
-  return (
-    <Box paddingX={padding} flexShrink={0}>
-      <Text dimColor wrap="truncate">
-        {text}
-      </Text>
-    </Box>
-  )
+  return text === undefined ? { padding } : { text, padding }
 }
