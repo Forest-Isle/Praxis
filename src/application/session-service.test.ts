@@ -6578,6 +6578,14 @@ describe('ClaudeSessionService', () => {
       }),
     }
     const events: RuntimeEvent[] = []
+    let signalContinuationChildStarted!: () => void
+    const continuationChildStarted = new Promise<void>((resolve) => {
+      signalContinuationChildStarted = resolve
+    })
+    let releaseContinuationChild!: () => void
+    const continuationChildRelease = new Promise<void>((resolve) => {
+      releaseContinuationChild = resolve
+    })
     const provider: ModelProvider = {
       model: 'btw-model',
       capabilities: { streaming: true, usage: true, tools: true },
@@ -6590,6 +6598,10 @@ describe('ClaudeSessionService', () => {
         )
         if (isChild) {
           const continuation = source.includes('CONTINUE_BTW_AGENT')
+          if (continuation) {
+            signalContinuationChildStarted()
+            await continuationChildRelease
+          }
           yield {
             type: 'text-delta',
             delta: continuation ? 'THIRD_AGAIN' : 'THIRD',
@@ -6745,11 +6757,17 @@ describe('ClaudeSessionService', () => {
       },
     })
 
-    const resumed = await service.resume(run.sessionId, 'RESUME_BTW_AGENT')
-    expect(resumed).toMatchObject({
-      text: 'BTW_MESSAGE_SENT',
-      usage: { inputTokens: 2, outputTokens: 1 },
-    })
+    const resumedPromise = service.resume(run.sessionId, 'RESUME_BTW_AGENT')
+    try {
+      await continuationChildStarted
+      const resumed = await resumedPromise
+      expect(resumed).toMatchObject({
+        text: 'BTW_MESSAGE_SENT',
+        usage: { inputTokens: 2, outputTokens: 1 },
+      })
+    } finally {
+      releaseContinuationChild()
+    }
     await expect
       .poll(() => readFile(paths.sessionFile, 'utf8'))
       .toSatisfy(
