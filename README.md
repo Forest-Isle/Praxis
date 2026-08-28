@@ -45,6 +45,7 @@ praxis --version
 
 Release tarballs, SBOMs, SHA-256 checksums, and build attestations are attached
 to every [GitHub release](https://github.com/Forest-Isle/Praxis/releases).
+Use `praxis update` for transactional self-updates; see [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md) for recovery and verification details.
 
 ## Quick start
 
@@ -204,6 +205,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
   streaming adapters with explicit capability checks, metering controls, and
   a bounded absolute deadline for every provider attempt.
+- **Transactional self-update** — `praxis update` verifies the package before
+  installing it, rejects concurrent updates, and can roll back after an
+  interruption or crash.
 
 Detailed feature status and executable evidence live in the
 [parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md),

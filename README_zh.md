@@ -39,6 +39,7 @@ praxis --version
 
 每个 [GitHub 发布](https://github.com/Forest-Isle/Praxis/releases) 都附带发布 tarball、
 SBOM、SHA-256 校验和及构建证明。
+请使用 `praxis update` 执行事务式自更新；验证和恢复细节请参阅[入门指南](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)。
 
 ## 快速开始
 
@@ -99,6 +100,7 @@ praxis doctor
   原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前覆盖已有 fixture 证据的 delete/send；create 仅执行解码，无法表达原生 roster/task 声明时会拒绝；shutdown 和 plan-response 仍有 fixture 证据，task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
 - **原生资源生态** — 支持递归 `@` 导入的共享 Praxis 指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件，以及位于 `~/.praxis` 下的 append-only `praxis.transcript` JSONL 会话；MCP 连接、发现和工具操作均有明确时限，断开后可安全恢复，且绝不重放已派发的调用。
 - **提供商无关的模型** — 原生 Anthropic Messages 和 OpenAI 兼容的流式适配器，支持明确的能力检查、计量控制，并为每次提供商请求设置有界的绝对 deadline。
+- **事务式自更新** — `praxis update` 会在安装前验证软件包，拒绝并发更新，并可在中断或崩溃后回滚。
 
 详细功能状态和可执行证据位于
 [兼容性矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)，
