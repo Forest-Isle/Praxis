@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.40.0](https://github.com/Forest-Isle/Praxis/compare/v0.39.0...v0.40.0) (2026-08-28)
+
+
+### Features
+
+* redesign interactive tui with hybrid ansi renderer ([#472](https://github.com/Forest-Isle/Praxis/issues/472)) ([59fb79f](https://github.com/Forest-Isle/Praxis/commit/59fb79fa16e237ee57e2598288290a2091deaf86))
+
 ## [0.39.0](https://github.com/Forest-Isle/Praxis/compare/v0.38.0...v0.39.0) (2026-08-27)
 
 
