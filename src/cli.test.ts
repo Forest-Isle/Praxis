@@ -3823,6 +3823,52 @@ describe('Praxis CLI', () => {
     }
   })
 
+  it.each([
+    ['MCP_TIMEOUT', 'not-a-timeout'],
+    ['MCP_TOOL_TIMEOUT', 'not-a-timeout'],
+  ])(
+    'rejects invalid injected %s before MCP transport creation',
+    async (name, value) => {
+      const root = await mkdtemp(
+        join(tmpdir(), 'praxis-cli-invalid-mcp-timeout-'),
+      )
+      const configRoot = join(root, 'config')
+      const marker = join(root, `${name}-transport-started`)
+      try {
+        await expect(
+          createDefaultDependencies().createService({
+            eventSink: () => undefined,
+            requireProvider: false,
+            exposeToolRegistry: true,
+            cwd: root,
+            configRoot,
+            providerEnvironment: { [name]: value },
+            controls: {
+              ...DEFAULT_CLI_CONTROLS,
+              strictMcpConfig: true,
+              mcpConfigs: [
+                JSON.stringify({
+                  mcpServers: {
+                    marker: {
+                      command: process.execPath,
+                      args: [
+                        '-e',
+                        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`,
+                      ],
+                    },
+                  },
+                }),
+              ],
+            },
+          }),
+        ).rejects.toThrow(name)
+        await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' })
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('resumes with NDJSON runtime events and a result record', async () => {
     const capture = captureIO()
     const sessionId = '11111111-1111-4111-8111-111111111111'

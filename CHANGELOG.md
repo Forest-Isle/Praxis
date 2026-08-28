@@ -75,6 +75,11 @@ this file from merged Conventional Commit pull requests.
 * add a hermetic PTY smoke for real `runInteractive` ANSI entry, resumed
   transcript rendering, Ctrl-C confirmation, and terminal lifecycle cleanup
 
+### Fixed
+
+* bound MCP connection, discovery, and tool lifecycles with safe disconnect
+  recovery that never replays an already-dispatched tool call
+
 ### Changed
 
 * make the Praxis data plane native-only: sessions, resources, permissions,

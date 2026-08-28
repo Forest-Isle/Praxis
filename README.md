@@ -198,7 +198,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   validation for unsupported payloads.
 - **Native resource ecosystem** — shared Praxis instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
-  plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`.
+  plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`,
+  with bounded MCP connection, discovery, and tool operations plus safe
+  disconnect recovery that never replays an already-dispatched call.
 - **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
   streaming adapters with explicit capability checks, metering controls, and
   a bounded absolute deadline for every provider attempt.

@@ -29,6 +29,94 @@ const base: ToolRegistry = {
   execute: async () => ({ content: 'base', isError: false }),
 }
 
+async function fixtureServer(root: string, mode: string) {
+  const script = join(root, `${mode}-server.mjs`)
+  const generationFile = join(root, `${mode}-generation`)
+  const callsFile = join(root, `${mode}-calls`)
+  await writeFile(
+    script,
+    `import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+const generationFile = process.argv[2]
+const mode = process.argv[3]
+const callsFile = process.argv[4]
+const generation = existsSync(generationFile) ? Number(readFileSync(generationFile, 'utf8')) + 1 : 1
+writeFileSync(generationFile, String(generation))
+let buffer = ''
+let lists = 0
+const incrementCalls = () => writeFileSync(callsFile, String((existsSync(callsFile) ? Number(readFileSync(callsFile, 'utf8')) : 0) + 1))
+const send = (request, result, error) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, ...(error ? { error } : { result }) }) + '\\n')
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    if (request.method === 'initialize' && mode === 'secret-error' && generation > 1) {
+      send(request, undefined, { code: -32000, message: 'fixture-secret reconnect failed' })
+      continue
+    }
+    if (request.method === 'initialize' && mode === 'slow-reconnect' && generation > 1) {
+      setTimeout(() => send(request, { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'fixture', version: '1' }, instructions: 'fixture instructions' }), 500)
+      continue
+    }
+    if (request.method === 'tools/call') incrementCalls()
+    if ((mode === 'hung' || mode === 'permission-hung') && request.method === 'tools/call') continue
+    if (mode === 'no-replay' && generation === 1 && request.method === 'tools/call') {
+      setTimeout(() => process.exit(0), 5)
+      continue
+    }
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'fixture', version: '1' }, instructions: 'fixture instructions' }
+      : request.method === 'tools/list'
+        ? { tools: mode === 'duplicate' ? [{ name: 'a b', inputSchema: { type: 'object' } }, { name: 'a?b', inputSchema: { type: 'object' } }] : [{ name: 'echo', description: 'echo tool', inputSchema: { type: 'object' } }, { name: 'approve', description: 'approval tool', inputSchema: { type: 'object' } }] }
+        : request.method === 'resources/list'
+          ? { resources: [{ uri: 'fixture://resource', name: 'resource' }] }
+          : request.method === 'prompts/list'
+            ? { prompts: [{ name: 'probe', description: 'probe prompt' }] }
+            : request.method === 'resources/read'
+              ? { contents: [{ uri: request.params.uri, mimeType: 'text/plain', text: 'generation=' + generation }] }
+              : request.method === 'prompts/get'
+                ? { messages: [{ role: 'user', content: { type: 'text', text: 'generation=' + generation } }] }
+                : { content: [{ type: 'text', text: 'generation=' + generation }] }
+    send(request, result)
+    if (request.method.endsWith('/list')) {
+      lists += 1
+      if ((mode === 'disconnect' || mode === 'secret-error' || mode === 'slow-reconnect') && generation === 1 && lists >= 3) setTimeout(() => process.exit(0), 5)
+    }
+  }
+})
+`,
+  )
+  return { script, generationFile, callsFile }
+}
+
+function fixtureResources(
+  serverScript: string,
+  generationFile: string,
+  mode: string,
+  callsFile: string,
+) {
+  return [
+    {
+      path: '/fixture.json',
+      scope: 'user' as const,
+      value: {
+        mcpServers: {
+          fixture: {
+            command: process.execPath,
+            args: [serverScript, generationFile, mode, callsFile],
+            env: { FIXTURE_SECRET: 'fixture-secret' },
+          },
+        },
+      },
+    },
+  ]
+}
+
 afterEach(async () => {
   vi.unstubAllEnvs()
   await Promise.all(
@@ -326,6 +414,9 @@ process.stdin.on('data', chunk => {
     expect(registry.close()).toBe(firstClose)
     await expect(reconnect).rejects.toThrow()
     await firstClose
+    expect(registry.definitions().map(({ name }) => name)).toEqual(['Read'])
+    expect(registry.prompts()).toEqual([])
+    expect(registry.instructions()).toEqual([])
     await expect(prompt.invoke('')).rejects.toThrow('MCP registry is closed')
   })
 
@@ -1919,6 +2010,325 @@ process.stdin.on('data', chunk => {
       expect(warnings).toContain('Agent MCP server not found: missing-parent')
     } finally {
       await parent.close()
+    }
+  })
+
+  it('hides every failed catalog surface while retaining a tool route for recovery', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-catalog-recovery-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'disconnect')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'disconnect',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      expect(registry.definitions().map(({ name }) => name)).toContain(
+        'mcp__fixture__echo',
+      )
+      expect(registry.prompts()).toHaveLength(1)
+      expect(registry.instructions()).toHaveLength(1)
+      await vi.waitFor(() =>
+        expect(registry.serverStatuses()).toContainEqual({
+          name: 'fixture',
+          status: 'failed',
+        }),
+      )
+      expect(registry.definitions().map(({ name }) => name)).toEqual(['Read'])
+      expect(registry.prompts()).toEqual([])
+      expect(registry.instructions()).toEqual([])
+      await expect(registry.tools('fixture')).resolves.toEqual([])
+      await expect(
+        registry.execute(
+          { id: 'recover', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ).resolves.toMatchObject({ content: 'generation=2' })
+      await expect(registry.tools('fixture')).resolves.toHaveLength(2)
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('reconnects a disconnected-before-dispatch tool exactly once', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-dispatch-recovery-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'disconnect')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'disconnect',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      await vi.waitFor(() =>
+        expect(registry.serverStatuses()).toContainEqual({
+          name: 'fixture',
+          status: 'failed',
+        }),
+      )
+      await expect(
+        registry.execute(
+          { id: 'once', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ).resolves.toMatchObject({ content: 'generation=2' })
+      expect(await readFile(fixture.generationFile, 'utf8')).toBe('2')
+      expect(await readFile(fixture.callsFile, 'utf8')).toBe('1')
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('does not replay an in-flight tool call after transport exit', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-no-replay-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'no-replay')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'no-replay',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      await expect(
+        registry.execute(
+          { id: 'failed', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ).rejects.toThrow()
+      await vi.waitFor(() =>
+        expect(registry.serverStatuses()).toContainEqual({
+          name: 'fixture',
+          status: 'failed',
+        }),
+      )
+      await expect(
+        registry.execute(
+          { id: 'retry', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ).resolves.toMatchObject({ content: 'generation=2' })
+      expect(await readFile(fixture.generationFile, 'utf8')).toBe('2')
+      expect(await readFile(fixture.callsFile, 'utf8')).toBe('2')
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('shares one reconnect generation across manual, prompt, and tool recovery', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-shared-reconnect-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'disconnect')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'disconnect',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      const prompt = registry.prompts()[0]
+      if (!prompt) throw new Error('prompt missing')
+      await vi.waitFor(() =>
+        expect(registry.serverStatuses()).toContainEqual({
+          name: 'fixture',
+          status: 'failed',
+        }),
+      )
+      const [manual, promptResult, toolResult] = await Promise.all([
+        registry.reconnect('fixture'),
+        prompt.invoke(''),
+        registry.execute(
+          { id: 'shared', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ])
+      void manual
+      expect(promptResult.text).toBe('generation=2')
+      expect(toolResult.content).toBe('generation=2')
+      expect(await readFile(fixture.generationFile, 'utf8')).toBe('2')
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('bounds normal and permission-prompt tools with the injected tool timeout', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-tool-timeout-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'hung')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      environment: { MCP_TOOL_TIMEOUT: '25' },
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'hung',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      await expect(
+        registry.execute(
+          { id: 'timeout', name: 'mcp__fixture__echo', input: {} },
+          { cwd: root },
+        ),
+      ).rejects.toThrow(/MCP.*fixture.*echo.*25ms/u)
+      const permission = registry.permissionPrompt('mcp__fixture__approve')
+      await expect(
+        permission({
+          id: 'permission-timeout',
+          name: 'Bash',
+          input: { command: 'run' },
+        }),
+      ).resolves.toMatchObject({ behavior: 'deny' })
+      expect(await readFile(fixture.callsFile, 'utf8')).toBe('2')
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('publishes no partial catalog when normalized tool names collide', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-transactional-catalog-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'duplicate')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'duplicate',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      expect(registry.definitions().map(({ name }) => name)).toEqual(['Read'])
+      expect(registry.prompts()).toEqual([])
+      expect(registry.instructions()).toEqual([])
+      await expect(registry.tools('fixture')).resolves.toEqual([])
+      await expect(
+        registry.execute(
+          {
+            id: 'resources',
+            name: 'ListMcpResourcesTool',
+            input: { server: 'fixture' },
+          },
+          { cwd: root },
+        ),
+      ).resolves.toMatchObject({
+        content: expect.stringContaining('No resources found'),
+      })
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('redacts secrets from public reconnect failures', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-redacted-reconnect-')),
+    )
+    roots.push(root)
+    const fixture = await fixtureServer(root, 'secret-error')
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: fixtureResources(
+        fixture.script,
+        fixture.generationFile,
+        'secret-error',
+        fixture.callsFile,
+      ),
+    })
+    try {
+      await vi.waitFor(() =>
+        expect(registry.serverStatuses()).toContainEqual({
+          name: 'fixture',
+          status: 'failed',
+        }),
+      )
+      let failure: unknown
+      try {
+        await registry.reconnect('fixture')
+      } catch (error) {
+        failure = error
+      }
+      const message =
+        failure instanceof Error ? failure.message : String(failure)
+      expect(message).toContain('[REDACTED]')
+      expect(message).toContain('reconnect failed')
+      expect(message).not.toContain('fixture-secret')
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('inherits mutable environment into agent construction before transport work', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-agent-mcp-environment-')),
+    )
+    roots.push(root)
+    const marker = join(root, 'transport-started')
+    const environment: NodeJS.ProcessEnv = { MCP_TOOL_TIMEOUT: '25' }
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      environment,
+      resources: [],
+    })
+    try {
+      environment.MCP_TOOL_TIMEOUT = 'not-a-timeout'
+      await expect(
+        registry.connectAgent({
+          specs: [
+            {
+              inline: {
+                command: process.execPath,
+                args: [
+                  '-e',
+                  `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started')`,
+                ],
+              },
+            },
+          ],
+          base,
+          cwd: root,
+        }),
+      ).rejects.toThrow('MCP_TOOL_TIMEOUT')
+      await expect(readFile(marker, 'utf8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    } finally {
+      await registry.close()
     }
   })
 })

@@ -191,6 +191,23 @@ Startup file downloads also support `PRAXIS_FILES_BASE_URL`,
 `PRAXIS_FILES_BEARER_TOKEN`, and `PRAXIS_FILES_API_KEY`. A bearer token wins;
 the files API key is next; `PRAXIS_API_KEY` is the final credential fallback.
 
+## MCP lifecycle environment
+
+These variables control MCP server lifecycle operations; they are separate from
+provider environment variables.
+
+| Variable           | Default | Validation                        | Applies to                                                         |
+| ------------------ | ------- | --------------------------------- | ------------------------------------------------------------------ |
+| `MCP_TIMEOUT`      | `10000` | Strict positive safe integer (ms) | Transport creation/start, initialize, and all paginated discovery. |
+| `MCP_TOOL_TIMEOUT` | `60000` | Strict positive safe integer (ms) | Normal and permission-prompt MCP tool calls.                       |
+
+The connection bound is one absolute deadline across transport setup and tool,
+resource, and prompt discovery pages. Invalid values fail service construction
+before a configured transport starts. After a disconnect, stale catalog entries
+are hidden; pre-dispatch invocations share one bounded reconnect (up to three
+attempts with 250/500 ms backoff), while an already-dispatched tool call is
+never replayed. A later invocation may reconnect and run normally.
+
 ## Settings and shared resources
 
 Praxis can load native user, project, and local settings. Important

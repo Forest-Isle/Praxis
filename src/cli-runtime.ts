@@ -2029,6 +2029,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           provider: hostedToolProvider,
         }),
     resources: await runtimeMcpResources(resources.mcp),
+    environment: runtimeEnvironment,
     reloadResources: async () => {
       if (cli.strictMcpConfig) return runtimeMcpResources(cli.mcpResources)
       const refreshed = nativeSharedResourcesEnabled
