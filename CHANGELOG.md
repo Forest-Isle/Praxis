@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.44.0](https://github.com/Forest-Isle/Praxis/compare/v0.43.1...v0.44.0) (2026-08-28)
+
+
+### Features
+
+* add native multi-provider authentication ([#502](https://github.com/Forest-Isle/Praxis/issues/502)) ([8ffbf81](https://github.com/Forest-Isle/Praxis/commit/8ffbf8103afea5059144745291e6011532137a47))
+
 ## [0.43.1](https://github.com/Forest-Isle/Praxis/compare/v0.43.0...v0.43.1) (2026-08-28)
 
 
@@ -68,7 +75,17 @@ this file from merged Conventional Commit pull requests.
 * bound every Anthropic/OpenAI provider attempt with a configurable absolute
   deadline and abort-aware fallback backoff
 * add exact-fingerprint workspace trust that blocks automatically discovered
-  project/local hooks and MCP servers until the canonical workspace is accepted
+  project/local hooks, MCP servers, and provider/profile/model routing until the
+  canonical workspace is accepted
+* add native multi-provider routing, credential Vault storage, `praxis auth`
+  actions, non-executing Doctor diagnostics, and the explicitly experimental
+  ChatGPT-backed `openai-codex` OAuth provider with a process-argument-safe
+  browser redirect bridge (#477)
+* preserve provider profile, deadline, Vault backend, and safely normalized
+  credentials in background workers; keep subscription accounting token-only
+  without API-dollar charges
+* document stable API-key setup, provider profiles, Vault controls, and Codex
+  OAuth limitations (#477)
 * add a responsive shared QuietFrame projection for every selectable
   interactive surface, rendered through ANSI or Ink adapters with full parity
 * adopt the terminal-native C+ Quiet Operator palette with mint, amber, and

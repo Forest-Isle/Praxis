@@ -1,28 +1,31 @@
-# ADR 0005: Gate workspace executable configuration behind trust
+# ADR 0005: Gate workspace-controlled configuration behind trust
 
 Status: accepted — 2026-08-28
 
 Issue: [#475](https://github.com/Forest-Isle/Praxis/issues/475)
 
+Related: [#477](https://github.com/Forest-Isle/Praxis/issues/477)
+
 ## Goal
 
-Automatically discovered project configuration must not start hook or MCP
-processes until the user explicitly trusts the canonical workspace and the
-current executable configuration. Ordinary local-first sessions must remain
+Automatically discovered project configuration must not route providers or
+start hook/MCP processes until the user explicitly trusts the canonical
+workspace and current configuration. Ordinary local-first sessions must remain
 usable when that trust is absent or rejected.
 
 ## Decision
 
-Praxis owns one native **workspace executable trust** policy. The policy is
-separate from tool permission modes and applies before `ClaudeHookRunner` or a
-project/local MCP transport can execute.
+Praxis owns one native **workspace trust** policy. The policy is
+separate from tool permission modes and applies before project/local selection
+reaches the Provider Registry and before `ClaudeHookRunner` or a project/local
+MCP transport can execute.
 
 Trust is keyed by the workspace path returned by `realpath`. The accepted
 record lives in native `~/.praxis/state.json` under
 `projects[canonicalPath].workspaceTrust` and contains:
 
 - a schema version;
-- a SHA-256 fingerprint of executable project configuration;
+- a SHA-256 fingerprint of workspace-controlled project configuration;
 - the acceptance timestamp.
 
 The fingerprint is a canonical serialization of:
@@ -30,6 +33,8 @@ The fingerprint is a canonical serialization of:
 - `hooks` definitions from automatically discovered project/local settings;
 - MCP server definitions from automatically discovered project/local MCP
   resources;
+- top-level `provider`, `providerProfile`, and `model` selection from
+  project/local settings;
 - each definition's scope and resolved source path.
 
 Object keys are sorted before hashing; array order remains significant. The
@@ -51,11 +56,15 @@ already authorized by the user action and are not included in this automatic
 project fingerprint. Plugin-produced project/local hook or MCP resources are
 included because their executable origin is still the workspace.
 
+Provider-only selection makes the workspace inventory non-empty. Changing
+provider, profile, model, scope, or source invalidates approval; unrelated
+settings do not.
+
 ## Runtime flow
 
 1. Resolve the workspace using `realpath`.
 2. Load resources as data without starting project processes.
-3. Build the executable resource inventory and fingerprint.
+3. Build the workspace-controlled resource inventory and fingerprint.
 4. If the inventory is empty, continue without a trust record.
 5. If native state contains the same accepted fingerprint, continue.
 6. If `--trust-project` is present, atomically persist the fingerprint and
@@ -64,13 +73,15 @@ included because their executable origin is still the workspace.
    resource origins. The default choice is reject. Acceptance is persisted;
    rejection is cached only for the current process.
 8. In headless mode, or after rejection/cancellation, emit an actionable
-   warning and remove only project/local executable hook and MCP resources.
-9. Construct hooks and MCP clients from the remaining resources.
+   warning, ignore project/local provider selection, and remove only
+   project/local hook and MCP resources.
+9. Resolve trusted project/local selection through the Provider Registry, then
+   construct hooks and MCP clients from the remaining resources.
 
 The interactive prompt runs during the initial read-only service preflight,
 before the main conversation renderer owns stdin. It supports accept, reject,
 EOF, abort, and screen-reader output. Acceptance and rejection are cached for
-that exact fingerprint. If executable configuration changes after the renderer
+that exact fingerprint. If workspace-controlled configuration changes after the renderer
 starts, the new fingerprint is blocked without competing for terminal input;
 the warning asks the user to restart and review it or use `--trust-project` on
 the next invocation.
@@ -87,23 +98,24 @@ reported without overwriting state.
 
 ## Compatibility and safety
 
-- `--safe-mode` and bare/simple mode continue to disable shared executable
-  capabilities even when trust exists.
+- `--safe-mode` and bare/simple mode continue to disable shared
+  workspace-controlled capabilities even when trust exists.
 - `--dangerously-skip-permissions` does not grant workspace trust.
 - Project instructions, rules, permissions, commands, agents, skills, memory,
-  and non-hook settings continue loading while executable trust is absent.
+  and non-hook settings continue loading while workspace trust is absent.
 - User hooks/MCP and explicit `--settings`/`--mcp-config` keep their existing
   behavior.
 - Symlink aliases share the trust state of their canonical workspace.
 - MCP reload applies the same policy before connecting newly discovered
   project/local servers.
 - `/cd` relocation confirmation remains #90, but any service created for the
-  new cwd must still pass this executable trust policy.
+  new cwd must still pass this workspace trust policy.
 
 ## Error handling
 
 - Rejection, cancellation, or non-TTY execution is not a session failure;
-  project executable resources are blocked and a warning names the remedy.
+  project/local provider selection is ignored, project/local hook and MCP
+  resources are blocked, and a warning names the remedy.
 - State corruption or an unsafe state path is an actionable configuration
   error and fails closed.
 - An approval persistence failure does not execute the resource.
@@ -113,8 +125,10 @@ reported without overwriting state.
 ## Test strategy
 
 - Unit-test canonicalization, source/scope sensitivity, harmless-setting
-  stability, changed hook/MCP invalidation, canonical paths, malformed state,
-  unknown-field preservation, and concurrent state updates.
+  stability, provider-only inventory, changed provider/profile/model and
+  hook/MCP invalidation, canonical paths, malformed state, legacy boolean
+  non-authorization, same-invocation approval, symlink reuse, unknown-field
+  preservation, and concurrent state updates.
 - Integration-test `createDefaultService` with user/project/local/explicit
   hook and MCP fixtures, including marker processes that must not start.
 - Test interactive accept/reject/cancel caching and headless warning behavior.
@@ -126,14 +140,17 @@ reported without overwriting state.
 
 ### Trust a path forever
 
-A single `trusted: true` bit would not notice a later malicious config change.
-Path plus executable fingerprint makes the authority match what will run.
+A single `trusted: true` bit would not notice a later malicious config change
+and is not authorization for provider or executable resources.
+Path plus exact configuration fingerprint makes the authority match current
+provider routing and resources.
 
 ### Prompt for every hook or MCP server
 
 Per-process prompts provide finer granularity but create repeated decisions,
 partial startup states, and a larger durable policy. One reviewed workspace
-inventory is smaller and still invalidates on any executable change.
+inventory is smaller and still invalidates on any provider-selection or
+executable configuration change.
 
 ### Reuse tool permission mode
 

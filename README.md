@@ -27,7 +27,9 @@ sessions, configuration, or compatibility directories.
 - macOS or Linux
 - Node.js 24 or newer
 - [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep tool
-- an API key and model ID for an Anthropic or OpenAI-compatible provider
+- an API key and model ID for an Anthropic or OpenAI-compatible provider (the
+  stable setup), or the explicitly enabled experimental ChatGPT-backed Codex
+  subscription integration
 
 Praxis does not use Claude subscription authentication. Claude-shaped message,
 tool, and CLI protocol forms remain supported where they are part of the
@@ -60,6 +62,15 @@ export PRAXIS_MODEL="your-model-id"
 cd /path/to/project
 praxis
 ```
+
+Praxis also has an experimental `openai-codex` provider for ChatGPT-backed
+Codex subscriptions. It is separate from OpenAI API-key access, requires
+`experimental.codexSubscription: true`, and stores OAuth credentials in the
+native Vault. Start with `praxis auth login openai-codex`; see [Getting
+Started](docs/GETTING_STARTED.md) for the browser/device flow and limitations.
+This uses an undocumented third-party subscription/backend contract and may
+change; it is not Claude subscription authentication. Subscription runs retain
+token usage but do not provide API-dollar cost or enforce USD budgets.
 
 For Anthropic Messages:
 
@@ -154,11 +165,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   isolation, explicit ask/deny precedence, sandbox-only auto-allow,
   write-allowlist/deny-within-allow enforcement, per-command overrides and
   exclusions, violation reporting, and bare-repository control-file cleanup,
-  safe-property Skill auto-allow, interactive
-  workspace-directory add/remove controls, path confinement, credential
-  redaction, sanitized child processes, and exact-fingerprint workspace trust
-  that blocks automatically discovered project/local hooks and MCP servers
-  until the canonical workspace configuration is explicitly accepted.
+  safe-property Skill auto-allow, interactive workspace-directory add/remove
+  controls, path confinement, credential redaction, sanitized child processes,
+  and exact-fingerprint workspace trust that blocks automatically discovered
+  project/local provider selection, hooks, and MCP until the canonical
+  workspace configuration is accepted.
 - **Durable local work** — resumable sessions, full-history forks, file
   checkpoints, tasks, foreground/background subagents, top-level agents, and
   Claude-compatible main-thread agent definitions with native prompt, model,
@@ -187,9 +198,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`,
   with bounded MCP connection, discovery, and tool operations plus safe
   disconnect recovery that never replays an already-dispatched call.
-- **Provider-neutral models** — native Anthropic Messages and OpenAI-compatible
-  streaming adapters with explicit capability checks, metering controls, and
-  a bounded absolute deadline for every provider attempt.
+- **Provider-neutral models** — native Provider Registry/Vault routing, API
+  adapters, an experimental Codex OAuth adapter, explicit capability checks,
+  per-attempt bounded deadlines, and token-only/no-API-dollar accounting for
+  subscription runs.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an
   interruption or crash.
@@ -232,7 +244,7 @@ only; they do not change Praxis data ownership.
 
 Praxis targets one local OS user working across multiple repositories and
 sessions. It is CLI-only and provider-capability-aware. Organization, tenant,
-RBAC, subscription authentication and billing, enterprise gateway,
+RBAC, billing, enterprise gateway,
 IDE/Desktop/mobile clients, Remote Control, Claude Desktop import, and hosted
 review-product surfaces are permanent non-goals.
 

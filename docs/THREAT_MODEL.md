@@ -16,23 +16,29 @@ Protected assets:
 
 ## Main threats and required controls
 
-| Threat                                         | Control                                                                                                                                                   |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Prompt injection requests unsafe tools         | Model text never grants permission; normalized tool input is evaluated by local allow/ask/deny rules                                                      |
-| Path traversal or symlink escape               | Resolve and validate filesystem targets at execution time; session IDs must be UUIDs                                                                      |
-| Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                                                          |
-| Sandboxed Bash escape                          | Official sandbox runtime, settings-file/extension write denies, explicit rule precedence, bare-repository file cleanup, and fail-closed required mode     |
-| Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts |
-| Malicious project hook or MCP server           | Discover as data, show canonical origin, and require exact-fingerprint workspace trust before constructing project/local processes                        |
-| Malicious user/explicit hook, skill, or MCP    | Treat as user-authorized executable code; preserve scopes and apply the relevant tool, sandbox, environment, and redaction controls                       |
-| Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                   |
-| Unsupported transcript format                  | Native codec selects read-only fallback before any write                                                                                                  |
-| Provider payload incompatibility               | Persist only translated native completed events; raw payload stays in sidecar                                                                             |
-| Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                    |
-| Fetched-page prompt injection                  | Serialize page text as untrusted JSON data and keep the user request distinct under a higher-priority system instruction                                  |
-| Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                 |
-| Scheduled prompt loss or duplicate             | Validate native state, atomically replace with fingerprint retry, verify PID/start ownership, and consume due jobs once per scheduler service             |
-| Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                         |
+| Threat                                         | Control                                                                                                                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Prompt injection requests unsafe tools         | Model text never grants permission; normalized tool input is evaluated by local allow/ask/deny rules                                                                                                              |
+| Path traversal or symlink escape               | Resolve and validate filesystem targets at execution time; session IDs must be UUIDs                                                                                                                              |
+| Shell injection                                | Execute explicit argv when possible; display exact shell command before approval                                                                                                                                  |
+| Sandboxed Bash escape                          | Official sandbox runtime, settings-file/extension write denies, explicit rule precedence, bare-repository file cleanup, and fail-closed required mode                                                             |
+| Secret disclosure                              | Strip credential-named ambient variables from child processes; disable shell startup files; redact exact configured values before diagnostics/transcripts                                                         |
+| Malicious project hook or MCP server           | Discover as data, show canonical origin, and require exact-fingerprint workspace trust before constructing project/local processes                                                                                |
+| Malicious project provider selection           | Require exact canonical fingerprint trust before Registry selection; profiles remain built-in or globally defined, with no project endpoints or credentials                                                       |
+| Malicious user/explicit hook, skill, or MCP    | Treat as user-authorized executable code; preserve scopes and apply the relevant tool, sandbox, environment, and redaction controls                                                                               |
+| Transcript corruption or confused parent chain | Append-only writes, advisory lock, tail fingerprint, `parentUuid` check, no auto-repair                                                                                                                           |
+| Unsupported transcript format                  | Native codec selects read-only fallback before any write                                                                                                                                                          |
+| Provider payload incompatibility               | Persist only translated native completed events; raw payload stays in sidecar                                                                                                                                     |
+| Web fetch SSRF or DNS rebinding                | Require HTTPS, reject private/loopback targets, pin requests to validated public DNS results, and revalidate redirects                                                                                            |
+| Fetched-page prompt injection                  | Serialize page text as untrusted JSON data and keep the user request distinct under a higher-priority system instruction                                                                                          |
+| Resource exhaustion                            | Bound model turns, post-redaction output, tool runtime, subprocess tree, and context size                                                                                                                         |
+| Scheduled prompt loss or duplicate             | Validate native state, atomically replace with fingerprint retry, verify PID/start ownership, and consume due jobs once per scheduler service                                                                     |
+| Dependency compromise                          | Lockfile, minimal dependencies, CI audit, explicit release review                                                                                                                                                 |
+| Provider credential theft                      | Native Vault prefers macOS Keychain; the file fallback is explicit/availability-gated, uses `0700`/`0600`, atomic writes, ownership/mode/symlink checks, revision reconciliation, and a serialized lease          |
+| Unsafe credential helper                       | Helpers are configured as argv arrays, run without a shell with bounded output/time, are user-scope only, and their output is never logged or persisted unredacted                                                |
+| OAuth interception or token replay             | PKCE, unpredictable one-use state, loopback-only callback with strict path/state checks, one-use non-cacheable browser redirect bridge, bounded waits, explicit device flow, and Vault-only refresh-token storage |
+| Codex endpoint or contract drift               | Codex uses a fixed `https://chatgpt.com/backend-api` endpoint, rejects API keys/overrides, requires the experimental kill switch, and keeps its Responses/SSE adapter private                                     |
+| Diagnostic secret execution                    | Doctor resolves target/source locally without network access or executing credential helpers; it reports skipped helpers and redacts secrets, tokens, account IDs, URL query/fragment, and helper output          |
 
 ## Explicit assumptions
 
@@ -59,6 +65,10 @@ Protected assets:
   Sidecars therefore provide coordination, not an authorization boundary.
 - Enterprise managed-policy enforcement and multi-user isolation are outside
   product scope.
+- ChatGPT subscription OAuth and its backend are third-party behavior that
+  OpenAI does not document as a stable public contract. The experimental
+  Codex integration may stop working or change; the kill switch disables both
+  login and inference. It is not a general OpenAI API-compatible transport.
 
 ## Security acceptance tests
 
@@ -84,6 +94,14 @@ Protected assets:
   address to the HTTPS request lookup;
 - bound WebFetch DNS/request duration, redirect count, response bytes, processed
   output, and cache lifetime.
+- verify provider settings reject plaintext secrets and unsafe URLs; verify
+  Vault permissions, ownership, symlink rejection, atomic mutation, revision
+  reconciliation, and exact provider/profile deletion.
+- verify OAuth state/PKCE, loopback and device flows, refresh rotation, and
+  redaction of tokens, account IDs, URLs, and helper output; browser child
+  arguments contain only an unpredictable local bridge URL.
+- verify Doctor performs no network request and never executes a configured
+  credential helper while still reporting that the helper was skipped.
 - validate background agent IDs before path resolution, create sidechains
   exclusively, and never let TaskStop cancel a different task or main run;
 - bound TaskOutput waits and returned content, serialize same-ID continuations,
