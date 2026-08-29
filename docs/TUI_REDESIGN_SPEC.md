@@ -15,7 +15,8 @@ meaning, Claude compatibility behavior, and native append-only JSONL transcript.
 
 Use **C+ Quiet Operator** as the single visual language for both renderers:
 
-- linear `you>` / `praxis>` conversation instead of cards;
+- linear `❯` user / `⏺` assistant conversation instead of cards; `✻` marks
+  thinking activity and `!` marks shell input;
 - no decorative panels, persistent sidebar, glow, or ornamental borders;
 - successful tools collapse to one stable row, running tools keep one stable
   status row, and failures disclose the useful error detail;
@@ -102,8 +103,8 @@ status updates must not churn unrelated keys.
 Transcript grammar:
 
 ```text
-you> explain this diff
-praxis> I will inspect the changed module.
+❯ explain this diff
+⏺ I will inspect the changed module.
 ✓ Read  src/core/example.ts
 … Bash  npm test
 ! Edit  src/core/example.ts

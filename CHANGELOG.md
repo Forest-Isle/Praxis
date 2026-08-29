@@ -126,6 +126,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Changed
 
+* refresh the normal TUI visual grammar with `❯` user prompts, `⏺` assistant
+  activity, `✻` thinking markers, and `!` shell input while preserving
+  screen-reader labels and transcript semantics
 * make the Praxis data plane native-only: sessions, resources, permissions,
   hooks, MCP, scheduled prompts, and operational state now use `~/.praxis`
   and native project roots; Claude Code directories are never read or written
