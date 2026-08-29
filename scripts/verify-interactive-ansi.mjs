@@ -31,14 +31,14 @@ while time.time()<deadline:
         try: output+=os.read(master,65536)
         except OSError: pass
     if lane=='fallback':
-        if not sent_exit and has(b'PTY_FALLBACK_USER',b'PTY_FALLBACK_ASSISTANT',b'you>'): os.write(master,b'\x03'); sent_exit=1
+        if not sent_exit and has(b'PTY_FALLBACK_USER',b'PTY_FALLBACK_ASSISTANT',b'\xe2\x9d\xaf'): os.write(master,b'\x03'); sent_exit=1
         if sent_exit==1 and b'Exit Praxis?' in output and b'Enter confirm  Esc cancel' in output: os.write(master,b'\x03'); sent_exit=2
     else:
-        if not sent_prompt and has(b'PTY_RESUMED_USER',b'PTY_RESUMED_ASSISTANT',b'you>',b'ready'): os.write(master,b'PTY prompt'); prompt_offset=len(output); sent_prompt=1
+        if not sent_prompt and has(b'PTY_RESUMED_USER',b'PTY_RESUMED_ASSISTANT',b'\xe2\x9d\xaf',b'ready'): os.write(master,b'PTY prompt'); prompt_offset=len(output); sent_prompt=1
         if sent_prompt and not prompt_submitted and len(output)>prompt_offset and b'PTY prompt' in output[prompt_offset:]: os.write(master,b'\r'); prompt_submitted=1
         if prompt_submitted and not down_sent and has(b'Allow once',b'Deny',b'Enter confirm  Esc cancel'): os.write(master,b'\x1b[B'); down_offset=len(output); down_sent=1
-        if down_sent and not up_sent and b'\x1b[2K' in output[down_offset:]: os.write(master,b'\x1b[A'); up_offset=len(output); up_sent=1
-        if up_sent and not sent_permission and b'\x1b[2K' in output[up_offset:]: os.write(master,b'\r'); sent_permission=1
+        if down_sent and not up_sent and b'Allow and don' in output[down_offset:]: os.write(master,b'\x1b[A'); up_offset=len(output); up_sent=1
+        if up_sent and not sent_permission and b'Allow once' in output[up_offset:]: os.write(master,b'\r'); sent_permission=1
         if sent_permission and not resized and b'PTY_STREAM_' in output: fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',20,60,0,0)); os.kill(process.pid,signal.SIGWINCH); resize_offset=len(output); resized=1
         if resized and not sent_exit and b'PTY_STREAM_FINAL' in output: os.write(master,b'\x03'); sent_exit=1
         if sent_exit==1 and b'Exit Praxis?' in output and b'Enter confirm  Esc cancel' in output: os.write(master,b'\x03'); sent_exit=2
@@ -138,7 +138,7 @@ const fallbackOutput = await runLane('fallback')
 const fallback = assertLifecycle(fallbackOutput, 16000, [
   'PTY_FALLBACK_USER',
   'PTY_FALLBACK_ASSISTANT',
-  'you>',
+  '❯',
   'PTY_FALLBACK_INJECTED:true',
 ])
 console.log(
