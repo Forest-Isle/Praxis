@@ -50,6 +50,9 @@ authoritative CLI surface.
   evidence.
 - [Release Automation](RELEASE_AUTOMATION.md) — Release Please, OIDC publishing,
   retry, and recovery procedures.
+- [Issue Tracker](agents/issue-tracker.md) — local GitHub issue operations and
+  triage lifecycle.
+- [Triage Labels](agents/triage-labels.md) — canonical role/label governance.
 
 ## Community and legal
 

@@ -5,6 +5,10 @@ operations.
 
 ## Conventions
 
+Every open issue has exactly one canonical triage role. New reports start at
+`needs-triage`. When transitioning an issue, remove its previous canonical
+role before adding the next one; preserve type and topic labels.
+
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a
   heredoc for multi-line bodies.
 - **Read an issue**: `gh issue view <number> --comments`, filtering comments by

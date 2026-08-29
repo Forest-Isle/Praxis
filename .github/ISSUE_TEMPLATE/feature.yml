@@ -1,7 +1,7 @@
 name: Feature request
 description: Propose a change within Praxis's single-user CLI boundary
 title: 'feat: '
-labels: [enhancement, triage]
+labels: [enhancement, needs-triage]
 body:
   - type: textarea
     id: problem
