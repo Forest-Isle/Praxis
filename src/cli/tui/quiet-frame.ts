@@ -377,7 +377,7 @@ export function projectQuietFrame(input: QuietFrameInput): QuietFrame {
           lines.push(
             createQuietFrameRow(
               `quiet:active:text:${start}`,
-              `${index === 0 ? 'praxis> ' : '        '}${index === 0 && activeTail.hidden ? '… ' : ''}${part}`,
+              `${index === 0 ? '⏺ ' : '        '}${index === 0 && activeTail.hidden ? '… ' : ''}${part}`,
               'active',
               'body',
               `${index === 0 ? 'Praxis: ' : ''}${part}`,
@@ -398,7 +398,7 @@ export function projectQuietFrame(input: QuietFrameInput): QuietFrame {
           lines.push(
             createQuietFrameRow(
               `quiet:active:thinking:${start}`,
-              `${index === 0 ? '… ' : '  '}${part}`,
+              `${index === 0 ? '✻ ' : '  '}${part}`,
               'active',
               'muted',
               `${index === 0 ? 'Thinking: ' : ''}${part}`,
@@ -413,7 +413,7 @@ export function projectQuietFrame(input: QuietFrameInput): QuietFrame {
       : [
           createQuietFrameRow(
             'quiet:composer',
-            `${input.shellMode ? 'shell>' : 'you>'} ${clean(input.composerText)}`,
+            `${input.shellMode ? '! ' : '❯ '}${clean(input.composerText)}`,
             'composer',
             'input',
             `${input.shellMode ? 'Shell' : 'Composer'} input field`,
@@ -454,7 +454,7 @@ export function projectQuietFrame(input: QuietFrameInput): QuietFrame {
     const compact = [...retained, ...focusRows, status]
     lines.splice(0, lines.length, ...compact)
   }
-  const composerPrefix = `${input.shellMode ? 'shell>' : 'you>'} `
+  const composerPrefix = input.shellMode ? '! ' : '❯ '
   if (!screenReader) {
     for (let index = 0; index < lines.length; index += 1) {
       const row = lines[index]

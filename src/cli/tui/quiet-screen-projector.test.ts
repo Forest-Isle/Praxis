@@ -82,16 +82,16 @@ describe('projectQuietScreenFrame', () => {
       'quiet:composer',
       'quiet:status',
     ])
-    expect(frameText(normal)).toContain('you> hello')
-    expect(normal.cursor).toEqual({ rowKey: 'quiet:composer', column: 7 })
+    expect(frameText(normal)).toContain('❯ hello')
+    expect(normal.cursor).toEqual({ rowKey: 'quiet:composer', column: 4 })
 
     const shell = project(conversationScreen(), {
       composerText: 'echo',
       composerCursor: 1,
       shellMode: true,
     })
-    expect(frameText(shell)).toContain('shell> echo')
-    expect(shell.cursor).toEqual({ rowKey: 'quiet:composer', column: 8 })
+    expect(frameText(shell)).toContain('! echo')
+    expect(shell.cursor).toEqual({ rowKey: 'quiet:composer', column: 3 })
   })
 
   it('routes session selection through choice rows and suppresses composer', () => {

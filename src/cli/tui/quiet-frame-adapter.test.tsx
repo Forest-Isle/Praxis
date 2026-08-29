@@ -143,10 +143,10 @@ describe('projectQuietInkFrameLines', () => {
   it('renders only the projected borderless lines', () => {
     const source = frame([
       [{ text: 'Praxis', role: 'heading' }],
-      [{ text: 'you> hello', role: 'input' }],
+      [{ text: '❯ hello', role: 'input' }],
     ])
     const app = render(<QuietInkFrame frame={source} />)
-    expect(app.lastFrame()).toBe('Praxis\nyou> hello')
+    expect(app.lastFrame()).toBe('Praxis\n❯ hello')
     expect(app.lastFrame()).not.toMatch(/[╭╮╰╯│]/u)
   })
 })

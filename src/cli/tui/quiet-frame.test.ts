@@ -102,7 +102,7 @@ describe('quiet frame', () => {
       screen: screen({
         intro: 'identity',
         sessionLabel: 'abc12345',
-        rows: [sourceRow('turn:1', 'you> hello')],
+        rows: [sourceRow('turn:1', '❯ hello')],
         active: { text: 'first\nsecond', thinking: 'checking', visible: true },
       }),
       width: 100,
@@ -120,7 +120,7 @@ describe('quiet frame', () => {
       'status',
     ])
     expect(value.lines[0]?.segments[0]?.text).toContain('session abc12345')
-    expect(value.lines[2]?.segments[0]?.text).toBe('praxis> first')
+    expect(value.lines[2]?.segments[0]?.text).toBe('⏺ first')
     expect(value.lines[3]?.segments[0]?.text).toBe('        second')
     expect(value.lines[4]?.accessibleText).toBe('Thinking: checking')
   })
@@ -393,7 +393,7 @@ describe('quiet frame', () => {
   it('reports a clamped visible cursor column including the composer prefix', () => {
     expect(frame({ composerText: 'hello', composerCursor: 2 }).cursor).toEqual({
       rowKey: 'quiet:composer',
-      column: 7,
+      column: 4,
     })
     expect(
       frame({
@@ -403,11 +403,11 @@ describe('quiet frame', () => {
         composerCursor: 999,
       }).cursor,
     ).toEqual({ rowKey: 'quiet:composer', column: 7 })
-    expect(frame({ composerCursor: Number.NaN }).cursor?.column).toBe(5)
+    expect(frame({ composerCursor: Number.NaN }).cursor?.column).toBe(2)
   })
 
   it('keeps unrelated row keys stable across status and input changes', () => {
-    const source = screen({ rows: [sourceRow('turn:stable', 'praxis> ok')] })
+    const source = screen({ rows: [sourceRow('turn:stable', '⏺ ok')] })
     const first = frame({ screen: source, composerText: 'a', status: 'Ready' })
     const second = frame({
       screen: source,
@@ -490,7 +490,7 @@ describe('quiet frame', () => {
       ])
       const composer = value.lines.find((row) => row.key === 'quiet:composer')
       const composerOutput = composer?.segments[0]?.text ?? ''
-      expect(composerOutput).toMatch(/^you> …/u)
+      expect(composerOutput).toMatch(/^❯ …/u)
       expect(composerOutput).toContain('界e\u0301👩‍💻R')
       expect(composerOutput).toMatch(/…$/u)
       expect(value.cursor?.column).toBeGreaterThanOrEqual(5)
@@ -522,13 +522,13 @@ describe('quiet frame', () => {
       value.lines.find((row) => row.key === 'quiet:composer')?.segments[0]
         ?.text ?? ''
 
-    expect(output(start)).toMatch(/^you> L+…$/u)
-    expect(start.cursor?.column).toBe(5)
-    expect(output(centered)).toMatch(/^you> …/u)
+    expect(output(start)).toMatch(/^❯ L+…$/u)
+    expect(start.cursor?.column).toBe(2)
+    expect(output(centered)).toMatch(/^❯ …/u)
     expect(output(centered)).toContain('界e\u0301👩‍💻R')
     expect(output(centered)).toMatch(/…$/u)
     expect(centered.cursor?.column).toBeLessThan(40)
-    expect(output(end)).toMatch(/^you> …R+ $/u)
+    expect(output(end)).toMatch(/^❯ …R+ $/u)
     expect(end.cursor?.column).toBe(39)
 
     const shell = frame({
@@ -537,7 +537,7 @@ describe('quiet frame', () => {
       composerText: middle,
       composerCursor: 86,
     })
-    expect(output(shell)).toMatch(/^shell> …/u)
+    expect(output(shell)).toMatch(/^! …/u)
     expect(shell.cursor?.column).toBeLessThan(40)
   })
 
@@ -597,6 +597,6 @@ describe('quiet frame', () => {
           ?.text ?? '',
       ),
     ).toBe(5)
-    expect(user.cursor?.column).toBe(4)
+    expect(user.cursor?.column).toBe(3)
   })
 })
