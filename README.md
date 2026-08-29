@@ -198,6 +198,22 @@ Detailed feature status and executable evidence live in the
 [parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md),
 not in this entry-point README.
 
+## Native data plane
+
+Praxis defaults to an independent local native data plane:
+
+```text
+Praxis ─── ~/.praxis (or PRAXIS_HOME)
+```
+
+All sessions, memory, tasks, scheduled tasks, resources, and private state live
+under `~/.praxis` (or `PRAXIS_HOME`). The authoritative transcript is
+append-only `praxis.transcript` v1 JSONL; legacy Claude transcripts, indexes,
+sidechains, and migration/recovery paths have been removed. `CLAUDE_CONFIG_DIR`
+does not participate in native runs, and legacy directories are neither read
+nor written. Claude-shaped messages and tool fields describe protocol shape
+only; they do not change Praxis data ownership.
+
 ## Documentation
 
 | Need                                       | Document                                                                                         |

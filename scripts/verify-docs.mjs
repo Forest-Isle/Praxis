@@ -1,5 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { dirname, relative, resolve, sep } from 'node:path'
+import { parse } from 'yaml'
+import { governanceDiagnostics } from './document-governance.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const excludedDirectories = new Set([
@@ -14,6 +16,7 @@ const requiredDocuments = [
   'CONTRIBUTING.md',
   'LICENSE',
   'README.md',
+  'README_zh.md',
   'SECURITY.md',
   'SUPPORT.md',
   'THIRD_PARTY_NOTICES.md',
@@ -99,6 +102,27 @@ for (const file of files) {
     }
   }
 }
+
+const governanceForms = [
+  '.github/ISSUE_TEMPLATE/bug.yml',
+  '.github/ISSUE_TEMPLATE/feature.yml',
+]
+const issueForms = []
+for (const path of governanceForms) {
+  const source = await readFile(resolve(root, path), 'utf8')
+  const form = parse(source)
+  issueForms.push({ path, labels: form?.labels ?? [] })
+}
+const governance = governanceDiagnostics({
+  englishReadme: await readFile(resolve(root, 'README.md'), 'utf8'),
+  chineseReadme: await readFile(resolve(root, 'README_zh.md'), 'utf8'),
+  issueForms,
+  triageDocumentation: await readFile(
+    resolve(root, 'docs/agents/triage-labels.md'),
+    'utf8',
+  ),
+})
+failures.push(...governance)
 
 if (failures.length > 0) {
   throw new Error(`Documentation verification failed:\n${failures.join('\n')}`)
