@@ -7293,7 +7293,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('✓ Bash  pwd')
-    expect(app.lastFrame()).toContain('continued pwd')
+    expect(app.lastFrame()).not.toContain('continued pwd')
     expect(app.lastFrame()).not.toContain('❯ !pwd')
 
     app.stdin.write('!')

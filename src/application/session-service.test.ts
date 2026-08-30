@@ -1333,7 +1333,10 @@ describe('ClaudeSessionService', () => {
       permissions: { resolve: () => ({ behavior: 'allow' }) },
     })
 
-    await service.runShell('printf native-shell', undefined, shellSessionId)
+    await expect(
+      service.runShell('printf native-shell', undefined, shellSessionId),
+    ).resolves.toMatchObject({ sessionId: shellSessionId, text: '' })
+    expect(providerCalls).toBe(0)
     const shellFile = resolveDataPlanePaths({
       dataPlane: 'native',
       root: configRoot,
@@ -1351,7 +1354,6 @@ describe('ClaudeSessionService', () => {
         content:
           '<bash-stdout>native-shell</bash-stdout><bash-stderr></bash-stderr>',
       },
-      { role: 'assistant', content: 'native shell answer' },
     ])
 
     const unresolvedSessionId = '95959595-9595-4595-8595-959595959595'
@@ -1392,7 +1394,7 @@ describe('ClaudeSessionService', () => {
     await expect(
       service.resume(unresolvedSessionId, 'must not execute'),
     ).rejects.toThrow(/requires explicit recovery approval/u)
-    expect(providerCalls).toBe(1)
+    expect(providerCalls).toBe(0)
     expect(await readFile(unresolvedFile, 'utf8')).toBe(unresolvedSource)
 
     const invalidFixtures = [
@@ -1451,7 +1453,38 @@ describe('ClaudeSessionService', () => {
       )
       expect(await readFile(file, 'utf8')).toBe(fixture.source)
     }
-    expect(providerCalls).toBe(1)
+    expect(providerCalls).toBe(0)
+    await service.close()
+  })
+
+  it('runs native shell without pricing when max budget is configured', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-max-budget-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    let providerCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      maxBudgetUsd: 1,
+      provider: {
+        model: 'unpriced-shell-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          providerCalls += 1
+          yield { type: 'text-delta', delta: 'unexpected' }
+        },
+      },
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(service.runShell('printf max-budget')).resolves.toMatchObject({
+      text: '',
+    })
+    expect(providerCalls).toBe(0)
     await service.close()
   })
 
@@ -2641,6 +2674,10 @@ describe('ClaudeSessionService', () => {
     const events: RuntimeEvent[] = []
     const hookEvents: string[] = []
     const postToolResponses: unknown[] = []
+    const projectMemoryExtraction = {
+      observe: vi.fn(),
+      close: vi.fn(async () => undefined),
+    }
     const provider: ModelProvider = {
       model: 'fixture-model',
       capabilities: { streaming: true, usage: true, tools: true },
@@ -2707,15 +2744,25 @@ describe('ClaudeSessionService', () => {
       tools: new LocalToolRegistry({ cwd }),
       permissions: { resolve: () => ({ behavior: 'ask' }) },
       hooks,
+      projectMemoryExtraction,
       eventSink: (event) => events.push(event),
     })
 
     await expect(
       service.runShell('printf original', undefined, sessionId),
-    ).resolves.toMatchObject({ text: 'answer-1', sessionId })
+    ).resolves.toMatchObject({ text: '', sessionId })
     await expect(
       service.resumeShell(sessionId, 'printf second'),
-    ).resolves.toMatchObject({ text: 'answer-2', sessionId })
+    ).resolves.toMatchObject({ text: '', sessionId })
+    expect(requests).toHaveLength(0)
+    expect(projectMemoryExtraction.observe).toHaveBeenCalledTimes(0)
+    await expect(
+      service.resume(sessionId, 'ordinary prompt'),
+    ).resolves.toMatchObject({
+      text: 'answer-1',
+      sessionId,
+    })
+    expect(projectMemoryExtraction.observe).toHaveBeenCalledTimes(1)
 
     expect(hookEvents).toEqual([
       'PreToolUse',
@@ -2743,7 +2790,7 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[0]?.messages)).toContain(
       '<bash-stdout>hook-output</bash-stdout><bash-stderr></bash-stderr>',
     )
-    expect(JSON.stringify(requests[1]?.messages)).toContain(
+    expect(JSON.stringify(requests[0]?.messages)).toContain(
       '<bash-input>printf second</bash-input>',
     )
 
@@ -2769,7 +2816,7 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(messages)).not.toContain('shell_')
     expect(messages.at(-1)).toMatchObject({
       role: 'assistant',
-      content: 'answer-2',
+      content: 'answer-1',
     })
   })
 
@@ -2806,11 +2853,16 @@ describe('ClaudeSessionService', () => {
       approveTool: () => ({ behavior: 'deny', message: 'User denied shell' }),
     })
 
-    await expect(service.runShell('touch denied')).resolves.toMatchObject({
-      text: 'denied safely',
-    })
+    const result = await service.runShell('touch denied')
+    expect(result.text).toBe('')
     expect(executed).toBe(false)
-    expect(JSON.stringify(requests[0]?.messages)).toContain(
+    expect(requests).toHaveLength(0)
+    const sessionFile = resolveNativePaths({
+      configDir: configRoot,
+      cwd,
+      sessionId: result.sessionId,
+    }).sessionFile
+    expect(await readFile(sessionFile, 'utf8')).toContain(
       '<bash-stderr>User denied shell</bash-stderr>',
     )
   })
@@ -9541,11 +9593,12 @@ describe('ClaudeSessionService', () => {
     )
   })
 
-  it('rejects a shell tool breakdown conflicting with the main provider capability metadata', async () => {
+  it('preserves native shell model usage capability metadata without a provider turn', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-metadata-shell-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
+    let providerCalls = 0
     const provider: ModelProvider = {
       model: 'shell-fixture-model',
       capabilities: {
@@ -9556,6 +9609,7 @@ describe('ClaudeSessionService', () => {
         maxOutputTokens: 32_000,
       },
       async *complete() {
+        providerCalls += 1
         yield { type: 'text-delta', delta: 'answer' }
         yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
       },
@@ -9595,15 +9649,20 @@ describe('ClaudeSessionService', () => {
       permissions: { resolve: () => ({ behavior: 'allow' }) },
     })
 
-    await expect(
-      service.runShell(
-        'printf hi',
-        undefined,
-        '91919191-9191-4191-8191-919191919191',
-      ),
-    ).rejects.toThrow(
-      'Model usage for "shell-fixture-model" has conflicting contextWindow values: 100000 vs 200000',
+    const result = await service.runShell(
+      'printf hi',
+      undefined,
+      '91919191-9191-4191-8191-919191919191',
     )
+    expect(result.text).toBe('')
+    expect(result.usage).toMatchObject({ inputTokens: 1, outputTokens: 1 })
+    expect(result.modelUsage?.['shell-fixture-model']).toMatchObject({
+      inputTokens: 2,
+      outputTokens: 1,
+      contextWindow: 100_000,
+      maxOutputTokens: 16_000,
+    })
+    expect(providerCalls).toBe(0)
   })
 
   it('honors the shared auto-compact setting without disabling manual compaction', async () => {
