@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.46.0](https://github.com/Forest-Isle/Praxis/compare/v0.45.4...v0.46.0) (2026-08-30)
+
+
+### Features
+
+* support active-turn steering and follow-ups ([#523](https://github.com/Forest-Isle/Praxis/issues/523)) ([964e010](https://github.com/Forest-Isle/Praxis/commit/964e01024bf0716e12cde7df03be93aeb52c0e33))
+
 ## [0.45.4](https://github.com/Forest-Isle/Praxis/compare/v0.45.3...v0.45.4) (2026-08-30)
 
 
