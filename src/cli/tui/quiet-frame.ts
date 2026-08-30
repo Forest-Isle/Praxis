@@ -13,7 +13,13 @@ import {
 export type QuietFrameDensity =
   'full' | 'standard' | 'compact' | 'narrow' | 'minimal'
 export type QuietFrameRegion =
-  'identity' | 'transcript' | 'active' | 'focus' | 'composer' | 'status'
+  | 'identity'
+  | 'transcript'
+  | 'active'
+  | 'pending'
+  | 'focus'
+  | 'composer'
+  | 'status'
 
 export interface QuietFrameRow extends TuiRow {
   readonly region: QuietFrameRegion
@@ -42,6 +48,11 @@ export interface QuietFrameInput {
   readonly shellMode: boolean
   readonly busy: boolean
   readonly status: string
+  readonly pendingItems?: readonly {
+    readonly id: string
+    readonly kind: 'steering' | 'follow-up'
+    readonly text: string
+  }[]
   readonly display?: {
     readonly cwd?: string
     readonly model?: string
@@ -406,6 +417,18 @@ export function projectQuietFrame(input: QuietFrameInput): QuietFrame {
           ),
         )
     }
+  }
+  for (const item of input.pendingItems ?? []) {
+    const label = item.kind === 'steering' ? 'steer' : 'follow-up'
+    lines.push(
+      createQuietFrameRow(
+        `quiet:pending:${item.id}`,
+        `${label} · ${clean(item.text)}`,
+        'pending',
+        'muted',
+        `${label} pending input: ${clean(item.text)}`,
+      ),
+    )
   }
   const focus =
     input.focusRows.length > 0

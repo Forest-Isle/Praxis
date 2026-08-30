@@ -1,5 +1,6 @@
 import { ToolExecutionScheduler } from './tool-execution-scheduler.js'
 import { resolveToolSchedulingPolicy } from './tool-scheduling-policy.js'
+import type { ActiveTurnInputPort, SteeringItem } from './active-turn-input.js'
 
 export type RuntimeState =
   | 'idle'
@@ -181,6 +182,17 @@ export type RuntimeEvent =
       message: string
       attachments?: readonly string[]
       status: 'normal' | 'proactive'
+    }
+  | {
+      type: 'user-input-delivered'
+      id: string
+      content: string
+    }
+  | {
+      type: 'user-input-rejected'
+      id: string
+      content: string
+      reason: 'cancelled' | 'failed' | 'closed'
     }
   | { type: 'usage'; usage: ModelUsage }
   | { type: 'terminal'; reason: ModelTerminalReason }
@@ -504,6 +516,7 @@ export interface AgentRunObserver {
   }): Promise<void>
   toolCompleted(call: ModelToolCall, result: ToolExecutionResult): Promise<void>
   followUpUserMessagesCompleted?(messages: readonly string[]): Promise<void>
+  userInputDelivered?(item: SteeringItem): Promise<void>
 }
 
 export interface ToolUseSummaryOutcome {
@@ -544,6 +557,7 @@ export interface AgentRunRequest {
   cwd?: string
   toolResultDirectory?: string
   observer?: AgentRunObserver
+  steering?: ActiveTurnInputPort
   reloadMessages?: () => Promise<readonly ModelMessage[]>
   approveTool?: (
     call: ModelToolCall,
@@ -956,13 +970,60 @@ export class AgentRuntime {
   ) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
+    const steering = request.steering
+    const rejectSteering = (
+      reason: 'cancelled' | 'failed' | 'closed',
+    ): void => {
+      for (const item of steering?.close() ?? []) {
+        this.emit({
+          type: 'user-input-rejected',
+          id: item.id,
+          content: item.content,
+          reason,
+        })
+      }
+    }
+    const cancelWithSteering = (): never => {
+      rejectSteering('cancelled')
+      return this.cancel()
+    }
+    const deliverSteering = async (item: SteeringItem): Promise<void> => {
+      try {
+        if (!request.observer?.userInputDelivered) {
+          throw new Error(
+            'Active-turn steering requires a durable delivery observer',
+          )
+        }
+        await request.observer.userInputDelivered(item)
+      } catch (error) {
+        this.emit({
+          type: 'user-input-rejected',
+          id: item.id,
+          content: item.content,
+          reason: 'failed',
+        })
+        throw error
+      }
+      messages.push({ role: 'user', content: item.content })
+      this.emit({
+        type: 'user-input-delivered',
+        id: item.id,
+        content: item.content,
+      })
+    }
+    const deliverNextSteering = async (): Promise<boolean> => {
+      const item = steering?.take()
+      if (!item) return false
+      await deliverSteering(item)
+      return true
+    }
     const failurePresentationDeferred = (kind: ProviderErrorKind): boolean =>
       request.deferFailureKinds === true ||
       request.deferFailureKinds?.includes(kind) === true
     if (this.options.emitInitialContextState !== false) {
       this.emit({ type: 'state', state: 'assembling-context' })
     }
-    if (request.signal?.aborted) return this.cancel()
+    if (request.signal?.aborted) return cancelWithSteering()
 
     const messages = [...request.messages]
     let usage = emptyUsage()
@@ -1004,7 +1065,7 @@ export class AgentRuntime {
       while (true) {
         activeAttemptHasPresentation = false
         activeAttemptDiscarded = false
-        if (request.signal?.aborted) return this.cancel()
+        if (request.signal?.aborted) return cancelWithSteering()
         if (maxModelTurns !== undefined && modelTurns >= maxModelTurns) {
           throw new Error(`Maximum model turns of ${maxModelTurns} exceeded`)
         }
@@ -1143,7 +1204,7 @@ export class AgentRuntime {
         let turnApiAttemptDurationSeen = false
         try {
           for await (const event of this.provider.complete(providerRequest)) {
-            if (request.signal?.aborted) return this.cancel()
+            if (request.signal?.aborted) return cancelWithSteering()
             if (terminalReason !== undefined) {
               throw new ModelProviderError(
                 `Provider emitted ${event.type} after terminal reason ${terminalReason}`,
@@ -1266,7 +1327,7 @@ export class AgentRuntime {
             toolScheduler.releaseExclusiveTools()
           }
           await toolScheduler.settle().catch(() => undefined)
-          if (request.signal?.aborted) return this.cancel()
+          if (request.signal?.aborted) return cancelWithSteering()
           throw error
         } finally {
           if (request.collectMetrics) {
@@ -1401,6 +1462,11 @@ export class AgentRuntime {
         toolScheduler.releaseExclusiveTools()
 
         if (toolCalls.length === 0) {
+          const preStopSteering = steering?.take()
+          if (preStopSteering !== undefined) {
+            await deliverSteering(preStopSteering)
+            continue
+          }
           const stopResult = (await request.onStop?.(text)) ?? []
           const stopBatch = Array.isArray(stopResult)
             ? null
@@ -1467,9 +1533,14 @@ export class AgentRuntime {
             )
             if (request.reloadMessages) {
               const reloadedMessages = await request.reloadMessages()
-              if (request.signal?.aborted) return this.cancel()
+              if (request.signal?.aborted) return cancelWithSteering()
               messages.splice(0, messages.length, ...reloadedMessages)
             }
+            continue
+          }
+          const completionInput = steering?.takeOrSeal()
+          if (completionInput !== undefined) {
+            await deliverSteering(completionInput)
             continue
           }
           this.emit({ type: 'state', state: 'completed' })
@@ -1596,12 +1667,17 @@ export class AgentRuntime {
         }
         if (request.reloadMessages) {
           const reloadedMessages = await request.reloadMessages()
-          if (request.signal?.aborted) return this.cancel()
+          if (request.signal?.aborted) return cancelWithSteering()
           messages.splice(0, messages.length, ...reloadedMessages)
         }
+        await deliverNextSteering()
       }
     } catch (error) {
-      if (request.signal?.aborted) return this.cancel()
+      if (request.signal?.aborted) {
+        rejectSteering('cancelled')
+        return this.cancel()
+      }
+      rejectSteering('failed')
       const message = error instanceof Error ? error.message : String(error)
       const retryable =
         error instanceof ModelProviderError ? error.retryable : false

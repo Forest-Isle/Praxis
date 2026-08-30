@@ -65,6 +65,8 @@ authoritative CLI surface.
 
 ## Focused design records
 
+- [Active-turn Input](ACTIVE_TURN_INPUT.md) — safe-boundary steering, queued
+  follow-up turns, pending-input presentation, and race behavior.
 - [Workflow Contract](STAGE23_WORKFLOW.md)
 - [Dynamic Wakeup Contract](STAGE24_DYNAMIC_WAKEUP.md)
 - [Native Worktrees](STAGE25_WORKTREES.md)

@@ -145,6 +145,34 @@ describe('projectQuietScreenFrame', () => {
     expect(frame.cursor).toBeUndefined()
   })
 
+  it('keeps pending rows visible while priority focus replaces the composer', () => {
+    const tool = projectTuiToolPermission(
+      { id: 'call-1', name: 'Bash', input: { command: 'npm test' } },
+      '/workspace',
+      [],
+    )
+    const frame = project(
+      conversationScreen({
+        kind: 'priority',
+        surface: {
+          kind: 'permission',
+          surface: projectTuiPermissionSurface({
+            kind: 'tool-request',
+            model: tool,
+            selection: 0,
+            feedbackMode: false,
+            feedback: '',
+          }),
+        },
+      }),
+      { pendingItems: [{ id: 'pending-1', kind: 'steering', text: 'wait' }] },
+    )
+    expect(frame.lines.map((row) => row.key)).toContain(
+      'quiet:pending:pending-1',
+    )
+    expect(frame.lines.some((row) => row.key === 'quiet:composer')).toBe(false)
+  })
+
   it('dispatches permission, operational, and settings secondary surfaces', () => {
     const permission = projectTuiPermissionSurface({
       kind: 'permission-dashboard',

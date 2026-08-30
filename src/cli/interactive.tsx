@@ -31,6 +31,7 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import type { ActiveTurnInputCommandResult } from '../core/active-turn-input.js'
 import { permissionRuleValueToString } from '../permissions/permission-updates.js'
 import {
   resolveDataPlane,
@@ -407,6 +408,12 @@ import {
 import type { BackgroundTaskSnapshot } from '../application/background-task-runtime.js'
 import { ClaudeMcpManagement } from '../mcp/claude-mcp-management.js'
 
+type PendingInteractiveInput = {
+  readonly id: string
+  readonly kind: 'steering' | 'follow-up'
+  readonly text: string
+}
+
 interface InteractiveSessionCommands {
   run(
     prompt: string,
@@ -422,6 +429,8 @@ interface InteractiveSessionCommands {
     name?: string,
     images?: readonly ModelImage[],
   ): Promise<SessionRunResult>
+  steer?(sessionId: string, content: string): ActiveTurnInputCommandResult
+  withdrawSteering?(sessionId: string, id: string): ActiveTurnInputCommandResult
   runShell?(
     command: string,
     signal?: AbortSignal,
@@ -1346,6 +1355,24 @@ export function InteractiveApp({
   const inputHistoryRef = useRef<string[]>([])
   const inputHistoryIndexRef = useRef<number | null>(null)
   const inputHistoryDraftRef = useRef('')
+  const [pendingInputs, setPendingInputs] = useState<
+    readonly PendingInteractiveInput[]
+  >([])
+  const pendingInputsRef = useRef(pendingInputs)
+  pendingInputsRef.current = pendingInputs
+  const followUpQueueRef = useRef<{ id: string; text: string }[]>([])
+  const updatePendingInputs = (
+    update:
+      | readonly PendingInteractiveInput[]
+      | ((
+          current: readonly PendingInteractiveInput[],
+        ) => readonly PendingInteractiveInput[]),
+  ) => {
+    const next =
+      typeof update === 'function' ? update(pendingInputsRef.current) : update
+    pendingInputsRef.current = next
+    setPendingInputs(next)
+  }
   const undoStackRef = useRef<Array<ReturnType<typeof createComposerEditor>>>(
     [],
   )
@@ -2994,6 +3021,35 @@ export function InteractiveApp({
     updateComposerInput(history[nextIndex] ?? '')
   }
 
+  const withdrawLatestPending = (): boolean => {
+    if (inputRef.current.trim().length !== 0) return false
+    const pending = pendingInputsRef.current.at(-1)
+    if (!pending) return false
+    if (pending.kind === 'follow-up') {
+      followUpQueueRef.current = followUpQueueRef.current.filter(
+        (item) => item.id !== pending.id,
+      )
+      updatePendingInputs((current) =>
+        current.filter((item) => item.id !== pending.id),
+      )
+      updateComposerInput(pending.text)
+      return true
+    }
+    const activeSessionId = sessionIdRef.current
+    const result = activeSessionId
+      ? serviceRef.current?.withdrawSteering?.(activeSessionId, pending.id)
+      : undefined
+    if (result?.kind === 'withdrawn') {
+      updatePendingInputs((current) =>
+        current.filter((item) => item.id !== pending.id),
+      )
+      updateComposerInput(result.item.content)
+      return true
+    }
+    append({ kind: 'warning', text: 'Input is already delivered.' })
+    return true
+  }
+
   const dismissExitConfirmation = () => {
     if (!exitConfirmation) return
     if (exitConfirmationTimerRef.current)
@@ -3063,6 +3119,37 @@ export function InteractiveApp({
       }
       case 'user-message':
         append({ kind: 'assistant', text: event.message })
+        break
+      case 'user-input-delivered':
+        // Steering is delivered after the preceding assistant batch has been
+        // persisted. Commit that batch to the visible transcript before the
+        // user row, then start the next provider continuation with a fresh
+        // active buffer. Otherwise the active row would appear after the
+        // steering message and be discarded when the turn finally completes.
+        if ((streamingFrameRef.current?.text.trim().length ?? 0) > 0) {
+          append({
+            kind: 'assistant',
+            text: streamingFrameRef.current?.text ?? '',
+          })
+        }
+        streamingFrameRef.current?.resetText()
+        streamingFrameRef.current?.resetThinking()
+        streamingFrameRef.current?.flush()
+        updatePendingInputs((current) =>
+          current.filter((item) => item.id !== event.id),
+        )
+        append({ kind: 'user', text: event.content })
+        break
+      case 'user-input-rejected':
+        updatePendingInputs((current) =>
+          current.filter((item) => item.id !== event.id),
+        )
+        if (inputRef.current.trim().length === 0)
+          updateComposerInput(event.content)
+        append({
+          kind: 'warning',
+          text: `Input not delivered · ${redactSensitiveText(event.content, sensitiveValues)}`,
+        })
         break
       case 'state':
         if (event.state === 'awaiting-model') {
@@ -4662,10 +4749,12 @@ export function InteractiveApp({
     void restoring.finally(() => onTurnChange?.(null))
   }
 
-  const submit = async (
+  const submitTurn = async (
     prompt: string,
     shellCommand?: string,
     images: readonly ModelImage[] = [],
+    followUpId?: string,
+    internal = false,
   ) => {
     setTranscriptScrollOffset(0)
     const turnNumber = turnNumberRef.current + 1
@@ -4681,6 +4770,11 @@ export function InteractiveApp({
       ? AbortSignal.any([signal, turnController.signal])
       : turnController.signal
     setBusy(true)
+    if (followUpId !== undefined) {
+      updatePendingInputs((current) =>
+        current.filter((item) => item.id !== followUpId),
+      )
+    }
     setTurnDuration(undefined)
     setCommandPaletteOpen(false)
     const submittedCommandName = /^\/([^\s]+)/u.exec(prompt)?.[1]?.toLowerCase()
@@ -4699,9 +4793,10 @@ export function InteractiveApp({
     if (shellCommand === undefined) append({ kind: 'user', text: prompt })
     else turnMutatedFilesRef.current = true
     let commands: InteractiveSessionCommands | undefined
+    let turnSucceeded = false
     try {
       commands = await service()
-      let activeSessionId = sessionId
+      let activeSessionId = sessionIdRef.current
       const startedNewSession = activeSessionId === null
       if (activeSessionId === null) {
         activeSessionId = randomUUID()
@@ -4795,6 +4890,8 @@ export function InteractiveApp({
       setStatus('ready')
       setTurnDuration(Date.now() - turnStartedAt)
       if (
+        !internal &&
+        followUpQueueRef.current.length === 0 &&
         runtimeSettingsRef.current.notifChannel !== 'notifications_disabled'
       ) {
         notifyTerminal({
@@ -4808,6 +4905,7 @@ export function InteractiveApp({
             : { write: notificationWriter }),
         })
       }
+      turnSucceeded = true
     } catch (error) {
       if (turnController.signal.aborted && !signal?.aborted) {
         if (shellCommand !== undefined) updateComposerInput(`!${shellCommand}`)
@@ -4824,7 +4922,7 @@ export function InteractiveApp({
         setStatus('failed')
       }
     } finally {
-      if (!factory.scheduledPrompts && commands) {
+      if (!internal && !factory.scheduledPrompts && commands) {
         try {
           await commands.close?.()
         } catch (error) {
@@ -4841,6 +4939,75 @@ export function InteractiveApp({
       }
       if (turnControllerRef.current === turnController)
         turnControllerRef.current = null
+      if (!internal) {
+        setBusy(false)
+      }
+    }
+    return turnSucceeded
+  }
+
+  const submit = async (
+    prompt: string,
+    shellCommand?: string,
+    images: readonly ModelImage[] = [],
+    followUpId?: string,
+  ) => {
+    let currentPrompt = prompt
+    let currentShellCommand = shellCommand
+    let currentImages = images
+    let currentFollowUpId = followUpId
+    let completed = false
+    try {
+      while (true) {
+        completed = await submitTurn(
+          currentPrompt,
+          currentShellCommand,
+          currentImages,
+          currentFollowUpId,
+          true,
+        )
+        if (!completed) break
+        const next = followUpQueueRef.current.shift()
+        if (!next) break
+        currentPrompt = next.text
+        currentShellCommand = undefined
+        currentImages = []
+        currentFollowUpId = next.id
+      }
+      if (
+        completed &&
+        runtimeSettingsRef.current.notifChannel !== 'notifications_disabled'
+      ) {
+        notifyTerminal({
+          channel: runtimeSettingsRef.current.notifChannel as Parameters<
+            typeof notifyTerminal
+          >[0]['channel'],
+          title: 'Praxis',
+          message: 'Turn complete',
+          ...(notificationWriter === undefined
+            ? {}
+            : { write: notificationWriter }),
+        })
+      }
+    } finally {
+      if (!factory.scheduledPrompts) {
+        const commands = serviceRef.current
+        if (commands) {
+          try {
+            await commands.close?.()
+          } catch (error) {
+            append({
+              kind: 'warning',
+              text: redactSensitiveText(
+                error instanceof Error ? error.message : String(error),
+                sensitiveValues,
+              ),
+            })
+          } finally {
+            if (serviceRef.current === commands) serviceRef.current = null
+          }
+        }
+      }
       setBusy(false)
     }
   }
@@ -7588,6 +7755,100 @@ export function InteractiveApp({
         void backgrounding
         return
       }
+      const pendingText = inputRef.current.trim()
+      const addPending = (item: {
+        id: string
+        kind: 'steering' | 'follow-up'
+        text: string
+      }) => updatePendingInputs((current) => [...current, item])
+      if (key.upArrow && pendingText.length === 0) {
+        withdrawLatestPending()
+        return
+      }
+      if (key.return && key.shift) {
+        updateComposerEditor(insertComposerText(editor(), '\n'))
+        return
+      }
+      if (isKeybinding('chat:submit') && !key.shift && !key.meta && !key.ctrl) {
+        if (!pendingText) return
+        const controller = turnControllerRef.current
+        if (!controller) {
+          append({
+            kind: 'warning',
+            text: 'Turn is completing; input was retained.',
+          })
+          return
+        }
+        const restoreSteeringText = () => {
+          const current = inputRef.current
+          updateComposerInput(
+            current.trim().length === 0
+              ? pendingText
+              : `${pendingText}\n${current}`,
+          )
+        }
+        // Service construction may still be in flight while the busy composer
+        // is already visible. Clear now so newly typed text becomes a distinct
+        // draft; restore both drafts if the active-turn command loses a race.
+        clearComposerInput()
+        const steer = async () => {
+          const commands = serviceRef.current ?? (await service())
+          if (
+            turnControllerRef.current !== controller ||
+            controller.signal.aborted
+          ) {
+            restoreSteeringText()
+            append({
+              kind: 'warning',
+              text: 'Active turn changed; input was retained.',
+            })
+            return
+          }
+          const activeSessionId = sessionIdRef.current
+          const result = activeSessionId
+            ? commands.steer?.(activeSessionId, pendingText)
+            : undefined
+          if (result?.kind === 'accepted') {
+            addPending({
+              id: result.item.id,
+              kind: 'steering',
+              text: result.item.content,
+            })
+          } else {
+            restoreSteeringText()
+            append({
+              kind: 'warning',
+              text:
+                result?.kind === 'turn-completing'
+                  ? 'Turn is completing; input was retained.'
+                  : result?.kind === 'not-steerable'
+                    ? 'This turn cannot be steered; input was retained.'
+                    : 'Steering is unavailable; input was retained.',
+            })
+          }
+        }
+        void steer().catch((error: unknown) => {
+          restoreSteeringText()
+          warn(error)
+        })
+        return
+      }
+      if (key.tab || (key.return && key.meta)) {
+        if (!pendingText) return
+        if (!turnControllerRef.current) {
+          append({
+            kind: 'warning',
+            text: 'Turn is completing; follow-up input was retained.',
+          })
+          return
+        }
+        const item = { id: randomUUID(), text: pendingText }
+        followUpQueueRef.current.push(item)
+        addPending({ id: item.id, kind: 'follow-up', text: item.text })
+        clearComposerInput()
+        return
+      }
+      editComposer()
       return
     }
     if (isKeybinding('chat:imagePaste')) {
@@ -8299,6 +8560,13 @@ export function InteractiveApp({
       }
       return
     }
+    if (
+      isKeybinding('history:previous') &&
+      inputRef.current.length === 0 &&
+      withdrawLatestPending()
+    ) {
+      return
+    }
     if (isKeybinding('history:previous')) {
       restorePromptHistory('previous')
       return
@@ -8405,6 +8673,7 @@ export function InteractiveApp({
         shellMode,
         busy,
         status: conciseStatus,
+        pendingItems: pendingInputs,
         display: runtimeDisplay,
       }),
     [
@@ -8414,6 +8683,7 @@ export function InteractiveApp({
       inputCursor,
       busy,
       conciseStatus,
+      pendingInputs,
       runtimeDisplay,
     ],
   )

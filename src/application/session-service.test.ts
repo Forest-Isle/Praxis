@@ -301,6 +301,103 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('registers active turns before await and appends steering only on delivery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-active-steering-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-5555-4555-8555-929292929292'
+    let releaseProvider!: () => void
+    let markProviderStarted!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve
+    })
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve
+    })
+    let calls = 0
+    const events: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      eventSink: (event) => events.push(event),
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          calls += 1
+          if (calls === 1) {
+            markProviderStarted()
+            await providerReleased
+          }
+          yield { type: 'text-delta', delta: calls === 1 ? 'first' : 'done' }
+        },
+      },
+    })
+    const run = service.run('prompt', undefined, sessionId)
+    await providerStarted
+    const accepted = service.steer(sessionId, 'steer me')
+    expect(accepted.kind).toBe('accepted')
+    const beforeDelivery = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
+    )
+    expect(nativeMessages(beforeDelivery)).not.toContainEqual({
+      role: 'user',
+      content: 'steer me',
+    })
+    await expect(service.resume(sessionId, 'duplicate')).rejects.toThrow(
+      'already has an active turn',
+    )
+    releaseProvider()
+    await run
+    expect(events).toContainEqual({
+      type: 'user-input-delivered',
+      id: expect.any(String),
+      content: 'steer me',
+    })
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
+    )
+    expect(nativeMessages(transcript)).toContainEqual({
+      role: 'user',
+      content: 'steer me',
+    })
+    expect(service.steer(sessionId, 'after')).toEqual({
+      kind: 'no-active-turn',
+    })
+  })
+
+  it('reports shell turns as explicitly non-steerable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-shell-steering-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '92929292-6666-4666-8666-929292929292'
+    let release!: () => void
+    const started = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          await started
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+    })
+    const run = service.runShell('printf hi', undefined, sessionId)
+    await Promise.resolve()
+    expect(service.steer(sessionId, 'not shell')).toEqual({
+      kind: 'not-steerable',
+    })
+    release()
+    await run
+  })
+
   it('appends Team inbox follow-ups as ordinary user text before acknowledging', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-team-inbox-'))
     roots.push(root)

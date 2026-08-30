@@ -13,6 +13,7 @@ import {
   type ToolExecutionResult,
   type ToolRegistry,
 } from './runtime.js'
+import { ActiveTurnInputMailbox } from './active-turn-input.js'
 
 function providerFrom(complete: ModelProvider['complete']): ModelProvider {
   return {
@@ -50,6 +51,225 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('delivers pre-enqueued steering one item per boundary before final stop', async () => {
+    let nextId = 0
+    const mailbox = new ActiveTurnInputMailbox(() => `steer-${++nextId}`)
+    mailbox.enqueue('  steer now  ')
+    mailbox.enqueue('second steering')
+    let calls = 0
+    let stopCalls = 0
+    const requests: string[] = []
+    const events: RuntimeEvent[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* (request) {
+        calls += 1
+        requests.push(request.messages.at(-1)?.content as string)
+        yield { type: 'text-delta', delta: calls === 1 ? 'first' : 'done' }
+      }),
+      (event) => events.push(event),
+    )
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'start' }],
+      steering: mailbox,
+      onStop: async () => {
+        stopCalls += 1
+        return []
+      },
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted() {},
+        async userInputDelivered(item) {
+          expect(item.content).toMatch(/steer now|second steering/u)
+        },
+      },
+    })
+    expect(result.text).toBe('done')
+    expect(calls).toBe(3)
+    expect(stopCalls).toBe(1)
+    expect(requests).toEqual(['start', 'steer now', 'second steering'])
+    expect(mailbox.isSealed()).toBe(true)
+    expect(
+      events.filter((event) => event.type === 'user-input-delivered'),
+    ).toEqual([
+      { type: 'user-input-delivered', id: 'steer-1', content: 'steer now' },
+      {
+        type: 'user-input-delivered',
+        id: 'steer-2',
+        content: 'second steering',
+      },
+    ])
+  })
+
+  it('observes steering accepted while stop awaits', async () => {
+    const mailbox = new ActiveTurnInputMailbox(() => 'late-steer')
+    const stopStarted = deferred()
+    const releaseStop = deferred()
+    let calls = 0
+    const requests: string[] = []
+    const run = new AgentRuntime(
+      providerFrom(async function* (request) {
+        calls += 1
+        requests.push(request.messages.at(-1)?.content as string)
+        yield { type: 'text-delta', delta: calls === 1 ? 'first' : 'done' }
+      }),
+    ).run({
+      messages: [{ role: 'user', content: 'start' }],
+      steering: mailbox,
+      onStop: async () => {
+        stopStarted.resolve()
+        await releaseStop.promise
+        return []
+      },
+      observer: {
+        async assistantCompleted() {},
+        async toolCompleted() {},
+        async userInputDelivered() {},
+      },
+    })
+    await stopStarted.promise
+    mailbox.enqueue('accepted during stop')
+    releaseStop.resolve()
+    await run
+    expect(requests).toEqual(['start', 'accepted during stop'])
+  })
+
+  it('delivers steering after a settled tool batch and before the next request', async () => {
+    const mailbox = new ActiveTurnInputMailbox(() => 'tool-steer')
+    mailbox.enqueue('after tool')
+    let calls = 0
+    const requestRoles: string[][] = []
+    const order: string[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* (request) {
+        calls += 1
+        requestRoles.push(request.messages.map((message) => message.role))
+        if (calls === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call-1', name: 'Read', input: {} },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'done' }
+      }),
+      undefined,
+      {
+        tools: {
+          definitions: () => [
+            {
+              name: 'Read',
+              description: 'read',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          async prepare(call) {
+            return call
+          },
+          async execute() {
+            return { content: 'tool result', isError: false }
+          },
+        },
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+    await runtime.run({
+      messages: [{ role: 'user', content: 'start' }],
+      steering: mailbox,
+      observer: {
+        async assistantCompleted(message) {
+          order.push(message.toolCalls?.length ? 'assistant-tool' : 'assistant')
+        },
+        async toolCompleted() {
+          order.push('tool')
+        },
+        async userInputDelivered() {
+          order.push('steering')
+        },
+      },
+    })
+    expect(order).toEqual(['assistant-tool', 'tool', 'steering', 'assistant'])
+    expect(requestRoles).toEqual([
+      ['user'],
+      ['user', 'assistant', 'tool', 'user'],
+    ])
+  })
+
+  it('emits rejection events for undelivered steering on failure', async () => {
+    const mailbox = new ActiveTurnInputMailbox(() => 'steer-1')
+    mailbox.enqueue('keep visible')
+    const events: RuntimeEvent[] = []
+    await expect(
+      new AgentRuntime(
+        providerFrom(async function* () {
+          yield { type: 'text-delta', delta: '' }
+          throw new Error('provider failed')
+        }),
+        (event) => events.push(event),
+      ).run({
+        messages: [{ role: 'user', content: 'start' }],
+        steering: mailbox,
+      }),
+    ).rejects.toThrow('provider failed')
+    expect(events).toContainEqual({
+      type: 'user-input-rejected',
+      id: 'steer-1',
+      content: 'keep visible',
+      reason: 'failed',
+    })
+  })
+
+  it('emits rejection when steering persistence fails during delivery', async () => {
+    const mailbox = new ActiveTurnInputMailbox(() => 'persist-failure')
+    mailbox.enqueue('must persist')
+    const events: RuntimeEvent[] = []
+    await expect(
+      new AgentRuntime(
+        providerFrom(async function* () {
+          yield { type: 'text-delta', delta: 'first' }
+        }),
+        (event) => events.push(event),
+      ).run({
+        messages: [{ role: 'user', content: 'start' }],
+        steering: mailbox,
+        observer: {
+          async assistantCompleted() {},
+          async toolCompleted() {},
+          async userInputDelivered() {
+            throw new Error('persistence failed')
+          },
+        },
+      }),
+    ).rejects.toThrow('persistence failed')
+    expect(events).toContainEqual({
+      type: 'user-input-rejected',
+      id: 'persist-failure',
+      content: 'must persist',
+      reason: 'failed',
+    })
+  })
+
+  it('rejects steering when no durable delivery observer is installed', async () => {
+    const mailbox = new ActiveTurnInputMailbox(() => 'missing-observer')
+    mailbox.enqueue('must not be memory-only')
+    const events: RuntimeEvent[] = []
+    await expect(
+      new AgentRuntime(
+        providerFrom(async function* () {
+          yield { type: 'text-delta', delta: 'first' }
+        }),
+        (event) => events.push(event),
+      ).run({
+        messages: [{ role: 'user', content: 'start' }],
+        steering: mailbox,
+      }),
+    ).rejects.toThrow('requires a durable delivery observer')
+    expect(events).toContainEqual({
+      type: 'user-input-rejected',
+      id: 'missing-observer',
+      content: 'must not be memory-only',
+      reason: 'failed',
+    })
+  })
   it('reports each provider usage with the exact request snapshot', async () => {
     let providerCalls = 0
     const observations: {

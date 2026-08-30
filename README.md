@@ -106,7 +106,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   terminal-native background, and a minimal composer/status row. Interactive
   surfaces share the same presentation across terminals, with English
   permission/configuration choices and a taught `❯` / Up/Down / Enter / Esc
-  interaction grammar, plus a
+  interaction grammar. While a regular turn is active, the composer remains
+  editable: Enter steers at the next safe continuation boundary, Tab or
+  Alt+Enter queues a sequential follow-up turn, and pending input stays visible
+  and can be withdrawn with Up. The TUI also includes a
   shared-command
   slash palette, tabbed help and shortcut surfaces, searchable resume picker,
   restored active-branch conversation history, streaming and expandable
