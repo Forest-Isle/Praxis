@@ -3813,7 +3813,11 @@ export class ClaudeSessionService {
         const initialPricing = this.options.pricing?.resolve(
           provider.model ?? 'praxis/provider',
         )
-        if (this.options.maxBudgetUsd !== undefined && !initialPricing) {
+        if (
+          shellCommand === undefined &&
+          this.options.maxBudgetUsd !== undefined &&
+          !initialPricing
+        ) {
           throw new Error(
             `Cannot enforce --max-budget-usd: no pricing is configured for model ${provider.model ?? 'praxis/provider'}`,
           )
@@ -5308,10 +5312,12 @@ export class ClaudeSessionService {
               }
             },
           })
-          await contextEngine.prepare(
-            contextTransitionPort(pendingUserMessages),
-            signal,
-          )
+          if (shellCommand === undefined) {
+            await contextEngine.prepare(
+              contextTransitionPort(pendingUserMessages),
+              signal,
+            )
+          }
 
           for (const [index, message] of expandedMessages.entries()) {
             if (shellCommand !== undefined) break
@@ -5415,6 +5421,9 @@ export class ClaudeSessionService {
           }
           let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
           let shellModelUsage: Readonly<Record<string, ModelUsage>> | undefined
+          let shellDurationApiMs: number | undefined
+          let shellDurationApiWithoutRetriesMs: number | undefined
+          let shellToolDurationMs: number | undefined
           if (shellCommand !== undefined) {
             const call: ModelToolCall = {
               id: `shell_${randomUUID().replaceAll('-', '')}`,
@@ -5456,6 +5465,10 @@ export class ClaudeSessionService {
               throw error
             }
             shellUsage = shellResult.usage ?? shellUsage
+            shellDurationApiMs = shellResult.durationApiMs
+            shellDurationApiWithoutRetriesMs =
+              shellResult.durationApiWithoutRetriesMs
+            shellToolDurationMs = shellResult.durationToolMs
             if (!shellResult.isError) {
               shellModelUsage = shellResult.modelUsage
               foregroundLineChanges.add(shellResult)
@@ -5513,7 +5526,88 @@ export class ClaudeSessionService {
               isError: shellResult.isError,
             })
           }
-          if (budget) {
+          if (shellCommand !== undefined) {
+            const tracker = this.sessionCostTrackers.get(sessionId)
+            if (!tracker) {
+              throw new Error(
+                `Session cost tracker is not active for session ${sessionId}`,
+              )
+            }
+            const totalUsage = mergeUsage(recoveryUsage, shellUsage)
+            const turnModelUsage = mergeSessionRawModelUsage(
+              recoveryModelUsage,
+              shellModelUsage,
+            )
+            let rawCostUsd: number | undefined
+            if (turnModelUsage) {
+              for (const [model, usage] of Object.entries(turnModelUsage)) {
+                const pricing = this.options.pricing?.resolve(model)
+                const costUsd = pricing
+                  ? usageCostUsd(usage, pricing)
+                  : undefined
+                if (costUsd !== undefined)
+                  rawCostUsd = (rawCostUsd ?? 0) + costUsd
+                tracker.recordTurn({
+                  model,
+                  usage,
+                  ...(costUsd === undefined ? {} : { costUsd }),
+                  ...(usage.webSearchRequests === undefined
+                    ? {}
+                    : { webSearchRequests: usage.webSearchRequests }),
+                })
+              }
+            }
+            let combinedToolDurationMs = 0
+            for (const recoveryResult of recoveryResults) {
+              combinedToolDurationMs = addToolDuration(
+                recoveryResult.durationToolMs,
+                combinedToolDurationMs,
+              )
+            }
+            combinedToolDurationMs = addToolDuration(
+              shellToolDurationMs,
+              combinedToolDurationMs,
+            )
+            tracker.recordDurations({
+              ...(shellDurationApiMs === undefined
+                ? {}
+                : { apiDurationMs: shellDurationApiMs }),
+              ...(shellDurationApiWithoutRetriesMs === undefined
+                ? {}
+                : {
+                    apiDurationWithoutRetriesMs:
+                      shellDurationApiWithoutRetriesMs,
+                  }),
+              ...(combinedToolDurationMs === 0
+                ? {}
+                : { toolDurationMs: combinedToolDurationMs }),
+            })
+            if (
+              foregroundLineChanges.linesAdded !== 0 ||
+              foregroundLineChanges.linesRemoved !== 0
+            ) {
+              tracker.recordLineChanges({
+                ...(foregroundLineChanges.linesAdded === 0
+                  ? {}
+                  : { linesAdded: foregroundLineChanges.linesAdded }),
+                ...(foregroundLineChanges.linesRemoved === 0
+                  ? {}
+                  : { linesRemoved: foregroundLineChanges.linesRemoved }),
+              })
+            }
+            turnCompleted = true
+            return {
+              sessionId,
+              text: '',
+              usage: totalUsage,
+              ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
+              ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
+              ...(shellDurationApiMs === undefined
+                ? {}
+                : { durationApiMs: shellDurationApiMs }),
+            }
+          }
+          if (shellCommand === undefined && budget) {
             await contextEngine.prepare(
               contextTransitionPort([], currentTurnUserMessages ?? []),
               signal,
@@ -5561,10 +5655,12 @@ export class ClaudeSessionService {
                 ]
               }
               await refreshRuntimeContext?.()
-              await contextEngine.prepare(
-                contextTransitionPort([], currentTurnUserMessages ?? []),
-                signal,
-              )
+              if (shellCommand === undefined) {
+                await contextEngine.prepare(
+                  contextTransitionPort([], currentTurnUserMessages ?? []),
+                  signal,
+                )
+              }
               runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
               return [
                 ...contextMessages,

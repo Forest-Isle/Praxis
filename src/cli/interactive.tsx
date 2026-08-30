@@ -4696,7 +4696,9 @@ export function InteractiveApp({
       streamingFrameRef.current?.resetText()
       streamingFrameRef.current?.resetThinking()
       streamingFrameRef.current?.flush()
-      append({ kind: 'assistant', text: result.text })
+      if (shellCommand === undefined) {
+        append({ kind: 'assistant', text: result.text })
+      }
       if (turnMutatedFilesRef.current) {
         try {
           const snapshot = await loadDiffSnapshot()

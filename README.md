@@ -140,8 +140,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   provider-free `/terminal-setup` diagnostics and repeatable Shift+Enter setup
   for supported local terminals,
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
-  recovery, permission-gated `!` shell turns, navigable current/per-turn Git
-  diff views, semantic plan/question decision panels with complete
+  recovery, permission-gated provider-free `!` shell turns that persist shell
+  input/output for later ordinary prompts without creating an assistant turn,
+  navigable current/per-turn Git diff views, semantic plan/question decision panels with complete
   screen-reader actions, semantic screen projection across selectable surfaces,
   deterministic resize-aware URL/form elicitation rendering, and measured
   context budgets; print mode,

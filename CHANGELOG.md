@@ -121,6 +121,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Fixed
 
+* keep interactive `!` shell turns provider-free after native Bash execution
+  while preserving permission, hooks, transcript, cancellation, and accounting
+
 * bound MCP connection, discovery, and tool lifecycles with safe disconnect
   recovery that never replays an already-dispatched tool call
 
