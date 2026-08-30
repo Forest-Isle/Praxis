@@ -3,6 +3,18 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.45.0](https://github.com/Forest-Isle/Praxis/compare/v0.44.0...v0.45.0) (2026-08-30)
+
+
+### Features
+
+* refresh tui operator visual language ([#505](https://github.com/Forest-Isle/Praxis/issues/505)) ([4f5a140](https://github.com/Forest-Isle/Praxis/commit/4f5a1408de86ddb7e6b9dd3bde94d03ae552a396))
+
+
+### Bug Fixes
+
+* keep bang shell turns provider-free ([#508](https://github.com/Forest-Isle/Praxis/issues/508)) ([034eb5f](https://github.com/Forest-Isle/Praxis/commit/034eb5fd896a42862458180469ad48622e0d4ea1))
+
 ## [0.44.0](https://github.com/Forest-Isle/Praxis/compare/v0.43.1...v0.44.0) (2026-08-28)
 
 
