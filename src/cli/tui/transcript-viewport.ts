@@ -647,7 +647,7 @@ function estimateRenderedTranscriptEntryLines(
       const heading =
         mode === 'screen-reader'
           ? 'Thinking:Thought for a moment'
-          : `✻ Thought for a moment${summary ? ` · ${summary.slice(0, 160)}` : ''}`
+          : '✻ Thought for a moment'
       return (
         1 +
         wrappedLineCount(heading, width) +
@@ -891,7 +891,7 @@ function entryViewportRows(
       const heading =
         mode === 'screen-reader'
           ? 'Thinking:Thought for a moment'
-          : `✻ Thought for a moment${summary ? ` · ${summary.slice(0, 160)}` : ''}`
+          : `✻ Thought for a moment${mode === 'normal' && summary ? ` · ${summary.slice(0, 160)}` : ''}`
       if (mode === 'normal')
         return [
           '',
