@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.45.2](https://github.com/Forest-Isle/Praxis/compare/v0.45.1...v0.45.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* accept multiline Bash permission rules ([#517](https://github.com/Forest-Isle/Praxis/issues/517)) ([9f6eb3d](https://github.com/Forest-Isle/Praxis/commit/9f6eb3d7413e4ff8f4979014e6fc3d4da49a20ed))
+
 ## [0.45.1](https://github.com/Forest-Isle/Praxis/compare/v0.45.0...v0.45.1) (2026-08-30)
 
 
