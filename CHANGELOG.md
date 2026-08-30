@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.45.1](https://github.com/Forest-Isle/Praxis/compare/v0.45.0...v0.45.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* avoid duplicate thinking preview in audit mode ([#511](https://github.com/Forest-Isle/Praxis/issues/511)) ([4ee13d2](https://github.com/Forest-Isle/Praxis/commit/4ee13d243a36be46b3e8089df5a28ef6be468da6)), closes [#510](https://github.com/Forest-Isle/Praxis/issues/510)
+
 ## [0.45.0](https://github.com/Forest-Isle/Praxis/compare/v0.44.0...v0.45.0) (2026-08-30)
 
 
