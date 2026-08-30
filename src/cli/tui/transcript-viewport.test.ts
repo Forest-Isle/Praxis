@@ -45,6 +45,32 @@ describe('presentation viewport', () => {
     expect(rows.slice(1).join('')).toContain('界'.repeat(20))
   })
 
+  it('keeps thinking previews collapsed and avoids repeating them in audit mode', () => {
+    const text = 'The user just said "hi". Simple greeting. Respond concisely.'
+    const normalEntry = projectTranscriptPresentation(
+      [{ kind: 'thinking', text }],
+      'normal',
+    )[0]
+    const auditEntry = projectTranscriptPresentation(
+      [{ kind: 'thinking', text }],
+      'audit',
+    )[0]
+    if (!normalEntry || !auditEntry)
+      throw new Error('expected thinking entries')
+
+    const normalRows = projectTranscriptEntryRows(normalEntry, 120, 'normal')
+    const auditRows = projectTranscriptEntryRows(auditEntry, 120, 'audit')
+    if (!normalRows || !auditRows) throw new Error('expected thinking rows')
+    expect(normalRows.join('\n')).toContain(`✻ Thought for a moment · ${text}`)
+    expect(auditRows).toEqual(['', '✻ Thought for a moment', text])
+    expect([
+      ...auditRows.join('\n').matchAll(/The user just said/g),
+    ]).toHaveLength(1)
+    expect(estimateTranscriptEntryLines(auditEntry, 120, 'audit')).toBe(
+      auditRows.length,
+    )
+  })
+
   it('preserves wrap state across logical lines and hard words', () => {
     const repeatedLines = projectTranscriptPresentation(
       [
