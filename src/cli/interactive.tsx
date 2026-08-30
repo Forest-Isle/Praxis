@@ -119,6 +119,19 @@ import {
   type TuiScreenModel,
 } from './tui/tui-screen-model.js'
 import { TuiAnsiSurface } from './tui/ansi-surface.js'
+import {
+  clampTranscriptScrollOffset,
+  createTerminalSelectionContext,
+  createTerminalSelectionState,
+  parseTerminalMouseReport,
+  projectTerminalSelection,
+  refreshTerminalSelection,
+  releaseTerminalSelection,
+  startTerminalSelection,
+  updateTerminalSelection,
+  type TerminalSelectionContext,
+  type TerminalSelectionState,
+} from './tui/terminal-selection.js'
 import { QuietInkFrame } from './tui/quiet-frame-adapter.js'
 import {
   projectQuietScreenFrame,
@@ -1481,6 +1494,19 @@ export function InteractiveApp({
     transcriptScrollOffsetRef.current = offset
     setTranscriptScrollOffsetState(offset)
   }
+  const [terminalSelection, setTerminalSelection] = useState(
+    createTerminalSelectionState,
+  )
+  const terminalSelectionRef = useRef<TerminalSelectionState>(
+    createTerminalSelectionState(),
+  )
+  const terminalSelectionContextRef = useRef<TerminalSelectionContext | null>(
+    null,
+  )
+  const selectionEdgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  )
+  const [clearRevision, setClearRevision] = useState(0)
   const sessionLoadRef = useRef(0)
   const [turnDiffs, setTurnDiffs] = useState<
     readonly { label: string; snapshot: TuiDiffSnapshot }[]
@@ -2378,6 +2404,59 @@ export function InteractiveApp({
   const transcriptPageRows = conversationScreen?.transcript.pageRows ?? 2
   const maxTranscriptScrollOffset =
     conversationScreen?.transcript.maxScrollOffset ?? 0
+  const stopSelectionEdgeScroll = () => {
+    if (selectionEdgeTimerRef.current !== null) {
+      clearInterval(selectionEdgeTimerRef.current)
+      selectionEdgeTimerRef.current = null
+    }
+  }
+  const selectionContextRef = terminalSelectionContextRef
+  const copyTerminalSelection = (text: string | null) => {
+    if (!text) return
+    void sideQuestionClipboardWriter(text).catch((error: unknown) => {
+      append({
+        kind: 'warning',
+        text: `Clipboard unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      })
+    })
+  }
+  const beginSelectionEdgeScroll = (direction: 'older' | 'newer') => {
+    if (selectionEdgeTimerRef.current !== null) return
+    selectionEdgeTimerRef.current = setInterval(() => {
+      const context = selectionContextRef.current
+      const current = terminalSelectionRef.current
+      if (
+        !context ||
+        current.phase !== 'dragging' ||
+        current.edge !== direction
+      ) {
+        stopSelectionEdgeScroll()
+        return
+      }
+      const offset = transcriptScrollOffsetRef.current
+      const next = clampTranscriptScrollOffset(
+        offset + (direction === 'older' ? 1 : -1),
+        context.maxTranscriptScrollOffset,
+      )
+      if (next === offset) {
+        stopSelectionEdgeScroll()
+        setTerminalSelection((state) => ({ ...state, edge: 'none' }))
+        terminalSelectionRef.current = { ...current, edge: 'none' }
+        return
+      }
+      setTranscriptScrollOffset(next)
+    }, 80)
+  }
+  useEffect(() => {
+    if (!ansiActive) {
+      stopSelectionEdgeScroll()
+      terminalSelectionRef.current = createTerminalSelectionState()
+      setTerminalSelection(terminalSelectionRef.current)
+    }
+    return () => {
+      stopSelectionEdgeScroll()
+    }
+  }, [ansiActive])
   const permissionOptions = useMemo(
     () => [
       ...PERMISSION_OPTIONS,
@@ -4829,6 +4908,60 @@ export function InteractiveApp({
   }, [busy, initialPromptPending, permission, selectingSession, sessionId])
 
   useInput((value, key) => {
+    if (ansiActive) {
+      const mouse = parseTerminalMouseReport(value)
+      if (mouse !== null) {
+        const context = terminalSelectionContextRef.current
+        if (context === null) return
+        if (mouse.kind === 'wheel') {
+          const offset = transcriptScrollOffsetRef.current
+          setTranscriptScrollOffset(
+            clampTranscriptScrollOffset(
+              offset + (mouse.direction === 'older' ? 1 : -1),
+              context.maxTranscriptScrollOffset,
+            ),
+          )
+          return
+        }
+        if (mouse.kind === 'press') {
+          stopSelectionEdgeScroll()
+          const next = startTerminalSelection(context, mouse)
+          terminalSelectionRef.current = next
+          setTerminalSelection(next)
+          return
+        }
+        if (mouse.kind === 'drag') {
+          const current = terminalSelectionRef.current
+          if (current.phase !== 'dragging') return
+          const previousEdge = current.edge
+          const next = updateTerminalSelection(current, context, mouse)
+          terminalSelectionRef.current = next
+          setTerminalSelection(next)
+          if (next.edge !== 'none') {
+            if (next.edge !== previousEdge) {
+              const offset = transcriptScrollOffsetRef.current
+              const moved = clampTranscriptScrollOffset(
+                offset + (next.edge === 'older' ? 1 : -1),
+                context.maxTranscriptScrollOffset,
+              )
+              if (moved !== offset) setTranscriptScrollOffset(moved)
+            }
+            beginSelectionEdgeScroll(next.edge)
+          } else stopSelectionEdgeScroll()
+          return
+        }
+        const released = releaseTerminalSelection(
+          terminalSelectionRef.current,
+          context,
+          mouse,
+        )
+        stopSelectionEdgeScroll()
+        terminalSelectionRef.current = released.state
+        setTerminalSelection(released.state)
+        copyTerminalSelection(released.text)
+        return
+      }
+    }
     const lower = value.toLowerCase()
     const controlKey = (letter: string) =>
       (key.ctrl && lower === letter) ||
@@ -5025,6 +5158,39 @@ export function InteractiveApp({
         keybindingContexts,
         inputChord,
       )
+    }
+    const clearScreenBinding =
+      ansiActive &&
+      (keybindingAction === 'chat:clearScreen' ||
+        (inputChord === 'ctrl+l' && keybindingAction === 'chat:clearInput'))
+    if (clearScreenBinding) {
+      stopSelectionEdgeScroll()
+      const cleared = createTerminalSelectionState()
+      terminalSelectionRef.current = cleared
+      setTerminalSelection(cleared)
+      setClearRevision((revision) => revision + 1)
+      return
+    }
+    if (ansiActive && terminalSelectionRef.current.phase !== 'idle') {
+      const selectionAction = resolveTuiKeybinding(
+        keybindings,
+        ['Scroll'],
+        inputChord,
+      )
+      if (selectionAction === 'selection:copy') {
+        const context = terminalSelectionContextRef.current
+        if (context === null) return
+        const copied = releaseTerminalSelection(
+          terminalSelectionRef.current,
+          context,
+        )
+        copyTerminalSelection(copied.text)
+        return
+      }
+      stopSelectionEdgeScroll()
+      const cleared = createTerminalSelectionState()
+      terminalSelectionRef.current = cleared
+      setTerminalSelection(cleared)
     }
     const scrollIntent: TuiScrollIntent = key.pageUp
       ? 'page-older'
@@ -8251,12 +8417,50 @@ export function InteractiveApp({
       runtimeDisplay,
     ],
   )
+  const terminalSelectionContext = useMemo(
+    () =>
+      createTerminalSelectionContext(
+        quietFrame,
+        conversationScreen?.transcript.rows.length ?? 0,
+        transcriptScrollOffset,
+        maxTranscriptScrollOffset,
+      ),
+    [
+      quietFrame,
+      conversationScreen?.transcript.rows.length,
+      transcriptScrollOffset,
+      maxTranscriptScrollOffset,
+    ],
+  )
+  terminalSelectionContextRef.current = terminalSelectionContext
+  terminalSelectionRef.current = terminalSelection
+  useEffect(() => {
+    if (!ansiActive || terminalSelection.phase !== 'dragging') return
+    const refreshed = refreshTerminalSelection(
+      terminalSelection,
+      terminalSelectionContext,
+    )
+    if (refreshed !== terminalSelection) {
+      terminalSelectionRef.current = refreshed
+      setTerminalSelection(refreshed)
+    }
+  }, [ansiActive, terminalSelection, terminalSelectionContext])
+  const selectedQuietFrame = useMemo(
+    () =>
+      projectTerminalSelection(
+        quietFrame,
+        terminalSelection,
+        terminalSelectionContext,
+      ),
+    [quietFrame, terminalSelection, terminalSelectionContext],
+  )
 
   return (
     <TuiThemeProvider settings={themeSettings} screenReader={axScreenReader}>
       {ansiActive ? (
         <TuiAnsiSurface
-          frame={quietFrame}
+          frame={selectedQuietFrame}
+          clearRevision={clearRevision}
           onError={() => setAnsiRendererFailed(true)}
         />
       ) : (

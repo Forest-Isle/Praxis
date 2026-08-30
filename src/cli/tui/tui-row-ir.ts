@@ -17,6 +17,7 @@ export type TuiTextRole =
   | 'error'
   | 'tool'
   | 'selection'
+  | 'textSelection'
   | 'input'
   | 'diffAdded'
   | 'diffRemoved'

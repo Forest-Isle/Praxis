@@ -144,3 +144,4 @@ const fallback = assertLifecycle(fallbackOutput, 16000, [
 console.log(
   `Interactive PTY lanes passed (ansi bytes: ${ansi.bytes}, ansi redraws: ${ansi.redraws}, fallback bytes: ${fallback.bytes})`,
 )
+await import('./verify-tui-screen-mouse.mjs')

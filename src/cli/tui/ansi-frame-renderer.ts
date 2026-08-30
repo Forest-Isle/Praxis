@@ -33,6 +33,18 @@ const ALTERNATE_SCREEN_ENTER = '\u001b[?1049h'
 const ALTERNATE_SCREEN_LEAVE = '\u001b[?1049l'
 const HIDE_CURSOR = '\u001b[?25l'
 const SHOW_CURSOR = '\u001b[?25h'
+const MOUSE_MODE_ENABLE = [
+  '\u001b[?1000h',
+  '\u001b[?1002h',
+  '\u001b[?1003h',
+  '\u001b[?1006h',
+] as const
+const MOUSE_MODE_DISABLE = [
+  '\u001b[?1006l',
+  '\u001b[?1003l',
+  '\u001b[?1002l',
+  '\u001b[?1000l',
+] as const
 const SYNCHRONIZED_BEGIN = '\u001b[?2026h'
 const SYNCHRONIZED_END = '\u001b[?2026l'
 const RESET = '\u001b[0m'
@@ -133,11 +145,16 @@ export class AnsiFullscreenRenderer {
     let alternateScreenEntered = false
     let cursorHidden = false
     let synchronizedOutputBegun = false
+    const mouseModesEnabled: boolean[] = []
     try {
       alternateScreenEntered = true
       this.#writer.write(ALTERNATE_SCREEN_ENTER)
       cursorHidden = true
       this.#writer.write(HIDE_CURSOR)
+      for (const [index, mode] of MOUSE_MODE_ENABLE.entries()) {
+        mouseModesEnabled[index] = true
+        this.#writer.write(mode)
+      }
       if (this.#synchronizedOutput) {
         synchronizedOutputBegun = true
         this.#writer.write(SYNCHRONIZED_BEGIN)
@@ -147,6 +164,16 @@ export class AnsiFullscreenRenderer {
       this.#mounted = false
       this.#previousLines = []
       this.#previousCursor = undefined
+      for (let index = MOUSE_MODE_ENABLE.length - 1; index >= 0; index -= 1) {
+        if (!mouseModesEnabled[index]) continue
+        try {
+          this.#writer.write(
+            MOUSE_MODE_DISABLE[MOUSE_MODE_ENABLE.length - 1 - index] as string,
+          )
+        } catch {
+          // Rollback must continue if one restoration write fails.
+        }
+      }
       if (synchronizedOutputBegun) {
         try {
           this.#writer.write(SYNCHRONIZED_END)
@@ -170,6 +197,36 @@ export class AnsiFullscreenRenderer {
       }
       throw error
     }
+  }
+
+  clear(): void {
+    if (!this.#mounted)
+      throw new Error('ANSI fullscreen renderer is not mounted')
+    let firstError: unknown
+    if (this.#synchronizedOutput) {
+      try {
+        this.#writer.write(SYNCHRONIZED_BEGIN)
+      } catch (error) {
+        firstError = error
+      }
+    }
+    if (firstError === undefined) {
+      try {
+        this.#writer.write('\u001b[2J\u001b[H')
+      } catch (error) {
+        firstError = error
+      }
+    }
+    if (this.#synchronizedOutput) {
+      try {
+        this.#writer.write(SYNCHRONIZED_END)
+      } catch (error) {
+        if (firstError === undefined) firstError = error
+      }
+    }
+    if (firstError !== undefined) throw firstError
+    this.#previousLines = []
+    this.#previousCursor = undefined
   }
 
   draw(frame: AnsiFrame): void {
@@ -230,14 +287,24 @@ export class AnsiFullscreenRenderer {
 
   dispose(): void {
     if (!this.#mounted) return
+    let firstError: unknown
+    const attempt = (write: string) => {
+      try {
+        this.#writer.write(write)
+      } catch (error) {
+        if (firstError === undefined) firstError = error
+      }
+    }
     try {
-      if (this.#synchronizedOutput) this.#writer.write(SYNCHRONIZED_END)
-      this.#writer.write(SHOW_CURSOR)
-      this.#writer.write(ALTERNATE_SCREEN_LEAVE)
+      for (const mode of MOUSE_MODE_DISABLE) attempt(mode)
+      if (this.#synchronizedOutput) attempt(SYNCHRONIZED_END)
+      attempt(SHOW_CURSOR)
+      attempt(ALTERNATE_SCREEN_LEAVE)
     } finally {
       this.#mounted = false
       this.#previousLines = []
       this.#previousCursor = undefined
     }
+    if (firstError !== undefined) throw firstError
   }
 }

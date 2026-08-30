@@ -154,6 +154,8 @@ this file from merged Conventional Commit pull requests.
 
 ### Fixed
 
+* support fullscreen `Ctrl+L` redraw and mouse transcript selection with wheel
+  scrolling, edge autoscroll, and OSC 52 copy (#516)
 * persist Workflow metadata validation failures as ordinary native tool errors
   without unclaimed-call warnings, and document the required phase-object shape
   (#512)

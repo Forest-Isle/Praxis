@@ -12,6 +12,7 @@ import type { QuietFrame } from './quiet-frame.js'
 export interface TuiAnsiSurfaceFrameProps {
   readonly frame: QuietFrame
   readonly onError: (error: unknown) => void
+  readonly clearRevision?: number
 }
 
 export type TuiAnsiSurfaceProps = TuiAnsiSurfaceFrameProps
@@ -31,6 +32,7 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
   const styles = useMemo(() => resolveAnsiTextStyles(theme), [theme])
   const rendererRef = useRef<AnsiFullscreenRenderer | null>(null)
   const failedRef = useRef(false)
+  const clearRevisionRef = useRef<number | undefined>(undefined)
   if (rendererRef.current === null) {
     rendererRef.current = new AnsiFullscreenRenderer({
       writer: { write: (chunk) => stdout.write(chunk) },
@@ -45,6 +47,7 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
     if (renderer === null) return
     try {
       renderer.mount()
+      clearRevisionRef.current = props.clearRevision
     } catch (error) {
       failedRef.current = true
       props.onError(error)
@@ -65,6 +68,10 @@ export function TuiAnsiSurface(props: TuiAnsiSurfaceProps) {
     const renderer = rendererRef.current
     if (renderer === null) return
     try {
+      if (clearRevisionRef.current !== props.clearRevision) {
+        renderer.clear()
+        clearRevisionRef.current = props.clearRevision
+      }
       renderer.draw(projectAnsiQuietFrame(props.frame))
     } catch (error) {
       failedRef.current = true
