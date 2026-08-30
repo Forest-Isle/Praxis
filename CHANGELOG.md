@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.45.3](https://github.com/Forest-Isle/Praxis/compare/v0.45.2...v0.45.3) (2026-08-30)
+
+
+### Bug Fixes
+
+* persist Workflow validation failures ([#518](https://github.com/Forest-Isle/Praxis/issues/518)) ([ebab8b7](https://github.com/Forest-Isle/Praxis/commit/ebab8b74b0d64f7d6a8cbba38881587ba5f6d0d8))
+
 ## [0.45.2](https://github.com/Forest-Isle/Praxis/compare/v0.45.1...v0.45.2) (2026-08-30)
 
 
