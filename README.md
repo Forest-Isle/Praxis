@@ -101,7 +101,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 ## What Praxis provides
 
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
-  `you>`/`praxis>` conversation, compact stable tool rows, responsive density,
+  `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
+  composer grammar, compact stable tool rows, responsive density,
   terminal-native background, and a minimal composer/status row. Interactive
   surfaces share the same presentation across terminals, with English
   permission/configuration choices and a taught `❯` / Up/Down / Enter / Esc

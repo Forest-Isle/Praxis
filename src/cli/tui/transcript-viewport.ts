@@ -621,7 +621,7 @@ function estimateRenderedTranscriptEntryLines(
         1 +
         (mode === 'screen-reader' ? 1 : 0) +
         wrappedLineCount(
-          `${mode === 'screen-reader' ? 'You: ' : 'you> '}${item.text}`,
+          `${mode === 'screen-reader' ? 'You: ' : '❯ '}${item.text}`,
           width,
         )
       )
@@ -874,7 +874,7 @@ function entryViewportRows(
         '',
         ...(mode === 'screen-reader' ? [''] : []),
         ...textVisualRows(
-          `${mode === 'screen-reader' ? 'You: ' : 'you> '}${item.text}`,
+          `${mode === 'screen-reader' ? 'You: ' : '❯ '}${item.text}`,
           width,
         ),
       ]
@@ -1072,7 +1072,7 @@ function assistantMarkdownProjectionRows(
     fenceAfter: false,
     fenceLabel: 'code',
   }
-  const prefixed = textVisualRows(`praxis> ${first.text.trimEnd()}`, width).map(
+  const prefixed = textVisualRows(`⏺ ${first.text.trimEnd()}`, width).map(
     (rowText) => ({ ...first, text: rowText }),
   )
   return [...prefixed, ...rows.slice(1)]

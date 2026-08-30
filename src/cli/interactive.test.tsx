@@ -288,7 +288,7 @@ describe('InteractiveApp', () => {
     const freshFrame = fresh.lastFrame() ?? ''
     // A fresh session renders the quiet identity and composer.
     expect(freshFrame).toContain('Praxis · v0.20.20')
-    expect(freshFrame).toContain('you>')
+    expect(freshFrame).toContain('❯')
     expect(freshFrame).not.toContain('Welcome to Praxis')
     fresh.unmount()
 
@@ -321,7 +321,7 @@ describe('InteractiveApp', () => {
     expect(resumedFrame.indexOf('first reply')).toBeLessThan(
       resumedFrame.indexOf('resumed prompt'),
     )
-    expect(resumedFrame).toContain('you>')
+    expect(resumedFrame).toContain('❯')
     resumed.unmount()
   })
 
@@ -1736,7 +1736,7 @@ describe('InteractiveApp', () => {
     expect(body[0]?.includes('Praxis')).toBe(true)
 
     // The composer footer reaches the bottom portion of the 24-row frame.
-    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
+    const footerIndex = body.findLastIndex((line) => line.includes('❯'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
 
     // Blank spacer rows separate the welcome panel from the composer.
@@ -1755,7 +1755,7 @@ describe('InteractiveApp', () => {
         : undefined
     })
     expect(defaultBody.length).toBeLessThan(24)
-    expect(defaultBody.some((line) => line.includes('you>'))).toBe(true)
+    expect(defaultBody.some((line) => line.includes('❯'))).toBe(true)
   })
 
   it('routes fullscreen transcript scrolling through the interaction seam', async () => {
@@ -1847,7 +1847,7 @@ describe('InteractiveApp', () => {
         : undefined
     })
 
-    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
+    const footerIndex = body.findLastIndex((line) => line.includes('❯'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
     expect(body.at(-1)).toContain('ready')
 
@@ -1909,13 +1909,13 @@ describe('InteractiveApp', () => {
         : undefined
     })
     const frame = body.join('\n')
-    expect(frame).toContain(`you> prompt ${turnCount}`)
+    expect(frame).toContain(`❯ prompt ${turnCount}`)
     expect(frame).toContain(`reply ${turnCount}`)
     expect(frame).toContain(`note ${turnCount} c`)
     expect(frame).not.toContain('prompt 1')
 
     // Composer and status footer stay anchored to the bottom of the viewport.
-    const footerIndex = body.findLastIndex((line) => line.includes('you>'))
+    const footerIndex = body.findLastIndex((line) => line.includes('❯'))
     expect(footerIndex).toBeGreaterThanOrEqual(body.length - 2)
     expect(body.at(-1)).toContain('ready')
 
@@ -1932,7 +1932,7 @@ describe('InteractiveApp', () => {
     })
     expect(defaultBody.length).toBeGreaterThan(24)
     expect(defaultBody.join('\n')).toContain('prompt 1')
-    expect(defaultBody.join('\n')).toContain(`you> prompt ${turnCount}`)
+    expect(defaultBody.join('\n')).toContain(`❯ prompt ${turnCount}`)
     expect(defaultBody.join('\n')).toContain(`reply ${turnCount}`)
   })
 
@@ -2048,7 +2048,7 @@ describe('InteractiveApp', () => {
     const tallFrame = tallBody.join('\n')
     expect(tallFrame).toContain(staleMarker)
     expect(tallFrame).toContain(newestMarker)
-    expect(countOccurrences(tallFrame, 'you>')).toBe(1)
+    expect(countOccurrences(tallFrame, '❯')).toBe(1)
 
     // Shrinking to 24 rows drops the budget to 12 rows (the newest four items):
     // the stale sentinel must disappear from the next frame while the newest
@@ -2064,7 +2064,7 @@ describe('InteractiveApp', () => {
     const shortFrame = shortBody.join('\n')
     expect(shortFrame).not.toContain(staleMarker)
     expect(shortFrame).toContain(newestMarker)
-    expect(countOccurrences(shortFrame, 'you>')).toBe(1)
+    expect(countOccurrences(shortFrame, '❯')).toBe(1)
 
     // Classic mode stays content-sized and never bounds the transcript.
     const defaultApp = renderApp('default')
@@ -2111,7 +2111,7 @@ describe('InteractiveApp', () => {
         ? candidate
         : undefined
     })
-    expect(countOccurrences(body.join('\n'), 'you>')).toBe(1)
+    expect(countOccurrences(body.join('\n'), '❯')).toBe(1)
 
     // ctrl+j (chat:newline) grows the composer to a second line. The frame
     // must stay exactly 24 rows tall with a single composer footer instead of
@@ -2133,7 +2133,7 @@ describe('InteractiveApp', () => {
     expect(multilineBody.length).toBeLessThanOrEqual(24)
     expect(frame).toContain('first line')
     expect(frame).toContain('second line')
-    expect(countOccurrences(frame, 'you>')).toBe(1)
+    expect(countOccurrences(frame, '❯')).toBe(1)
   })
 
   it('bounds active stream frames and preserves the completed transcript', async () => {
@@ -2185,14 +2185,14 @@ describe('InteractiveApp', () => {
     // transcript; the visible row is deterministic and width-bounded.
     const streamingFrame = await waitFor(() => {
       const frame = app.lastFrame()
-      return frame?.includes('praxis> chunk-0') && frame.includes('…')
+      return frame?.includes('⏺ chunk-0') && frame.includes('…')
         ? frame
         : undefined
     })
     expect(streamingFrame).not.toContain(chunks.join(''))
     const activeLine = streamingFrame
       .split('\n')
-      .find((line) => line.startsWith('praxis>'))
+      .find((line) => line.startsWith('⏺'))
     expect(Array.from(activeLine ?? '')).toHaveLength(100)
 
     // Releasing the turn replaces the active row with authoritative transcript
@@ -2200,7 +2200,7 @@ describe('InteractiveApp', () => {
     release?.()
     await flush()
     const normalized = (app.lastFrame() ?? '').replace(/\s+/gu, '')
-    expect(app.lastFrame()).toContain('praxis>')
+    expect(app.lastFrame()).toContain('⏺')
     expect(normalized).toContain(chunks.join(''))
   })
 
@@ -2389,17 +2389,13 @@ describe('InteractiveApp', () => {
     await flush()
 
     // Wait for the streaming turn to be visible before finalizing it.
-    await waitFor(() =>
-      app.lastFrame()?.includes('praxis>') ? true : undefined,
-    )
+    await waitFor(() => (app.lastFrame()?.includes('⏺') ? true : undefined))
 
     // Complete the turn while the diff snapshot loader is still pending. The
     // committed assistant entry and the active stream must never render in the
     // same frame, so no published frame may contain the final text twice.
     releaseRun?.()
-    await waitFor(() =>
-      app.lastFrame()?.includes('praxis>') ? true : undefined,
-    )
+    await waitFor(() => (app.lastFrame()?.includes('⏺') ? true : undefined))
     const normalized = (frame: string | undefined) =>
       (frame ?? '').replace(/\s+/gu, '')
     const needle = normalized(finalText)
@@ -5028,7 +5024,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('single')
     await flush()
-    expect(app.lastFrame()).toContain('you> single')
+    expect(app.lastFrame()).toContain('❯ single')
     expect(app.lastFrame()).not.toContain('singlesingle')
 
     app.stdin.write('\r')
@@ -5183,7 +5179,7 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('❯ stashed prompt')
     app.stdin.write('\u0013')
     await flush()
-    expect(app.lastFrame()).toContain('you> stashed prompt')
+    expect(app.lastFrame()).toContain('❯ stashed prompt')
 
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
@@ -5229,7 +5225,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('you> review @src/agent.ts')
+    expect(app.lastFrame()).toContain('❯ review @src/agent.ts')
 
     app.stdin.write(' later')
     await flush()
@@ -5292,7 +5288,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B\r')
     await flush()
 
-    expect(app.lastFrame()).toContain('you> @beta.ts')
+    expect(app.lastFrame()).toContain('❯ @beta.ts')
   })
 
   it('dismisses command and file pickers without clearing the composer', async () => {
@@ -5322,7 +5318,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await delay(75)
     await flush()
-    expect(app.lastFrame()).toContain('you> /ins')
+    expect(app.lastFrame()).toContain('❯ /ins')
     expect(app.lastFrame()).not.toContain('Inspect the fixture')
 
     app.stdin.write('\u000c')
@@ -5334,7 +5330,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await delay(75)
     await flush()
-    expect(app.lastFrame()).toContain('you> @')
+    expect(app.lastFrame()).toContain('❯ @')
     expect(app.lastFrame()).not.toContain('alpha.ts')
   })
 
@@ -5394,7 +5390,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('keep this')
     app.stdin.write('\u0016')
     await flush()
-    expect(app.lastFrame()).toContain('you> keep this')
+    expect(app.lastFrame()).toContain('❯ keep this')
     expect(app.lastFrame()).toContain('Clipboard is unavailable')
   })
 
@@ -5549,7 +5545,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\u001F')
     await flush()
-    expect(app.lastFrame()).toContain('you> original prompt')
+    expect(app.lastFrame()).toContain('❯ original prompt')
     expect(serviceCreations).toBe(0)
   })
 
@@ -5572,7 +5568,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u0007')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('you> original prompt')
+    expect(app.lastFrame()).toContain('❯ original prompt')
     expect(app.lastFrame()).toContain(
       'Editor-fail quit unexpectedly (exit code 7)',
     )
@@ -5645,7 +5641,7 @@ describe('InteractiveApp', () => {
     expect(externalEditor).toHaveBeenCalledWith('', {
       cwd: process.cwd(),
     })
-    expect(app.lastFrame()).toContain('you> prompt started in editor')
+    expect(app.lastFrame()).toContain('❯ prompt started in editor')
   })
 
   it('supports the default Ctrl+X Ctrl+E external-editor sequence', async () => {
@@ -5973,7 +5969,7 @@ describe('InteractiveApp', () => {
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
     expect(suspendProcess).toHaveBeenCalledOnce()
-    expect(app.lastFrame()).toContain('you> preserve me')
+    expect(app.lastFrame()).toContain('❯ preserve me')
     expect(serviceCreations).toBe(0)
   })
 
@@ -6074,7 +6070,7 @@ describe('InteractiveApp', () => {
     )
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('you> @"reviewer (agent)"')
+    expect(app.lastFrame()).toContain('❯ @"reviewer (agent)"')
     app.stdin.write(' inspect this')
     app.stdin.write('\r')
     await flush()
@@ -6179,7 +6175,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('\t')
     await flush()
-    expect(app.lastFrame()).toContain('you> /review')
+    expect(app.lastFrame()).toContain('❯ /review')
     expect(app.lastFrame()).not.toContain('Review the current change.')
 
     app.stdin.write('src')
@@ -6244,7 +6240,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B[B')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('you> /review')
+    expect(app.lastFrame()).toContain('❯ /review')
 
     app.stdin.write('inspect')
     app.stdin.write('\r')
@@ -6957,7 +6953,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('you>')
+    expect(app.lastFrame()).toContain('❯')
     app.stdin.write('continue')
     await flush()
     expect(app.lastFrame()).toContain('continue')
@@ -7069,7 +7065,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
 
-    expect(app.lastFrame()).toContain('praxis> done')
+    expect(app.lastFrame()).toContain('⏺ done')
   })
 
   it('toggles retained thinking with Ctrl+O without losing the full text', async () => {
@@ -7226,7 +7222,7 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('✓ Bash  npm test')
     expect(app.lastFrame()).toContain('npm test')
-    expect(app.lastFrame()).toContain('praxis> done')
+    expect(app.lastFrame()).toContain('⏺ done')
 
     app.stdin.write('\u000f')
     await flush()
@@ -7290,7 +7286,7 @@ describe('InteractiveApp', () => {
 
     app.stdin.write('!')
     await flush()
-    expect(app.lastFrame()).toContain('shell>')
+    expect(app.lastFrame()).toContain('!')
     expect(app.lastFrame()).toContain('ready')
 
     app.stdin.write('pwd')
@@ -7358,7 +7354,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).toContain('shell> sleep 30')
+    expect(app.lastFrame()).toContain('! sleep 30')
     expect(app.lastFrame()).toContain('cancelled')
     expect(app.lastFrame()).toContain('Interrupted by user.')
   })

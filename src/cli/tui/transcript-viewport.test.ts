@@ -41,7 +41,7 @@ describe('presentation viewport', () => {
     const rows = projectTranscriptEntryRows(entry, 10, 'normal')
     if (!rows) throw new Error('missing projected rows')
     expect(rows[0]).toBe('')
-    expect(rows[1]).toContain('praxis>')
+    expect(rows[1]).toContain('⏺')
     expect(rows.slice(1).join('')).toContain('界'.repeat(20))
   })
 
@@ -386,8 +386,8 @@ describe('presentation viewport', () => {
     if (!entry) throw new Error('expected an assistant entry')
     const index = createTranscriptEntryViewportIndex(entry, 5, 'normal')
 
-    expect(estimateTranscriptEntryLines(entry, 5, 'normal')).toBe(4)
-    expect(index?.rows).toEqual(['', 'praxi', 's> ', '界'])
+    expect(estimateTranscriptEntryLines(entry, 5, 'normal')).toBe(3)
+    expect(index?.rows).toEqual(['', '⏺ ', '界'])
   })
 
   it.each([
