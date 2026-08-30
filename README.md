@@ -126,7 +126,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   support, and no-color output,
   cursor/history composer, provider-free `/cost` usage and pricing summaries,
   with a hermetic PTY smoke covering real `runInteractive` ANSI entry,
-  resize-safe lifecycle, and Ctrl-C restoration,
+  resize-safe lifecycle, Ctrl-C restoration, fullscreen `Ctrl+L` redraw, and
+  mouse-wheel/drag selection with edge autoscroll and OSC 52 copy,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
   context/status/skill/task dashboards, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external

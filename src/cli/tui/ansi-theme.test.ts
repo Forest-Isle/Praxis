@@ -41,7 +41,7 @@ describe('resolveAnsiTextStyles', () => {
       resolveAnsiTextStyles(
         theme({ body: { color: 'red' } }, { noColor: true }),
       ),
-    ).toEqual({})
+    ).toEqual({ textSelection: '\u001b[7m' })
     expect(
       resolveAnsiTextStyles(
         theme({ body: { color: 'red' } }, { screenReader: true }),
@@ -61,6 +61,7 @@ describe('resolveAnsiTextStyles', () => {
         error: { color: 'redBright' },
         info: { color: 'blueBright' },
         inputMarker: { color: 'cyan' },
+        inputCursor: { inverse: true },
         diffAdded: { color: 'green' },
         diffRemoved: { color: 'red' },
       }),
@@ -71,6 +72,7 @@ describe('resolveAnsiTextStyles', () => {
       muted: '\u001b[2m',
       accent: '\u001b[96;1m',
       selection: '\u001b[96;1m',
+      textSelection: '\u001b[7m',
       input: '\u001b[36m',
       tool: '\u001b[94m',
       success: '\u001b[92m',

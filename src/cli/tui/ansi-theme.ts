@@ -73,7 +73,8 @@ function styleSequence(style: TuiTextStyle): string | undefined {
 export function resolveAnsiTextStyles(
   theme: Pick<TuiSemanticTheme, 'text' | 'noColor' | 'screenReader'>,
 ): Partial<Record<RowIrTextRole | 'link', string>> {
-  if (theme.noColor || theme.screenReader) return {}
+  if (theme.screenReader) return {}
+  if (theme.noColor) return { textSelection: '\u001b[7m' }
   const styles: Partial<Record<RowIrTextRole | 'link', string>> = {}
   const roleMap: Readonly<Record<RowIrTextRole, TuiTextRole>> = {
     body: 'body',
@@ -85,6 +86,7 @@ export function resolveAnsiTextStyles(
     error: 'error',
     tool: 'info',
     selection: 'focusMarker',
+    textSelection: 'inputCursor',
     input: 'inputMarker',
     diffAdded: 'diffAdded',
     diffRemoved: 'diffRemoved',

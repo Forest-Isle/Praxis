@@ -30,6 +30,7 @@ const ROLE_MAP: Readonly<Record<RowIrTextRole, TuiTextRole>> = {
   error: 'error',
   tool: 'info',
   selection: 'focusMarker',
+  textSelection: 'inputCursor',
   input: 'inputMarker',
   diffAdded: 'diffAdded',
   diffRemoved: 'diffRemoved',

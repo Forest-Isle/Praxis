@@ -33,7 +33,7 @@ describe('AnsiFullscreenRenderer', () => {
     renderer.dispose()
     renderer.dispose()
     expect(output.join('')).toBe(
-      '\u001b[?1049h\u001b[?25l\u001b[?25h\u001b[?1049l',
+      '\u001b[?1049h\u001b[?25l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?25h\u001b[?1049l',
     )
     expect(renderer.mounted).toBe(false)
   })
@@ -69,7 +69,7 @@ describe('AnsiFullscreenRenderer', () => {
     expect(renderer.mounted).toBe(true)
     renderer.dispose()
     expect(output.join('')).toBe(
-      '\u001b[?1049h\u001b[?25l\u001b[?25h\u001b[?1049l',
+      '\u001b[?1049h\u001b[?25l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?25h\u001b[?1049l',
     )
   })
 
@@ -93,7 +93,15 @@ describe('AnsiFullscreenRenderer', () => {
     expect(output).toEqual([
       '\u001b[?1049h',
       '\u001b[?25l',
+      '\u001b[?1000h',
+      '\u001b[?1002h',
+      '\u001b[?1003h',
+      '\u001b[?1006h',
       '\u001b[?2026h',
+      '\u001b[?1006l',
+      '\u001b[?1003l',
+      '\u001b[?1002l',
+      '\u001b[?1000l',
       '\u001b[?2026l',
       '\u001b[?25h',
       '\u001b[?1049l',
@@ -106,8 +114,68 @@ describe('AnsiFullscreenRenderer', () => {
     expect(renderer.mounted).toBe(true)
     renderer.dispose()
     expect(output.join('')).toBe(
-      '\u001b[?1049h\u001b[?25l\u001b[?2026h\u001b[?2026l\u001b[?25h\u001b[?1049l',
+      '\u001b[?1049h\u001b[?25l\u001b[?1000h\u001b[?1002h\u001b[?1003h\u001b[?1006h\u001b[?2026h\u001b[?1006l\u001b[?1003l\u001b[?1002l\u001b[?1000l\u001b[?2026l\u001b[?25h\u001b[?1049l',
     )
+  })
+
+  it('rolls back a partial mouse-mode enable and preserves its original error', () => {
+    const output: string[] = []
+    const mountError = new Error('third mouse mode failed')
+    const renderer = new AnsiFullscreenRenderer({
+      writer: {
+        write: (chunk) => {
+          output.push(chunk)
+          if (chunk === '\u001b[?1003h') throw mountError
+        },
+      },
+    })
+
+    expect(() => renderer.mount()).toThrow(mountError)
+    expect(output).toEqual([
+      '\u001b[?1049h',
+      '\u001b[?25l',
+      '\u001b[?1000h',
+      '\u001b[?1002h',
+      '\u001b[?1003h',
+      '\u001b[?1003l',
+      '\u001b[?1002l',
+      '\u001b[?1000l',
+      '\u001b[?25h',
+      '\u001b[?1049l',
+    ])
+    expect(renderer.mounted).toBe(false)
+  })
+
+  it('attempts every disposal restoration and throws the first error', () => {
+    const output: string[] = []
+    const firstError = new Error('mouse disable failed')
+    let fail = false
+    const renderer = new AnsiFullscreenRenderer({
+      writer: {
+        write: (chunk) => {
+          output.push(chunk)
+          if (fail && chunk === '\u001b[?1006l') throw firstError
+          if (fail && chunk === '\u001b[?25h')
+            throw new Error('cursor show failed')
+        },
+      },
+    })
+    renderer.mount()
+    output.length = 0
+    fail = true
+    expect(() => renderer.dispose()).toThrow(firstError)
+    expect(output).toEqual([
+      '\u001b[?1006l',
+      '\u001b[?1003l',
+      '\u001b[?1002l',
+      '\u001b[?1000l',
+      '\u001b[?25h',
+      '\u001b[?1049l',
+    ])
+    const count = output.length
+    renderer.dispose()
+    expect(output).toHaveLength(count)
+    expect(renderer.mounted).toBe(false)
   })
 
   it('balances synchronized markers and emits only dirty rows', () => {
@@ -130,6 +198,26 @@ describe('AnsiFullscreenRenderer', () => {
     expect(first).toContain('\u001b[?2026l')
     renderer.dispose()
     expect(output.join('')).toContain('\u001b[?2026l')
+  })
+
+  it('clears the screen and invalidates the dirty-row cache', () => {
+    const output: string[] = []
+    const renderer = new AnsiFullscreenRenderer({
+      writer: { write: (x) => output.push(x) },
+      synchronizedOutput: true,
+    })
+    renderer.mount()
+    renderer.draw(frame([row('same')]))
+    output.length = 0
+    renderer.clear()
+    expect(output.join('')).toContain(
+      '\u001b[?2026h\u001b[2J\u001b[H\u001b[?2026l',
+    )
+    output.length = 0
+    renderer.draw(frame([row('same')]))
+    expect(output.join('')).toContain('\u001b[1;1H\u001b[2Ksame')
+    renderer.dispose()
+    expect(() => renderer.clear()).toThrow('not mounted')
   })
 
   it('moves or hides the cursor without redrawing unchanged rows', () => {

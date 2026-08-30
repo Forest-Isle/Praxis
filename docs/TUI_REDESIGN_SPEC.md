@@ -152,6 +152,13 @@ Renderer failure falls back to Ink without changing controller state or
 transcript data. Mount, suspend, resume, resize, failure, and exit preserve
 exactly-once raw-mode, cursor, alternate-screen, and listener cleanup.
 
+Fullscreen ANSI sessions enable SGR mouse reporting. Wheel reports scroll the
+bounded transcript, while a drag selects complete terminal grapheme cells,
+continues across viewport edges, and writes the completed selection once via
+OSC 52 on release. `Ctrl+L` clears and redraws the current frame without
+changing the session, transcript, or composer draft. Classic and screen-reader
+sessions do not enable mouse reporting or these fullscreen-only behaviors.
+
 Screen-reader mode always uses Ink, linearizes every meaningful label, does not
 depend on cursor placement or color, and preserves current input announcements.
 
@@ -186,8 +193,9 @@ depend on cursor placement or color, and preserves current input announcements.
 - Adapter parity: ANSI and Ink expose the same ordered semantic content.
 - Focused Ink tests: permission, plan/question, composer/status, Team/Tasks/
   Audit, narrow widths, no-color, and screen-reader output.
-- PTY: alternate screen, cursor/raw mode cleanup, resize, streaming, focused
-  decisions, and ANSI-to-Ink fallback.
+- PTY: alternate screen, cursor/raw/mouse-mode cleanup, resize, streaming,
+  fullscreen clear/redraw with draft retention, drag edge autoscroll with one
+  contiguous OSC 52 copy, focused decisions, and ANSI-to-Ink fallback.
 - Performance: cold projection, append, stable-row diff bytes, and streaming
   coalescing, including a deterministic injected-threshold self-test that
   protects both the doubling-ratio and absolute 120k median limits.
