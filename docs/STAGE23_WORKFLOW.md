@@ -65,6 +65,8 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 ## Contract and limits
 
 - Script max 524288 bytes; plain JavaScript; async top-level body.
+- Optional metadata `phases` is an array of objects with required string `title` and
+  optional string `detail` and `model` fields; string entries are rejected.
 - `agent`, `parallel`, `pipeline`, `workflow`, `log`, `phase`, `args`, `budget` only.
 - `Date.now`, argless `new Date`, and `Math.random` throw; no Node/filesystem/network.
 - Concurrency `min(16, max(1, cpuCount - 2))`; max 1000 agents/run; collection max 4096.
@@ -78,7 +80,8 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 
 ## Errors
 
-- Input/meta/source errors are synchronous tool errors and create no artifacts.
+- Input/meta/source errors are synchronous tool errors and create no workflow
+  artifacts; native sessions still claim and persist the error completion exactly once.
 - Individual agent/provider/schema/isolation failures become `null`, append a completed
   replay pair, and let script-level parallel/pipeline logic continue.
 - Top-level runtime, token-budget, validation, and agent-count failures fail the run,
