@@ -7,6 +7,7 @@ import { resolveDataPlaneRoot } from '../../persistence/data-plane.js'
 import { loadNativeSharedResources } from '../../persistence/native-resources.js'
 import type { PermissionUpdate } from '../../core/runtime.js'
 import {
+  permissionRuleStringIsValid,
   permissionRuleValueFromString,
   permissionRuleValueToString,
 } from '../../permissions/permission-updates.js'
@@ -107,7 +108,7 @@ export async function addTuiPermissionRule({
   scope: ResourceScope
   configRoot?: string
 }): Promise<void> {
-  if (!/^([A-Za-z][\w-]*)(?:\(.*\))?$/u.test(rule))
+  if (!permissionRuleStringIsValid(rule))
     throw new Error(`Invalid permission rule: ${rule}`)
   const path = settingsPath(configRoot ?? configRootPath(), cwd, scope)
   for (let attempt = 0; attempt < 3; attempt += 1) {

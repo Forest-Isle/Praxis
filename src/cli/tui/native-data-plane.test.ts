@@ -11,6 +11,9 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { JsonResource } from '../../core/resources.js'
+import { validateClaudePermissionSettings } from '../../permissions/claude-permission-resolver.js'
+import { permissionRuleValueToString } from '../../permissions/permission-updates.js'
 import {
   resolveConfigSettingsLocation,
   saveConfigSetting,
@@ -109,6 +112,32 @@ describe.sequential('native TUI data plane', () => {
     await expect(access(join(cwd, '.claude'))).rejects.toMatchObject({
       code: 'ENOENT',
     })
+  })
+
+  it('persists and validates multiline Bash heredoc permission rules', async () => {
+    const { cwd } = await fixture()
+    const rule = permissionRuleValueToString({
+      toolName: 'Bash',
+      ruleContent: "python3 - <<'PY'\nprint(1)\nPY",
+    })
+    const path = join(cwd, '.praxis', 'settings.local.json')
+
+    await addTuiPermissionRule({
+      cwd,
+      behavior: 'allow',
+      rule,
+      scope: 'local',
+    })
+
+    await expect(loadTuiPermissionRules(cwd)).resolves.toEqual([
+      expect.objectContaining({ behavior: 'allow', rule, path }),
+    ])
+    const resource: JsonResource = {
+      path,
+      scope: 'local',
+      value: JSON.parse(await readFile(path, 'utf8')),
+    }
+    expect(() => validateClaudePermissionSettings([resource])).not.toThrow()
   })
 
   it('loads native memory paths and reports the native transcript path', async () => {
