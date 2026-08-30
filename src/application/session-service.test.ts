@@ -7564,6 +7564,111 @@ describe('ClaudeSessionService', () => {
     expect(downloads).toBe(1)
   })
 
+  it('persists prepare-time Workflow validation errors without native claim warnings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-invalid-meta-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '11111111-1111-4111-8111-111111111111'
+    const events: RuntimeEvent[] = []
+    let providerTurn = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      enableWorkflows: true,
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (providerTurn++ === 0) {
+            yield {
+              type: 'tool-call' as const,
+              call: {
+                id: 'workflow-invalid-meta',
+                name: 'Workflow',
+                input: {
+                  script: `export const meta = {
+  name: 'demo',
+  description: 'Demonstrate workflows',
+  phases: ['Research', 'Synthesis'],
+}
+return 'done'`,
+                },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta' as const, delta: 'handled' }
+        },
+      },
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => events.push(event),
+    })
+
+    try {
+      await expect(
+        service.run('演示 workflows', undefined, sessionId),
+      ).resolves.toMatchObject({ text: 'handled' })
+      const toolErrors = events.filter(
+        (event): event is Extract<RuntimeEvent, { type: 'tool-result' }> =>
+          event.type === 'tool-result' &&
+          event.callId === 'workflow-invalid-meta' &&
+          event.isError,
+      )
+      expect(toolErrors).toHaveLength(1)
+      expect(toolErrors[0]?.content).toContain(
+        'meta.phases[0] must be an object',
+      )
+      expect(events.filter((event) => event.type === 'warning')).toHaveLength(0)
+
+      const nativeEvents = await readNativeEvents(
+        nativeSessionFile(configRoot, cwd, sessionId),
+      )
+      const claimIndex = nativeEvents.findIndex(
+        (event) =>
+          event.kind === 'tool-execution-started' &&
+          event.callId === 'workflow-invalid-meta',
+      )
+      expect(
+        nativeEvents.filter(
+          (event) =>
+            event.kind === 'tool-execution-started' &&
+            event.callId === 'workflow-invalid-meta',
+        ),
+      ).toHaveLength(1)
+      const toolMessages = nativeMessages(nativeEvents)
+      const completionIndex = nativeEvents.findIndex(
+        (event) =>
+          event.kind === 'messages' &&
+          Array.isArray(event.messages) &&
+          event.messages.some(
+            (message) =>
+              typeof message === 'object' &&
+              message !== null &&
+              'role' in message &&
+              message.role === 'tool' &&
+              'toolCallId' in message &&
+              message.toolCallId === 'workflow-invalid-meta',
+          ),
+      )
+      expect(
+        toolMessages.filter(
+          (message) =>
+            message.role === 'tool' &&
+            message.toolCallId === 'workflow-invalid-meta',
+        ),
+      ).toHaveLength(1)
+      expect(claimIndex).toBeGreaterThanOrEqual(0)
+      expect(completionIndex).toBeGreaterThan(claimIndex)
+    } finally {
+      await service.close()
+    }
+  })
+
   it('builds a hosted registry with durable task and schedule tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-hosted-registry-'))
     roots.push(root)
@@ -7615,6 +7720,12 @@ describe('ClaudeSessionService', () => {
           'ScheduleWakeup',
           'Workflow',
         ]),
+      )
+      expect(
+        registry.definitions().find(({ name }) => name === 'Workflow')
+          ?.description,
+      ).toContain(
+        '`phases` is optional and must be an array of objects shaped `{ title: string, detail?: string, model?: string }`, never an array of strings.',
       )
       const create = await registry.prepare(
         {

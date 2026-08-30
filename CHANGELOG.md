@@ -147,6 +147,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Fixed
 
+* persist Workflow metadata validation failures as ordinary native tool errors
+  without unclaimed-call warnings, and document the required phase-object shape
+  (#512)
 * allow persisted multiline Bash permission rules, including heredoc commands,
   to pass shared validation (#515)
 

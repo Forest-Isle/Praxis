@@ -4358,11 +4358,13 @@ export class ClaudeSessionService {
           tools: readonly ModelToolDefinition[]
         }) => void = () => undefined
         const durableFollowUps = new DurableFollowUpTracker()
+        const claimedToolCallIds = new Set<string>()
         const observer = {
           ...(nativeLease
             ? {
                 toolExecutionStarted: async (call: ModelToolCall) => {
                   await nativeLease.beginToolExecution(call.id)
+                  claimedToolCallIds.add(call.id)
                 },
               }
             : {}),
@@ -4489,6 +4491,10 @@ export class ClaudeSessionService {
                 await refreshRuntimeContext()
             }
             if (nativeLease) {
+              if (!claimedToolCallIds.has(call.id) && !signal?.aborted) {
+                await nativeLease.beginToolExecution(call.id)
+                claimedToolCallIds.add(call.id)
+              }
               await nativeLease.appendToolCompletion({
                 callId: call.id,
                 result: toolResult,
