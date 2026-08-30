@@ -140,6 +140,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Fixed
 
+* allow persisted multiline Bash permission rules, including heredoc commands,
+  to pass shared validation (#515)
+
 * keep interactive `!` shell turns provider-free after native Bash execution
   while preserving permission, hooks, transcript, cancellation, and accounting
 

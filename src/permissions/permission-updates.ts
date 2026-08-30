@@ -19,6 +19,10 @@ export function permissionRuleValueToString(rule: PermissionRuleValue): string {
   return `${rule.toolName}(${content})`
 }
 
+export function permissionRuleStringIsValid(value: string): boolean {
+  return /^([A-Za-z][\w-]*)(?:\(.*\))?$/su.test(value)
+}
+
 function unescapedIndex(
   value: string,
   character: '(' | ')',

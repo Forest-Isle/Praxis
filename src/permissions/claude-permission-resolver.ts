@@ -38,6 +38,7 @@ import {
   effectivePermissionMode,
   filePermissionSuggestions,
   permissionRuleValueFromString,
+  permissionRuleStringIsValid,
   permissionRuleValueToString,
   shellInputIsReadOnly,
   shellPermissionSuggestions,
@@ -235,7 +236,7 @@ export function validateClaudePermissionSettings(
         )
       }
       for (const rule of rules) {
-        if (!/^([A-Za-z][\w-]*)(?:\(.*\))?$/.test(rule)) {
+        if (!permissionRuleStringIsValid(rule)) {
           throw new Error(
             `Invalid permission rule in ${resource.path}: ${rule}`,
           )
