@@ -118,7 +118,7 @@ describe('routeTuiInteraction', () => {
     })
   })
 
-  it('delegates busy background/toggle, interrupts cancel, and consumes other input', () => {
+  it('delegates busy background/toggle/editing, while cancellation remains first-class', () => {
     const busy = {
       ...base,
       busy: true,
@@ -146,10 +146,7 @@ describe('routeTuiInteraction', () => {
       routeTuiInteraction(busy, {
         ...interactionInput({ action: 'other' }),
       }),
-    ).toEqual({
-      disposition: 'handled',
-      effects: [],
-    })
+    ).toEqual({ disposition: 'delegated', effects: [] })
   })
 
   it('normalizes malformed viewport facts and still consumes clamped scrolling', () => {

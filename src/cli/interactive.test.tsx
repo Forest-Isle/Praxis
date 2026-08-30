@@ -12,6 +12,7 @@ import { cleanup, render } from 'ink-testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AGENT_COLORS, type AgentColorSelection } from '../core/agent-color.js'
+import type { SessionRunResult } from '../application/session-service.js'
 import type {
   ModelToolCall,
   PermissionApproval,
@@ -7856,6 +7857,337 @@ describe('InteractiveApp', () => {
     await flush()
     expect(app.lastFrame()).toContain('Interrupted by user.')
     expect(app.lastFrame()).not.toContain('provider aborted')
+  })
+
+  it('steers a busy turn and reconciles delivered pending input', async () => {
+    let resolveRun!: (result: SessionRunResult) => void
+    let eventSink: RuntimeEventSink | undefined
+    const steerCalls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            eventSink = options.eventSink
+            return {
+              async run() {
+                return new Promise<SessionRunResult>((resolve) => {
+                  resolveRun = resolve
+                })
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              steer(_sessionId, content) {
+                steerCalls.push(content)
+                return {
+                  kind: 'accepted' as const,
+                  item: { id: 'steer-1', content },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+    app.stdin.write('initial')
+    app.stdin.write('\r')
+    await flush()
+    eventSink?.({ type: 'text-delta', delta: 'partial answer' })
+    app.stdin.write('steer this')
+    app.stdin.write('\r')
+    await flush()
+    expect(steerCalls).toEqual(['steer this'])
+    eventSink?.({
+      type: 'user-input-delivered',
+      id: 'steer-1',
+      content: 'steer this',
+    })
+    await flush()
+    const deliveredFrame = app.lastFrame() ?? ''
+    expect(deliveredFrame).toContain('steer this')
+    expect(deliveredFrame.indexOf('partial answer')).toBeLessThan(
+      deliveredFrame.indexOf('steer this'),
+    )
+    resolveRun({
+      sessionId: 'session-1',
+      text: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await flush()
+  })
+
+  it('queues Meta+Enter follow-up while preserving busy Shift+Enter newline', async () => {
+    let resolveRun!: (result: SessionRunResult) => void
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(`run:${prompt}`)
+                return new Promise<SessionRunResult>((resolve) => {
+                  resolveRun = resolve
+                })
+              },
+              async resume(sessionId, prompt) {
+                calls.push(`resume:${sessionId}:${prompt}`)
+                return {
+                  sessionId,
+                  text: 'follow-up answer',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('later one')
+    app.stdin.write('\u001B[13;2u')
+    app.stdin.write('later two')
+    app.stdin.write('\u001B\r')
+    await flush()
+    expect(calls).toEqual(['run:first'])
+    expect(app.lastFrame()).toContain('follow-up · later one')
+    resolveRun({
+      sessionId: 'created-session',
+      text: 'first answer',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await vi.waitFor(() => {
+      expect(calls).toEqual([
+        'run:first',
+        'resume:created-session:later one\nlater two',
+      ])
+    })
+  })
+
+  it('withdraws a queued follow-up after the active turn fails', async () => {
+    let rejectRun!: (error: Error) => void
+    const resume = vi.fn()
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                return new Promise<SessionRunResult>((_resolve, reject) => {
+                  rejectRun = reject
+                })
+              },
+              resume,
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('keep for later')
+    app.stdin.write('\t')
+    await flush()
+    expect(app.lastFrame()).toContain('follow-up · keep for later')
+    rejectRun(new Error('provider failed'))
+    await vi.waitFor(() => expect(app.lastFrame()).toContain('provider failed'))
+    app.stdin.write('\u001B[A')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ keep for later')
+    expect(app.lastFrame()).not.toContain('follow-up · keep for later')
+    expect(resume).not.toHaveBeenCalled()
+  })
+
+  it('keeps permission feedback on the decision surface instead of steering', async () => {
+    let approval: PermissionApproval | undefined
+    const steer = vi.fn()
+    const call: ModelToolCall = {
+      id: 'permission-during-turn',
+      name: 'Bash',
+      input: { command: 'npm test' },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService({ approveTool }) {
+            return {
+              async run() {
+                approval = await approveTool?.(call)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              steer,
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('initial')
+    app.stdin.write('\r')
+    await vi.waitFor(() => expect(app.lastFrame()).toContain('npm test'))
+    app.stdin.write('\t')
+    await flush()
+    app.stdin.write('use this feedback')
+    app.stdin.write('\r')
+    await vi.waitFor(() => expect(approval).toBeDefined())
+    expect(steer).not.toHaveBeenCalled()
+    expect(approval).toMatchObject({
+      behavior: 'allow',
+      feedback: 'use this feedback',
+    })
+  })
+
+  it('retains composer input while a completed turn is closing its service', async () => {
+    let releaseClose!: () => void
+    let markCloseStarted!: () => void
+    const closeStarted = new Promise<void>((resolve) => {
+      markCloseStarted = resolve
+    })
+    const closeReleased = new Promise<void>((resolve) => {
+      releaseClose = resolve
+    })
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async close() {
+                markCloseStarted()
+                await closeReleased
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('initial')
+    app.stdin.write('\r')
+    await closeStarted
+    app.stdin.write('keep typing')
+    await flush()
+    expect(app.lastFrame()).toContain('❯ keep typing')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Turn is completing; input was retained.')
+    expect(app.lastFrame()).toContain('❯ keep typing')
+    releaseClose()
+    await flush()
+  })
+
+  it('drains queued follow-ups FIFO through resume after the active turn succeeds', async () => {
+    let resolveRun!: (result: SessionRunResult) => void
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(`run:${prompt}`)
+                return new Promise<SessionRunResult>((resolve) => {
+                  resolveRun = resolve
+                })
+              },
+              async resume(sessionId, prompt) {
+                calls.push(`resume:${sessionId}:${prompt}`)
+                return {
+                  sessionId,
+                  text: `answer:${prompt}`,
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+    app.stdin.write('first')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('follow-up')
+    app.stdin.write('\t')
+    app.stdin.write('second follow-up')
+    app.stdin.write('\t')
+    await flush()
+    expect(calls).toEqual(['run:first'])
+    resolveRun({
+      sessionId: 'created-session',
+      text: 'first answer',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await vi.waitFor(() => {
+      expect(calls).toEqual([
+        'run:first',
+        'resume:created-session:follow-up',
+        'resume:created-session:second follow-up',
+      ])
+    })
+    await flush()
   })
 
   it('submits an initial prompt once after mounting', async () => {

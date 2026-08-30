@@ -110,6 +110,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Added
 
+* keep the active-turn composer editable, with safe-boundary Enter steering,
+  FIFO Tab/Alt+Enter follow-up turns, visible pending input, and Up-to-edit
+  withdrawal (#514)
 * add transactional checksum-verified self-update with exclusive locking,
   rollback, and crash recovery
 * bound every Anthropic/OpenAI provider attempt with a configurable absolute

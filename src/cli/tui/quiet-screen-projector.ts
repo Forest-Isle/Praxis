@@ -43,6 +43,7 @@ export interface QuietScreenProjectionInput {
   readonly shellMode: boolean
   readonly busy: boolean
   readonly status: string
+  readonly pendingItems?: QuietFrameInput['pendingItems']
   readonly display?: QuietFrameInput['display']
 }
 
@@ -171,6 +172,9 @@ export function projectQuietScreenFrame(
     shellMode: input.shellMode,
     busy: input.busy,
     status: input.status,
+    ...(input.pendingItems === undefined
+      ? {}
+      : { pendingItems: input.pendingItems }),
     ...(input.display === undefined ? {} : { display: input.display }),
     focusRows,
   })

@@ -189,7 +189,7 @@ export function routeTuiInteraction(
     }
     if (input.action === 'chat:cancel')
       return handled([...confirmationEffects, { kind: 'interrupt-turn' }])
-    return handled(confirmationEffects)
+    return delegated(confirmationEffects)
   }
 
   if (input.callerIntent !== 'none') return delegated(confirmationEffects)

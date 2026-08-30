@@ -105,6 +105,11 @@ import {
 import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import { isSessionId } from '../core/session.js'
+import {
+  ActiveTurnInputMailbox,
+  type ActiveTurnInputCommandResult,
+  type SteeringItem,
+} from '../core/active-turn-input.js'
 import type { CompactionResult, Compactor } from '../core/compaction.js'
 
 import {
@@ -1291,6 +1296,10 @@ export class ClaudeSessionService {
   private readonly hookLifecycle: HookLifecycle
   private readonly leadOperations: TeamLeadOperations | null
   private readonly fileChangeWatcher: ClaudeFileChangeWatcher | null
+  private readonly activeTurnInputs = new Map<
+    string,
+    { readonly mailbox?: ActiveTurnInputMailbox }
+  >()
   private runtimeCwd: string
 
   constructor(options: ClaudeSessionServiceOptions) {
@@ -1591,6 +1600,17 @@ export class ClaudeSessionService {
 
   async close(): Promise<void> {
     this.closing = true
+    for (const { mailbox } of this.activeTurnInputs.values()) {
+      if (!mailbox) continue
+      for (const item of mailbox.close()) {
+        this.options.eventSink?.({
+          type: 'user-input-rejected',
+          id: item.id,
+          content: item.content,
+          reason: 'closed',
+        })
+      }
+    }
     await this.fileChangeWatcher?.close(5_000)
     await this.hookLifecycle.close()
     await this.drainDetachedHookRuns(5_000)
@@ -2172,6 +2192,29 @@ export class ClaudeSessionService {
       },
       ...(signal ? { signal } : {}),
     })
+  }
+
+  steer(sessionId: string, content: string): ActiveTurnInputCommandResult {
+    const active = this.activeTurnInputs.get(sessionId)
+    if (!active) return { kind: 'no-active-turn' }
+    const mailbox = active.mailbox
+    if (!mailbox) return { kind: 'not-steerable' }
+    const result = mailbox.enqueue(content)
+    if (result.kind === 'accepted') return result
+    if (result.kind === 'empty') return result
+    return { kind: 'turn-completing' }
+  }
+
+  withdrawSteering(
+    sessionId: string,
+    id: string,
+  ): ActiveTurnInputCommandResult {
+    const active = this.activeTurnInputs.get(sessionId)
+    if (!active) return { kind: 'no-active-turn' }
+    const mailbox = active.mailbox
+    if (!mailbox) return { kind: 'not-steerable' }
+    const result = mailbox.withdraw(id)
+    return result.kind === 'withdrawn' ? result : { kind: 'not-pending' }
   }
 
   async resumeShell(
@@ -3627,6 +3670,9 @@ export class ClaudeSessionService {
     const controller = new TurnTerminalController(
       this.options.eventSink ?? (() => undefined),
     )
+    let activeTurnInput: ActiveTurnInputMailbox | undefined
+    let activeTurnRecord:
+      { readonly mailbox?: ActiveTurnInputMailbox } | undefined
     try {
       this.assertTurnWritable()
       if (prompt.length === 0 && images.length === 0 && documents.length === 0)
@@ -3637,6 +3683,20 @@ export class ClaudeSessionService {
       if (shellCommand !== undefined && shellCommand.trim().length === 0) {
         throw new Error('Shell command must not be empty')
       }
+      if (this.activeTurnInputs.has(sessionId)) {
+        throw new Error(
+          `conflict: locked (session ${sessionId} already has an active turn)`,
+        )
+      }
+      activeTurnRecord =
+        shellCommand === undefined
+          ? {
+              mailbox: (activeTurnInput = new ActiveTurnInputMailbox(
+                randomUUID,
+              )),
+            }
+          : {}
+      this.activeTurnInputs.set(sessionId, activeTurnRecord)
 
       await this.activateSessionCostTracker(sessionId)
 
@@ -4663,6 +4723,31 @@ export class ClaudeSessionService {
             }
             await durableFollowUps.followUpUserMessagesCompleted(messages)
           },
+          userInputDelivered: async (item: SteeringItem) => {
+            if (nativeLease) {
+              await nativeLease.appendMessages({
+                messages: [{ role: 'user', content: item.content }],
+              })
+              currentTurnUserMessages?.push(item.content)
+              return
+            }
+            const [steeringEntry] = translateProviderEvents(
+              [{ type: 'user-text-block', text: item.content }],
+              this.translationContext(sessionId, snapshot),
+            )
+            if (!steeringEntry)
+              throw new Error('Could not translate steering message')
+            const steeringTail = await this.append(
+              lease,
+              snapshot.tail,
+              steeringEntry,
+            )
+            snapshot = {
+              entries: [...snapshot.entries, steeringEntry],
+              tail: steeringTail,
+            }
+            currentTurnUserMessages?.push(item.content)
+          },
         }
         let turnCompleted = false
         try {
@@ -5640,6 +5725,7 @@ export class ClaudeSessionService {
             cwd: this.activeCwd(),
             toolResultDirectory,
             observer,
+            ...(activeTurnInput ? { steering: activeTurnInput } : {}),
             ...(this.options.effort ? { effort: this.options.effort } : {}),
             ...(this.options.maxModelTurns !== undefined
               ? { maxModelTurns: this.options.maxModelTurns }
@@ -6160,6 +6246,19 @@ export class ClaudeSessionService {
     } catch (error) {
       controller.fail(error, signal)
       throw error
+    } finally {
+      if (activeTurnInput !== undefined) {
+        for (const item of activeTurnInput.close()) {
+          this.options.eventSink?.({
+            type: 'user-input-rejected',
+            id: item.id,
+            content: item.content,
+            reason: signal?.aborted ? 'cancelled' : 'failed',
+          })
+        }
+      }
+      if (this.activeTurnInputs.get(sessionId) === activeTurnRecord)
+        this.activeTurnInputs.delete(sessionId)
     }
   }
 

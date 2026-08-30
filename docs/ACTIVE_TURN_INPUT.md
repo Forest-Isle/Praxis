@@ -29,9 +29,9 @@ Praxis 的交互式 TUI 在普通 agent turn 运行期间保持 composer 可编�
 
 Mailbox 提供：
 
-- `enqueue(content)`：仅接受非空文本，并返回带稳定 ID 的 pending item。
-- `takeSteering()`：只弹出一个 item。
-- `takeCompletionInputOrSeal()`：有 item 时弹出一个；为空时原子地 seal。
+- `enqueue(content)`：仅接受非空文本，并返回带稳定 ID 的 pending item；ID factory 由 session service 注入，core 不依赖 Node 平台 API。
+- `take()`：只弹出一个 item。
+- `takeOrSeal()`：有 item 时弹出一个；为空时原子地 seal。
 - `withdraw(id)`：仅移除尚未交付的 item。
 - `close()`：返回所有未交付 item，供失败或取消路径显式拒绝。
 

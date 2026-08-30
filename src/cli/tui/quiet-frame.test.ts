@@ -125,6 +125,25 @@ describe('quiet frame', () => {
     expect(value.lines[4]?.accessibleText).toBe('Thinking: checking')
   })
 
+  it('renders stable semantic pending steering and follow-up rows before the composer', () => {
+    const value = frame({
+      pendingItems: [
+        { id: 's1', kind: 'steering', text: 'steer now' },
+        { id: 'f1', kind: 'follow-up', text: 'follow later' },
+      ],
+    })
+    expect(value.lines.map(({ key, region }) => [key, region])).toEqual([
+      ['quiet:pending:s1', 'pending'],
+      ['quiet:pending:f1', 'pending'],
+      ['quiet:composer', 'composer'],
+      ['quiet:status', 'status'],
+    ])
+    expect(value.lines[0]?.segments[0]?.text).toBe('steer · steer now')
+    expect(value.lines[1]?.accessibleText).toBe(
+      'follow-up pending input: follow later',
+    )
+  })
+
   it('retains a bounded newest active tail while screen-reader stays complete', () => {
     const text = Array.from(
       { length: 1000 },
