@@ -143,6 +143,9 @@ this file from merged Conventional Commit pull requests.
 * persist Workflow metadata validation failures as ordinary native tool errors
   without unclaimed-call warnings, and document the required phase-object shape
   (#512)
+* allow persisted multiline Bash permission rules, including heredoc commands,
+  to pass shared validation (#515)
+
 * keep interactive `!` shell turns provider-free after native Bash execution
   while preserving permission, hooks, transcript, cancellation, and accounting
 
