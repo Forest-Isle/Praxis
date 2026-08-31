@@ -10,6 +10,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.46.5](https://github.com/Forest-Isle/Praxis/compare/v0.46.4...v0.46.5) (2026-08-31)
+
+
+### Bug Fixes
+
+* enforce explicit Read output limits ([#538](https://github.com/Forest-Isle/Praxis/issues/538)) ([ad7041b](https://github.com/Forest-Isle/Praxis/commit/ad7041b18a6c28870376e926af43a030ce90041c)), closes [#127](https://github.com/Forest-Isle/Praxis/issues/127)
+
 ## [0.46.4](https://github.com/Forest-Isle/Praxis/compare/v0.46.3...v0.46.4) (2026-08-31)
 
 
