@@ -9,6 +9,7 @@ export interface TuiFocusProjectionInput {
   readonly pendingPrefix: boolean
   readonly permission: boolean
   readonly planApproval: boolean
+  readonly cdTrust?: boolean
   readonly question: boolean
   readonly elicitation: 'plain' | 'url-waiting' | 'expanded-options' | false
   readonly selectingSession: boolean
@@ -38,6 +39,11 @@ export function projectTuiFocusStack(
     higher = {
       id: 'plan-approval',
       layer: { kind: 'cancelable', target: 'plan-approval' },
+    }
+  } else if (input.cdTrust) {
+    higher = {
+      id: 'cd-trust',
+      layer: { kind: 'cancelable', target: 'cd-trust' },
     }
   } else if (input.question) {
     higher = {

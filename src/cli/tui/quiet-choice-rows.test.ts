@@ -302,6 +302,29 @@ describe('quiet choice rows', () => {
     )
   })
 
+  it('projects cwd trust with a default reject and semantic controls', () => {
+    const model = projectTuiDecisionSurface({
+      kind: 'cd-trust',
+      canonicalPath: '/canonical/next',
+      selectedIndex: 0,
+    })
+    const rows = projectQuietChoiceRows(model, {
+      density: 'standard',
+      screenReader: true,
+    })
+    expect(text(rows)).toContain('Moving to a new directory:')
+    expect(text(rows)).toContain('/canonical/next')
+    expect(text(rows)).toContain('read, edit, and execute files')
+    expect(text(rows)).toContain(
+      'Security guide: https://code.claude.com/docs/en/security',
+    )
+    expect(text(rows)).toContain('Selected: No, stay put')
+    expect(text(rows)).toContain('Option: Yes, move here')
+    expect(rows.at(-1)?.accessibleText).toBe(
+      'Use up and down arrows to select. Press Enter to confirm. Press Escape to cancel.',
+    )
+  })
+
   it('projects MCP form input, errors, density, and expanded option focus separately from stored selection', () => {
     const textForm: TuiElicitationSurfaceModel = {
       kind: 'elicitation-form',

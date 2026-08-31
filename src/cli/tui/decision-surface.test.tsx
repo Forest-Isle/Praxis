@@ -50,6 +50,36 @@ function frame(
 }
 
 describe('DecisionSurface', () => {
+  it('renders cwd trust visually and with complete screen-reader semantics', () => {
+    const model = projectTuiDecisionSurface({
+      kind: 'cd-trust',
+      canonicalPath: '/canonical/next',
+      selectedIndex: 0,
+    })
+    const visual = frame(model, false, 80)
+    expect(visual).toContain('Moving to a new directory:')
+    expect(visual).toContain('/canonical/next')
+    expect(visual).toContain('read, edit, and execute files')
+    expect(visual).toContain(
+      'Security guide: https://code.claude.com/docs/en/security',
+    )
+    expect(visual).toContain('❯ 1. No, stay put')
+    expect(visual).toContain('2. Yes, move here')
+    expect(visual).toContain('Enter to confirm')
+    expect(visual).toContain('Esc to cancel')
+
+    const screenReader = frame(model, true, 80).replace(/\s+/gu, ' ')
+    expect(screenReader).toContain('Selected: 1. No, stay put')
+    expect(screenReader).toContain('read, edit, and execute files')
+    expect(screenReader).toContain(
+      'Security guide: https://code.claude.com/docs/en/security',
+    )
+    expect(screenReader).toContain('2. Yes, move here')
+    expect(screenReader).toContain('Enter to confirm')
+    expect(screenReader).toContain('Escape to cancel')
+    expect(screenReader).not.toContain('❯')
+  })
+
   it('renders complete plan screen-reader semantics', () => {
     const output = frame(plan(0), true)
     const semantic = output.replace(/\s+/g, ' ')

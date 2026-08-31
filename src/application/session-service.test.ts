@@ -8,6 +8,7 @@ import {
   realpath,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -5899,6 +5900,90 @@ describe('ClaudeSessionService', () => {
     }).sessionFile
     await expect(readFile(targetSession, 'utf8')).resolves.toContain(
       '"content":"start in target"',
+    )
+  })
+
+  it('inspects canonical cwd targets without mutating the active workspace', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-inspect-'))
+    roots.push(root)
+    const originalCwd = join(root, 'original')
+    const targetCwd = join(root, 'target')
+    const currentLink = join(root, 'current-link')
+    const targetLink = join(originalCwd, 'target-link')
+    await mkdir(originalCwd)
+    await mkdir(targetCwd)
+    await symlink(originalCwd, currentLink)
+    await symlink(targetCwd, targetLink)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+
+    await expect(service.inspectCwd(currentLink)).resolves.toEqual({
+      canonicalTarget: await realpath(originalCwd),
+      canonicalCurrentCwd: await realpath(originalCwd),
+      sameDirectory: true,
+    })
+    await expect(service.inspectCwd('target-link')).resolves.toEqual({
+      canonicalTarget: await realpath(targetCwd),
+      canonicalCurrentCwd: await realpath(originalCwd),
+      sameDirectory: false,
+    })
+  })
+
+  it('rejects a cwd target whose canonical identity changes after approval', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-retarget-'))
+    roots.push(root)
+    const originalCwd = join(root, 'original')
+    const approvedCwd = join(root, 'approved')
+    const replacementCwd = join(root, 'replacement')
+    const targetLink = join(originalCwd, 'next')
+    await mkdir(originalCwd)
+    await mkdir(approvedCwd)
+    await mkdir(replacementCwd)
+    await symlink(approvedCwd, targetLink)
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: originalCwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+    const approved = await service.inspectCwd('next')
+
+    await unlink(targetLink)
+    await symlink(replacementCwd, targetLink)
+
+    await expect(
+      service.changeCwd(undefined, 'next', approved.canonicalTarget),
+    ).rejects.toThrow(
+      `Directory changed after approval: expected ${approved.canonicalTarget}, resolved to ${await realpath(replacementCwd)}.`,
+    )
+    await expect(service.inspectCwd('.')).resolves.toMatchObject({
+      canonicalTarget: await realpath(originalCwd),
+      sameDirectory: true,
+    })
+  })
+
+  it('humanizes missing and file cwd inspection failures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cd-errors-'))
+    roots.push(root)
+    const file = join(root, 'alpha.txt')
+    await writeFile(file, 'fixture')
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['unused']),
+    })
+    const canonicalRoot = await realpath(root)
+
+    await expect(service.inspectCwd('missing')).rejects.toThrow(
+      `Could not find a directory at ${join(canonicalRoot, 'missing')}.`,
+    )
+    await expect(service.inspectCwd(file)).rejects.toThrow(
+      `${await realpath(file)} is not a directory. Did you mean ${canonicalRoot}?`,
     )
   })
 

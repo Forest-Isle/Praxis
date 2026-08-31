@@ -47,6 +47,11 @@ export type TuiDecisionSurfaceInput =
       readonly questionIndex: number
       readonly answer: string
     }
+  | {
+      readonly kind: 'cd-trust'
+      readonly canonicalPath: string
+      readonly selectedIndex: number
+    }
 
 export interface TuiPlanApprovalSurfaceModel {
   readonly kind: 'plan-approval'
@@ -83,8 +88,22 @@ export interface TuiQuestionSurfaceModel {
   readonly emptyState?: string
 }
 
+export interface TuiCdTrustSurfaceModel {
+  readonly kind: 'cd-trust'
+  readonly heading: 'Moving to a new directory:'
+  readonly canonicalPath: string
+  readonly explanation: "This session hasn't worked here before. Is this a directory you created or one you trust?"
+  readonly scope: 'Praxis can read, edit, and execute files in this directory.'
+  readonly securityGuide: 'Security guide: https://code.claude.com/docs/en/security'
+  readonly options: readonly TuiDecisionSurfaceOption[]
+  readonly selectedIndex: number
+  readonly range: TuiDecisionSurfaceRange
+  readonly actions: readonly TuiDecisionSurfaceAction[]
+  readonly cancellation: TuiDecisionSurfaceCancellation
+}
+
 export type TuiDecisionSurfaceModel =
-  TuiPlanApprovalSurfaceModel | TuiQuestionSurfaceModel
+  TuiPlanApprovalSurfaceModel | TuiQuestionSurfaceModel | TuiCdTrustSurfaceModel
 
 function normalizeIndex(value: number, count: number, empty = -1): number {
   if (count === 0) return empty
@@ -200,6 +219,37 @@ export function projectTuiDecisionSurface(
             { screenReaderLabel: 'Press y to approve' },
             { screenReaderLabel: 'Press n to keep planning' },
           ],
+      cancellation,
+    }
+  }
+
+  if (input.kind === 'cd-trust') {
+    const selectedIndex = normalizeIndex(input.selectedIndex, 2)
+    const options = projectedOptions(
+      [{ label: 'No, stay put' }, { label: 'Yes, move here' }],
+      selectedIndex,
+    )
+    return {
+      kind: 'cd-trust',
+      heading: 'Moving to a new directory:',
+      canonicalPath: input.canonicalPath,
+      explanation:
+        "This session hasn't worked here before. Is this a directory you created or one you trust?",
+      scope: 'Praxis can read, edit, and execute files in this directory.',
+      securityGuide: 'Security guide: https://code.claude.com/docs/en/security',
+      options,
+      selectedIndex,
+      range: range(options.length),
+      actions: [
+        {
+          visualLabel: 'Enter to confirm',
+          screenReaderLabel: 'Enter to confirm',
+        },
+        { screenReaderLabel: 'Use up and down arrows to change selection' },
+        { screenReaderLabel: 'Press 1 or 2 to choose directly' },
+        { screenReaderLabel: 'Press y to move here' },
+        { screenReaderLabel: 'Press n to stay put' },
+      ],
       cancellation,
     }
   }
