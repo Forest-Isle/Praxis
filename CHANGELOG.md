@@ -9,6 +9,13 @@ this file from merged Conventional Commit pull requests.
 
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.46.3](https://github.com/Forest-Isle/Praxis/compare/v0.46.2...v0.46.3) (2026-08-31)
+
+
+### Bug Fixes
+
+* enforce safe file mutation semantics ([#533](https://github.com/Forest-Isle/Praxis/issues/533)) ([b3e0150](https://github.com/Forest-Isle/Praxis/commit/b3e015000161e723d539977804a7717b3eb8a460))
+
 ## [0.46.2](https://github.com/Forest-Isle/Praxis/compare/v0.46.1...v0.46.2) (2026-08-31)
 
 
