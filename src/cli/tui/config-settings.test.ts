@@ -46,7 +46,7 @@ describe('Claude 2.1.208 config settings contract', () => {
     const fixture = JSON.parse(
       await readFile(
         new URL(
-          '../../../test/fixtures/claude-code/2.1.208/config-dashboard.json',
+          '../../../test/fixtures/reference/claude-code/2.1.208/config-dashboard.json',
           import.meta.url,
         ),
         'utf8',
@@ -103,7 +103,7 @@ describe('Claude 2.1.208 config settings contract', () => {
     const fixture = JSON.parse(
       await readFile(
         new URL(
-          '../../../test/fixtures/claude-code/2.1.208/config-dashboard.json',
+          '../../../test/fixtures/reference/claude-code/2.1.208/config-dashboard.json',
           import.meta.url,
         ),
         'utf8',

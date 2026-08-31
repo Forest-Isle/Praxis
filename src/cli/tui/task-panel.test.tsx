@@ -39,7 +39,7 @@ interface TaskFixture {
 }
 
 const fixtureUrl = new URL(
-  '../../../test/fixtures/claude-code/2.1.208/tasks-tui.json',
+  '../../../test/fixtures/reference/claude-code/2.1.208/tasks-tui.json',
   import.meta.url,
 )
 const fixture = JSON.parse(await readFile(fixtureUrl, 'utf8')) as TaskFixture

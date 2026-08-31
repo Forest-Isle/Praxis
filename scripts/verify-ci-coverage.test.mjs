@@ -44,6 +44,13 @@ describe('CI coverage contract verifier', () => {
       coverageContractDiagnostics(invalid, config, workflow).join('\n'),
     ).toContain('scripts.check must invoke npm run verify:ci-coverage')
   })
+  it('rejects coverage without per-runtime-module enforcement', () => {
+    const invalid = JSON.parse(JSON.stringify(packageData))
+    invalid.scripts['test:coverage'] = 'vitest run --coverage'
+    expect(
+      coverageContractDiagnostics(invalid, config, workflow).join('\n'),
+    ).toContain('per-runtime-module enforcement')
+  })
   it('rejects a Coverage job without Linux test tools', () => {
     const invalid = JSON.parse(JSON.stringify(workflow))
     invalid.jobs.coverage.steps = invalid.jobs.coverage.steps.filter(

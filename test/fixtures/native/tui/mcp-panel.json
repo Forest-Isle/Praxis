@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "cwd": "/workspace/project",
+  "records": [
+    {
+      "name": "connected-project",
+      "scope": "project",
+      "path": "/workspace/project/.mcp.json",
+      "config": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["server.mjs", "--fixture"],
+        "capabilities": ["tools", "resources"]
+      }
+    },
+    {
+      "name": "failed-project",
+      "scope": "project",
+      "path": "/workspace/project/z-failed.json",
+      "config": { "type": "stdio", "command": "missing-server" }
+    },
+    {
+      "name": "auth-local",
+      "scope": "local",
+      "path": "/users/fixture/.praxis/mcp.json",
+      "config": {
+        "type": "http",
+        "url": "https://auth.example.test/mcp"
+      }
+    },
+    {
+      "name": "disabled-user",
+      "scope": "user",
+      "path": "/users/fixture/.praxis/user-mcp.json",
+      "config": {
+        "type": "sse",
+        "url": "https://disabled.example.test/events"
+      }
+    }
+  ],
+  "disabledNames": ["disabled-user"],
+  "runtime": [
+    {
+      "name": "connected-project",
+      "status": "connected",
+      "statusDetail": "ready",
+      "capabilities": ["tools", "resources"],
+      "toolCount": 2
+    },
+    {
+      "name": "auth-local",
+      "status": "needs-authentication",
+      "authDetail": "Token required",
+      "statusDetail": "login required"
+    },
+    {
+      "name": "disabled-user",
+      "status": "connected",
+      "statusDetail": "ready",
+      "toolCount": 1
+    }
+  ],
+  "tools": [
+    {
+      "name": "search",
+      "fullName": "mcp__connected-project__search",
+      "description": "Search fixture records."
+    },
+    {
+      "name": "fetch",
+      "fullName": "mcp__connected-project__fetch",
+      "description": "Fetch a fixture record."
+    }
+  ],
+  "expected": {
+    "serverOrder": [
+      "connected-project",
+      "failed-project",
+      "auth-local",
+      "disabled-user"
+    ],
+    "statuses": {
+      "connected-project": "connected",
+      "failed-project": "failed",
+      "auth-local": "needs-authentication",
+      "disabled-user": "disabled"
+    },
+    "locations": {
+      "connected-project": "/workspace/project/.mcp.json",
+      "failed-project": "/workspace/project/z-failed.json",
+      "auth-local": "/users/fixture/.praxis/mcp.json [project: /workspace/project]",
+      "disabled-user": "/users/fixture/.praxis/user-mcp.json"
+    },
+    "actions": {
+      "connected-project": ["view-tools", "reconnect", "set-enabled"],
+      "failed-project": ["reconnect", "set-enabled"],
+      "auth-local": ["authenticate", "set-enabled"],
+      "disabled-user": ["set-enabled"]
+    },
+    "commands": {
+      "viewTools": { "type": "view-tools", "name": "connected-project" },
+      "reconnect": { "type": "reconnect", "name": "failed-project" },
+      "authenticate": { "type": "authenticate", "name": "auth-local" },
+      "disable": {
+        "type": "set-enabled",
+        "name": "connected-project",
+        "scope": "project",
+        "enabled": false
+      },
+      "enable": {
+        "type": "set-enabled",
+        "name": "disabled-user",
+        "scope": "user",
+        "enabled": true
+      }
+    },
+    "frames": {
+      "list": [
+        "Manage MCP servers",
+        "4 servers",
+        "Project MCPs",
+        "✔  connected · 2 tools",
+        "✘  failed",
+        "△  needs authentication",
+        "◯  disabled"
+      ],
+      "detailStdio": [
+        "Connected-project MCP Server",
+        "Status: done: ready",
+        "Command: node",
+        "Args: server.mjs --fixture",
+        "Capabilities:  tools · resources",
+        "Tools:  2 tools"
+      ],
+      "detailHttpAuth": [
+        "Auth-local MCP Server",
+        "Status: △ needs authentication",
+        "Auth: Token required",
+        "URL: https://auth.example.test/mcp"
+      ],
+      "tools": ["Tools for connected-project", "2 tools", "search", "fetch"],
+      "tool": [
+        "search",
+        "Tool name:  search",
+        "Full name:  mcp__connected-project__search",
+        "Search fixture records."
+      ],
+      "empty": ["No MCP servers configured.", "praxis doctor"],
+      "screenReader": [
+        "Selected server: connected-project",
+        "Selected action: View tools",
+        "Selected tool: search"
+      ]
+    }
+  }
+}

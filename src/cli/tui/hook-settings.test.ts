@@ -14,7 +14,7 @@ describe('TUI hook settings projection', () => {
     const fixture = JSON.parse(
       await readFile(
         new URL(
-          '../../../test/fixtures/claude-code/2.1.208/hooks-tui.json',
+          '../../../test/fixtures/reference/claude-code/2.1.208/hooks-tui.json',
           import.meta.url,
         ),
         'utf8',
@@ -52,7 +52,7 @@ describe('TUI hook settings projection', () => {
     const fixture = JSON.parse(
       await readFile(
         new URL(
-          '../../../test/fixtures/claude-code/2.1.208/hooks-tui.json',
+          '../../../test/fixtures/reference/claude-code/2.1.208/hooks-tui.json',
           import.meta.url,
         ),
         'utf8',

@@ -33,9 +33,12 @@ export function coverageContractDiagnostics(
   if (packageData?.devDependencies?.['@vitest/coverage-v8'] !== '^4.1.10') {
     diagnostics.push('package.json must pin @vitest/coverage-v8 to ^4.1.10')
   }
-  if (scripts['test:coverage'] !== 'vitest run --coverage') {
+  if (
+    scripts['test:coverage'] !==
+    'vitest run --coverage && node scripts/verify-nonzero-runtime-coverage.mjs'
+  ) {
     diagnostics.push(
-      'package.json must define test:coverage as vitest run --coverage',
+      'package.json must define test:coverage with global thresholds and per-runtime-module enforcement',
     )
   }
   if (scripts['verify:ci-coverage'] !== 'node scripts/verify-ci-coverage.mjs') {
@@ -138,7 +141,7 @@ async function main() {
     return
   }
   console.log(
-    'CI coverage contract is wired: V8 src coverage floors and protected Coverage lane are present',
+    'CI coverage contract is wired: V8 src coverage floors, per-runtime-module enforcement, and protected Coverage lane are present',
   )
 }
 

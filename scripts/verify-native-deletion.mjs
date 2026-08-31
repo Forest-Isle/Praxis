@@ -11,7 +11,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { Buffer } from 'node:buffer'
-const output = new URL('../dist-native/', import.meta.url)
+const outputs = [
+  new URL('../dist/', import.meta.url),
+  new URL('../dist-native/', import.meta.url),
+]
 
 async function filesBelow(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
@@ -24,23 +27,47 @@ async function filesBelow(directory) {
   return nested.flat()
 }
 
-const outputPath = output.pathname
 const cliPath = new URL('../dist/cli.js', import.meta.url).pathname
 try {
-  const emitted = await filesBelow(outputPath)
-  if (
-    emitted.some((path) =>
-      path.replaceAll('\\', '/').includes('compatibility/claude'),
-    )
+  const emittedByRoot = await Promise.all(
+    outputs.map(async (root) => ({
+      root,
+      files: await filesBelow(root.pathname),
+    })),
   )
-    throw new Error('native output contains a Claude compatibility module')
-  for (const path of emitted) {
-    if (!/\.(?:map|d\.ts)$/.test(path)) continue
-    const source = await readFile(path, 'utf8')
-    if (source.includes('compatibility/claude'))
-      throw new Error(
-        `native declaration/source map references Claude compatibility: ${path}`,
+  for (const { root, files } of emittedByRoot) {
+    const rootLabel = root.pathname.replaceAll('\\', '/')
+    const emitted = files.map((path) => path.replaceAll('\\', '/'))
+    if (emitted.some((path) => path.includes('compatibility/claude')))
+      throw new Error(`${rootLabel} contains a Claude compatibility module`)
+    if (
+      emitted.some((path) =>
+        /(?:^|\/)native\/fork\.(?:js|d\.ts|js\.map|d\.ts\.map)$/.test(path),
       )
+    )
+      throw new Error(`${rootLabel} contains the removed native/fork module`)
+    for (const path of files) {
+      if (!/\.(?:js|d\.ts|js\.map|d\.ts\.map)$/.test(path)) continue
+      const source = await readFile(path, 'utf8')
+      if (source.includes('compatibility/claude'))
+        throw new Error(
+          `${rootLabel} declaration/source references Claude compatibility: ${path}`,
+        )
+      if (source.includes('native/fork'))
+        throw new Error(
+          `${rootLabel} declaration/source references removed native/fork: ${path}`,
+        )
+      for (const identifier of [
+        'FORKABLE_ENTRY_TYPES',
+        'isNativeForkableEntryType',
+        'copyNativeEntryWithSessionId',
+      ]) {
+        if (source.includes(identifier))
+          throw new Error(
+            `${rootLabel} emitted artifact references removed fork helper ${identifier}: ${path}`,
+          )
+      }
+    }
   }
 
   const [
@@ -49,10 +76,10 @@ try {
     { NativeTranscriptStore },
     { NativeSessionTranscript },
   ] = await Promise.all([
-    import(new URL('./persistence/native-data-plane-adapter.js', output)),
-    import(new URL('./persistence/native-transcript-codec.js', output)),
-    import(new URL('./persistence/native-transcript-store.js', output)),
-    import(new URL('./application/native-session-transcript.js', output)),
+    import(new URL('./persistence/native-data-plane-adapter.js', outputs[1])),
+    import(new URL('./persistence/native-transcript-codec.js', outputs[1])),
+    import(new URL('./persistence/native-transcript-store.js', outputs[1])),
+    import(new URL('./application/native-session-transcript.js', outputs[1])),
   ])
   const temporaryRoot = await realpath(
     await mkdtemp(join(tmpdir(), 'praxis-native-deletion-')),

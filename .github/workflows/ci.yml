@@ -104,6 +104,40 @@ jobs:
       - name: Run coverage
         run: npm run test:coverage
 
+  fixtures:
+    name: Fixture contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run fixture contracts
+        run: npm run test:fixtures
+
+  native-deletion:
+    name: Native deletion
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify native deletion
+        run: npm run test:native:deletion
+
   release-regression:
     name: Release regression (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
@@ -126,18 +160,91 @@ jobs:
       - name: Verify installed release package
         run: npm run test:package
 
+  tui-pty:
+    name: TUI PTY
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run TUI PTY verification
+        run: |
+          python3 --version
+          npm run test:tui:pty
+
+  performance:
+    name: Performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run performance verification
+        run: npm run test:performance
+
+  security:
+    name: Production security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run production security audit
+        run: npm run test:security
+
   required:
     name: CI
     if: always()
-    needs: [quality, coverage, release-regression]
+    needs:
+      [
+        quality,
+        coverage,
+        fixtures,
+        native-deletion,
+        release-regression,
+        tui-pty,
+        performance,
+        security,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI lane
         env:
           QUALITY_RESULT: ${{ needs.quality.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
+          FIXTURES_RESULT: ${{ needs.fixtures.result }}
+          NATIVE_DELETION_RESULT: ${{ needs.native-deletion.result }}
           RELEASE_RESULT: ${{ needs.release-regression.result }}
+          TUI_PTY_RESULT: ${{ needs.tui-pty.result }}
+          PERFORMANCE_RESULT: ${{ needs.performance.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
         run: |
           test "$QUALITY_RESULT" = success
           test "$COVERAGE_RESULT" = success
+          test "$FIXTURES_RESULT" = success
+          test "$NATIVE_DELETION_RESULT" = success
           test "$RELEASE_RESULT" = success
+          test "$TUI_PTY_RESULT" = success
+          test "$PERFORMANCE_RESULT" = success
+          test "$SECURITY_RESULT" = success

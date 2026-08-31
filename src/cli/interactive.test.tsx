@@ -5526,11 +5526,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('original prompt')
     app.stdin.write('\u0007')
     await flush()
-    expect(app.lastFrame()).toContain('Editor is open')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(externalEditor).toHaveBeenCalledWith('original prompt', {
-      cwd: '/workspace',
+    await vi.waitFor(() => {
+      expect(externalEditor).toHaveBeenCalledWith('original prompt', {
+        cwd: '/workspace',
+      })
+      expect(app.lastFrame()).toContain('Editor is open')
     })
     expect(turns[0]).toBeInstanceOf(Promise)
 
@@ -5538,10 +5538,12 @@ describe('InteractiveApp', () => {
       content: 'edited first line\nedited second line\n\n',
       editorName: 'Editor-wrapper',
     })
+    await vi.waitFor(() => {
+      expect(app.lastFrame()).toContain('edited first line')
+      expect(app.lastFrame()).toContain('edited second line')
+      expect(app.lastFrame()).toContain('ctrl+g to edit in Editor-wrapper')
+    })
     await flush()
-    expect(app.lastFrame()).toContain('edited first line')
-    expect(app.lastFrame()).toContain('edited second line')
-    expect(app.lastFrame()).toContain('ctrl+g to edit in Editor-wrapper')
     expect(turns.at(-1)).toBeNull()
 
     app.stdin.write('\u001F')
@@ -5551,6 +5553,9 @@ describe('InteractiveApp', () => {
   })
 
   it('keeps the composer when the Ctrl+G editor fails', async () => {
+    const externalEditor = vi.fn(async () => {
+      throw new Error('Editor-fail quit unexpectedly (exit code 7)')
+    })
     const app = render(
       <InteractiveApp
         factory={{
@@ -5559,20 +5564,21 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
-        externalEditor={async () => {
-          throw new Error('Editor-fail quit unexpectedly (exit code 7)')
-        }}
+        externalEditor={externalEditor}
       />,
     )
 
     app.stdin.write('original prompt')
     app.stdin.write('\u0007')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(app.lastFrame()).toContain('❯ original prompt')
-    expect(app.lastFrame()).toContain(
-      'Editor-fail quit unexpectedly (exit code 7)',
-    )
+    await vi.waitFor(() => {
+      expect(externalEditor).toHaveBeenCalledWith('original prompt', {
+        cwd: process.cwd(),
+      })
+      expect(app.lastFrame()).toContain('❯ original prompt')
+      expect(app.lastFrame()).toContain(
+        'Editor-fail quit unexpectedly (exit code 7)',
+      )
+    })
   })
 
   it('loads shared custom keybindings and honors explicit rebinding', async () => {
@@ -5611,12 +5617,12 @@ describe('InteractiveApp', () => {
     expect(externalEditor).not.toHaveBeenCalled()
 
     app.stdin.write('\u0019')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(externalEditor).toHaveBeenCalledWith('custom', {
-      cwd: process.cwd(),
+    await vi.waitFor(() => {
+      expect(externalEditor).toHaveBeenCalledWith('custom', {
+        cwd: process.cwd(),
+      })
+      expect(app.lastFrame()).toContain('custom edited')
     })
-    expect(app.lastFrame()).toContain('custom edited')
   })
 
   it('opens the Ctrl+G editor from an empty composer', async () => {
@@ -5637,12 +5643,12 @@ describe('InteractiveApp', () => {
     )
 
     app.stdin.write('\u0007')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(externalEditor).toHaveBeenCalledWith('', {
-      cwd: process.cwd(),
+    await vi.waitFor(() => {
+      expect(externalEditor).toHaveBeenCalledWith('', {
+        cwd: process.cwd(),
+      })
+      expect(app.lastFrame()).toContain('❯ prompt started in editor')
     })
-    expect(app.lastFrame()).toContain('❯ prompt started in editor')
   })
 
   it('supports the default Ctrl+X Ctrl+E external-editor sequence', async () => {
@@ -5667,10 +5673,10 @@ describe('InteractiveApp', () => {
     await flush()
     expect(externalEditor).not.toHaveBeenCalled()
     app.stdin.write('\u0005')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(externalEditor).toHaveBeenCalledWith('sequence prompt', {
-      cwd: process.cwd(),
+    await vi.waitFor(() => {
+      expect(externalEditor).toHaveBeenCalledWith('sequence prompt', {
+        cwd: process.cwd(),
+      })
     })
   })
 
@@ -5680,7 +5686,13 @@ describe('InteractiveApp', () => {
       path: `${configRoot}/keybindings.json`,
       created: true,
     }))
-    const keybindingsEditor = vi.fn(async () => ({ editorName: 'Fixture' }))
+    let completeEditor: (result: { editorName: string }) => void = () => {
+      throw new Error('keybindings editor was not initialized')
+    }
+    const editorPromise = new Promise<{ editorName: string }>((resolve) => {
+      completeEditor = resolve
+    })
+    const keybindingsEditor = vi.fn(() => editorPromise)
     const turns: Array<Promise<void> | null> = []
     const app = render(
       <InteractiveApp
@@ -5706,7 +5718,21 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     app.stdin.write('\r')
-    await new Promise((resolve) => setTimeout(resolve, 75))
+    await vi.waitFor(() => {
+      expect(keybindingsEditor).toHaveBeenCalled()
+      expect(app.lastFrame()).toContain('Editor is open. Waiting for changes…')
+    })
+    completeEditor({ editorName: 'Fixture' })
+    await vi.waitFor(() => {
+      if (!turns.some((turn) => turn !== null)) {
+        throw new Error('keybindings turn was not started')
+      }
+    })
+    const turn = turns.find(
+      (candidate): candidate is Promise<void> => candidate !== null,
+    )
+    expect(turn).toBeInstanceOf(Promise)
+    await turn
     await flush()
 
     expect(keybindingsFile).toHaveBeenCalledWith('/shared-claude')

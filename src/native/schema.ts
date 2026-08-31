@@ -7,32 +7,3 @@
 export type NativeTranscriptEntry = Record<string, unknown> & {
   type: string
 }
-
-const FORKABLE_ENTRY_TYPES = new Set([
-  'agent-color',
-  'agent-name',
-  'agent-setting',
-  'ai-title',
-  'assistant',
-  'attachment',
-  'custom-title',
-  'last-prompt',
-  'mode',
-  'permission-mode',
-  'pr-link',
-  'system',
-  'user',
-])
-
-export function isNativeForkableEntryType(type: string): boolean {
-  return FORKABLE_ENTRY_TYPES.has(type)
-}
-
-/** Copy only projection metadata; persisted native events are copied by
- * NativeSessionTranscript.forkTo and retain their event identity semantics. */
-export function copyNativeEntryWithSessionId(
-  entry: NativeTranscriptEntry,
-  sessionId: string,
-): NativeTranscriptEntry {
-  return { ...entry, sessionId }
-}

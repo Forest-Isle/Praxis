@@ -337,11 +337,12 @@ function validate(
     for (const member of input.roster) {
       if (!member || typeof member !== 'object' || Array.isArray(member))
         throw new Error('Invalid Team member')
-      objectInput(member as Record<string, unknown>, [
-        'name',
-        'agentType',
-        'access',
-      ])
+      const value = member as Record<string, unknown>
+      objectInput(value, ['name', 'agentType', 'access'])
+      stringValue(value, 'name')
+      stringValue(value, 'agentType')
+      if (value.access !== 'read-only' && value.access !== 'write')
+        throw new Error('Invalid Team member access')
     }
     for (const task of input.tasks) {
       if (!task || typeof task !== 'object' || Array.isArray(task))
@@ -354,6 +355,16 @@ function validate(
         'blockedBy',
         'claims',
       ])
+      stringValue(value, 'id')
+      stringValue(value, 'description')
+      stringValue(value, 'assignee')
+      if (
+        !Array.isArray(value.blockedBy) ||
+        value.blockedBy.some(
+          (entry) => typeof entry !== 'string' || entry.trim() === '',
+        )
+      )
+        throw new Error('Invalid Team blockedBy')
       if (
         !value.claims ||
         typeof value.claims !== 'object' ||
@@ -367,6 +378,22 @@ function validate(
         'migrations',
         'mergeTargets',
       ])
+      for (const key of [
+        'files',
+        'publicContracts',
+        'generatedArtifacts',
+        'migrations',
+        'mergeTargets',
+      ]) {
+        const entries = (value.claims as Record<string, unknown>)[key]
+        if (
+          !Array.isArray(entries) ||
+          entries.some(
+            (entry) => typeof entry !== 'string' || entry.trim() === '',
+          )
+        )
+          throw new Error(`Invalid Team claim list: ${key}`)
+      }
     }
     return input
   }
