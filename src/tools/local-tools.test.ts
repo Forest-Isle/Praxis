@@ -726,6 +726,79 @@ describe('LocalToolRegistry', () => {
       '[output truncated]',
     )
 
+    const exactBytePath = join(cwd, 'exact-byte-limit.txt')
+    const exactByteContent =
+      Array.from({ length: 261 }, () => `${' '.repeat(1000)}a`).join('') +
+      ' '.repeat(881)
+    await writeFile(exactBytePath, exactByteContent)
+    const exactByteCall = await registry.prepare(
+      {
+        id: 'read-exact-byte',
+        name: 'Read',
+        input: { file_path: exactBytePath },
+      },
+      { cwd },
+    )
+    await expect(
+      registry.execute(exactByteCall, { cwd }),
+    ).resolves.toMatchObject({
+      content: `1\t${exactByteContent}`,
+      isError: false,
+    })
+
+    const overBytePath = join(cwd, 'over-byte-limit.txt')
+    await writeFile(overBytePath, `${exactByteContent} `)
+    const overByteCall = await registry.prepare(
+      {
+        id: 'read-over-byte',
+        name: 'Read',
+        input: { file_path: overBytePath },
+      },
+      { cwd },
+    )
+    const overByteError = await registry.execute(overByteCall, { cwd }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(overByteError).toMatchObject({
+      message: expect.stringMatching(/262145 bytes.*256KB.*offset.*limit/i),
+    })
+
+    const exactTokenPath = join(cwd, 'exact-token-limit.txt')
+    await writeFile(exactTokenPath, 'x '.repeat(24_997))
+    const exactTokenCall = await registry.prepare(
+      {
+        id: 'read-exact-token',
+        name: 'Read',
+        input: { file_path: exactTokenPath },
+      },
+      { cwd },
+    )
+    await expect(
+      registry.execute(exactTokenCall, { cwd }),
+    ).resolves.toMatchObject({
+      content: `1\t${'x '.repeat(24_997)}`,
+      isError: false,
+    })
+
+    const overTokenPath = join(cwd, 'over-token-limit.txt')
+    await writeFile(overTokenPath, 'x '.repeat(24_998))
+    const overTokenCall = await registry.prepare(
+      {
+        id: 'read-over-token',
+        name: 'Read',
+        input: { file_path: overTokenPath },
+      },
+      { cwd },
+    )
+    const overTokenError = await registry.execute(overTokenCall, { cwd }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(overTokenError).toMatchObject({
+      message: expect.stringMatching(/25001 tokens.*25000.*offset.*limit/i),
+    })
+
     const slice = await registry.prepare(
       {
         id: 'read-oversized-slice',
