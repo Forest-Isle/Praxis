@@ -10,6 +10,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { render, useApp, useInput } from 'ink'
 
 import type {
+  CwdInspection,
   ForkResult,
   ManualCompactResult,
   ManualCompactSelection,
@@ -465,7 +466,12 @@ interface InteractiveSessionCommands {
   ): Promise<ManualCompactResult>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
-  changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  changeCwd?(
+    sessionId: string | undefined,
+    cwd: string,
+    expectedCanonicalTarget?: string,
+  ): Promise<string>
+  inspectCwd?(cwd: string): Promise<CwdInspection>
   notify?(
     sessionId: string | undefined,
     message: string,
@@ -1698,6 +1704,34 @@ export function InteractiveApp({
   const [planApprovalSelection, setPlanApprovalSelection] = useState(0)
   const [planApprovalFeedbackMode, setPlanApprovalFeedbackMode] =
     useState(false)
+  const [cdTrust, setCdTrust] = useState<{
+    canonicalPath: string
+  } | null>(null)
+  const [cdTrustSelection, setCdTrustSelection] = useState(0)
+  const cdTrustRef = useRef<typeof cdTrust>(null)
+  const trustedCwdsBySessionRef = useRef(new Map<string | null, Set<string>>())
+  const trustedCwdSessionRef = useRef<string | null>(sessionId)
+  useEffect(() => {
+    const previousSessionId = trustedCwdSessionRef.current
+    if (previousSessionId === sessionId) return
+    if (previousSessionId === null && sessionId !== null) {
+      const pendingSessionTrust = trustedCwdsBySessionRef.current.get(null)
+      if (pendingSessionTrust)
+        trustedCwdsBySessionRef.current.set(sessionId, pendingSessionTrust)
+      trustedCwdsBySessionRef.current.delete(null)
+    } else if (sessionId === null) {
+      trustedCwdsBySessionRef.current.delete(null)
+    }
+    trustedCwdSessionRef.current = sessionId
+  }, [sessionId])
+  const trustedCwds = () => {
+    const key = sessionIdRef.current
+    const existing = trustedCwdsBySessionRef.current.get(key)
+    if (existing) return existing
+    const created = new Set<string>()
+    trustedCwdsBySessionRef.current.set(key, created)
+    return created
+  }
   const serviceRef = useRef<InteractiveSessionCommands | null>(null)
   const serviceCreationRef = useRef<
     Promise<InteractiveSessionCommands> | undefined
@@ -2025,6 +2059,17 @@ export function InteractiveApp({
         : null,
     [question, input],
   )
+  const cdTrustSurface = useMemo<TuiDecisionSurfaceModel | null>(
+    () =>
+      cdTrust
+        ? projectTuiDecisionSurface({
+            kind: 'cd-trust',
+            canonicalPath: cdTrust.canonicalPath,
+            selectedIndex: cdTrustSelection,
+          })
+        : null,
+    [cdTrust, cdTrustSelection],
+  )
   const elicitationSurface = useMemo<TuiElicitationSurfaceModel | null>(
     () =>
       elicitation === null
@@ -2351,16 +2396,18 @@ export function InteractiveApp({
             }
           : planApproval !== null && planDecisionSurface !== null
             ? { priority: planDecisionSurface }
-            : question !== null && questionDecisionSurface !== null
-              ? { priority: questionDecisionSurface }
-              : elicitation !== null && elicitationSurface !== null
-                ? {
-                    priority: {
-                      kind: 'elicitation',
-                      surface: elicitationSurface,
-                    },
-                  }
-                : {}),
+            : cdTrust !== null && cdTrustSurface !== null
+              ? { priority: cdTrustSurface }
+              : question !== null && questionDecisionSurface !== null
+                ? { priority: questionDecisionSurface }
+                : elicitation !== null && elicitationSurface !== null
+                  ? {
+                      priority: {
+                        kind: 'elicitation',
+                        surface: elicitationSurface,
+                      },
+                    }
+                  : {}),
       ...(secondarySurface === undefined
         ? {}
         : { secondary: secondarySurface }),
@@ -2379,6 +2426,8 @@ export function InteractiveApp({
       permission,
       permissionPrioritySurface,
       planApproval,
+      cdTrust,
+      cdTrustSurface,
       question,
       planDecisionSurface,
       questionDecisionSurface,
@@ -4175,10 +4224,15 @@ export function InteractiveApp({
     void loading.finally(() => onTurnChange?.(null))
   }
 
-  const changeWorkingDirectory = (requestedCwd: string) => {
+  const changeWorkingDirectory = (
+    requestedCwd: string,
+    authorization:
+      | { readonly kind: 'unapproved' }
+      | { readonly kind: 'approved'; readonly canonicalTarget: string } = {
+      kind: 'unapproved',
+    },
+  ) => {
     const changing = (async () => {
-      setBusy(true)
-      setStatus('changing directory')
       try {
         const commands = await service()
         if (!commands.changeCwd) {
@@ -4186,16 +4240,63 @@ export function InteractiveApp({
             'This interactive service cannot change working directories.',
           )
         }
+        if (!commands.inspectCwd) {
+          throw new Error(
+            'This interactive service cannot inspect or change working directories.',
+          )
+        }
+        const inspection = await commands.inspectCwd(requestedCwd)
+        if (
+          authorization.kind === 'approved' &&
+          inspection.canonicalTarget !== authorization.canonicalTarget
+        ) {
+          throw new Error(
+            `Directory changed after approval: expected ${authorization.canonicalTarget}, resolved to ${inspection.canonicalTarget}. Review the target and try again.`,
+          )
+        }
+        const activeSessionTrust = trustedCwds()
+        activeSessionTrust.add(inspection.canonicalCurrentCwd)
+        if (inspection.sameDirectory) {
+          append({
+            kind: 'local-result',
+            text: `Already in ${inspection.canonicalTarget}.`,
+          })
+          return
+        }
+        if (
+          authorization.kind === 'unapproved' &&
+          !activeSessionTrust.has(inspection.canonicalTarget)
+        ) {
+          const pending = {
+            canonicalPath: inspection.canonicalTarget,
+          }
+          cdTrustRef.current = pending
+          setCdTrust(pending)
+          return
+        }
+        setBusy(true)
+        setStatus('changing directory')
         const cwd = await commands.changeCwd(
           sessionId ?? undefined,
-          requestedCwd,
+          inspection.canonicalTarget,
+          inspection.canonicalTarget,
         )
+        activeSessionTrust.add(cwd)
         runtimeCwdRef.current = cwd
         setRuntimeCwd(cwd)
         await retireService()
         append({ kind: 'local-result', text: `Moved to ${cwd}` })
       } catch (error) {
-        warn(error)
+        const message = error instanceof Error ? error.message : String(error)
+        if (authorization.kind === 'approved')
+          trustedCwds().delete(authorization.canonicalTarget)
+        if (
+          /^(Could not find a directory at .*\.|.* is not a directory\. Did you mean .+\?)$/u.test(
+            message,
+          )
+        )
+          append({ kind: 'local-result', text: message })
+        else warn(error)
       } finally {
         setBusy(false)
         setStatus('ready')
@@ -5257,6 +5358,11 @@ export function InteractiveApp({
             case 'command-palette':
               setCommandPaletteOpen(false)
               break
+            case 'cd-trust':
+              cdTrustRef.current = null
+              setCdTrust(null)
+              setCdTrustSelection(0)
+              break
             default: {
               const unhandledTarget: never = effect.target
               return unhandledTarget
@@ -5311,7 +5417,7 @@ export function InteractiveApp({
                 : ['Select']
       : commandPaletteVisible || filePickerVisible
         ? ['Autocomplete', 'Chat']
-        : permission || planApproval
+        : permission || planApproval || cdTrust
           ? ['Confirmation']
           : selectingSession
             ? ['Select']
@@ -5400,6 +5506,7 @@ export function InteractiveApp({
         pendingPrefix: hasPendingPrefix,
         permission: Boolean(permission),
         planApproval: Boolean(planApproval),
+        cdTrust: Boolean(cdTrust),
         question: Boolean(question),
         elicitation: elicitation
           ? elicitationUrlWaiting
@@ -5669,6 +5776,29 @@ export function InteractiveApp({
       } else if (key.return) {
         resolvePermission(permissionSelection)
       }
+      return
+    }
+
+    if (cdTrust) {
+      const resolveCdTrust = (selectedIndex: number) => {
+        const pending = cdTrustRef.current
+        cdTrustRef.current = null
+        setCdTrust(null)
+        setCdTrustSelection(0)
+        if (!pending || selectedIndex !== 1) return
+        changeWorkingDirectory(pending.canonicalPath, {
+          kind: 'approved',
+          canonicalTarget: pending.canonicalPath,
+        })
+      }
+      if (key.upArrow) {
+        setCdTrustSelection((current) => Math.max(0, current - 1))
+      } else if (key.downArrow) {
+        setCdTrustSelection((current) => Math.min(1, current + 1))
+      } else if (lower === 'y') resolveCdTrust(1)
+      else if (lower === 'n') resolveCdTrust(0)
+      else if (/^[12]$/u.test(value)) resolveCdTrust(Number(value) - 1)
+      else if (key.return) resolveCdTrust(cdTrustSelection)
       return
     }
 

@@ -31,6 +31,7 @@ describe('projectTuiFocusStack', () => {
       { planApproval: true },
       { kind: 'cancelable', target: 'plan-approval' },
     ],
+    ['cd-trust', { cdTrust: true }, { kind: 'cancelable', target: 'cd-trust' }],
     [
       'question',
       { question: true },

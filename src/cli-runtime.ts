@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto'
 
 import {
   ClaudeSessionService,
+  type CwdInspection,
   type ForkResult,
   type ManualCompactResult,
   type ManualCompactSelection,
@@ -1094,7 +1095,12 @@ interface SessionCommands {
   ): Promise<void>
   rewindFiles?(sessionId: string, userMessageId: string): Promise<void>
   rewindPoints?(sessionId: string): Promise<RewindPoint[]>
-  changeCwd?(sessionId: string | undefined, cwd: string): Promise<string>
+  changeCwd?(
+    sessionId: string | undefined,
+    cwd: string,
+    expectedCanonicalTarget?: string,
+  ): Promise<string>
+  inspectCwd?(cwd: string): Promise<CwdInspection>
   notify?(
     sessionId: string | undefined,
     message: string,
@@ -2824,7 +2830,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
       rewindFiles: (sessionId, userMessageId) =>
         service.rewindFiles(sessionId, userMessageId),
       rewindPoints: (sessionId) => service.rewindPoints(sessionId),
-      changeCwd: (sessionId, cwd) => service.changeCwd(sessionId, cwd),
+      changeCwd: (sessionId, cwd, expectedCanonicalTarget) =>
+        service.changeCwd(sessionId, cwd, expectedCanonicalTarget),
+      inspectCwd: (cwd) => service.inspectCwd(cwd),
       notify: (sessionId, message, notificationType, title) =>
         service.notifyDetached(sessionId, message, notificationType, title),
       recordCdUsage: (sessionId) => service.recordCdUsage(sessionId),

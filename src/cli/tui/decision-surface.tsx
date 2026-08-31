@@ -5,6 +5,7 @@ import type {
   TuiDecisionSurfaceModel,
   TuiQuestionSurfaceModel,
   TuiPlanApprovalSurfaceModel,
+  TuiCdTrustSurfaceModel,
 } from './decision-surface-model.js'
 import { useTuiTheme } from './theme.js'
 
@@ -129,6 +130,31 @@ function QuestionSurface({
   )
 }
 
+function CdTrustSurface({
+  model,
+  screenReader,
+}: {
+  model: TuiCdTrustSurfaceModel
+  screenReader: boolean
+}) {
+  return (
+    <DialogFrame title={model.heading} screenReader={screenReader}>
+      <Text>{model.canonicalPath}</Text>
+      <Text dimColor>{model.explanation}</Text>
+      <Text dimColor>{model.scope}</Text>
+      <Text dimColor>{model.securityGuide}</Text>
+      {model.options.map((option) => (
+        <Option
+          key={option.index}
+          option={option}
+          screenReader={screenReader}
+        />
+      ))}
+      <Footer {...model} screenReader={screenReader} />
+    </DialogFrame>
+  )
+}
+
 export function DecisionSurface({
   model,
   width,
@@ -141,8 +167,10 @@ export function DecisionSurface({
   const content =
     model.kind === 'plan-approval' ? (
       <PlanSurface model={model} screenReader={screenReader} />
-    ) : (
+    ) : model.kind === 'question' ? (
       <QuestionSurface model={model} screenReader={screenReader} />
+    ) : (
+      <CdTrustSurface model={model} screenReader={screenReader} />
     )
   const normalizedWidth = Number.isFinite(width)
     ? Math.min(100, Math.max(1, Math.trunc(width)))

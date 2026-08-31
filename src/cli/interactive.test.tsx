@@ -3347,6 +3347,13 @@ describe('InteractiveApp', () => {
           async changeCwd() {
             return '/fixture/next'
           },
+          async inspectCwd() {
+            return {
+              canonicalTarget: '/fixture/next',
+              canonicalCurrentCwd: '/fixture/initial',
+              sameDirectory: false,
+            }
+          },
           async close() {},
         }
       },
@@ -3369,6 +3376,11 @@ describe('InteractiveApp', () => {
     app.stdin.write('/cd next')
     app.stdin.write('\r')
     await flush()
+    expect(app.lastFrame()).toContain('No, stay put')
+    app.stdin.write('y')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Moved to /fixture/next') ? true : undefined,
+    )
     expect(app.lastFrame()).toContain('Moved to /fixture/next')
     app.stdin.write('/hooks')
     app.stdin.write('\r')
@@ -4592,6 +4604,13 @@ describe('InteractiveApp', () => {
             changes.push([sessionId, cwd])
             return '/canonical/next'
           },
+          async inspectCwd() {
+            return {
+              canonicalTarget: '/canonical/next',
+              canonicalCurrentCwd: '/workspace',
+              sameDirectory: false,
+            }
+          },
           async close() {},
         }
       },
@@ -4608,14 +4627,282 @@ describe('InteractiveApp', () => {
     app.stdin.write('/cd ../next')
     app.stdin.write('\r')
     await flush()
+    expect(app.lastFrame()).toContain('Moving to a new directory:')
+    app.stdin.write('y')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Moved to /canonical/next') ? true : undefined,
+    )
     expect(app.lastFrame()).toContain('Moved to /canonical/next')
-    expect(changes).toEqual([['active-session', '../next']])
+    expect(changes).toEqual([['active-session', '/canonical/next']])
 
     app.stdin.write('continue')
     app.stdin.write('\r')
     await flush()
     expect(creations).toEqual(['/workspace', '/canonical/next'])
     expect(resumes).toEqual(['continue'])
+  })
+
+  it('requires session-local trust before canonical cwd moves and reuses accepted paths', async () => {
+    const creations: string[] = []
+    const changes: string[] = []
+    const openedTranscripts: string[] = []
+    const sessions = [
+      {
+        sessionId: 'active-session',
+        lastPrompt: 'active work',
+        updatedAt: '2026-08-31T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+      {
+        sessionId: 'other-session',
+        lastPrompt: 'other work',
+        updatedAt: '2026-08-30T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+    ]
+    let current = '/workspace'
+    const targets: Record<string, string> = {
+      next: '/canonical/next',
+      '/canonical/next': '/canonical/next',
+      back: '/workspace',
+      '/workspace': '/workspace',
+      same: '/canonical/next',
+    }
+    const factory: InteractiveServiceFactory = {
+      async createService(options) {
+        creations.push(options.cwd ?? '/workspace')
+        return {
+          async run() {
+            throw new Error('unused')
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return sessions
+          },
+          async transcript(sessionId) {
+            openedTranscripts.push(sessionId)
+            return []
+          },
+          async inspectCwd(requested) {
+            if (requested === 'missing')
+              throw new Error(
+                `Could not find a directory at ${current}/missing.`,
+              )
+            if (requested === 'file')
+              throw new Error(
+                `${current}/file is not a directory. Did you mean ${current}?`,
+              )
+            const canonicalTarget = targets[requested]
+            if (!canonicalTarget) throw new Error(`unexpected cwd ${requested}`)
+            return {
+              canonicalTarget,
+              canonicalCurrentCwd: current,
+              sameDirectory: canonicalTarget === current,
+            }
+          },
+          async changeCwd(_sessionId, cwd) {
+            changes.push(cwd)
+            current = cwd
+            return cwd
+          },
+          async close() {},
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={sessions}
+        resume={{ sessionId: 'active-session' }}
+        display={{ version: 'test', cwd: '/workspace' }}
+      />,
+    )
+    const submitCd = async (target: string) => {
+      app.stdin.write(`/cd ${target}`)
+      app.stdin.write('\r')
+      await flush()
+    }
+
+    await submitCd('next')
+    expect(app.lastFrame()).toContain('Moving to a new directory:')
+    expect(app.lastFrame()).toContain('❯ No, stay put')
+    expect(app.lastFrame()).toContain('/canonical/next')
+    app.stdin.write('\u001B[A')
+    app.stdin.write('\r')
+    await flush()
+    expect(changes).toEqual([])
+    expect(creations).toEqual(['/workspace'])
+
+    await submitCd('next')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Moving to a new directory:')
+        ? true
+        : undefined,
+    )
+    app.stdin.write('2')
+    await waitFor(() => (changes.length === 1 ? true : undefined))
+    expect(changes).toEqual(['/canonical/next'])
+    expect(app.lastFrame()).toContain('Moved to /canonical/next')
+
+    await submitCd('back')
+    await waitFor(() => (changes.length === 2 ? true : undefined))
+    expect(changes).toEqual(['/canonical/next', '/workspace'])
+    expect(app.lastFrame()).not.toContain('Moving to a new directory:')
+
+    await submitCd('next')
+    await waitFor(() => (changes.length === 3 ? true : undefined))
+    expect(changes).toEqual([
+      '/canonical/next',
+      '/workspace',
+      '/canonical/next',
+    ])
+    expect(app.lastFrame()).not.toContain('Moving to a new directory:')
+
+    await submitCd('same')
+    expect(app.lastFrame()).toContain('Already in /canonical/next.')
+    expect(changes).toHaveLength(3)
+
+    await submitCd('missing')
+    expect(app.lastFrame()).toContain(
+      'Could not find a directory at /canonical/next/missing.',
+    )
+    await submitCd('file')
+    expect(app.lastFrame()).toContain(
+      '/canonical/next/file is not a directory. Did you mean /canonical/next?',
+    )
+    expect(changes).toHaveLength(3)
+
+    app.stdin.write('/resume')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      openedTranscripts.includes('other-session') ? true : undefined,
+    )
+    await submitCd('back')
+    expect(app.lastFrame()).toContain('Moving to a new directory:')
+    expect(app.lastFrame()).toContain('/workspace')
+    expect(changes).toHaveLength(3)
+  })
+
+  it('renders unfamiliar cwd trust as a semantic screen-reader decision', async () => {
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async inspectCwd() {
+                return {
+                  canonicalTarget: '/canonical/next',
+                  canonicalCurrentCwd: '/workspace',
+                  sameDirectory: false,
+                }
+              },
+              async changeCwd() {
+                throw new Error('must not move before approval')
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/workspace' }}
+        axScreenReader
+      />,
+    )
+
+    app.stdin.write('/cd next')
+    app.stdin.write('\r')
+    await flush()
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Moving to a new directory:')
+    expect(frame).toContain('/canonical/next')
+    expect(frame).toContain('read, edit, and execute files')
+    expect(frame).toContain(
+      'Security guide: https://code.claude.com/docs/en/security',
+    )
+    expect(frame).toContain('Selected: No, stay put')
+    expect(frame).toContain('Option: Yes, move here')
+    expect(frame).toContain('Press Enter to confirm')
+    expect(frame).toContain('Press Escape to cancel')
+    expect(frame).not.toContain('❯')
+    app.stdin.write('\u001B')
+    await waitFor(() =>
+      app.lastFrame()?.includes('Moving to a new directory:')
+        ? undefined
+        : true,
+    )
+  })
+
+  it('rejects a cwd whose canonical identity changes after approval', async () => {
+    let inspections = 0
+    const changeCwd = vi.fn(async () => '/canonical/replacement')
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+              async inspectCwd() {
+                inspections += 1
+                return {
+                  canonicalTarget:
+                    inspections === 1
+                      ? '/canonical/approved'
+                      : '/canonical/replacement',
+                  canonicalCurrentCwd: '/workspace',
+                  sameDirectory: false,
+                }
+              },
+              changeCwd,
+            }
+          },
+        }}
+        initialSessions={[]}
+        display={{ version: 'test', cwd: '/workspace' }}
+      />,
+    )
+
+    app.stdin.write('/cd next')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('y')
+    await waitFor(() => (inspections === 2 ? true : undefined))
+
+    expect(changeCwd).not.toHaveBeenCalled()
+    expect(app.lastFrame()).toContain('Directory changed after approval')
+    expect(app.lastFrame()).toContain('/canonical/approved')
+    expect(app.lastFrame()).toContain('/canonical/replacement')
   })
 
   it('keeps the previous cwd and service when /cd fails', async () => {
@@ -4645,6 +4932,9 @@ describe('InteractiveApp', () => {
           async changeCwd() {
             throw new Error('Directory does not exist')
           },
+          async inspectCwd() {
+            throw new Error('Could not find a directory at /workspace/missing.')
+          },
         }
       },
     }
@@ -4660,7 +4950,9 @@ describe('InteractiveApp', () => {
     app.stdin.write('/cd missing')
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Directory does not exist')
+    expect(app.lastFrame()).toContain(
+      'Could not find a directory at /workspace/missing.',
+    )
 
     app.stdin.write('continue')
     app.stdin.write('\r')

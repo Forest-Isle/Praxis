@@ -178,6 +178,9 @@ this file from merged Conventional Commit pull requests.
 
 ### Fixed
 
+* require an explicit, default-reject trust decision before `/cd` enters an
+  unfamiliar canonical directory, while reusing accepted paths for the current
+  session and preserving semantic screen-reader controls (#90)
 * support fullscreen `Ctrl+L` redraw and mouse transcript selection with wheel
   scrolling, edge autoscroll, and OSC 52 copy (#516)
 * persist Workflow metadata validation failures as ordinary native tool errors

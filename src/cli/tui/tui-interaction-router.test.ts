@@ -30,6 +30,15 @@ const interactionInput = (
 })
 
 describe('routeTuiInteraction', () => {
+  it('cancels cd trust without composer side effects', () => {
+    const result = routeTuiInteraction(
+      { ...base, layer: { kind: 'cancelable', target: 'cd-trust' } },
+      interactionInput({ composerKey: { ...composerKey, escape: true } }),
+    )
+    expect(result.effects).toEqual([
+      { kind: 'cancel-tui-layer', target: 'cd-trust' },
+    ])
+  })
   const base = {
     suspensionPending: false,
     exitConfirmationArmed: false,

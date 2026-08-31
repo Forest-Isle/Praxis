@@ -396,6 +396,25 @@ function decision(
       ),
     ]
   }
+  if (surface.kind === 'cd-trust') {
+    out.push(row('quiet:cd-trust:path', surface.canonicalPath, 'body'))
+    out.push(row('quiet:cd-trust:explanation', surface.explanation, 'muted'))
+    out.push(row('quiet:cd-trust:scope', surface.scope, 'muted'))
+    out.push(
+      row('quiet:cd-trust:security-guide', surface.securityGuide, 'muted'),
+    )
+    out.push(
+      ...optionsRows(surface.options, 'quiet:cd-trust:option', density, sr),
+    )
+    return [
+      ...out,
+      explicitFooter(
+        'quiet:cd-trust:footer',
+        '↑/↓ select  Enter confirm  Esc cancel',
+        'Use up and down arrows to select. Press Enter to confirm. Press Escape to cancel.',
+      ),
+    ]
+  }
   if (surface.progress)
     out.push(row('quiet:question:progress', surface.progress, 'muted'))
   if (surface.question) out.push(row('quiet:question:text', surface.question))
@@ -617,7 +636,11 @@ export function projectQuietChoiceRows(
         'Press Enter to confirm. Press Escape to cancel.',
       ),
     ]
-  if (surface.kind === 'plan-approval' || surface.kind === 'question')
+  if (
+    surface.kind === 'plan-approval' ||
+    surface.kind === 'question' ||
+    surface.kind === 'cd-trust'
+  )
     return decision(surface, options.density, sr)
   if (
     surface.kind === 'session-picker' ||

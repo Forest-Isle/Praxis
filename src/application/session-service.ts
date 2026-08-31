@@ -389,6 +389,12 @@ export interface SessionRunResult {
   modelUsage?: Readonly<Record<string, ModelUsage>>
 }
 
+export interface CwdInspection {
+  readonly canonicalTarget: string
+  readonly canonicalCurrentCwd: string
+  readonly sameDirectory: boolean
+}
+
 export interface SideQuestionResult {
   sessionId: string
   text: string
@@ -2802,20 +2808,29 @@ export class ClaudeSessionService {
   async changeCwd(
     sessionId: string | undefined,
     requestedCwd: string,
+    expectedCanonicalTarget?: string,
   ): Promise<string> {
     this.assertWritable()
     const previousCwd = this.activeCwd()
-    const expandedCwd =
-      requestedCwd === '~'
-        ? homedir()
-        : requestedCwd.startsWith('~/')
-          ? join(homedir(), requestedCwd.slice(2))
-          : requestedCwd
-    const cwd = await realpath(
-      isAbsolute(expandedCwd) ? expandedCwd : join(previousCwd, expandedCwd),
-    )
-    if (!(await stat(cwd)).isDirectory()) {
-      throw new Error(`Not a directory: ${requestedCwd}`)
+    let inspection: CwdInspection
+    try {
+      inspection = await this.inspectCwd(requestedCwd)
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes(' is not a directory.')
+      )
+        throw new Error(`Not a directory: ${requestedCwd}; ${error.message}`)
+      throw error
+    }
+    const cwd = inspection.canonicalTarget
+    if (
+      expectedCanonicalTarget !== undefined &&
+      cwd !== expectedCanonicalTarget
+    ) {
+      throw new Error(
+        `Directory changed after approval: expected ${expectedCanonicalTarget}, resolved to ${cwd}. Review the target and try again.`,
+      )
     }
     if (sessionId && this.options.sessionPersistence !== false) {
       const sourcePaths = this.pathsForCwd(
@@ -2905,6 +2920,36 @@ export class ClaudeSessionService {
       await this.cwdChanged(sessionId, previousCwd, cwd)
     }
     return cwd
+  }
+
+  async inspectCwd(requestedCwd: string): Promise<CwdInspection> {
+    const current = await realpath(this.activeCwd())
+    const expanded =
+      requestedCwd === '~'
+        ? homedir()
+        : requestedCwd.startsWith('~/')
+          ? join(homedir(), requestedCwd.slice(2))
+          : requestedCwd
+    const resolved = isAbsolute(expanded) ? expanded : join(current, expanded)
+    let target: string
+    try {
+      target = await realpath(resolved)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+        throw new Error(`Could not find a directory at ${resolved}.`)
+      throw error
+    }
+    const info = await stat(target)
+    if (!info.isDirectory()) {
+      throw new Error(
+        `${target} is not a directory. Did you mean ${dirname(target)}?`,
+      )
+    }
+    return {
+      canonicalTarget: target,
+      canonicalCurrentCwd: current,
+      sameDirectory: target === current,
+    }
   }
 
   async recordCdUsage(sessionId: string): Promise<void> {

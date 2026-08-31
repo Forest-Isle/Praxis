@@ -16,6 +16,7 @@ export type TuiScrollIntent =
 export type TuiCancellationTarget =
   | 'permission'
   | 'plan-approval'
+  | 'cd-trust'
   | 'question'
   | 'elicitation'
   | 'elicitation-url-waiting'

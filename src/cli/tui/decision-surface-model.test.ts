@@ -55,6 +55,33 @@ const planModel = (
 }
 
 describe('projectTuiDecisionSurface', () => {
+  it('projects cd trust with default rejection and clamps selection', () => {
+    const model = projectTuiDecisionSurface({
+      kind: 'cd-trust',
+      canonicalPath: '/canonical/target',
+      selectedIndex: 99,
+    })
+    expect(model).toMatchObject({
+      kind: 'cd-trust',
+      heading: 'Moving to a new directory:',
+      canonicalPath: '/canonical/target',
+      selectedIndex: 1,
+    })
+    expect(
+      model.options.map((option) => [option.label, option.selected]),
+    ).toEqual([
+      ['No, stay put', false],
+      ['Yes, move here', true],
+    ])
+    const rejected = projectTuiDecisionSurface({
+      kind: 'cd-trust',
+      canonicalPath: '/canonical/target',
+      selectedIndex: -1,
+    })
+    if (rejected.kind !== 'cd-trust') throw new Error('expected cd trust model')
+    expect(rejected.selectedIndex).toBe(0)
+    expect(rejected.options[0]?.selected).toBe(true)
+  })
   it.each([
     [-4, 0],
     [1.9, 1],
