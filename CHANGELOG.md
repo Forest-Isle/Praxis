@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.46.2](https://github.com/Forest-Isle/Praxis/compare/v0.46.1...v0.46.2) (2026-08-31)
+
+
+### Bug Fixes
+
+* require trust before changing directories ([#530](https://github.com/Forest-Isle/Praxis/issues/530)) ([111f2bf](https://github.com/Forest-Isle/Praxis/commit/111f2bfe61299c27c2edf363738d5033cf853eea))
+
 ## [0.46.1](https://github.com/Forest-Isle/Praxis/compare/v0.46.0...v0.46.1) (2026-08-31)
 
 
