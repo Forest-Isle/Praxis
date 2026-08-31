@@ -118,6 +118,30 @@ describe('routeTuiInteraction', () => {
     })
   })
 
+  it('lets resolved semantic actions claim keys before incidental scrolling', () => {
+    expect(
+      routeTuiInteraction(
+        base,
+        interactionInput({
+          action: 'history:previous',
+          scrollIntent: 'line-older',
+        }),
+      ),
+    ).toEqual({ disposition: 'delegated', effects: [] })
+    expect(
+      routeTuiInteraction(
+        base,
+        interactionInput({
+          action: 'scroll:older',
+          scrollIntent: 'line-older',
+        }),
+      ),
+    ).toEqual({
+      disposition: 'handled',
+      effects: [{ kind: 'set-transcript-scroll-offset', offset: 5 }],
+    })
+  })
+
   it('delegates busy background/toggle/editing, while cancellation remains first-class', () => {
     const busy = {
       ...base,
