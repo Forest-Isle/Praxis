@@ -701,6 +701,76 @@ describe('LocalToolRegistry', () => {
     }
   })
 
+  it('rejects oversized ordinary text reads with recoverable guidance', async () => {
+    const { cwd } = await workspace()
+    const filePath = join(cwd, 'oversized.txt')
+    await writeFile(
+      filePath,
+      Array.from({ length: 200 }, () => 'x'.repeat(2 * 1024)).join('\n'),
+    )
+    const registry = new LocalToolRegistry({ cwd })
+    const call = await registry.prepare(
+      { id: 'read-oversized', name: 'Read', input: { file_path: filePath } },
+      { cwd },
+    )
+
+    const oversizedError = await registry.execute(call, { cwd }).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(oversizedError).toBeInstanceOf(Error)
+    expect(oversizedError).toMatchObject({
+      message: expect.stringMatching(/256KB.*offset.*limit/i),
+    })
+    expect((oversizedError as Error).message).not.toContain(
+      '[output truncated]',
+    )
+
+    const slice = await registry.prepare(
+      {
+        id: 'read-oversized-slice',
+        name: 'Read',
+        input: { file_path: filePath, offset: 10, limit: 1 },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(slice, { cwd })).resolves.toMatchObject({
+      content: `10\t${'x'.repeat(2 * 1024)}`,
+      isError: false,
+      nativeToolUseResult: {
+        type: 'text',
+        file: { startLine: 10, numLines: 1, totalLines: 200 },
+      },
+    })
+
+    const tokenPath = join(cwd, 'token-heavy.txt')
+    await writeFile(tokenPath, `${'token '.repeat(30_000)}\n`)
+    const tokenCall = await registry.prepare(
+      { id: 'read-token-heavy', name: 'Read', input: { file_path: tokenPath } },
+      { cwd },
+    )
+    await expect(registry.execute(tokenCall, { cwd })).rejects.toThrow(
+      /tokens.*25000.*offset.*limit/i,
+    )
+
+    const tinyOutputRegistry = new LocalToolRegistry({
+      cwd,
+      maxOutputBytes: 4,
+    })
+    await writeFile(join(cwd, 'source.txt'), 'alpha\nbeta\n')
+    const tinyOutputCall = await tinyOutputRegistry.prepare(
+      {
+        id: 'read-tiny-output',
+        name: 'Read',
+        input: { file_path: 'source.txt' },
+      },
+      { cwd },
+    )
+    await expect(
+      tinyOutputRegistry.execute(tinyOutputCall, { cwd }),
+    ).resolves.toMatchObject({ content: '1\talpha\n2\tbeta\n3\t' })
+  })
+
   it('provides bounded read, write, edit, search, and shell tools', async () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'source.txt'), 'alpha\nbeta\nalpha\n')
@@ -868,6 +938,40 @@ describe('LocalToolRegistry', () => {
     expect(readResult.content).toBe(
       '<cell id="intro"><cell_type>markdown</cell_type># Old\nbody</cell id="intro">',
     )
+
+    const boundedNotebookPath = join(cwd, 'bounded.ipynb')
+    await writeFile(
+      boundedNotebookPath,
+      JSON.stringify({
+        cells: [
+          {
+            cell_type: 'markdown',
+            id: 'long',
+            metadata: {},
+            source: 'long '.repeat(100),
+          },
+        ],
+        metadata: {},
+        nbformat: 4,
+      }),
+    )
+    const boundedRegistry = new LocalToolRegistry({
+      cwd,
+      maxOutputBytes: 16,
+    })
+    const boundedRead = await boundedRegistry.prepare(
+      {
+        id: 'bounded-notebook',
+        name: 'Read',
+        input: { file_path: boundedNotebookPath },
+      },
+      { cwd },
+    )
+    await expect(
+      boundedRegistry.execute(boundedRead, { cwd }),
+    ).resolves.toMatchObject({
+      content: expect.stringContaining('[output truncated]'),
+    })
 
     const replaceCall = {
       id: 'replace-cell',

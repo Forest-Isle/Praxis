@@ -21,6 +21,7 @@ import {
 import { homedir, tmpdir } from 'node:os'
 
 import sharp from 'sharp'
+import { countTokens } from '@anthropic-ai/tokenizer'
 
 import type {
   ModelImage,
@@ -606,6 +607,9 @@ function truncateOutput(content: string, maxBytes: number): string {
     ? `${retained.content}\n[output truncated]`
     : retained.content
 }
+
+const TEXT_READ_MAX_BYTES = 256 * 1024
+const TEXT_READ_MAX_TOKENS = 25_000
 
 function abortError(): DOMException {
   return new DOMException('Tool execution aborted', 'AbortError')
@@ -1361,8 +1365,24 @@ export class LocalToolRegistry implements ToolRegistry {
                 `${(offset === 0 ? 0 : offset) + index}\t${line}`,
             )
             .join('\n')
+      if (!notebook) {
+        const contentBytes = Buffer.byteLength(content)
+        if (contentBytes > TEXT_READ_MAX_BYTES) {
+          throw new Error(
+            `Read result is ${contentBytes} bytes, which exceeds the 256KB limit. Use offset and limit to read specific portions.`,
+          )
+        }
+        const contentTokens = countTokens(content)
+        if (contentTokens > TEXT_READ_MAX_TOKENS) {
+          throw new Error(
+            `Read result is ${contentTokens} tokens, which exceeds the 25000 token limit. Use offset and limit to read specific portions.`,
+          )
+        }
+      }
       return {
-        content: truncateOutput(content, this.maxOutputBytes),
+        content: notebook
+          ? truncateOutput(content, this.maxOutputBytes)
+          : content,
         isError: false,
         accessedPaths: [filePath],
         ...(notebook
