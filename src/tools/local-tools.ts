@@ -1369,13 +1369,13 @@ export class LocalToolRegistry implements ToolRegistry {
         const contentBytes = Buffer.byteLength(content)
         if (contentBytes > TEXT_READ_MAX_BYTES) {
           throw new Error(
-            `Read result is ${contentBytes} bytes, which exceeds the 256KB limit. Use offset and limit to read specific portions.`,
+            `Read result is ${contentBytes} bytes, which exceeds the ${formatKilobytes(TEXT_READ_MAX_BYTES)} limit. Use offset and limit to read specific portions.`,
           )
         }
         const contentTokens = countTokens(content)
         if (contentTokens > TEXT_READ_MAX_TOKENS) {
           throw new Error(
-            `Read result is ${contentTokens} tokens, which exceeds the 25000 token limit. Use offset and limit to read specific portions.`,
+            `Read result is ${contentTokens} tokens, which exceeds the ${TEXT_READ_MAX_TOKENS} token limit. Use offset and limit to read specific portions.`,
           )
         }
       }
