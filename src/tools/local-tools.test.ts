@@ -3,6 +3,7 @@ import {
   mkdtemp,
   readFile,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
@@ -16,6 +17,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { ModelMessage, ToolExecutionContext } from '../core/runtime.js'
 import { LocalToolRegistry } from './local-tools.js'
 
 const roots: string[] = []
@@ -26,6 +28,29 @@ async function workspace() {
   const cwd = join(root, 'workspace')
   await mkdir(cwd)
   return { root, cwd }
+}
+
+async function contextAfterRead(
+  registry: LocalToolRegistry,
+  context: ToolExecutionContext,
+  filePath: string,
+): Promise<ToolExecutionContext> {
+  const read = await registry.prepare(
+    { id: `read-${filePath}`, name: 'Read', input: { file_path: filePath } },
+    context,
+  )
+  const result = await registry.execute(read, context)
+  const messages: ModelMessage[] = [
+    ...(context.messages ?? []),
+    { role: 'assistant', content: '', toolCalls: [read] },
+    {
+      role: 'tool',
+      toolCallId: read.id,
+      content: result.content,
+      isError: false,
+    },
+  ]
+  return { ...context, messages }
 }
 
 afterEach(async () => {
@@ -440,6 +465,27 @@ describe('LocalToolRegistry', () => {
     await expect(registry.execute(write, context)).resolves.toMatchObject({
       isError: false,
     })
+    const outputRead = await registry.prepare(
+      {
+        id: 'output-read',
+        name: 'Read',
+        input: { file_path: 'output.txt' },
+      },
+      context,
+    )
+    const outputReadResult = await registry.execute(outputRead, context)
+    const mutationContext = {
+      ...context,
+      messages: [
+        { role: 'assistant' as const, content: '', toolCalls: [outputRead] },
+        {
+          role: 'tool' as const,
+          toolCallId: outputRead.id,
+          content: outputReadResult.content,
+          isError: false,
+        },
+      ],
+    }
     const edit = await registry.prepare(
       {
         id: 'edit',
@@ -450,9 +496,11 @@ describe('LocalToolRegistry', () => {
           new_string: 'after',
         },
       },
-      context,
+      mutationContext,
     )
-    await expect(registry.execute(edit, context)).resolves.toMatchObject({
+    await expect(
+      registry.execute(edit, mutationContext),
+    ).resolves.toMatchObject({
       isError: false,
     })
     await expect(readFile(join(cwd, 'output.txt'), 'utf8')).resolves.toBe(
@@ -712,9 +760,29 @@ describe('LocalToolRegistry', () => {
     )
     await symlink(protectedPath, join(cwd, 'approved.txt'))
     await expect(registry.execute(approved, { cwd })).rejects.toThrow(
-      'changed after permission approval',
+      'File has not been read yet',
     )
     await expect(readFile(protectedPath, 'utf8')).resolves.toBe('keep')
+
+    const replacedParent = join(cwd, 'replaced-parent')
+    const originalParent = join(cwd, 'original-parent')
+    await mkdir(replacedParent)
+    const parentSwap = await registry.prepare(
+      {
+        id: 'parent-swapped',
+        name: 'Write',
+        input: { file_path: join(replacedParent, 'created.txt'), content: 'x' },
+      },
+      { cwd },
+    )
+    await rename(replacedParent, originalParent)
+    await symlink(outside, replacedParent)
+    await expect(registry.execute(parentSwap, { cwd })).rejects.toThrow(
+      'outside workspace',
+    )
+    await expect(
+      readFile(join(outside, 'created.txt'), 'utf8'),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('defers outside-path rejection for permission prompts and honors approved updates', async () => {
@@ -900,6 +968,27 @@ describe('LocalToolRegistry', () => {
       context,
     )
     await registry.execute(write, context)
+    const praxisRead = await registry.prepare(
+      {
+        id: 'memory-praxis-read',
+        name: 'Read',
+        input: { file_path: join(memoryDirectory, 'praxis.md') },
+      },
+      context,
+    )
+    const praxisReadResult = await registry.execute(praxisRead, context)
+    const mutationContext = {
+      ...context,
+      messages: [
+        { role: 'assistant' as const, content: '', toolCalls: [praxisRead] },
+        {
+          role: 'tool' as const,
+          toolCallId: praxisRead.id,
+          content: praxisReadResult.content,
+          isError: false,
+        },
+      ],
+    }
     const edit = await registry.prepare(
       {
         id: 'memory-edit',
@@ -910,9 +999,9 @@ describe('LocalToolRegistry', () => {
           new_string: 'Claude and Praxis',
         },
       },
-      context,
+      mutationContext,
     )
-    await registry.execute(edit, context)
+    await registry.execute(edit, mutationContext)
     await expect(
       readFile(join(memoryDirectory, 'praxis.md'), 'utf8'),
     ).resolves.toBe('created by Claude and Praxis')
@@ -1229,6 +1318,23 @@ describe('LocalToolRegistry', () => {
     const { cwd } = await workspace()
     await writeFile(join(cwd, 'expand.txt'), 'aaaa')
     const registry = new LocalToolRegistry({ cwd, maxFileBytes: 10 })
+    const read = await registry.prepare(
+      { id: 'expand-read', name: 'Read', input: { file_path: 'expand.txt' } },
+      { cwd },
+    )
+    const readResult = await registry.execute(read, { cwd })
+    const context = {
+      cwd,
+      messages: [
+        { role: 'assistant' as const, content: '', toolCalls: [read] },
+        {
+          role: 'tool' as const,
+          toolCallId: read.id,
+          content: readResult.content,
+          isError: false,
+        },
+      ],
+    }
     const edit = await registry.prepare(
       {
         id: 'expand',
@@ -1240,15 +1346,402 @@ describe('LocalToolRegistry', () => {
           replace_all: true,
         },
       },
-      { cwd },
+      context,
     )
 
-    await expect(registry.execute(edit, { cwd })).rejects.toThrow(
+    await expect(registry.execute(edit, context)).rejects.toThrow(
       'Edited content exceeds 10 bytes',
     )
     await expect(readFile(join(cwd, 'expand.txt'), 'utf8')).resolves.toBe(
       'aaaa',
     )
+  })
+
+  it('requires successful reads of the canonical target before existing mutations', async () => {
+    const { cwd } = await workspace()
+    const target = join(cwd, 'target.txt')
+    const other = join(cwd, 'other.txt')
+    const alias = join(cwd, 'target-alias.txt')
+    await writeFile(target, 'before')
+    await writeFile(other, 'other')
+    await symlink(target, alias)
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+
+    await expect(
+      registry.prepare(
+        {
+          id: 'unread-write',
+          name: 'Write',
+          input: { file_path: target, content: 'after' },
+        },
+        context,
+      ),
+    ).rejects.toThrow(
+      '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+    )
+    await expect(
+      registry.prepare(
+        {
+          id: 'unread-edit',
+          name: 'Edit',
+          input: {
+            file_path: target,
+            old_string: 'before',
+            new_string: 'after',
+          },
+        },
+        context,
+      ),
+    ).rejects.toThrow('File has not been read yet')
+
+    const otherRead = await registry.prepare(
+      { id: 'other-read', name: 'Read', input: { file_path: other } },
+      context,
+    )
+    const otherResult = await registry.execute(otherRead, context)
+    const wrongPathContext = {
+      cwd,
+      messages: [
+        { role: 'assistant' as const, content: '', toolCalls: [otherRead] },
+        {
+          role: 'tool' as const,
+          toolCallId: otherRead.id,
+          content: otherResult.content,
+          isError: false,
+        },
+      ],
+    }
+    await expect(
+      registry.prepare(
+        {
+          id: 'wrong-path-edit',
+          name: 'Edit',
+          input: {
+            file_path: target,
+            old_string: 'before',
+            new_string: 'after',
+          },
+        },
+        wrongPathContext,
+      ),
+    ).rejects.toThrow('File has not been read yet')
+
+    const failedReadContext = {
+      cwd,
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: '',
+          toolCalls: [
+            { id: 'failed-read', name: 'Read', input: { file_path: target } },
+          ],
+        },
+        {
+          role: 'tool' as const,
+          toolCallId: 'failed-read',
+          content: 'read failed',
+          isError: true,
+        },
+      ],
+    }
+    await expect(
+      registry.prepare(
+        {
+          id: 'failed-read-edit',
+          name: 'Edit',
+          input: {
+            file_path: target,
+            old_string: 'before',
+            new_string: 'after',
+          },
+        },
+        failedReadContext,
+      ),
+    ).rejects.toThrow('File has not been read yet')
+
+    const aliasContext = await contextAfterRead(registry, context, alias)
+    const authorized = await registry.prepare(
+      {
+        id: 'authorized-write',
+        name: 'Write',
+        input: { file_path: target, content: 'after' },
+      },
+      aliasContext,
+    )
+    await expect(
+      registry.execute(authorized, aliasContext),
+    ).resolves.toMatchObject({
+      nativeToolUseResult: {
+        filePath: await realpath(target),
+        content: 'after',
+      },
+    })
+  })
+
+  it('creates missing files safely and preserves an existing newline style', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+
+    const write = await registry.prepare(
+      {
+        id: 'missing-write',
+        name: 'Write',
+        input: { file_path: 'missing.txt', content: 'created' },
+      },
+      context,
+    )
+    await expect(registry.execute(write, context)).resolves.toEqual({
+      content: 'Wrote 7 bytes',
+      isError: false,
+      linesAdded: 1,
+      linesRemoved: 0,
+      nativeToolUseResult: {
+        filePath: write.input.file_path,
+        content: 'created',
+      },
+    })
+
+    const boundedRegistry = new LocalToolRegistry({ cwd, maxFileBytes: 3 })
+    const boundedMissingPath = join(cwd, 'oversized.txt')
+    const oversized = await boundedRegistry.prepare(
+      {
+        id: 'oversized-write',
+        name: 'Write',
+        input: { file_path: boundedMissingPath, content: '1234' },
+      },
+      context,
+    )
+    await expect(boundedRegistry.execute(oversized, context)).rejects.toThrow(
+      'Content exceeds 3 byte write limit',
+    )
+    await expect(readFile(boundedMissingPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    const emptyEdit = await registry.prepare(
+      {
+        id: 'missing-edit',
+        name: 'Edit',
+        input: {
+          file_path: 'created-by-edit.txt',
+          old_string: '',
+          new_string: 'new',
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(emptyEdit, context)).resolves.toMatchObject({
+      nativeToolUseResult: {
+        filePath: emptyEdit.input.file_path,
+        content: 'new',
+      },
+    })
+
+    const crlfPath = join(cwd, 'crlf.txt')
+    await writeFile(crlfPath, 'one\r\ntwo\r\n')
+    const readContext = await contextAfterRead(registry, context, crlfPath)
+    const crlfWrite = await registry.prepare(
+      {
+        id: 'crlf-write',
+        name: 'Write',
+        input: { file_path: crlfPath, content: 'first\nsecond\n' },
+      },
+      readContext,
+    )
+    await registry.execute(crlfWrite, readContext)
+    await expect(readFile(crlfPath, 'utf8')).resolves.toBe(
+      'first\r\nsecond\r\n',
+    )
+
+    const editReadContext = await contextAfterRead(registry, context, crlfPath)
+    const crlfEdit = await registry.prepare(
+      {
+        id: 'crlf-edit',
+        name: 'Edit',
+        input: {
+          file_path: crlfPath,
+          old_string: 'first\nsecond',
+          new_string: 'uno\ndos',
+        },
+      },
+      editReadContext,
+    )
+    await expect(
+      registry.execute(crlfEdit, editReadContext),
+    ).resolves.toMatchObject({
+      nativeToolUseResult: {
+        filePath: await realpath(crlfPath),
+        content: 'uno\r\ndos\r\n',
+      },
+    })
+    await expect(readFile(crlfPath, 'utf8')).resolves.toBe('uno\r\ndos\r\n')
+
+    const lfPath = join(cwd, 'bounded-lf.txt')
+    await writeFile(lfPath, 'x\n')
+    const lfContext = await contextAfterRead(
+      new LocalToolRegistry({ cwd, maxFileBytes: 2 }),
+      { cwd },
+      lfPath,
+    )
+    const lfRegistry = new LocalToolRegistry({ cwd, maxFileBytes: 2 })
+    const lfWrite = await lfRegistry.prepare(
+      {
+        id: 'bounded-lf-write',
+        name: 'Write',
+        input: { file_path: lfPath, content: 'a\r\n' },
+      },
+      lfContext,
+    )
+    await expect(lfRegistry.execute(lfWrite, lfContext)).resolves.toMatchObject(
+      {
+        nativeToolUseResult: {
+          filePath: await realpath(lfPath),
+          content: 'a\n',
+        },
+      },
+    )
+    await expect(readFile(lfPath, 'utf8')).resolves.toBe('a\n')
+
+    const oversizedExistingPath = join(cwd, 'oversized-existing.txt')
+    await writeFile(oversizedExistingPath, '1234')
+    const oversizedExistingContext = await contextAfterRead(
+      registry,
+      context,
+      oversizedExistingPath,
+    )
+    const oversizedExistingRegistry = new LocalToolRegistry({
+      cwd,
+      maxFileBytes: 3,
+    })
+    const oversizedExisting = await oversizedExistingRegistry.prepare(
+      {
+        id: 'oversized-existing-write',
+        name: 'Write',
+        input: { file_path: oversizedExistingPath, content: 'x' },
+      },
+      oversizedExistingContext,
+    )
+    await expect(
+      oversizedExistingRegistry.execute(
+        oversizedExisting,
+        oversizedExistingContext,
+      ),
+    ).rejects.toThrow('File exceeds 3 byte write limit')
+    await expect(readFile(oversizedExistingPath, 'utf8')).resolves.toBe('1234')
+  })
+
+  it('rejects ambiguous empty edits and create-to-overwrite races', async () => {
+    const { cwd } = await workspace()
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+    await expect(
+      registry.prepare(
+        {
+          id: 'missing-non-empty-old',
+          name: 'Edit',
+          input: {
+            file_path: join(cwd, 'missing-target.txt'),
+            old_string: 'needle',
+            new_string: 'replacement',
+          },
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    const existing = join(cwd, 'existing.txt')
+    await writeFile(existing, 'keep')
+    await expect(
+      registry.prepare(
+        {
+          id: 'existing-empty-old',
+          name: 'Edit',
+          input: { file_path: existing, old_string: '', new_string: 'insert' },
+        },
+        context,
+      ),
+    ).rejects.toThrow('File has not been read yet')
+    const readContext = await contextAfterRead(registry, context, existing)
+    const emptyEdit = await registry.prepare(
+      {
+        id: 'existing-empty-old-authorized',
+        name: 'Edit',
+        input: { file_path: existing, old_string: '', new_string: 'insert' },
+      },
+      readContext,
+    )
+    await expect(registry.execute(emptyEdit, readContext)).rejects.toThrow(
+      'only valid for creating a missing file',
+    )
+    await expect(readFile(existing, 'utf8')).resolves.toBe('keep')
+
+    const racePath = join(cwd, 'race.txt')
+    const race = await registry.prepare(
+      {
+        id: 'race-write',
+        name: 'Write',
+        input: { file_path: racePath, content: 'overwrite' },
+      },
+      context,
+    )
+    await writeFile(racePath, 'created concurrently')
+    await expect(registry.execute(race, context)).rejects.toThrow(
+      'File has not been read yet',
+    )
+    await expect(readFile(racePath, 'utf8')).resolves.toBe(
+      'created concurrently',
+    )
+
+    const deletedWritePath = join(cwd, 'deleted-write.txt')
+    await writeFile(deletedWritePath, 'before')
+    const deletedWriteContext = await contextAfterRead(
+      registry,
+      context,
+      deletedWritePath,
+    )
+    const deletedWrite = await registry.prepare(
+      {
+        id: 'deleted-existing-write',
+        name: 'Write',
+        input: { file_path: deletedWritePath, content: 'replacement' },
+      },
+      deletedWriteContext,
+    )
+    await rm(deletedWritePath)
+    await expect(
+      registry.execute(deletedWrite, deletedWriteContext),
+    ).rejects.toThrow('Tool input changed after permission approval')
+    await expect(readFile(deletedWritePath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+
+    const deletedEditPath = join(cwd, 'deleted-edit.txt')
+    await writeFile(deletedEditPath, 'before')
+    const deletedEditContext = await contextAfterRead(
+      registry,
+      context,
+      deletedEditPath,
+    )
+    const deletedEdit = await registry.prepare(
+      {
+        id: 'deleted-existing-empty-edit',
+        name: 'Edit',
+        input: {
+          file_path: deletedEditPath,
+          old_string: '',
+          new_string: 'replacement',
+        },
+      },
+      deletedEditContext,
+    )
+    await rm(deletedEditPath)
+    await expect(
+      registry.execute(deletedEdit, deletedEditContext),
+    ).rejects.toThrow('Tool input changed after permission approval')
+    await expect(readFile(deletedEditPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
   })
 
   it('reports exact Claude line metrics for successful local mutations', async () => {
@@ -1265,7 +1758,9 @@ describe('LocalToolRegistry', () => {
       },
       context,
     )
-    await expect(registry.execute(newWithTrailing, context)).resolves.toEqual({
+    await expect(
+      registry.execute(newWithTrailing, context),
+    ).resolves.toMatchObject({
       content: 'Wrote 11 bytes',
       isError: false,
       linesAdded: 3,
@@ -1274,6 +1769,11 @@ describe('LocalToolRegistry', () => {
 
     // Existing empty file Write uses the same Claude create rule.
     await writeFile(join(cwd, 'existing-empty.txt'), '')
+    const existingEmptyContext = await contextAfterRead(
+      registry,
+      context,
+      'existing-empty.txt',
+    )
     const existingEmpty = await registry.prepare(
       {
         id: 'write-existing-empty',
@@ -1283,9 +1783,11 @@ describe('LocalToolRegistry', () => {
           content: 'alpha\nbeta\n',
         },
       },
-      context,
+      existingEmptyContext,
     )
-    await expect(registry.execute(existingEmpty, context)).resolves.toEqual({
+    await expect(
+      registry.execute(existingEmpty, existingEmptyContext),
+    ).resolves.toMatchObject({
       content: 'Wrote 11 bytes',
       isError: false,
       linesAdded: 3,
@@ -1303,7 +1805,7 @@ describe('LocalToolRegistry', () => {
     )
     await expect(
       registry.execute(newWithoutTrailing, context),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       content: 'Wrote 10 bytes',
       isError: false,
       linesAdded: 2,
@@ -1311,15 +1813,22 @@ describe('LocalToolRegistry', () => {
     })
 
     // Existing-file Write overwrites with a full pre/post diff.
+    const overwriteContext = await contextAfterRead(
+      registry,
+      context,
+      'fresh.txt',
+    )
     const overwrite = await registry.prepare(
       {
         id: 'write-overwrite',
         name: 'Write',
         input: { file_path: 'fresh.txt', content: 'delta\n' },
       },
-      context,
+      overwriteContext,
     )
-    await expect(registry.execute(overwrite, context)).resolves.toEqual({
+    await expect(
+      registry.execute(overwrite, overwriteContext),
+    ).resolves.toMatchObject({
       content: 'Wrote 6 bytes',
       isError: false,
       linesAdded: 1,
@@ -1328,6 +1837,11 @@ describe('LocalToolRegistry', () => {
 
     // Edit single replacement.
     await writeFile(join(cwd, 'edit-single.txt'), 'one\ntwo\nthree\n')
+    const editSingleContext = await contextAfterRead(
+      registry,
+      context,
+      'edit-single.txt',
+    )
     const editSingle = await registry.prepare(
       {
         id: 'edit-single',
@@ -1338,9 +1852,11 @@ describe('LocalToolRegistry', () => {
           new_string: 'TWO',
         },
       },
-      context,
+      editSingleContext,
     )
-    await expect(registry.execute(editSingle, context)).resolves.toEqual({
+    await expect(
+      registry.execute(editSingle, editSingleContext),
+    ).resolves.toMatchObject({
       content: 'Replaced 1 occurrence(s)',
       isError: false,
       linesAdded: 1,
@@ -1349,6 +1865,11 @@ describe('LocalToolRegistry', () => {
 
     // Edit replace_all counts every replaced occurrence.
     await writeFile(join(cwd, 'edit-all.txt'), 'alpha\nbeta\nalpha\n')
+    const editAllContext = await contextAfterRead(
+      registry,
+      context,
+      'edit-all.txt',
+    )
     const editAll = await registry.prepare(
       {
         id: 'edit-all',
@@ -1360,9 +1881,11 @@ describe('LocalToolRegistry', () => {
           replace_all: true,
         },
       },
-      context,
+      editAllContext,
     )
-    await expect(registry.execute(editAll, context)).resolves.toEqual({
+    await expect(
+      registry.execute(editAll, editAllContext),
+    ).resolves.toMatchObject({
       content: 'Replaced 2 occurrence(s)',
       isError: false,
       linesAdded: 2,
@@ -1384,38 +1907,36 @@ describe('LocalToolRegistry', () => {
 
     const authorizedKeys = join(home, '.ssh', 'authorized_keys')
     await writeFile(authorizedKeys, 'existing-key\n')
-    const write = await registry.prepare(
-      {
-        id: 'protected-write',
-        name: 'Write',
-        input: { file_path: authorizedKeys, content: 'malicious\n' },
-      },
-      context,
-    )
-    await expect(registry.execute(write, context)).rejects.toThrow(
-      'Refusing to write protected path',
-    )
+    await expect(
+      registry.prepare(
+        {
+          id: 'protected-write',
+          name: 'Write',
+          input: { file_path: authorizedKeys, content: 'malicious\n' },
+        },
+        context,
+      ),
+    ).rejects.toThrow('Refusing to write protected path')
     await expect(readFile(authorizedKeys, 'utf8')).resolves.toBe(
       'existing-key\n',
     )
 
     const credentials = join(home, '.aws', 'credentials')
     await writeFile(credentials, 'aws_access_key_id=existing\n')
-    const edit = await registry.prepare(
-      {
-        id: 'protected-edit',
-        name: 'Edit',
-        input: {
-          file_path: credentials,
-          old_string: 'existing',
-          new_string: 'malicious',
+    await expect(
+      registry.prepare(
+        {
+          id: 'protected-edit',
+          name: 'Edit',
+          input: {
+            file_path: credentials,
+            old_string: 'existing',
+            new_string: 'malicious',
+          },
         },
-      },
-      context,
-    )
-    await expect(registry.execute(edit, context)).rejects.toThrow(
-      'Refusing to write protected path',
-    )
+        context,
+      ),
+    ).rejects.toThrow('Refusing to write protected path')
     await expect(readFile(credentials, 'utf8')).resolves.toBe(
       'aws_access_key_id=existing\n',
     )
@@ -1481,16 +2002,15 @@ describe('LocalToolRegistry', () => {
     })
     const settingsPath = join(home, '.praxis', 'settings.json')
     await mkdir(dirname(settingsPath), { recursive: true })
-    const settingsWrite = await defaultConfigRegistry.prepare(
-      {
-        id: 'protected-default-config',
-        name: 'Write',
-        input: { file_path: settingsPath, content: '{}' },
-      },
-      context,
-    )
     await expect(
-      defaultConfigRegistry.execute(settingsWrite, context),
+      defaultConfigRegistry.prepare(
+        {
+          id: 'protected-default-config',
+          name: 'Write',
+          input: { file_path: settingsPath, content: '{}' },
+        },
+        context,
+      ),
     ).rejects.toThrow('Refusing to write protected path')
   })
 
@@ -1604,17 +2124,16 @@ describe('LocalToolRegistry', () => {
     })
     const context = { cwd }
     const protectedPath = join(cwd, '.praxis', 'commands', 'review.md')
-    const protectedWrite = await registry.prepare(
-      {
-        id: 'protected-native-command',
-        name: 'Write',
-        input: { file_path: protectedPath, content: 'changed' },
-      },
-      context,
-    )
-    await expect(registry.execute(protectedWrite, context)).rejects.toThrow(
-      'Refusing to write protected path',
-    )
+    await expect(
+      registry.prepare(
+        {
+          id: 'protected-native-command',
+          name: 'Write',
+          input: { file_path: protectedPath, content: 'changed' },
+        },
+        context,
+      ),
+    ).rejects.toThrow('Refusing to write protected path')
 
     const compatibilityPath = join(cwd, '.claude', 'commands', 'review.md')
     const compatibilityWrite = await registry.prepare(

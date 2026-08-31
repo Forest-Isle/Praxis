@@ -632,6 +632,15 @@ function formatKilobytes(bytes: number): string {
   )
 }
 
+function newlineStyle(content: string): string | undefined {
+  return content.match(/\r\n|\n|\r/u)?.[0]
+}
+
+function normalizeNewlines(content: string, style: string | undefined): string {
+  if (style === undefined) return content
+  return content.replace(/\r\n|\n|\r/gu, style)
+}
+
 function parsePdfPages(value: string): { start: number; end: number } {
   const match = /^(\d+)(?:-(\d+))?$/u.exec(value)
   if (!match) throw new Error(`Invalid PDF page range: ${value}`)
@@ -674,6 +683,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly protectedWriteReason: (
     absolutePath: string,
   ) => string | undefined
+  private readonly mutationTargetExisted = new WeakMap<ModelToolCall, boolean>()
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -844,38 +854,74 @@ export class LocalToolRegistry implements ToolRegistry {
           },
         }
       }
-      case 'Write':
-        return {
+      case 'Write': {
+        const filePath = await this.filePath(
+          stringInput(call.input, 'file_path'),
+          true,
+          false,
+          context,
+        )
+        this.assertProtectedWritePath(filePath)
+        const targetExisted = await this.pathExists(filePath)
+        if (
+          targetExisted &&
+          !(await this.wasSuccessfullyRead(
+            filePath,
+            context.messages ?? [],
+            context,
+          ))
+        ) {
+          throw new Error(
+            '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+          )
+        }
+        const prepared = {
           ...call,
           input: {
-            file_path: await this.filePath(
-              stringInput(call.input, 'file_path'),
-              true,
-              false,
-              context,
-            ),
+            file_path: filePath,
             content: stringInput(call.input, 'content', true),
           },
         }
+        this.mutationTargetExisted.set(prepared, targetExisted)
+        return prepared
+      }
       case 'Edit': {
         const replaceAll = call.input.replace_all
         if (replaceAll !== undefined && typeof replaceAll !== 'boolean') {
           throw new Error('replace_all must be a boolean')
         }
-        return {
+        const oldString = stringInput(call.input, 'old_string', true)
+        const filePath = await this.filePath(
+          stringInput(call.input, 'file_path'),
+          oldString === '',
+          false,
+          context,
+        )
+        this.assertProtectedWritePath(filePath)
+        const targetExisted = await this.pathExists(filePath)
+        if (
+          targetExisted &&
+          !(await this.wasSuccessfullyRead(
+            filePath,
+            context.messages ?? [],
+            context,
+          ))
+        ) {
+          throw new Error(
+            '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+          )
+        }
+        const prepared = {
           ...call,
           input: {
-            file_path: await this.filePath(
-              stringInput(call.input, 'file_path'),
-              false,
-              false,
-              context,
-            ),
-            old_string: stringInput(call.input, 'old_string'),
+            file_path: filePath,
+            old_string: oldString,
             new_string: stringInput(call.input, 'new_string', true),
             replace_all: replaceAll ?? false,
           },
         }
+        this.mutationTargetExisted.set(prepared, targetExisted)
+        return prepared
       }
       case 'NotebookEdit': {
         const requestedPath = stringInput(call.input, 'notebook_path')
@@ -995,17 +1041,26 @@ export class LocalToolRegistry implements ToolRegistry {
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
     if (context.signal?.aborted) throw abortError()
+    const approvedTargetExisted = this.mutationTargetExisted.get(call)
     const prepared = await this.prepare(call, context)
     if (JSON.stringify(prepared.input) !== JSON.stringify(call.input)) {
       throw new Error('Tool input changed after permission approval')
     }
+    const executionTargetExisted = this.mutationTargetExisted.get(prepared)
+    if (
+      approvedTargetExisted !== undefined &&
+      executionTargetExisted !== approvedTargetExisted
+    ) {
+      throw new Error('Tool input changed after permission approval')
+    }
+    const targetExisted = approvedTargetExisted ?? executionTargetExisted
     switch (prepared.name) {
       case 'Read':
         return this.read(prepared, context)
       case 'Write':
-        return this.write(prepared)
+        return this.write(prepared, context, targetExisted)
       case 'Edit':
-        return this.edit(prepared)
+        return this.edit(prepared, targetExisted)
       case 'NotebookEdit':
         return this.notebookEdit(prepared)
       case 'Glob':
@@ -1136,8 +1191,25 @@ export class LocalToolRegistry implements ToolRegistry {
     }
   }
 
+  private async pathExists(filePath: string): Promise<boolean> {
+    try {
+      await stat(filePath)
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
+  }
+
   private async assertStablePath(filePath: string): Promise<void> {
     if ((await realpath(filePath)) !== filePath) {
+      throw new Error('Tool input changed after permission approval')
+    }
+  }
+
+  private async assertStableCreationParent(filePath: string): Promise<void> {
+    const parent = dirname(filePath)
+    if ((await realpath(parent)) !== parent) {
       throw new Error('Tool input changed after permission approval')
     }
   }
@@ -1368,19 +1440,28 @@ export class LocalToolRegistry implements ToolRegistry {
     return mkdtemp(join(parent, 'pdf-'))
   }
 
-  private async write(call: ModelToolCall): Promise<ToolExecutionResult> {
+  private async write(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+    preparedTargetExisted: boolean | undefined,
+  ): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
     this.assertProtectedWritePath(filePath)
-    const content = stringInput(call.input, 'content', true)
-    if (Buffer.byteLength(content) > this.maxFileBytes) {
-      throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
-    }
+    const requestedContent = stringInput(call.input, 'content', true)
     let handle: FileHandle
     let newFile = false
-    try {
-      handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    const hasRead = await this.wasSuccessfullyRead(
+      filePath,
+      context.messages ?? [],
+      context,
+    )
+    const targetExisted =
+      preparedTargetExisted ?? (await this.pathExists(filePath))
+    if (!targetExisted) {
+      if (Buffer.byteLength(requestedContent) > this.maxFileBytes) {
+        throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
+      }
+      await this.assertStableCreationParent(filePath)
       try {
         handle = await open(
           filePath,
@@ -1392,18 +1473,44 @@ export class LocalToolRegistry implements ToolRegistry {
         )
         newFile = true
       } catch (createError) {
-        if ((createError as NodeJS.ErrnoException).code !== 'EEXIST') {
-          throw createError
+        if ((createError as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new Error(
+            '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+          )
         }
+        throw createError
+      }
+    } else {
+      if (!hasRead) {
+        throw new Error(
+          '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+        )
+      }
+      try {
         handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new Error('Tool input changed after permission approval')
+        }
+        throw error
       }
     }
     try {
       await this.assertStablePath(filePath)
       const metadata = await handle.stat()
       if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      if (!newFile && metadata.size > this.maxFileBytes) {
+        throw new Error(`File exceeds ${this.maxFileBytes} byte write limit`)
+      }
       const preContent = newFile ? '' : await handle.readFile('utf8')
+      const content = normalizeNewlines(
+        requestedContent,
+        newlineStyle(preContent),
+      )
       const encoded = Buffer.from(content)
+      if (encoded.length > this.maxFileBytes) {
+        throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
+      }
       const { linesAdded, linesRemoved } = countLineChanges(
         preContent,
         content,
@@ -1417,27 +1524,92 @@ export class LocalToolRegistry implements ToolRegistry {
         isError: false,
         linesAdded,
         linesRemoved,
+        nativeToolUseResult: { filePath, content },
       }
     } finally {
       await handle.close()
     }
   }
 
-  private async edit(call: ModelToolCall): Promise<ToolExecutionResult> {
+  private async edit(
+    call: ModelToolCall,
+    preparedTargetExisted: boolean | undefined,
+  ): Promise<ToolExecutionResult> {
     const filePath = stringInput(call.input, 'file_path')
     this.assertProtectedWritePath(filePath)
-    const oldString = stringInput(call.input, 'old_string')
+    const oldString = stringInput(call.input, 'old_string', true)
     const newString = stringInput(call.input, 'new_string', true)
-    const handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+    if (oldString === '' && Buffer.byteLength(newString) > this.maxFileBytes) {
+      throw new Error(`Content exceeds ${this.maxFileBytes} byte write limit`)
+    }
+    let handle: FileHandle
+    let newFile = false
+    if (oldString === '') {
+      const targetExisted =
+        preparedTargetExisted ?? (await this.pathExists(filePath))
+      if (targetExisted) {
+        handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+      } else {
+        await this.assertStableCreationParent(filePath)
+        try {
+          handle = await open(
+            filePath,
+            constants.O_RDWR |
+              constants.O_CREAT |
+              constants.O_EXCL |
+              constants.O_NOFOLLOW,
+            0o666,
+          )
+          newFile = true
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+            throw new Error('Tool input changed after permission approval')
+          }
+          throw error
+        }
+      }
+    } else {
+      handle = await open(filePath, constants.O_RDWR | constants.O_NOFOLLOW)
+    }
     try {
       await this.assertStablePath(filePath)
       const metadata = await handle.stat()
       if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+      if (newFile) {
+        const content = newString
+        const encoded = Buffer.from(content)
+        if (encoded.length > this.maxFileBytes) {
+          throw new Error(
+            `Content exceeds ${this.maxFileBytes} byte write limit`,
+          )
+        }
+        const { linesAdded, linesRemoved } = countLineChanges('', content, {
+          newFile: true,
+        })
+        await handle.write(encoded, 0, encoded.length, 0)
+        await handle.truncate(encoded.length)
+        await handle.sync()
+        return {
+          content: `Replaced 1 occurrence(s)`,
+          isError: false,
+          linesAdded,
+          linesRemoved,
+          nativeToolUseResult: { filePath, content },
+        }
+      }
+      if (oldString === '') {
+        throw new Error(
+          'Edit with an empty old_string is only valid for creating a missing file',
+        )
+      }
       if (metadata.size > this.maxFileBytes) {
         throw new Error(`File exceeds ${this.maxFileBytes} byte edit limit`)
       }
       const source = await handle.readFile('utf8')
-      const occurrences = source.split(oldString).length - 1
+      const style = newlineStyle(source)
+      const normalizedOldString = normalizeNewlines(oldString, style)
+      const normalizedNewString = normalizeNewlines(newString, style)
+      const occurrences = source.split(normalizedOldString).length - 1
       if (occurrences === 0) throw new Error('old_string was not found')
       if (call.input.replace_all !== true && occurrences !== 1) {
         throw new Error(
@@ -1448,14 +1620,15 @@ export class LocalToolRegistry implements ToolRegistry {
       const outputBytes =
         Buffer.byteLength(source) +
         replacementCount *
-          (Buffer.byteLength(newString) - Buffer.byteLength(oldString))
+          (Buffer.byteLength(normalizedNewString) -
+            Buffer.byteLength(normalizedOldString))
       if (outputBytes > this.maxFileBytes) {
         throw new Error(`Edited content exceeds ${this.maxFileBytes} bytes`)
       }
       const output =
         call.input.replace_all === true
-          ? source.replaceAll(oldString, newString)
-          : source.replace(oldString, newString)
+          ? source.replaceAll(normalizedOldString, normalizedNewString)
+          : source.replace(normalizedOldString, normalizedNewString)
       const { linesAdded, linesRemoved } = countLineChanges(source, output)
       const encoded = Buffer.from(output)
       await handle.write(encoded, 0, encoded.length, 0)
@@ -1466,6 +1639,7 @@ export class LocalToolRegistry implements ToolRegistry {
         isError: false,
         linesAdded,
         linesRemoved,
+        nativeToolUseResult: { filePath, content: output },
       }
     } finally {
       await handle.close()
