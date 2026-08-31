@@ -1870,6 +1870,7 @@ ${statusVariable}=$?
 ${cwdReportCommand}
 exit "$${statusVariable}"`
           : rawCommand
+      const scriptLoaderCommand = 'eval "$(cat <&4)"'
       if (syntaxTimeoutResult) {
         result = syntaxTimeoutResult
       } else {
@@ -1878,7 +1879,7 @@ exit "$${statusVariable}"`
           sandboxCommandAttempted = true
           command = await this.sandbox?.wrapCommand(
             cwdToken
-              ? { ...sandboxPolicyInput, executionCommand: '. /dev/fd/4' }
+              ? { ...sandboxPolicyInput, executionCommand: scriptLoaderCommand }
               : sandboxPolicyInput,
             {
               shell,
@@ -1887,7 +1888,7 @@ exit "$${statusVariable}"`
             },
           )
         } else {
-          command = cwdToken ? '. /dev/fd/4' : rawCommand
+          command = cwdToken ? scriptLoaderCommand : rawCommand
         }
         result = await this.processRunner.run({
           command: shell,

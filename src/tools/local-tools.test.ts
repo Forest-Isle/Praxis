@@ -636,7 +636,7 @@ describe('LocalToolRegistry', () => {
       isError: false,
     })
     expect(sandbox.wrapCommand).toHaveBeenCalledWith(
-      { command: 'pwd', executionCommand: '. /dev/fd/4' },
+      { command: 'pwd', executionCommand: 'eval "$(cat <&4)"' },
       expect.objectContaining({ commandId: 'sandboxed-session-bash' }),
     )
     expect(sandbox.cleanupAfterCommand).toHaveBeenCalledOnce()
