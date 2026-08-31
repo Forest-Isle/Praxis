@@ -1,0 +1,1307 @@
+{
+  "schemaVersion": 1,
+  "behaviors": [
+    {
+      "id": "core.agent.loop",
+      "seam": "AgentRuntime",
+      "contract": "The provider-neutral Agent loop continues through allowed tool calls and enforces a bounded model-turn limit.",
+      "status": "qualified",
+      "modules": ["src/core/runtime.ts"],
+      "outcomes": [
+        "Allowed tool results return to the provider.",
+        "A run stops at its configured maximum model turns."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > runs an allowed tool call and returns its result to the provider"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > honors a per-run maximum model turn limit"
+        }
+      ]
+    },
+    {
+      "id": "persistence.native.sessions",
+      "seam": "Native data plane",
+      "contract": "Native sessions resolve entirely from Praxis-owned state without consulting Claude configuration.",
+      "status": "qualified",
+      "modules": ["src/persistence/data-plane.ts"],
+      "outcomes": [
+        "PRAXIS_HOME selects the native session root without reading a legacy sentinel."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/persistence/data-plane.test.ts",
+          "testName": "data plane paths > honours PRAXIS_HOME without reading a legacy config sentinel in native mode"
+        }
+      ]
+    },
+    {
+      "id": "persistence.native.storage",
+      "seam": "Native storage root",
+      "contract": "Praxis uses an isolated Praxis-owned home for native persistence by default.",
+      "status": "qualified",
+      "modules": ["src/persistence/data-plane.ts"],
+      "outcomes": ["Default storage does not depend on a Claude data plane."],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/persistence/data-plane.test.ts",
+          "testName": "data plane paths > uses an isolated Praxis home by default"
+        }
+      ]
+    },
+    {
+      "id": "compatibility.claude.explicit.mode",
+      "seam": "Removed Claude compatibility mode",
+      "contract": "Claude data-plane compatibility is not part of the supported native runtime.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "No executable fixture claims a removed Claude compatibility mode."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed the Claude data plane and compatibility mode."
+    },
+    {
+      "id": "persistence.session.inspect",
+      "seam": "Native transcript reader",
+      "contract": "Existing native sessions remain inspectable and export their authoritative bytes while unknown schema versions fail closed.",
+      "status": "qualified",
+      "modules": ["src/persistence/native-transcript-reader.ts"],
+      "outcomes": [
+        "Full native documents can be inspected and exported byte-for-byte.",
+        "Unknown transcript versions are reported instead of guessed."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/persistence/native-transcript-reader.test.ts",
+          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions"
+        }
+      ]
+    },
+    {
+      "id": "migration.native.dry.run",
+      "seam": "Removed migration dry-run",
+      "contract": "No native-to-Claude migration write surface is supported.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "A removed migration surface is not represented as qualified behavior."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed native/Claude migration writes rather than exposing a dry-run surface."
+    },
+    {
+      "id": "migration.native.source.retention",
+      "seam": "Removed migration source retention",
+      "contract": "No migration publication or cleanup lifecycle is supported.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "Source-retention guarantees are not claimed for a removed migration."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed migration publication and cleanup."
+    },
+    {
+      "id": "persistence.transcript.schema",
+      "seam": "Native transcript schema",
+      "contract": "Native transcript decoding preserves known documents and rejects unknown versions explicitly.",
+      "status": "qualified",
+      "modules": [
+        "src/persistence/native-transcript-reader.ts",
+        "src/persistence/native-transcript-codec.ts"
+      ],
+      "outcomes": [
+        "Known documents round-trip for inspection and export.",
+        "Unknown versions fail closed."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/persistence/native-transcript-reader.test.ts",
+          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions"
+        }
+      ]
+    },
+    {
+      "id": "persistence.transcript.append.only",
+      "seam": "NativeTranscriptStore",
+      "contract": "Transcript appends validate the whole batch before creation or mutation.",
+      "status": "qualified",
+      "modules": ["src/persistence/native-transcript-store.ts"],
+      "outcomes": [
+        "Invalid batches create nothing and preserve all existing transcript bytes."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/persistence/native-transcript-store.test.ts",
+          "testName": "NativeTranscriptStore > rejects invalid batches before creation and preserves existing bytes"
+        }
+      ]
+    },
+    {
+      "id": "application.context.compaction",
+      "seam": "Session compaction",
+      "contract": "Manual compaction replaces the native active branch with canonical compacted events.",
+      "status": "qualified",
+      "modules": ["src/application/session-service.ts"],
+      "outcomes": [
+        "The active context changes through durable canonical events."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > manually compacts the native active branch into canonical events"
+        }
+      ]
+    },
+    {
+      "id": "core.context.recovery",
+      "seam": "ContextEngine recovery",
+      "contract": "Automatic context recovery is bounded and never commits a no-progress attempt.",
+      "status": "qualified",
+      "modules": ["src/application/context-engine.ts"],
+      "outcomes": [
+        "No-progress recovery exhausts deterministically without looping or committing."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/context-engine.test.ts",
+          "testName": "ContextEngine > exhausts a no-progress recovery without committing or looping"
+        }
+      ]
+    },
+    {
+      "id": "core.context.usage.anchor",
+      "seam": "Context occupancy",
+      "contract": "Later context occupancy is anchored to observed provider usage.",
+      "status": "qualified",
+      "modules": ["src/application/context-engine.ts"],
+      "outcomes": [
+        "Provider usage becomes the stable baseline for subsequent occupancy decisions."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/context-engine.test.ts",
+          "testName": "ContextEngine > anchors later occupancy to observed provider usage"
+        }
+      ]
+    },
+    {
+      "id": "core.prompt.sections",
+      "seam": "PromptComposer",
+      "contract": "Every turn-context input has an owned identity, placement, and lifetime.",
+      "status": "qualified",
+      "modules": ["src/core/prompt-composer.ts"],
+      "outcomes": [
+        "System, first-user, and stable inputs remain in their declared prompt positions."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/prompt-composer.test.ts",
+          "testName": "PromptComposer > owns identities, placement, and lifetime for every turn context input"
+        }
+      ]
+    },
+    {
+      "id": "core.context.snapshot",
+      "seam": "Canonical context snapshot",
+      "contract": "One canonical snapshot projects ordered system, first-user, and stable-prefix data.",
+      "status": "qualified",
+      "modules": ["src/core/context.ts"],
+      "outcomes": [
+        "All context consumers observe the same ordered snapshot representation."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/context.test.ts",
+          "testName": "canonical context snapshots > projects ordered system, first-user, and stable-prefix data"
+        }
+      ]
+    },
+    {
+      "id": "application.turn.lifecycle",
+      "seam": "TurnTerminalController",
+      "contract": "Inner terminal states are filtered into exactly one outer turn terminal state.",
+      "status": "qualified",
+      "modules": ["src/application/turn-lifecycle.ts"],
+      "outcomes": [
+        "A turn exposes one terminal transition even when inner operations terminate."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-lifecycle.test.ts",
+          "testName": "TurnTerminalController > filters inner terminal states and emits one outer terminal state"
+        }
+      ]
+    },
+    {
+      "id": "application.session.memory.async",
+      "seam": "SessionMemoryController",
+      "contract": "Session-memory extraction is asynchronous while compaction can await its durable result.",
+      "status": "qualified",
+      "modules": ["src/application/session-memory.ts"],
+      "outcomes": [
+        "Context observation returns before slow extraction.",
+        "Compaction waits for extraction completion when required."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/session-memory.test.ts",
+          "testName": "SessionMemoryController > returns from a context observation before a slow extraction and lets compact wait"
+        }
+      ]
+    },
+    {
+      "id": "application.project.memory.bounds",
+      "seam": "Project memory index",
+      "contract": "Injected project memory is bounded by both line count and UTF-8 byte size.",
+      "status": "qualified",
+      "modules": ["src/application/project-memory.ts"],
+      "outcomes": [
+        "Large project memory cannot exceed either configured context budget."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/project-memory.test.ts",
+          "testName": "Project memory > bounds the injected index by both lines and UTF-8 bytes"
+        }
+      ]
+    },
+    {
+      "id": "application.project.memory.extraction",
+      "seam": "Project memory extraction",
+      "contract": "Automatic extraction reads only durable new content and advances its cursor only after success.",
+      "status": "qualified",
+      "modules": ["src/application/project-memory.ts"],
+      "outcomes": [
+        "Failed extraction leaves the durable cursor unchanged.",
+        "Successful extraction advances exactly past processed content."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/project-memory.test.ts",
+          "testName": "Project memory > extracts only after the durable cursor and advances it only on success"
+        }
+      ]
+    },
+    {
+      "id": "application.project.memory.recall",
+      "seam": "Project memory recall",
+      "contract": "Selective recall obeys per-file, per-turn, and per-session budgets.",
+      "status": "qualified",
+      "modules": ["src/application/project-memory.ts"],
+      "outcomes": [
+        "Repeated recalls cannot exceed any configured scope budget."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/project-memory.test.ts",
+          "testName": "Project memory > enforces per-file, per-turn, and per-session recall budgets"
+        }
+      ]
+    },
+    {
+      "id": "application.memory.isolation",
+      "seam": "TurnMemoryCoordinator",
+      "contract": "Optional memory failures remain isolated from the authoritative transcript and turn.",
+      "status": "qualified",
+      "modules": ["src/application/turn-memory-coordinator.ts"],
+      "outcomes": [
+        "A memory-side failure does not fail or corrupt the primary turn."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-memory-coordinator.test.ts",
+          "testName": "TurnMemoryCoordinator > isolates optional memory failures"
+        }
+      ]
+    },
+    {
+      "id": "core.tools.safe.overlap",
+      "seam": "Concurrent tool runtime",
+      "contract": "Safely concurrent streamed tool calls may overlap and settle in actual completion order.",
+      "status": "qualified",
+      "modules": ["src/core/runtime.ts"],
+      "outcomes": [
+        "Completed safe calls start before provider streaming ends.",
+        "Results are exposed in completion order."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > starts completed concurrent tool calls before the provider stream ends and exposes results in completion order"
+        }
+      ]
+    },
+    {
+      "id": "core.tools.exclusive.scheduling",
+      "seam": "Tool scheduling policy",
+      "contract": "Unknown, write-capable, or malformed tools fail closed into exclusive FIFO barriers.",
+      "status": "qualified",
+      "modules": ["src/core/tool-scheduling-policy.ts", "src/core/runtime.ts"],
+      "outcomes": [
+        "Classifier uncertainty selects exclusive scheduling.",
+        "Exclusive calls form FIFO barriers between safe concurrent groups."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/tool-scheduling-policy.test.ts",
+          "testName": "resolveToolSchedulingPolicy > fails closed for missing, throwing, and malformed classifiers"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > treats exclusive tools as FIFO barriers between concurrent groups"
+        }
+      ]
+    },
+    {
+      "id": "core.tools.exact.settlement",
+      "seam": "Native tool settlement",
+      "contract": "Every native tool call, result, and provider follow-up is persisted exactly once.",
+      "status": "qualified",
+      "modules": [
+        "src/application/session-service.ts",
+        "src/application/native-session-transcript.ts"
+      ],
+      "outcomes": [
+        "Retries and continuation cannot duplicate durable tool events."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once"
+        }
+      ]
+    },
+    {
+      "id": "application.subagent.permissions",
+      "seam": "Foreground Agent permissions",
+      "contract": "A child Agent inherits and may narrow but never enlarge its parent's permission ceiling.",
+      "status": "qualified",
+      "modules": ["src/application/subagent-service.ts"],
+      "outcomes": [
+        "A parent ask decision remains ask even when the child mode would allow execution."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/subagent-service.test.ts",
+          "testName": "foreground Claude Agent execution > keeps a parent ask ceiling when the child mode would allow execution"
+        }
+      ]
+    },
+    {
+      "id": "team.permission.decision.surface",
+      "seam": "SerializedTeamLeadDecisionSurface",
+      "contract": "Team permission requests pass through one serialized Lead decision surface.",
+      "status": "qualified",
+      "modules": ["src/application/team-lead-decision-surface.ts"],
+      "outcomes": [
+        "Requests run FIFO without overlap.",
+        "A rejected request does not poison later decisions."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-lead-decision-surface.test.ts",
+          "testName": "SerializedTeamLeadDecisionSurface > runs requests FIFO, without overlap, and recovers after rejection"
+        }
+      ]
+    },
+    {
+      "id": "providers.adapter.optimizations",
+      "seam": "Anthropic-compatible adapter",
+      "contract": "Provider-specific cache optimizations stay inside the capability-aware adapter.",
+      "status": "qualified",
+      "modules": ["src/providers/anthropic-compatible.ts"],
+      "outcomes": [
+        "Official Anthropic cache breakpoints render only at stable prompt boundaries."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/providers/anthropic-compatible.test.ts",
+          "testName": "AnthropicCompatibleProvider > renders official Anthropic cache breakpoints at stable prompt boundaries"
+        }
+      ]
+    },
+    {
+      "id": "providers.capability.fail.closed",
+      "seam": "OpenAI-compatible capabilities",
+      "contract": "Unsupported provider capabilities fail explicitly when no lossless mapping exists.",
+      "status": "qualified",
+      "modules": ["src/providers/openai-compatible.ts"],
+      "outcomes": [
+        "Unsupported thinking modes are rejected rather than silently degraded."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/providers/openai-compatible.test.ts",
+          "testName": "OpenAICompatibleProvider > rejects thinking modes without a lossless provider mapping"
+        }
+      ]
+    },
+    {
+      "id": "providers.fallback.commit.boundary",
+      "seam": "FallbackModelProvider",
+      "contract": "Provider fallback is allowed only before output and usage cross the commit boundary.",
+      "status": "qualified",
+      "modules": ["src/providers/fallback-provider.ts"],
+      "outcomes": [
+        "Partial failed-attempt output is discarded.",
+        "Successful content and usage commit exactly once."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/providers/fallback-provider.test.ts",
+          "testName": "FallbackModelProvider > commits successful content and usage once after discarding a partial attempt"
+        }
+      ]
+    },
+    {
+      "id": "team.capability.explicit.enable",
+      "seam": "Local Team capability",
+      "contract": "Local Team support is disabled by default and enabled only through explicit capability resolution.",
+      "status": "qualified",
+      "modules": [
+        "src/tools/claude-capabilities.ts",
+        "src/application/team-capability.ts"
+      ],
+      "outcomes": [
+        "Explicit input wins over environment and the default is off.",
+        "Capability construction has no side effects and concurrent opens share one result."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/tools/claude-capabilities.test.ts",
+          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-capability.test.ts",
+          "testName": "LocalTeamCapability > has no construction side effects and shares one successful open"
+        }
+      ]
+    },
+    {
+      "id": "team.durable.tasks.messages",
+      "seam": "Team task and mailbox persistence",
+      "contract": "Named teammates receive durable tasks and typed messages through their scoped mailbox endpoints.",
+      "status": "qualified",
+      "modules": [
+        "src/application/team-manager.ts",
+        "src/application/team-mailbox.ts",
+        "src/core/team-mailbox.ts"
+      ],
+      "outcomes": [
+        "Every launched runtime receives the assigned mailbox endpoint.",
+        "All typed payload variants preserve request correlation."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > passes the assigned scoped mailbox endpoint to every launched runtime"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/core/team-mailbox.test.ts",
+          "testName": "Team mailbox core contract > round-trips all typed payload variants and preserves request correlation"
+        }
+      ]
+    },
+    {
+      "id": "team.swarm.independent.only",
+      "seam": "Swarm admission",
+      "contract": "Swarm launches only mutually independent, non-conflicting work.",
+      "status": "qualified",
+      "modules": ["src/application/team-manager.ts"],
+      "outcomes": [
+        "Independent tasks run concurrently behind a real barrier.",
+        "Conflicting or dependency-blocked tasks stay out of the launch batch."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > runs independent Swarm tasks concurrently behind a real barrier"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > keeps conflicting and dependency-blocked work out of a Swarm launch batch"
+        }
+      ]
+    },
+    {
+      "id": "team.workspace.write.isolation",
+      "seam": "NativeTeamWorkspaceProvider",
+      "contract": "Write-capable Team agents receive deterministic dedicated worktrees.",
+      "status": "qualified",
+      "modules": ["src/application/team-workspace.ts"],
+      "outcomes": [
+        "Writer roots remain isolated and retained deterministically."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-workspace.test.ts",
+          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees"
+        }
+      ]
+    },
+    {
+      "id": "team.workspace.read.only.shared",
+      "seam": "NativeTeamWorkspaceProvider",
+      "contract": "Read-only Team agents share the repository root without creating write worktrees.",
+      "status": "qualified",
+      "modules": ["src/application/team-workspace.ts"],
+      "outcomes": [
+        "Read-only roots are shared while writer roots stay isolated."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-workspace.test.ts",
+          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees"
+        }
+      ]
+    },
+    {
+      "id": "team.lead.review.acceptance",
+      "seam": "Team Lead acceptance",
+      "contract": "Completed teammate work becomes accepted only through an explicit Lead review transition.",
+      "status": "qualified",
+      "modules": [
+        "src/core/team-ownership.ts",
+        "src/application/team-manager.ts"
+      ],
+      "outcomes": [
+        "Completion alone does not imply acceptance.",
+        "Dependent work is admitted only after Lead acceptance."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/team-ownership.test.ts",
+          "testName": "team ownership contract > requires explicit lead acceptance after completion"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > resumes after detach and admits a dependent task only after Lead acceptance"
+        }
+      ]
+    },
+    {
+      "id": "team.orphan.retained.worktree",
+      "seam": "Team orphan recovery",
+      "contract": "Failed or owner-lost write work retains its isolated worktree and only active siblings become orphaned.",
+      "status": "qualified",
+      "modules": [
+        "src/application/team-workspace.ts",
+        "src/application/team-manager.ts",
+        "src/application/team-agent-runtime.ts"
+      ],
+      "outcomes": [
+        "Guarded read-only and retained writer isolation hold through the manager.",
+        "Drained runtimes cancel while only still-active siblings orphan."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-agent-runtime.test.ts",
+          "testName": "ClaudeTeamAgentRuntime > proves guarded read-only tools and retained writer isolation through LocalTeamManager"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > cancels drained runtimes and orphans only the still-active sibling"
+        }
+      ]
+    },
+    {
+      "id": "team.budgets.bounded",
+      "seam": "Team budgets",
+      "contract": "Team token and wall-time budgets durably stop active work and prevent new launches.",
+      "status": "qualified",
+      "modules": [
+        "src/application/team-manager.ts",
+        "src/core/team-ownership.ts"
+      ],
+      "outcomes": [
+        "Token exhaustion persists and aborts active Swarm work.",
+        "The durable wall deadline returns from idle and prevents pending launches."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > persists token exhaustion, aborts active Swarm work, and never launches pending work"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-manager.test.ts",
+          "testName": "LocalTeamManager > enforces the durable wall deadline with fake time and returns from idle"
+        }
+      ]
+    },
+    {
+      "id": "team.lead.hybrid.ordinary.work",
+      "seam": "TeamLeadToolRegistry",
+      "contract": "A Hybrid Lead retains ordinary tools while Team capability is filtered consistently at every registry boundary.",
+      "status": "qualified",
+      "modules": ["src/tools/team-lead-tools.ts"],
+      "outcomes": [
+        "Hybrid and Coordinator capability sets remain distinct and consistently enforced."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/tools/team-lead-tools.test.ts",
+          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary"
+        }
+      ]
+    },
+    {
+      "id": "team.lead.coordinator.policy",
+      "seam": "Coordinator Lead policy",
+      "contract": "Coordinator Lead restrictions are capability-filtered and durable across owned Teams.",
+      "status": "qualified",
+      "modules": [
+        "src/tools/team-lead-tools.ts",
+        "src/application/team-lead-operations.ts"
+      ],
+      "outcomes": [
+        "Coordinator registries exclude ordinary work tools.",
+        "Owned Teams retain the selected coordinator policy."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/tools/team-lead-tools.test.ts",
+          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-lead-operations.test.ts",
+          "testName": "TeamLeadOperations > tracks durable coordinator policy across owned Teams"
+        }
+      ]
+    },
+    {
+      "id": "agent.worker.temporary.lifecycle",
+      "seam": "Foreground Agent lifecycle",
+      "contract": "Temporary foreground workers remain in memory and do not become durable Team members.",
+      "status": "qualified",
+      "modules": ["src/application/subagent-service.ts"],
+      "outcomes": [
+        "Foreground Agent transcripts do not create disk sidechains."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/subagent-service.test.ts",
+          "testName": "foreground Claude Agent execution > keeps foreground Agent transcripts in memory without disk sidechains"
+        }
+      ]
+    },
+    {
+      "id": "team.mailbox.idempotent",
+      "seam": "TeamMailboxService",
+      "contract": "Durable Team delivery is persisted before wake-up and exact acknowledgements remain idempotent.",
+      "status": "qualified",
+      "modules": [
+        "src/application/team-mailbox.ts",
+        "src/core/team-mailbox.ts"
+      ],
+      "outcomes": [
+        "Advisory wake failure does not lose persisted mail.",
+        "Directed targets deduplicate and acknowledgements settle exactly once."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-mailbox.test.ts",
+          "testName": "TeamMailboxService > persists before metadata-only wake and warns on advisory failure"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-mailbox.test.ts",
+          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly"
+        }
+      ]
+    },
+    {
+      "id": "team.mailbox.bounded.context",
+      "seam": "Team mailbox context",
+      "contract": "Team messages project bounded UTF-8 attachments into recipient context.",
+      "status": "qualified",
+      "modules": ["src/application/team-mailbox.ts"],
+      "outcomes": [
+        "Per-target deduplication and attachment bounds apply before context projection."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-mailbox.test.ts",
+          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly"
+        }
+      ]
+    },
+    {
+      "id": "team.observability.concise.summary",
+      "seam": "Team CLI summary",
+      "contract": "Team status exposes a concise provider-free summary through the CLI.",
+      "status": "qualified",
+      "modules": [
+        "src/application/team-observability.ts",
+        "src/cli-runtime.ts"
+      ],
+      "outcomes": [
+        "Status, logs, and durable-local attach project without a model provider."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli.test.ts",
+          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider"
+        }
+      ]
+    },
+    {
+      "id": "team.observability.dashboard",
+      "seam": "Team observability dashboard",
+      "contract": "The Team dashboard projects policy, dependencies, claims, usage, and bounded events.",
+      "status": "qualified",
+      "modules": ["src/application/team-observability.ts"],
+      "outcomes": [
+        "Dashboard state is complete enough for local Lead inspection and remains bounded."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-observability.test.ts",
+          "testName": "Team observability > projects policy, dependencies, claims, usage and bounded events"
+        }
+      ]
+    },
+    {
+      "id": "team.observability.audit.events",
+      "seam": "Team audit events",
+      "contract": "Team observability renders mailbox events while retaining a bounded event tail.",
+      "status": "qualified",
+      "modules": ["src/application/team-observability.ts"],
+      "outcomes": [
+        "Mailbox events remain inspectable.",
+        "Only the bounded tail is retained while pending counts remain accurate."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-observability.test.ts",
+          "testName": "Team observability > renders mailbox events"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-observability.test.ts",
+          "testName": "Team observability > retains only the bounded mailbox tail while counting pending records"
+        }
+      ]
+    },
+    {
+      "id": "team.attach.tmux.optional",
+      "seam": "Optional tmux Team presentation",
+      "contract": "The supported Team attach contract is durable-local and does not claim a tmux-specific teammate presentation.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "No fixture upgrades optional tmux presentation into a required Team contract."
+      ],
+      "evidence": [],
+      "reason": "Current supported Team attach is durable-local; tmux-specific teammate presentation is optional and not claimed as a Team contract."
+    },
+    {
+      "id": "team.cli.status.logs.headless",
+      "seam": "Headless Team CLI",
+      "contract": "Team status, logs, and durable-local attach work headlessly without a provider.",
+      "status": "qualified",
+      "modules": ["src/cli-runtime.ts"],
+      "outcomes": [
+        "CLI Team inspection and attach remain available in provider-free native runs."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli.test.ts",
+          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider"
+        }
+      ]
+    },
+    {
+      "id": "core.lifecycle.shared.vocabulary",
+      "seam": "Agent orchestration lifecycle",
+      "contract": "Ordinary Agent and Team orchestration share one declared lifecycle vocabulary and transition matrix.",
+      "status": "qualified",
+      "modules": ["src/core/agent-orchestration.ts"],
+      "outcomes": [
+        "Every ordinary state pair is checked against the declared transition matrix."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/agent-orchestration.test.ts",
+          "testName": "agent orchestration lifecycle > checks every ordinary state pair against the declared matrix"
+        }
+      ]
+    },
+    {
+      "id": "team.orphan.new.ownership.token",
+      "seam": "Team ownership generation",
+      "contract": "Orphan recovery requires a fresh ownership generation and rejects stale execution tokens.",
+      "status": "qualified",
+      "modules": [
+        "src/core/team-ownership.ts",
+        "src/core/agent-orchestration.ts"
+      ],
+      "outcomes": [
+        "Replacement execution preserves future timestamps and enforces the current generation.",
+        "Cancellation, owner loss, fresh generation, and acceptance remain independent transitions."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/team-ownership.test.ts",
+          "testName": "team ownership contract > replaces execution, enforces current generation, and preserves future timestamps"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/core/agent-orchestration.test.ts",
+          "testName": "agent orchestration lifecycle > supports cancellation, owner-loss, fresh generations, and acceptance independently"
+        }
+      ]
+    },
+    {
+      "id": "team.prompt.outcome.behavior",
+      "seam": "Team worker prompt",
+      "contract": "Team worker guidance is derived from observable assignment outcomes and fixed tool boundaries.",
+      "status": "qualified",
+      "modules": ["src/application/team-agent-runtime.ts"],
+      "outcomes": [
+        "Worker prompts preserve assignment identity, workspace, claims, and allowed coordination behavior."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/team-agent-runtime.test.ts",
+          "testName": "ClaudeTeamAgentRuntime > builds Team worker guidance from observable assignment outcomes"
+        }
+      ]
+    },
+    {
+      "id": "team.disabled.absent.tool.pool",
+      "seam": "Team tool capability resolution",
+      "contract": "Disabled Team capability is absent from the runtime tool pool.",
+      "status": "qualified",
+      "modules": ["src/tools/claude-capabilities.ts"],
+      "outcomes": [
+        "Team defaults off.",
+        "Simple and worker runtimes suppress Team tools while enabled runtime names are filtered explicitly."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/tools/claude-capabilities.test.ts",
+          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/claude-capabilities.test.ts",
+          "testName": "resolveClaudeToolCapabilities > suppresses Teams for simple and worker runtimes and only filters enabled names"
+        }
+      ]
+    },
+    {
+      "id": "fixtures.hermetic.environment",
+      "seam": "Fixture contract runner",
+      "contract": "Fixture execution is hermetic from provider, Claude, Praxis, and Codex host state.",
+      "status": "qualified",
+      "modules": ["scripts/run-fixture-contracts.mjs"],
+      "outcomes": [
+        "The runner clears external state while retaining the executable PATH."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "scripts/fixture-contracts.test.mjs",
+          "testName": "fixture contract verifier > sanitizes provider, Claude, Praxis, and Codex state while retaining PATH"
+        }
+      ]
+    },
+    {
+      "id": "compatibility.live.zero.skips",
+      "seam": "Removed live Claude qualification",
+      "contract": "Live Claude compatibility lanes are outside the supported native qualification surface.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "Native qualification does not report a removed external lane as passed or skipped."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed live Claude compatibility lanes and binaries from the supported runtime qualification surface."
+    },
+    {
+      "id": "compatibility.external.blocked.reporting",
+      "seam": "Removed external qualification reporting",
+      "contract": "External Claude environment status is not a Praxis product qualification gate.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "No absent external credential or binary is represented as a product blocker."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed external Claude qualification as a product gate, so no external environment is claimed."
+    },
+    {
+      "id": "qualification.implemented.distinction",
+      "seam": "Executable qualification status",
+      "contract": "Executable fixture contracts replace the old prose-only implemented-versus-qualified model.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": ["Only executable qualified evidence remains authoritative."],
+      "evidence": [],
+      "reason": "The prose-only implemented/qualified audit is replaced by this executable contract, which never treats implementation claims as qualification evidence."
+    },
+    {
+      "id": "native.deletion.gate",
+      "seam": "Native deletion verification",
+      "contract": "Removed compatibility and migration surfaces remain absent from source, build, and package output.",
+      "status": "qualified",
+      "modules": ["scripts/verify-native-deletion.mjs", "src/native/schema.ts"],
+      "outcomes": [
+        "The native deletion gate executes as required CI evidence.",
+        "Fork-only projection helpers remain absent from emitted runtime artifacts."
+      ],
+      "evidence": [{ "kind": "gate", "gate": "native-deletion" }]
+    },
+    {
+      "id": "migration.independent.slices",
+      "seam": "Removed migration lifecycle slices",
+      "contract": "No migration rollout or reversibility slices are part of the native-only product.",
+      "status": "excluded",
+      "modules": [],
+      "outcomes": [
+        "Removed migration slices are not represented as independently qualified capabilities."
+      ],
+      "evidence": [],
+      "reason": "ADR 0002 removed the native/Claude migration feature and its rollout slices."
+    },
+    {
+      "id": "tui.mcp.panel.native",
+      "seam": "McpPanel",
+      "contract": "The native MCP panel projects deterministic server state, bounded navigation, actions, and accessible presentation across every panel depth.",
+      "status": "qualified",
+      "modules": [
+        "src/cli/tui/mcp-panel-projector.ts",
+        "src/cli/tui/mcp-panel.tsx",
+        "src/cli/tui/mcp-surface-model.ts"
+      ],
+      "outcomes": [
+        "Native project, local, and user MCP servers render in stable scope and location order with connected, failed, authentication, and disabled statuses.",
+        "Panel navigation clamps bounds, routes actions, and renders list, detail, tools, tool, empty, and screen-reader states."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/mcp-panel.test.tsx",
+          "testName": "McpPanel native fixture > projects, navigates, and renders every MCP panel state"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/tui/mcp-panel.json"
+        }
+      ]
+    },
+    {
+      "id": "tui.open.url.native",
+      "seam": "openTuiUrl",
+      "contract": "The native TUI URL opener validates absolute HTTP(S) URLs and invokes the platform launcher as a single non-shell argument.",
+      "status": "qualified",
+      "modules": ["src/cli/tui/open-url.ts"],
+      "outcomes": [
+        "Only absolute HTTP(S) URLs reach the platform opener.",
+        "macOS, Linux, and Windows use deterministic commands without shell parsing, and launcher errors reach the caller."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/open-url.test.ts",
+          "testName": "openTuiUrl native fixture > validates URLs and invokes each platform opener without a shell"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/tui/open-url.json"
+        }
+      ]
+    },
+    {
+      "id": "tui.sandbox.settings.native",
+      "seam": "TuiSandboxStore",
+      "contract": "The native TUI sandbox settings store persists bounded mutations, refreshes runtime state, deduplicates Linux glob warnings and exclusions, preserves unknown settings, and fails closed on malformed local settings.",
+      "status": "qualified",
+      "modules": [
+        "src/cli/tui/sandbox-settings.ts",
+        "src/sandbox/claude-sandbox-settings.ts"
+      ],
+      "outcomes": [
+        "Sandbox settings mutations persist to the native local settings file and refresh the selected runtime.",
+        "Unknown settings survive mutations, Linux glob warnings and exclusions are deduplicated, and malformed inputs preserve exact file bytes."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/sandbox-settings.test.ts",
+          "testName": "TUI sandbox settings native fixture > persists bounded mutations and fails closed without replacing malformed settings"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/tui/sandbox-settings.json"
+        }
+      ]
+    },
+    {
+      "id": "package.release.native",
+      "seam": "Installed native package",
+      "contract": "The packed release package contains only the intended production boundary and its installed CLI performs a native smoke run.",
+      "status": "qualified",
+      "modules": ["scripts/verify-native-release-package.mjs"],
+      "outcomes": [
+        "The packed-file boundary contains the expected release contents.",
+        "The installed release CLI completes the native smoke verification."
+      ],
+      "evidence": [{ "kind": "gate", "gate": "package" }]
+    },
+    {
+      "id": "tui.pty.presentation",
+      "seam": "Native TUI PTY",
+      "contract": "The native TUI presents the interactive terminal lifecycle and semantic fallback correctly through a PTY.",
+      "status": "qualified",
+      "modules": [
+        "scripts/verify-fullscreen-rendering.mjs",
+        "scripts/verify-interactive-ansi.mjs"
+      ],
+      "outcomes": [
+        "Fullscreen lifecycle, resize, and ANSI rendering remain correct.",
+        "Fallback and screen-reader semantic behavior remain accessible."
+      ],
+      "evidence": [{ "kind": "gate", "gate": "tui-pty" }]
+    },
+    {
+      "id": "performance.native.budgets",
+      "seam": "Native performance budgets",
+      "contract": "Native projection and quiet-frame paths remain within their measured performance budgets.",
+      "status": "qualified",
+      "modules": [
+        "scripts/verify-projection-scaling.mjs",
+        "scripts/verify-projection-regression.mjs",
+        "scripts/verify-quiet-frame-performance.mjs"
+      ],
+      "outcomes": [
+        "Projection scaling, absolute, and injected regression budgets remain within bounds.",
+        "Quiet-frame p95 performance remains within its budget."
+      ],
+      "evidence": [{ "kind": "gate", "gate": "performance" }]
+    },
+    {
+      "id": "security.production.dependencies",
+      "seam": "Production dependency audit",
+      "contract": "Production dependencies have no known vulnerabilities according to the npm audit exit status.",
+      "status": "qualified",
+      "modules": ["package.json", "package-lock.json"],
+      "outcomes": [
+        "The production dependency audit reports zero known vulnerabilities."
+      ],
+      "evidence": [{ "kind": "gate", "gate": "security" }]
+    },
+    {
+      "id": "reference.config.settings",
+      "seam": "TUI config settings",
+      "contract": "The config settings projection preserves the clean-room 2.1.208 catalog.",
+      "status": "qualified",
+      "modules": ["src/cli/tui/config-settings.ts"],
+      "outcomes": [
+        "Captured config labels, scopes, paths, domains, and defaults remain stable."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/config-settings.test.ts",
+          "testName": "Claude 2.1.208 config settings contract > matches the fixed provider-free PTY catalog and exclusions"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/config-settings.test.ts",
+          "testName": "Claude 2.1.208 config settings contract > matches every captured label, scope, path, domain, and default"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/reference/claude-code/2.1.208/config-dashboard.json"
+        }
+      ]
+    },
+    {
+      "id": "reference.hook.settings",
+      "seam": "TUI hook settings projection",
+      "contract": "The hook settings projection preserves the clean-room 2.1.208 event and detail fixture.",
+      "status": "qualified",
+      "modules": ["src/cli/tui/hook-settings.ts"],
+      "outcomes": ["Captured hook events, scopes, and types remain stable."],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/hook-settings.test.ts",
+          "testName": "TUI hook settings projection > matches the fixed Claude Code 2.1.208 event and detail fixture"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/hook-settings.test.ts",
+          "testName": "TUI hook settings projection > matches observed scopes and hook types from the 2.1.208 fixture"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/reference/claude-code/2.1.208/hooks-tui.json"
+        }
+      ]
+    },
+    {
+      "id": "reference.task.surface",
+      "seam": "TaskPanel",
+      "contract": "The task panel preserves the clean-room 2.1.208 task surface and capture.",
+      "status": "qualified",
+      "modules": [
+        "src/cli/tui/task-panel.tsx",
+        "src/cli/tui/task-surface-model.ts"
+      ],
+      "outcomes": [
+        "Captured empty, running-shell, ordering, and detail surfaces remain stable."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/task-panel.test.tsx",
+          "testName": "TaskPanel > binds every observed fixture section to an immutable 2.1.208 capture"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/task-panel.test.tsx",
+          "testName": "TaskPanel > matches the observed empty task surface"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/task-panel.test.tsx",
+          "testName": "TaskPanel > sorts multiple running shells newest-first and semantically selects"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli/tui/task-panel.test.tsx",
+          "testName": "TaskPanel > opens one running shell directly with the captured detail contract"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/reference/claude-code/2.1.208/tasks-tui.json"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/reference/claude-code/2.1.208/tasks-tui.capture.txt"
+        }
+      ]
+    },
+    {
+      "id": "coverage.runtime.nonzero",
+      "seam": "coverage qualification",
+      "contract": "Coverage qualification rejects production runtime modules with statements but no covered statements while allowing type-only modules.",
+      "status": "qualified",
+      "modules": [
+        "scripts/verify-nonzero-runtime-coverage.mjs",
+        "vitest.config.ts"
+      ],
+      "outcomes": [
+        "Global floors cannot hide zero-covered runtime modules.",
+        "Type-only modules with zero statements remain valid."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "scripts/verify-nonzero-runtime-coverage.test.mjs",
+          "testName": "nonzero runtime coverage gate > rejects zero-covered runtime modules while allowing covered and type-only modules"
+        },
+        { "kind": "gate", "gate": "coverage" }
+      ]
+    }
+  ],
+  "gates": [
+    {
+      "id": "fixtures",
+      "script": "test:fixtures",
+      "ciJob": "fixtures"
+    },
+    {
+      "id": "native-deletion",
+      "script": "test:native:deletion",
+      "ciJob": "native-deletion"
+    },
+    {
+      "id": "package",
+      "script": "test:package",
+      "ciJob": "release-regression"
+    },
+    {
+      "id": "tui-pty",
+      "script": "test:tui:pty",
+      "ciJob": "tui-pty"
+    },
+    {
+      "id": "performance",
+      "script": "test:performance",
+      "ciJob": "performance"
+    },
+    {
+      "id": "security",
+      "script": "test:security",
+      "ciJob": "security"
+    },
+    {
+      "id": "coverage",
+      "script": "test:coverage",
+      "ciJob": "coverage"
+    }
+  ]
+}

@@ -255,6 +255,93 @@ describe('ClaudeTeamAgentRuntime', () => {
     }
   })
 
+  it('builds Team worker guidance from observable assignment outcomes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-outcomes-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    const assignment: TeamTask = {
+      id: 'outcome-task',
+      description: 'Implement the observable assignment contract.',
+      assignee: 'outcome-worker',
+      blockedBy: [],
+      claims: {
+        files: ['src/feature.ts'],
+        publicContracts: ['TeamWorkerContract'],
+        generatedArtifacts: ['dist/feature.js'],
+        migrations: ['migrate-feature'],
+        mergeTargets: ['main'],
+      },
+      execution: null,
+      usage: { generation: 0, totalTokens: 0, durationMs: 0 },
+    }
+    const requests: Array<Parameters<ModelProvider['complete']>[0]> = []
+    try {
+      const runtime = new ClaudeTeamAgentRuntime({
+        nativeRoot: root,
+        configRoot: root,
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete(request) {
+            requests.push(request)
+            yield { type: 'text-delta', delta: 'completed' }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 3, outputTokens: 2 },
+            }
+          },
+        },
+      })
+      await expect(
+        runtime.run({
+          teamId: 'team-outcomes',
+          task: assignment,
+          member: {
+            name: 'outcome-worker',
+            agentType: 'general-purpose',
+            access: 'read-only',
+          },
+          generation: 2,
+          cwd,
+          branch: 'feature/outcome-contract',
+          tools,
+          permissions,
+          signal: new AbortController().signal,
+          mailbox,
+          reportProgress: () => undefined,
+        }),
+      ).resolves.toMatchObject({ status: 'completed' })
+
+      const assignmentMessage = requests
+        .flatMap((request) => request.messages)
+        .find(
+          (message) =>
+            message.role === 'user' &&
+            JSON.stringify(message.content).includes(assignment.id),
+        )
+      expect(assignmentMessage).toBeDefined()
+      const guidance = JSON.stringify(assignmentMessage?.content)
+      for (const value of [
+        assignment.id,
+        assignment.description,
+        assignment.assignee,
+        'general-purpose',
+        'read-only',
+        cwd,
+        'feature/outcome-contract',
+        ...assignment.claims.files,
+        ...assignment.claims.publicContracts,
+        ...assignment.claims.generatedArtifacts,
+        ...assignment.claims.migrations,
+        ...assignment.claims.mergeTargets,
+      ])
+        expect(guidance).toContain(value)
+      expect(guidance.toLowerCase()).toContain('assigned cwd')
+      expect(guidance.toLowerCase()).toContain('tools provided')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails before transcript creation without usage and reports exact metered completion', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-usage-'))
     const cwd = await mkdtemp(join(root, 'checkout-'))

@@ -5,6 +5,8 @@ export default tseslint.config(
   {
     ignores: [
       '.worktrees/',
+      '.agent/',
+      '.praxis/',
       'coverage/',
       'dist/',
       'dist-native/',

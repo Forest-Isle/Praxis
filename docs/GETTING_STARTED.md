@@ -331,8 +331,11 @@ Install `ripgrep` and confirm `rg --version` succeeds in the same shell.
 
 ### Session writes are refused
 
-Run `praxis doctor`. Praxis refuses writes when the detected Claude Code local
-format is outside its validated profile; inspection and export remain available.
+Run `praxis doctor` and inspect the native state diagnostics. Praxis fails closed
+when a native session file is malformed or uses an unsupported schema version;
+inspection and export report the error rather than guessing or writing a
+replacement. Valid native sessions remain inspectable and export their
+authoritative bytes.
 
 ### Need more diagnostics
 

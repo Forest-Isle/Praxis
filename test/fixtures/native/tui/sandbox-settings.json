@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "initialSettings": {
+    "futureTopLevel": {
+      "version": 7,
+      "values": ["preserve", { "nested": true }]
+    },
+    "permissions": {
+      "allow": [
+        "Read(/workspace/**/*.md)",
+        "Read(/workspace/**/*.md)",
+        "Edit(/workspace/**/*.ts)"
+      ],
+      "deny": [
+        "Read(/workspace/**/*.md)",
+        "Read(/workspace/**/*.md)",
+        "Edit(/workspace/**/*.ts)"
+      ]
+    },
+    "sandbox": {
+      "enabled": false,
+      "autoAllowBashIfSandboxed": false,
+      "allowUnsandboxedCommands": true,
+      "excludedCommands": ["docker:*"],
+      "network": {
+        "allowedDomains": ["example.test"],
+        "allowLocalBinding": true
+      },
+      "filesystem": {
+        "allowWrite": ["./out"],
+        "denyRead": ["./private"]
+      },
+      "futureSandboxField": {
+        "keep": [1, 2, 3]
+      }
+    }
+  },
+  "expectedFinalSettings": {
+    "futureTopLevel": {
+      "version": 7,
+      "values": ["preserve", { "nested": true }]
+    },
+    "permissions": {
+      "allow": [
+        "Read(/workspace/**/*.md)",
+        "Read(/workspace/**/*.md)",
+        "Edit(/workspace/**/*.ts)"
+      ],
+      "deny": [
+        "Read(/workspace/**/*.md)",
+        "Read(/workspace/**/*.md)",
+        "Edit(/workspace/**/*.ts)"
+      ]
+    },
+    "sandbox": {
+      "enabled": true,
+      "autoAllowBashIfSandboxed": true,
+      "allowUnsandboxedCommands": false,
+      "excludedCommands": ["docker:*", "git *"],
+      "network": {
+        "allowedDomains": ["example.test"],
+        "allowLocalBinding": true
+      },
+      "filesystem": {
+        "allowWrite": ["./out"],
+        "denyRead": ["./private"]
+      },
+      "futureSandboxField": {
+        "keep": [1, 2, 3]
+      }
+    }
+  },
+  "expectedGlobWarnings": [
+    "Read(/workspace/**/*.md)",
+    "Edit(/workspace/**/*.ts)"
+  ]
+}

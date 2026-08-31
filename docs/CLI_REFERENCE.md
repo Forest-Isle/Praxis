@@ -354,5 +354,8 @@ praxis -p --resume <session-id> --rewind-files <user-message-uuid>
 - Debug output is redacted, but prompts and workspace content may still be
   sensitive. Review logs before sharing them.
 
-For implementation-level schemas and exact parity evidence, use
-[PARITY_MATRIX.md](PARITY_MATRIX.md) and `praxis --help`.
+For implementation-level executable evidence, use
+[NATIVE_FIXTURE_CONTRACTS.md](NATIVE_FIXTURE_CONTRACTS.md) and its
+[`test/fixtures/manifest.json`](../test/fixtures/manifest.json); `praxis --help`
+remains the authoritative CLI surface. [PARITY_MATRIX.md](PARITY_MATRIX.md) is
+retained as a historical clean-room record.

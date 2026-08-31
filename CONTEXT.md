@@ -49,9 +49,9 @@ terms below consistently in issues, plans, tests, and architecture documents.
   observable outcomes. Reference behavior may inform the contract, but private
   prompt wording and provider-specific prose are never compatibility surfaces.
 - **Data-plane adapter**: an adapter that maps the Praxis Core Contract to one
-  external path and encoding scheme. The native adapter owns Praxis paths and
-  formats; the optional Claude compatibility adapter owns verified Claude paths
-  and formats. An adapter may not change core runtime behavior.
+  path and encoding scheme. The native adapter exclusively owns Praxis paths
+  and formats; provider protocol adapters do not select another persistence
+  plane. An adapter may not change core runtime behavior.
 - **Capability-gated**: a fully specified optional behavior that is available
   only when a local or provider adapter explicitly advertises support and the
   user or configuration enables it. Required workflows remain correct when the
@@ -59,10 +59,10 @@ terms below consistently in issues, plans, tests, and architecture documents.
 - **Implemented**: production code and required wiring exist and pass focused
   native fixtures. This status does not claim current reference compatibility
   or product-quality qualification.
-- **Qualified**: an implemented behavior has passed every required native,
-  adapter, zero-skip live compatibility, package, security, performance, and
-  interaction gate declared for its pinned baseline. A blocked or skipped gate
-  cannot produce this status.
+- **Qualified**: an implemented behavior has passed every executable evidence
+  item and applicable package, security, performance, and interaction gate
+  declared by the current native contract. An excluded, blocked, or skipped
+  gate cannot produce this status.
 - **Team**: a local, single-user group of named agents working toward one shared
   goal under a lead agent. A Team may share a task graph and mailbox, while each
   agent retains its own lifecycle, context, and execution ownership.
@@ -120,9 +120,9 @@ terms below consistently in issues, plans, tests, and architecture documents.
   full thinking is opt-in through an explicit shortcut.
 - The fullscreen renderer is the default TTY experience. The classic renderer
   remains a compatibility and accessibility fallback.
-- These decisions change presentation and interaction only. Claude-compatible
-  transcripts, runtime semantics, permissions, CLI contracts, and the shared
-  `.claude` data plane remain authoritative.
+- These decisions change presentation and interaction only. Native Praxis
+  transcripts, runtime semantics, permissions, CLI contracts, and the
+  `~/.praxis` (or `PRAXIS_HOME`) data plane remain authoritative.
 - The visual palette is mostly neutral with one Praxis brand accent. Semantic
   colors are reserved for success, warning, error, permission, and active
   states; color is not decorative hierarchy.

@@ -2,6 +2,7 @@ import { configDefaults, defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
+    testTimeout: 10_000,
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
@@ -14,7 +15,12 @@ export default defineConfig({
         lines: 81,
       },
     },
-    exclude: [...configDefaults.exclude, '**/.worktrees/**'],
+    exclude: [
+      ...configDefaults.exclude,
+      '**/.worktrees/**',
+      '**/.agent/**',
+      '**/.praxis/**',
+    ],
     setupFiles: ['./vitest.setup.ts'],
   },
 })

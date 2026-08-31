@@ -106,14 +106,18 @@ praxis doctor
   并提供持久任务所有权以及唯一有序 mailbox，支持稳定身份、发送时固化的广播接收者、持久游标、有界保留和有界模型上下文投影。Team 仍是实验性功能，必须显式设置
   `PRAXIS_ENABLE_TEAMS=true` 才会启用；未启用时不会加载、发现或暴露 Team 代码。新 Team 默认使用 Hybrid Lead、sequential 执行和 Lead 持有提交权限，也可选 Coordinator 与 Swarm 策略。
   Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
-  原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。Claude Team 适配器可移除，当前覆盖已有 fixture 证据的 delete/send；create 仅执行解码，无法表达原生 roster/task 声明时会拒绝；shutdown 和 plan-response 仍有 fixture 证据，task、notification、context 与 Session-resume 兼容性仍明确处于未 qualification 状态。
+  原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。原生 task、notification、context 和 Team resume/inbox seam 已实现，并对不支持的负载执行 fail-closed 校验；这些状态以 Native Fixture Contracts 及 manifest 中的可执行证据为准。
 - **原生资源生态** — 支持递归 `@` 导入的共享 Praxis 指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件，以及位于 `~/.praxis` 下的 append-only `praxis.transcript` JSONL 会话；MCP 连接、发现和工具操作均有明确时限，断开后可安全恢复，且绝不重放已派发的调用。
 - **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次请求有界的 deadline，以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。
 - **事务式自更新** — `praxis update` 会在安装前验证软件包，拒绝并发更新，并可在中断或崩溃后回滚。
 
-详细功能状态和可执行证据位于
-[兼容性矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)，
-而不是本入口 README。
+当前 qualification 状态和可执行证据位于
+[Native Fixture Contracts](https://github.com/Forest-Isle/Praxis/blob/main/docs/NATIVE_FIXTURE_CONTRACTS.md)
+及其机器可读的
+[fixture manifest](https://github.com/Forest-Isle/Praxis/blob/main/test/fixtures/manifest.json)。
+[兼容性矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)
+和[路线图](https://github.com/Forest-Isle/Praxis/blob/main/docs/ROADMAP.md)是历史性的
+clean-room 记录。
 
 ## Native 数据平面
 
@@ -130,17 +134,17 @@ Claude-shaped 消息和工具字段只描述协议形状，不改变 Praxis 的�
 
 ## 文档
 
-| 需求                      | 文档                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| 安装并运行首次会话        | [入门指南](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)              |
-| 常用命令和环境变量        | [CLI 参考](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)                |
-| 查找全部用户和维护者文档  | [文档索引](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)                       |
-| 了解模块和数据流边界      | [架构](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)                     |
-| 查看安全假设              | [威胁模型](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)                 |
-| 检查协议形状和功能状态    | [功能矩阵](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)                |
-| 查看交互式 TUI 设计和证据 | [Quiet Operator 规格](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_REDESIGN_SPEC.md) |
-| 构建、测试和贡献          | [贡献指南](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)                      |
-| 验证发布和供应链控制      | [发布契约](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)                      |
+| 需求                      | 文档                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 安装并运行首次会话        | [入门指南](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)                          |
+| 常用命令和环境变量        | [CLI 参考](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)                            |
+| 查找全部用户和维护者文档  | [文档索引](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)                                   |
+| 了解模块和数据流边界      | [架构](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)                                 |
+| 查看安全假设              | [威胁模型](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)                             |
+| 验证原生行为和可执行证据  | [Native Fixture Contracts](https://github.com/Forest-Isle/Praxis/blob/main/docs/NATIVE_FIXTURE_CONTRACTS.md) |
+| 查看交互式 TUI 设计和证据 | [Quiet Operator 规格](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_REDESIGN_SPEC.md)             |
+| 构建、测试和贡献          | [贡献指南](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)                                  |
+| 验证发布和供应链控制      | [发布契约](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)                                  |
 
 ## 项目边界
 
@@ -174,8 +178,10 @@ npm run check
 `npm run test:performance` 强制检查 TUI projection scaling、<=3.25 的 doubling ratio、绝对的 120k median <1000 ms 预算、确定性的注入式回归保护，以及 Quiet Operator 输入回显 <50 ms 和普通/低能力全帧 p95 <16.7/<33 ms 预算。
 `npm run check` 还会强制执行对应的源代码依赖方向。
 `npm run test:coverage` 使用 V8 覆盖 `src/**` 下的全部生产代码，并强制执行全局最低标准：
-语句 79%、分支 70%、函数 85%、行 81%。
-`npm run test:core-completion` 会运行 #402 的 56 条 user story 审计，并分别报告 implemented、qualified、blocked、deferred 和 out-of-scope；缺少 live 前置条件不会被当作通过。
+语句 79%、分支 70%、函数 85%、行 81%；同时拒绝存在语句但完全未覆盖的生产运行时模块（仅类型模块可以为零语句）。
+`npm run test:fixtures` 会执行包含 67 条行为的 native contract，其中 59 条为 qualified、8 条明确 excluded。
+`npm run verify:fixture-contracts` 执行结构校验，并包含在 `npm run check` 中。
+`npm run test:core-completion` 保留为兼容别名，实际执行 `npm run test:fixtures`。
 
 贡献使用 Conventional Commit pull request 标题和受保护的 squash-merge 工作流。
 修改兼容性、持久化、发布或安全行为前，请阅读

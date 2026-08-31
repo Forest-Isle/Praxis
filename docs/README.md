@@ -7,7 +7,7 @@ authoritative CLI surface.
 ## Start here
 
 - [Getting Started](GETTING_STARTED.md) — install, configure a provider, run a
-  first session, share Claude Code state, update, and troubleshoot.
+  first session, manage native session state, update, and troubleshoot.
 - [CLI Reference](CLI_REFERENCE.md) — common workflows, provider environment,
   execution modes, persistence, and safety controls.
 - [Support](../SUPPORT.md) — questions, bug reports, feature requests, and
@@ -15,8 +15,10 @@ authoritative CLI surface.
 
 ## Product behavior
 
-- [Single-User CLI Parity Matrix](PARITY_MATRIX.md) — feature-by-feature status
-  and executable evidence.
+- [Native Fixture Contracts](NATIVE_FIXTURE_CONTRACTS.md) — current executable
+  native behavior contracts and qualification evidence source.
+- [Single-User CLI Parity Matrix](PARITY_MATRIX.md) — historical clean-room
+  status and evidence record; it is not the current qualification source.
 - [Claude-style TUI Parity](TUI_PARITY.md) — black-box visual rules,
   presentation components, interactions, and verification gates.
 - [Quiet Operator Spec](TUI_REDESIGN_SPEC.md) — C+ TUI visual language,
@@ -26,7 +28,7 @@ authoritative CLI surface.
 - [Native Subagent Contract](SUBAGENT_CONTRACT.md) — foreground/background
   subagent execution and persistence.
 - [Development Roadmap](ROADMAP.md) — historical implementation stages and
-  acceptance gates.
+  acceptance gates; it is not a runtime or qualification dependency.
 
 ## Architecture and security
 
@@ -70,8 +72,6 @@ authoritative CLI surface.
 - [Workflow Contract](STAGE23_WORKFLOW.md)
 - [Dynamic Wakeup Contract](STAGE24_DYNAMIC_WAKEUP.md)
 - [Native Worktrees](STAGE25_WORKTREES.md)
-- [Core Runtime Parity Plan](CORE_RUNTIME_PARITY_PLAN.md) — core-runtime parity
-  design decisions, implementation status, and validation evidence.
 
 These focused records explain implementation decisions. New users normally
 need only Getting Started and CLI Reference.

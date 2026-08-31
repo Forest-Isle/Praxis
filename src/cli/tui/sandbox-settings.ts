@@ -6,7 +6,10 @@ import type { SandboxDependencyCheck } from '@anthropic-ai/sandbox-runtime'
 import type { JsonResource } from '../../core/resources.js'
 import { writeFileAtomically } from '../../platform/atomic-write.js'
 import { loadNativeSharedResources } from '../../persistence/native-resources.js'
-import { claudeSandboxRuntime } from '../../sandbox/claude-sandbox-runtime.js'
+import {
+  claudeSandboxRuntime,
+  type ClaudeSandboxPlatform,
+} from '../../sandbox/claude-sandbox-runtime.js'
 import {
   nativeSandboxTempDirectory,
   loadClaudeSandboxSettings,
@@ -15,6 +18,14 @@ import {
 
 export type TuiSandboxMode = 'auto-allow' | 'regular' | 'disabled'
 export type TuiSandboxTab = 'mode' | 'dependencies' | 'overrides' | 'config'
+
+export interface TuiSandboxRuntime {
+  initialize(settings: ClaudeSandboxSettings): Promise<void>
+  unavailableReason(settings: ClaudeSandboxSettings): string | undefined
+  platformName(): ClaudeSandboxPlatform
+  dependencyCheck(settings: ClaudeSandboxSettings): SandboxDependencyCheck
+  isSupportedPlatform(): boolean
+}
 
 export interface TuiSandboxSnapshot {
   settings: ClaudeSandboxSettings
@@ -118,12 +129,14 @@ export function createTuiSandboxStore({
   homeDirectory,
   additionalDirectories = [],
   environment = process.env,
+  runtime = claudeSandboxRuntime,
 }: {
   configRoot: string
   cwd: string
   homeDirectory: string
   additionalDirectories?: readonly string[]
   environment?: NodeJS.ProcessEnv
+  runtime?: TuiSandboxRuntime
 }): TuiSandboxStore {
   const localSettingsPath = join(cwd, '.praxis', 'settings.local.json')
 
@@ -139,13 +152,13 @@ export function createTuiSandboxStore({
       additionalDirectories,
       tempDirectory: nativeSandboxTempDirectory(environment),
     })
-    await claudeSandboxRuntime.initialize(settings)
-    const unavailableReason = claudeSandboxRuntime.unavailableReason(settings)
-    const platform = claudeSandboxRuntime.platformName()
+    await runtime.initialize(settings)
+    const unavailableReason = runtime.unavailableReason(settings)
+    const platform = runtime.platformName()
     return {
       settings,
-      dependencies: claudeSandboxRuntime.dependencyCheck(settings),
-      supported: claudeSandboxRuntime.isSupportedPlatform(),
+      dependencies: runtime.dependencyCheck(settings),
+      supported: runtime.isSupportedPlatform(),
       platform,
       globPatternWarnings: linuxGlobPatternWarnings(resources, platform),
       ...(unavailableReason ? { unavailableReason } : {}),

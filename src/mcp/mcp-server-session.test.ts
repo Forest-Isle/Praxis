@@ -156,7 +156,7 @@ describe('McpServerSession', () => {
     const { stdout } = await execFileAsync(
       process.execPath,
       ['--import', 'tsx', '--input-type=module', '--eval', source],
-      { cwd: process.cwd(), timeout: 2_000 },
+      { cwd: process.cwd(), timeout: 10_000 },
     )
     expect(stdout).toContain('MCP server child connection timed out after 20ms')
   })

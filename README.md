@@ -212,9 +212,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   installing it, rejects concurrent updates, and can roll back after an
   interruption or crash.
 
-Detailed feature status and executable evidence live in the
-[parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md),
-not in this entry-point README.
+Current qualification status and executable evidence live in the
+[Native Fixture Contracts](https://github.com/Forest-Isle/Praxis/blob/main/docs/NATIVE_FIXTURE_CONTRACTS.md)
+and its machine-readable
+[fixture manifest](https://github.com/Forest-Isle/Praxis/blob/main/test/fixtures/manifest.json).
+The [parity matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)
+and [roadmap](https://github.com/Forest-Isle/Praxis/blob/main/docs/ROADMAP.md) are
+historical clean-room records.
 
 ## Native data plane
 
@@ -234,17 +238,17 @@ only; they do not change Praxis data ownership.
 
 ## Documentation
 
-| Need                                       | Document                                                                                         |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| Install and run the first session          | [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)       |
-| Common commands and environment variables  | [CLI Reference](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)           |
-| Find all user and maintainer documentation | [Documentation Index](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)            |
-| Understand module and data-flow boundaries | [Architecture](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)             |
-| Review security assumptions                | [Threat Model](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)             |
-| Check Claude Code parity                   | [Parity Matrix](https://github.com/Forest-Isle/Praxis/blob/main/docs/PARITY_MATRIX.md)           |
-| Review interactive TUI design and evidence | [Quiet Operator Spec](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_REDESIGN_SPEC.md) |
-| Build, test, and contribute                | [Contributing](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)                  |
-| Verify release and supply-chain controls   | [Release Contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)              |
+| Need                                       | Document                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Install and run the first session          | [Getting Started](https://github.com/Forest-Isle/Praxis/blob/main/docs/GETTING_STARTED.md)                   |
+| Common commands and environment variables  | [CLI Reference](https://github.com/Forest-Isle/Praxis/blob/main/docs/CLI_REFERENCE.md)                       |
+| Find all user and maintainer documentation | [Documentation Index](https://github.com/Forest-Isle/Praxis/blob/main/docs/README.md)                        |
+| Understand module and data-flow boundaries | [Architecture](https://github.com/Forest-Isle/Praxis/blob/main/docs/ARCHITECTURE.md)                         |
+| Review security assumptions                | [Threat Model](https://github.com/Forest-Isle/Praxis/blob/main/docs/THREAT_MODEL.md)                         |
+| Qualify native behavior and evidence       | [Native Fixture Contracts](https://github.com/Forest-Isle/Praxis/blob/main/docs/NATIVE_FIXTURE_CONTRACTS.md) |
+| Review interactive TUI design and evidence | [Quiet Operator Spec](https://github.com/Forest-Isle/Praxis/blob/main/docs/TUI_REDESIGN_SPEC.md)             |
+| Build, test, and contribute                | [Contributing](https://github.com/Forest-Isle/Praxis/blob/main/CONTRIBUTING.md)                              |
+| Verify release and supply-chain controls   | [Release Contract](https://github.com/Forest-Isle/Praxis/blob/main/docs/RELEASE.md)                          |
 
 ## Project boundary
 
@@ -286,10 +290,13 @@ injected regression protection, plus Quiet Operator input echo `<50 ms` and
 normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run check` also enforces the corresponding source dependency direction.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
-enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines.
-`npm run test:core-completion` runs the 56-story #402 audit and reports
-implemented, qualified, blocked, deferred, and out-of-scope states separately;
-it never treats missing live prerequisites as a pass.
+enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
+and rejects any production runtime module with zero covered statements (while allowing
+type-only modules). `npm run test:fixtures` executes the 67-behavior native contract; 59 behaviors
+are qualified and 8 are explicitly excluded. `npm run verify:fixture-contracts`
+performs the structural check and is part of `npm run check`.
+`npm run test:core-completion` is retained as a compatibility alias for
+`npm run test:fixtures`.
 
 Contributions use Conventional Commit pull-request titles and the protected
 squash-merge workflow. Read

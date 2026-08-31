@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "accepted": [
+    {
+      "platform": "darwin",
+      "url": "https://example.test/path?a=1&b=two",
+      "canonicalUrl": "https://example.test/path?a=1&b=two",
+      "command": "open",
+      "args": ["https://example.test/path?a=1&b=two"],
+      "options": { "timeout": 10000, "shell": false }
+    },
+    {
+      "platform": "linux",
+      "url": "http://example.test/resource?q=one&next=two",
+      "canonicalUrl": "http://example.test/resource?q=one&next=two",
+      "command": "xdg-open",
+      "args": ["http://example.test/resource?q=one&next=two"],
+      "options": { "timeout": 10000, "shell": false }
+    },
+    {
+      "platform": "win32",
+      "url": "https://example.test/windows?q=one&next=two",
+      "canonicalUrl": "https://example.test/windows?q=one&next=two",
+      "command": "rundll32.exe",
+      "args": [
+        "url.dll,FileProtocolHandler",
+        "https://example.test/windows?q=one&next=two"
+      ],
+      "options": { "timeout": 10000, "shell": false }
+    }
+  ],
+  "rejected": [
+    {
+      "url": "",
+      "error": "TUI URL must be an absolute HTTP(S) URL"
+    },
+    {
+      "url": "/relative/path",
+      "error": "TUI URL must be an absolute HTTP(S) URL"
+    },
+    {
+      "url": "file:///tmp/example.txt",
+      "error": "TUI URL must be an absolute HTTP(S) URL"
+    },
+    {
+      "url": "javascript:alert(1)",
+      "error": "TUI URL must be an absolute HTTP(S) URL"
+    }
+  ]
+}
