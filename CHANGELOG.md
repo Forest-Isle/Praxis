@@ -3,6 +3,12 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## Unreleased
+
+### Bug Fixes
+
+* require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
+
 ## [0.46.2](https://github.com/Forest-Isle/Praxis/compare/v0.46.1...v0.46.2) (2026-08-31)
 
 
