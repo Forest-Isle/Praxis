@@ -6422,6 +6422,312 @@ describe('InteractiveApp', () => {
     ])
   })
 
+  it('navigates fullscreen prompt history without moving the transcript viewport and restores the draft cursor', async () => {
+    const calls: string[] = []
+    const factory: InteractiveServiceFactory = {
+      async createService() {
+        return {
+          async run(prompt) {
+            calls.push(`run:${prompt}`)
+            return {
+              sessionId: 'session-1',
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async resume(sessionId, prompt) {
+            calls.push(`resume:${sessionId}:${prompt}`)
+            return {
+              sessionId,
+              text: `answer:${prompt}`,
+              usage: { inputTokens: 1, outputTokens: 1 },
+            }
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp
+        factory={factory}
+        initialSessions={[]}
+        initialHistory={[
+          {
+            kind: 'assistant',
+            text: Array.from(
+              { length: 60 },
+              (_, index) => `history-viewport-marker-${index}`,
+            ).join('\n'),
+          },
+        ]}
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+      />,
+    )
+    await flush()
+    Object.assign(app.stdout, { rows: 24 })
+    app.stdout.emit('resize')
+
+    const composerLine = () =>
+      (app.lastFrame() ?? '')
+        .split('\n')
+        .findLast((line) => line.includes('❯')) ?? ''
+    const visibleMarkers = () =>
+      [
+        ...(app.lastFrame() ?? '').matchAll(/history-viewport-marker-(\d+)/gu),
+      ].map((match) => Number(match[1]))
+
+    app.stdin.write('first prompt')
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 1 ? calls.length : undefined))
+    app.stdin.write('second prompt')
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 2 ? calls.length : undefined))
+
+    app.stdin.write('abcd')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('\u001B[D')
+    app.stdin.write('\u001B[A')
+    await waitFor(() =>
+      composerLine().includes('second prompt') ? true : undefined,
+    )
+    app.stdin.write('\u001B[A')
+    await waitFor(() =>
+      composerLine().includes('first prompt') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B')
+    await waitFor(() =>
+      composerLine().includes('second prompt') ? true : undefined,
+    )
+    app.stdin.write('\u001B[B')
+    await waitFor(() => (composerLine().includes('abcd') ? true : undefined))
+    app.stdin.write('X')
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 3 ? calls.length : undefined))
+    expect(calls).toEqual([
+      'run:first prompt',
+      'resume:session-1:second prompt',
+      'resume:session-1:abXcd',
+    ])
+
+    app.stdin.write('\u0015')
+    const markersBeforeHistory = await waitFor(() => {
+      const markers = visibleMarkers()
+      return markers.length > 0 ? markers : undefined
+    })
+    app.stdin.write('\u001B[A')
+    const markersAfterHistory = await waitFor(() =>
+      composerLine().includes('abXcd') ? visibleMarkers() : undefined,
+    )
+    expect(markersAfterHistory).toEqual(markersBeforeHistory)
+  })
+
+  it('seeds resumed prompt history only from user-visible transcript messages', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume(sessionId, prompt) {
+                calls.push(`${sessionId}:${prompt}`)
+                return {
+                  sessionId,
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        resume={{ sessionId: 'resumed-session' }}
+        initialHistory={[
+          { kind: 'user', text: 'older resumed prompt' },
+          { kind: 'assistant', text: 'assistant-only text' },
+          { kind: 'user', text: '   ' },
+          { kind: 'notice', text: 'operational notice' },
+          { kind: 'user', text: 'newer resumed prompt' },
+        ]}
+      />,
+    )
+    await flush()
+    const composerLine = () =>
+      (app.lastFrame() ?? '')
+        .split('\n')
+        .findLast((line) => line.includes('❯')) ?? ''
+
+    app.stdin.write('\u001B[A')
+    await waitFor(() =>
+      composerLine().includes('newer resumed prompt') ? true : undefined,
+    )
+    app.stdin.write('\u001B[A')
+    await waitFor(() =>
+      composerLine().includes('older resumed prompt') ? true : undefined,
+    )
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 1 ? calls.length : undefined))
+    expect(calls).toEqual(['resumed-session:older resumed prompt'])
+  })
+
+  it('replaces prompt history after an asynchronously loaded resume session', async () => {
+    const calls: string[] = []
+    const transcriptCalls: string[] = []
+    const sessions = [
+      {
+        sessionId: 'active-session',
+        lastPrompt: 'active summary prompt',
+        updatedAt: '2026-08-31T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+      {
+        sessionId: 'loaded-session',
+        lastPrompt: 'loaded summary prompt',
+        updatedAt: '2026-08-30T00:00:00.000Z',
+        status: 'ready' as const,
+        issue: null,
+      },
+    ]
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run() {
+                throw new Error('unused')
+              },
+              async resume(sessionId, prompt) {
+                calls.push(`${sessionId}:${prompt}`)
+                return {
+                  sessionId,
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return sessions
+              },
+              async transcript(sessionId) {
+                transcriptCalls.push(sessionId)
+                return sessionId === 'loaded-session'
+                  ? [
+                      { kind: 'user' as const, text: 'loaded older prompt' },
+                      { kind: 'assistant' as const, text: 'loaded answer' },
+                      { kind: 'user' as const, text: 'loaded newest prompt' },
+                    ]
+                  : [{ kind: 'user' as const, text: 'active prompt' }]
+              },
+            }
+          },
+        }}
+        initialSessions={sessions}
+        resume={{ sessionId: 'active-session' }}
+        initialHistory={[{ kind: 'user', text: 'active prompt' }]}
+      />,
+    )
+    await flush()
+
+    app.stdin.write('/resume')
+    app.stdin.write('\r')
+    await flush()
+    app.stdin.write('\u001B[B')
+    app.stdin.write('\r')
+    await waitFor(() =>
+      transcriptCalls.includes('loaded-session') ? true : undefined,
+    )
+    app.stdin.write('\u001B[A')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 1 ? calls.length : undefined))
+    expect(calls).toEqual(['loaded-session:loaded newest prompt'])
+  })
+
+  it('honors custom semantic arrow bindings for fullscreen prompt history', async () => {
+    const calls: string[] = []
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService() {
+            return {
+              async run(prompt) {
+                calls.push(`run:${prompt}`)
+                return {
+                  sessionId: 'session-1',
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async resume(sessionId, prompt) {
+                calls.push(`resume:${sessionId}:${prompt}`)
+                return {
+                  sessionId,
+                  text: 'done',
+                  usage: { inputTokens: 1, outputTokens: 1 },
+                }
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+        keybindingsLoader={async () =>
+          new Map([
+            [
+              'Chat',
+              new Map([
+                ['down', 'history:previous'],
+                ['up', 'history:next'],
+                ['enter', 'chat:submit'],
+              ]),
+            ],
+          ])
+        }
+        runtimeSettings={{
+          ...projectRuntimeSettings({ settings: {}, state: {} }),
+          tui: 'fullscreen',
+        }}
+      />,
+    )
+    await flush()
+
+    app.stdin.write('custom history prompt')
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 1 ? calls.length : undefined))
+    app.stdin.write('\u001B[B')
+    await flush()
+    app.stdin.write('\r')
+    await waitFor(() => (calls.length === 2 ? calls.length : undefined))
+    expect(calls).toEqual([
+      'run:custom history prompt',
+      'resume:session-1:custom history prompt',
+    ])
+  })
+
   it('applies slash-selected model and effort choices to the next service', async () => {
     const configRoot = await mkdtemp(join(tmpdir(), 'praxis-model-settings-'))
     const creates: Array<{

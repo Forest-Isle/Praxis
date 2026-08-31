@@ -154,7 +154,9 @@ export function routeTuiInteraction(
   if (snapshot.layer.kind === 'delegated') return delegated(confirmationEffects)
 
   const viewport = snapshot.viewport
-  if (viewport.enabled && input.scrollIntent !== 'none') {
+  const scrollIsIncidental =
+    input.action === undefined || input.action.startsWith('scroll:')
+  if (viewport.enabled && input.scrollIntent !== 'none' && scrollIsIncidental) {
     const pageRows = finiteNonNegativeInteger(viewport.pageRows)
     const offset = finiteNonNegativeInteger(viewport.offset)
     const maxOffset = finiteNonNegativeInteger(viewport.maxOffset)

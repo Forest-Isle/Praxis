@@ -204,6 +204,14 @@ import {
   moveComposerCursor,
 } from './tui/composer-editor.js'
 import {
+  createComposerPromptHistory,
+  navigateComposerPromptHistory,
+  recordComposerPrompt,
+  resetComposerPromptHistoryNavigation,
+  seedComposerPromptHistory,
+  type ComposerPromptHistoryState,
+} from './tui/composer-prompt-history.js'
+import {
   routeComposerKey,
   type ComposerKeyProjection,
 } from './tui/composer-key-router.js'
@@ -1069,6 +1077,10 @@ export interface InteractiveHistoryState {
   readonly change: TuiHistoryChange
 }
 
+function transcriptPrompts(items: readonly TranscriptItem[]): string[] {
+  return items.flatMap((item) => (item.kind === 'user' ? [item.text] : []))
+}
+
 /** Advances the React-owned transcript plus its exact local mutation fact. */
 export function advanceInteractiveHistoryState(
   current: InteractiveHistoryState,
@@ -1352,9 +1364,9 @@ export function InteractiveApp({
   const [pendingFork, setPendingFork] = useState(resume?.forkSession === true)
   const inputRef = useRef('')
   const inputCursorRef = useRef(0)
-  const inputHistoryRef = useRef<string[]>([])
-  const inputHistoryIndexRef = useRef<number | null>(null)
-  const inputHistoryDraftRef = useRef('')
+  const promptHistoryRef = useRef<ComposerPromptHistoryState>(
+    seedComposerPromptHistory(transcriptPrompts(initialHistory)),
+  )
   const [pendingInputs, setPendingInputs] = useState<
     readonly PendingInteractiveInput[]
   >([])
@@ -2733,6 +2745,9 @@ export function InteractiveApp({
     editor: ReturnType<typeof createComposerEditor>,
     recordUndo = true,
   ) => {
+    promptHistoryRef.current = resetComposerPromptHistoryNavigation(
+      promptHistoryRef.current,
+    )
     if (recordUndo && editor.text !== inputRef.current) {
       undoStackRef.current = [
         ...undoStackRef.current,
@@ -2742,7 +2757,12 @@ export function InteractiveApp({
     updateComposerInput(editor.text, editor.cursor)
   }
 
-  const clearComposerInput = () => updateComposerInput('')
+  const clearComposerInput = () => {
+    promptHistoryRef.current = resetComposerPromptHistoryNavigation(
+      promptHistoryRef.current,
+    )
+    updateComposerInput('')
+  }
 
   const promptImages = (prompt: string): readonly ModelImage[] => {
     const seen = new Set<number>()
@@ -2992,33 +3012,21 @@ export function InteractiveApp({
   }, [menu?.kind])
 
   const appendPromptHistory = (prompt: string) => {
-    if (!prompt) return
-    const history = inputHistoryRef.current.filter((item) => item !== prompt)
-    inputHistoryRef.current = [prompt, ...history].slice(0, 100)
-    inputHistoryIndexRef.current = null
-    inputHistoryDraftRef.current = ''
+    promptHistoryRef.current = recordComposerPrompt(
+      promptHistoryRef.current,
+      prompt,
+    )
   }
 
   const restorePromptHistory = (direction: 'previous' | 'next') => {
-    const history = inputHistoryRef.current
-    if (history.length === 0) return
-    const currentIndex = inputHistoryIndexRef.current
-    if (direction === 'previous') {
-      if (currentIndex === null) inputHistoryDraftRef.current = inputRef.current
-      const nextIndex = Math.min(history.length - 1, (currentIndex ?? -1) + 1)
-      inputHistoryIndexRef.current = nextIndex
-      updateComposerInput(history[nextIndex] ?? '')
-      return
-    }
-    if (currentIndex === null) return
-    const nextIndex = currentIndex - 1
-    if (nextIndex < 0) {
-      inputHistoryIndexRef.current = null
-      updateComposerInput(inputHistoryDraftRef.current)
-      return
-    }
-    inputHistoryIndexRef.current = nextIndex
-    updateComposerInput(history[nextIndex] ?? '')
+    const transition = navigateComposerPromptHistory(
+      promptHistoryRef.current,
+      direction,
+      createComposerEditor(inputRef.current, inputCursorRef.current),
+    )
+    promptHistoryRef.current = transition.state
+    if (transition.editor !== null)
+      updateComposerInput(transition.editor.text, transition.editor.cursor)
   }
 
   const withdrawLatestPending = (): boolean => {
@@ -3634,10 +3642,12 @@ export function InteractiveApp({
     const loadId = sessionLoadRef.current + 1
     sessionLoadRef.current = loadId
     if (nextSessionId === null) {
+      promptHistoryRef.current = createComposerPromptHistory()
       setHistory([])
       setSessionColor(undefined)
       return
     }
+    promptHistoryRef.current = createComposerPromptHistory()
     const loading = (async () => {
       try {
         const commands = await service()
@@ -3648,6 +3658,9 @@ export function InteractiveApp({
             : await commands.agentColor(nextSessionId)
         if (sessionLoadRef.current === loadId) {
           setHistory(transcript ? [...transcript] : [])
+          promptHistoryRef.current = seedComposerPromptHistory(
+            transcriptPrompts(transcript ?? []),
+          )
           setSessionColor(agentColor)
         }
       } catch (error) {
@@ -4726,6 +4739,9 @@ export function InteractiveApp({
           setSessionId(restoredConversation.sessionId || null)
           setPendingFork(false)
           setHistory(restoredConversation.history)
+          promptHistoryRef.current = seedComposerPromptHistory(
+            transcriptPrompts(restoredConversation.history),
+          )
           updateComposerInput(point.prompt)
         }
         append({
@@ -8075,9 +8091,6 @@ export function InteractiveApp({
           streamingFrameRef.current?.flush()
           setThinkingExpanded(false)
           setStatus('ready')
-          inputHistoryRef.current = []
-          inputHistoryIndexRef.current = null
-          inputHistoryDraftRef.current = ''
         })().catch(warn)
       } else if (prompt === '/model') {
         updateMenu({ kind: 'model', selectedIndex: 0 })
