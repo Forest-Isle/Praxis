@@ -3,6 +3,13 @@
 All notable changes to Praxis are documented here. Release Please maintains
 this file from merged Conventional Commit pull requests.
 
+## [0.46.1](https://github.com/Forest-Isle/Praxis/compare/v0.46.0...v0.46.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* restore fullscreen prompt history ([#526](https://github.com/Forest-Isle/Praxis/issues/526)) ([834b820](https://github.com/Forest-Isle/Praxis/commit/834b820923727eadf5db09551cd6caaaefe95001)), closes [#525](https://github.com/Forest-Isle/Praxis/issues/525)
+
 ## [0.46.0](https://github.com/Forest-Isle/Praxis/compare/v0.45.4...v0.46.0) (2026-08-30)
 
 
