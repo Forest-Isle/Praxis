@@ -271,6 +271,265 @@ describe('LocalToolRegistry', () => {
     })
   })
 
+  it('keeps Bash cwd per session without exposing its control marker', async () => {
+    const { cwd } = await workspace()
+    const subdirectory = join(cwd, 'subdirectory')
+    await mkdir(subdirectory)
+    const registry = new LocalToolRegistry({ cwd })
+    const prepareBash = (id: string, command: string) =>
+      registry.prepare({ id, name: 'Bash', input: { command } }, { cwd })
+
+    const searchTimeout = vi.spyOn(AbortSignal, 'timeout')
+    try {
+      const glob = await registry.prepare(
+        { id: 'default-search-timeout', name: 'Glob', input: { pattern: '*' } },
+        { cwd },
+      )
+      await registry.execute(glob, { cwd })
+      expect(searchTimeout).toHaveBeenCalledWith(120_000)
+    } finally {
+      searchTimeout.mockRestore()
+    }
+
+    const defaultTimeout = await registry.prepare(
+      { id: 'default-timeout', name: 'Bash', input: { command: 'pwd' } },
+      { cwd },
+    )
+    expect(defaultTimeout.input.timeout).toBe(600_000)
+    const clampedTimeout = await registry.prepare(
+      {
+        id: 'clamped-timeout',
+        name: 'Bash',
+        input: { command: 'pwd', timeout: 900_000 },
+      },
+      { cwd },
+    )
+    expect(clampedTimeout.input.timeout).toBe(600_000)
+
+    const changeDirectory = await prepareBash(
+      'change-directory',
+      `cd ${JSON.stringify(subdirectory)} && pwd`,
+    )
+    const session = { cwd, sessionId: 'session-a' }
+    const changed = await registry.execute(changeDirectory, session)
+    expect(changed.content).toBe(`${subdirectory}\n`)
+    expect(changed.content).not.toMatch(/[a-f0-9]{32}/u)
+    expect(changed.processOutput).toEqual({
+      stdout: `${subdirectory}\n`,
+      stderr: '',
+      exitCode: 0,
+    })
+
+    const pwd = await prepareBash('session-pwd', 'pwd')
+    await expect(registry.execute(pwd, session)).resolves.toMatchObject({
+      content: `${await realpath(subdirectory)}\n`,
+      isError: false,
+    })
+
+    await writeFile(join(cwd, 'host-relative.txt'), 'host')
+    const relativeRead = await registry.prepare(
+      {
+        id: 'host-relative-read',
+        name: 'Read',
+        input: { file_path: 'host-relative.txt' },
+      },
+      session,
+    )
+    expect(relativeRead.input.file_path).toBe(
+      await realpath(join(cwd, 'host-relative.txt')),
+    )
+
+    for (const [id, command] of [
+      ['rebind-control-fd', 'exec 3>&1; true'],
+      ['close-control-fd', 'exec 3>&-; true'],
+    ] as const) {
+      const call = await prepareBash(id, command)
+      await expect(
+        registry.execute(call, { cwd, sessionId: `session-${id}` }),
+      ).resolves.toMatchObject({
+        content: '',
+        isError: false,
+        processOutput: { stdout: '', stderr: '', exitCode: 0 },
+      })
+    }
+
+    for (const [id, command] of [
+      ['inspect-shell-state', 'set'],
+      ['trace-shell-execution', 'set -x; true'],
+      ['trace-shell-input', 'set -v; true'],
+    ] as const) {
+      const inspectShell = await prepareBash(id, command)
+      const inspected = await registry.execute(inspectShell, {
+        cwd,
+        sessionId: `session-${id}`,
+      })
+      expect(inspected).toMatchObject({ isError: false })
+      expect(inspected.content).not.toContain('_praxis_')
+    }
+
+    const shellArgZero = await prepareBash(
+      'preserve-shell-arg-zero',
+      `printf '%s' "$0"`,
+    )
+    await expect(
+      registry.execute(shellArgZero, {
+        cwd,
+        sessionId: 'session-preserve-shell-arg-zero',
+      }),
+    ).resolves.toMatchObject({
+      content: process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash',
+      isError: false,
+    })
+
+    const invalidSyntax = await prepareBash('invalid-shell-syntax', 'if')
+    const invalid = await registry.execute(invalidSyntax, {
+      cwd,
+      sessionId: 'session-invalid-shell-syntax',
+    })
+    expect(invalid).toMatchObject({
+      isError: true,
+      processOutput: {
+        exitCode: process.platform === 'darwin' ? 1 : 2,
+      },
+    })
+    expect(invalid.content).not.toContain('/dev/fd/4')
+    expect(invalid.content).not.toContain('_praxis_')
+
+    const trapSession = { cwd, sessionId: 'session-cleared-trap' }
+    const clearTrap = await prepareBash(
+      'clear-exit-trap',
+      `trap - EXIT; cd ${JSON.stringify(subdirectory)}`,
+    )
+    await expect(
+      registry.execute(clearTrap, trapSession),
+    ).resolves.toMatchObject({
+      content: '',
+      isError: false,
+      processOutput: { stdout: '', stderr: '', exitCode: 0 },
+    })
+    await expect(registry.execute(pwd, trapSession)).resolves.toMatchObject({
+      content: `${await realpath(subdirectory)}\n`,
+      isError: false,
+    })
+
+    const exitSession = { cwd, sessionId: 'session-explicit-exit' }
+    const explicitExit = await prepareBash(
+      'explicit-shell-exit',
+      `cd ${JSON.stringify(subdirectory)}; exit 7`,
+    )
+    await expect(
+      registry.execute(explicitExit, exitSession),
+    ).resolves.toMatchObject({
+      content: 'Command exited with code 7',
+      isError: true,
+      processOutput: {
+        stdout: '',
+        stderr: 'Command exited with code 7',
+        exitCode: 7,
+      },
+    })
+    await expect(registry.execute(pwd, exitSession)).resolves.toMatchObject({
+      content: `${await realpath(subdirectory)}\n`,
+      isError: false,
+    })
+
+    const userTrapOutput = await prepareBash(
+      'user-exit-trap-output',
+      "trap 'printf user-exit' EXIT; true",
+    )
+    await expect(
+      registry.execute(userTrapOutput, {
+        cwd,
+        sessionId: 'session-user-trap-output',
+      }),
+    ).resolves.toMatchObject({
+      content: 'user-exit',
+      isError: false,
+      processOutput: { stdout: 'user-exit', stderr: '', exitCode: 0 },
+    })
+
+    const userTrapStatus = await prepareBash(
+      'user-exit-trap-status',
+      "trap 'exit 9' EXIT; true",
+    )
+    await expect(
+      registry.execute(userTrapStatus, {
+        cwd,
+        sessionId: 'session-user-trap-status',
+      }),
+    ).resolves.toMatchObject({
+      content: 'Command exited with code 9',
+      isError: true,
+      processOutput: {
+        stdout: '',
+        stderr: 'Command exited with code 9',
+        exitCode: 9,
+      },
+    })
+
+    const detachedChild = await registry.prepare(
+      {
+        id: 'detached-child-does-not-hold-control-output',
+        name: 'Bash',
+        input: {
+          command: 'sleep 1 >/dev/null 2>&1 &',
+          timeout: 200,
+        },
+      },
+      session,
+    )
+    await expect(
+      registry.execute(detachedChild, session),
+    ).resolves.toMatchObject({
+      content: '',
+      isError: false,
+      processOutput: { stdout: '', stderr: '', exitCode: 0 },
+    })
+
+    const explicitCwd = join(cwd, 'explicit-cwd')
+    await mkdir(explicitCwd)
+    await expect(
+      registry.execute(pwd, { cwd: explicitCwd, sessionId: 'session-a' }),
+    ).resolves.toMatchObject({
+      content: `${await realpath(explicitCwd)}\n`,
+      isError: false,
+    })
+    await expect(registry.execute(pwd, session)).resolves.toMatchObject({
+      content: `${await realpath(cwd)}\n`,
+      isError: false,
+    })
+    await expect(
+      registry.execute(pwd, { cwd, sessionId: 'session-b' }),
+    ).resolves.toMatchObject({ content: `${await realpath(cwd)}\n` })
+    await expect(registry.execute(pwd, { cwd })).resolves.toMatchObject({
+      content: `${await realpath(cwd)}\n`,
+    })
+
+    const deletedDirectory = join(cwd, 'deleted-final-cwd')
+    const invalidateCwd = await prepareBash(
+      'invalidate-cwd',
+      `d=${JSON.stringify(deletedDirectory)}; mkdir "$d"; cd "$d"; rmdir "$d"`,
+    )
+    await expect(
+      registry.execute(invalidateCwd, session),
+    ).resolves.toMatchObject({ content: '', isError: false })
+    await expect(registry.execute(pwd, session)).resolves.toMatchObject({
+      content: `${await realpath(cwd)}\n`,
+      isError: false,
+    })
+
+    const failedChange = await prepareBash(
+      'failed-change-directory',
+      `cd ${JSON.stringify(cwd)} && false`,
+    )
+    await expect(
+      registry.execute(failedChange, session),
+    ).resolves.toMatchObject({ isError: true })
+    await expect(registry.execute(pwd, session)).resolves.toMatchObject({
+      content: `${await realpath(cwd)}\n`,
+    })
+  })
+
   it('loads hook-captured session exports into subsequent Bash commands', async () => {
     const { cwd } = await workspace()
     const requestedSessions: string[] = []
@@ -350,6 +609,35 @@ describe('LocalToolRegistry', () => {
         dangerouslyDisableSandbox: true,
       },
       expect.objectContaining({ commandId: 'sandboxed-bash' }),
+    )
+    expect(sandbox.cleanupAfterCommand).toHaveBeenCalledOnce()
+  })
+
+  it('feeds session cwd instrumentation through a sandboxed script fd', async () => {
+    const { cwd } = await workspace()
+    const sandbox = {
+      shouldUseSandbox: vi.fn(() => true),
+      wrapCommand: vi.fn(
+        async (input: { executionCommand?: string; command: string }) =>
+          input.executionCommand ?? input.command,
+      ),
+      annotateStderr: vi.fn((_commandId: string, stderr: string) => stderr),
+      cleanupAfterCommand: vi.fn(),
+    }
+    const registry = new LocalToolRegistry({ cwd, sandbox })
+    const context = { cwd, sessionId: 'sandbox-session' }
+    const call = await registry.prepare(
+      { id: 'sandboxed-session-bash', name: 'Bash', input: { command: 'pwd' } },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).resolves.toMatchObject({
+      content: `${await realpath(cwd)}\n`,
+      isError: false,
+    })
+    expect(sandbox.wrapCommand).toHaveBeenCalledWith(
+      { command: 'pwd', executionCommand: '. /dev/fd/4' },
+      expect.objectContaining({ commandId: 'sandboxed-session-bash' }),
     )
     expect(sandbox.cleanupAfterCommand).toHaveBeenCalledOnce()
   })

@@ -7,6 +7,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
 ## [0.46.2](https://github.com/Forest-Isle/Praxis/compare/v0.46.1...v0.46.2) (2026-08-31)

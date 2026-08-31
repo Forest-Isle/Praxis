@@ -40,6 +40,7 @@ export interface SandboxBackend {
 export interface SandboxCommandInput {
   command: string
   dangerouslyDisableSandbox?: boolean
+  executionCommand?: string
 }
 
 function currentPlatform(): ClaudeSandboxPlatform {
@@ -197,7 +198,7 @@ export class ClaudeSandboxRuntime {
     if (!this.initialized) throw new Error('Sandbox has not been initialized')
     if (!this.shouldUseSandbox(input)) return input.command
     return this.backend.wrapWithSandbox(
-      input.command,
+      input.executionCommand ?? input.command,
       options.shell,
       undefined,
       options.signal,

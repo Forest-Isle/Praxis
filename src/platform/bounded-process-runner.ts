@@ -13,6 +13,7 @@ export interface ProcessResult {
   code: number
   timedOut: boolean
   truncated: boolean
+  controlOutput?: string
 }
 
 export interface BoundedProcessRunnerOptions {
@@ -28,6 +29,9 @@ export interface RunProcessOptions {
   signal?: AbortSignal
   onOutput?: (output: string) => void | Promise<void>
   env?: Readonly<Record<string, string>>
+  controlOutputBytes?: number
+  controlOutputFd?: number
+  scriptInput?: string
 }
 
 function abortError(): DOMException {
@@ -146,15 +150,41 @@ export class BoundedProcessRunner {
       )
       const rawOutputLimit =
         this.options.maxOutputBytes + Math.max(3, longestSensitiveValueBytes)
+      const controlOutputFd =
+        options.controlOutputBytes === undefined
+          ? undefined
+          : (options.controlOutputFd ?? 3)
+      const scriptInputFd = options.scriptInput === undefined ? undefined : 4
+      if (
+        controlOutputFd !== undefined &&
+        scriptInputFd !== undefined &&
+        controlOutputFd === scriptInputFd
+      ) {
+        reject(
+          new Error('Process control output and script input FDs conflict'),
+        )
+        return
+      }
+      const highestFd = Math.max(2, controlOutputFd ?? 2, scriptInputFd ?? 2)
+      const stdio: Array<'ignore' | 'pipe'> = Array.from(
+        { length: highestFd + 1 },
+        () => 'ignore' as const,
+      )
+      stdio[1] = 'pipe'
+      stdio[2] = 'pipe'
+      if (controlOutputFd !== undefined) stdio[controlOutputFd] = 'pipe'
+      if (scriptInputFd !== undefined) stdio[scriptInputFd] = 'pipe'
       const child = spawn(options.command, options.args, {
         cwd: options.cwd ?? this.options.cwd,
         detached: process.platform !== 'win32',
         env: { ...sanitizeChildEnvironment(), ...options.env },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio,
       })
       const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] }
       const combined: Buffer[] = []
       const retainedBytes = { stdout: 0, stderr: 0, combined: 0 }
+      const controlChunks: Buffer[] = []
+      let controlBytes = 0
       let outputBytes = 0
       let timedOut = false
       let settled = false
@@ -203,8 +233,45 @@ export class BoundedProcessRunner {
         }
         updateLiveOutput()
       }
+      if (!child.stdout || !child.stderr) {
+        reject(new Error('Process output streams were not created'))
+        return
+      }
       child.stdout.on('data', (chunk: Buffer) => retain('stdout', chunk))
       child.stderr.on('data', (chunk: Buffer) => retain('stderr', chunk))
+      const controlStream =
+        controlOutputFd === undefined ? undefined : child.stdio[controlOutputFd]
+      if (controlStream) {
+        controlStream.on('data', (chunk: Buffer) => {
+          const remaining = Math.max(
+            0,
+            (options.controlOutputBytes ?? 0) - controlBytes,
+          )
+          if (remaining <= 0) return
+          const retained = chunk.subarray(0, remaining)
+          controlChunks.push(retained)
+          controlBytes += retained.length
+        })
+        child.once('exit', () => {
+          setImmediate(() => controlStream.destroy())
+        })
+      }
+      const scriptStream =
+        scriptInputFd === undefined ? undefined : child.stdio[scriptInputFd]
+      if (scriptStream) {
+        scriptStream.on('error', () => {
+          // The child process result remains authoritative if it exits before
+          // consuming the complete script.
+        })
+        if (!('end' in scriptStream)) {
+          reject(new Error('Process script input stream is not writable'))
+          return
+        }
+        scriptStream.end(options.scriptInput)
+        child.once('exit', () => {
+          setImmediate(() => scriptStream.destroy())
+        })
+      }
 
       const kill = () => {
         if (child.pid === undefined) return
@@ -281,6 +348,11 @@ export class BoundedProcessRunner {
             code: code ?? 1,
             timedOut,
             truncated,
+            ...(options.controlOutputBytes === undefined
+              ? {}
+              : {
+                  controlOutput: Buffer.concat(controlChunks).toString('utf8'),
+                }),
           })
         }, reject)
       })

@@ -61,12 +61,12 @@ describe('ClaudeSandboxRuntime', () => {
     expect(base.initialize).toHaveBeenCalledOnce()
     await expect(
       runtime.wrapCommand(
-        { command: 'npm test' },
+        { command: 'npm test', executionCommand: 'instrumented npm test' },
         { shell: '/bin/zsh', commandId: 'tool-1' },
       ),
-    ).resolves.toBe('sandbox:npm test')
+    ).resolves.toBe('sandbox:instrumented npm test')
     expect(base.wrapWithSandbox).toHaveBeenCalledWith(
-      'npm test',
+      'instrumented npm test',
       '/bin/zsh',
       undefined,
       undefined,
