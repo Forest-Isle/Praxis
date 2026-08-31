@@ -1,4 +1,5 @@
 import { constants } from 'node:fs'
+import { randomBytes, randomInt } from 'node:crypto'
 import {
   mkdir,
   mkdtemp,
@@ -79,7 +80,11 @@ export interface BashSandboxRuntime {
     dangerouslyDisableSandbox?: boolean
   }): boolean
   wrapCommand(
-    input: { command: string; dangerouslyDisableSandbox?: boolean },
+    input: {
+      command: string
+      dangerouslyDisableSandbox?: boolean
+      executionCommand?: string
+    },
     options?: { shell?: string; signal?: AbortSignal; commandId?: string },
   ): Promise<string>
   annotateStderr(commandId: string, stderr: string): string
@@ -346,6 +351,21 @@ function stringInput(
     throw new Error(`${name} must be a${allowEmpty ? '' : ' non-empty'} string`)
   }
   return value
+}
+
+function stripShellControlTrace(content: string, token: string): string {
+  if (!content.includes(token)) return content
+  return content
+    .split('\n')
+    .filter((line) => !line.includes(token))
+    .join('\n')
+}
+
+function commandShellSyntaxArguments(command: string): string[] {
+  const args = [...commandShellArguments(command)]
+  const commandIndex = args.indexOf('-c')
+  args.splice(commandIndex, 0, '-n')
+  return args
 }
 
 function optionalString(
@@ -669,6 +689,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly maxOutputBytes: number
   private readonly maxFileBytes: number
   private readonly maxShellTimeoutMs: number
+  private readonly maxSearchTimeoutMs: number
   private readonly processRunner: BoundedProcessRunner
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
@@ -680,6 +701,10 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly sandbox: BashSandboxRuntime | undefined
   private readonly homeDirectory: string
   private readonly configRoot: string
+  private readonly sessionCwds = new Map<
+    string,
+    { cwd: string; hostCwd: string }
+  >()
   private readonly protectedWriteReason: (
     absolutePath: string,
   ) => string | undefined
@@ -699,7 +724,8 @@ export class LocalToolRegistry implements ToolRegistry {
     ).map((directory) => resolve(directory))
     this.maxOutputBytes = options.maxOutputBytes ?? 128 * 1024
     this.maxFileBytes = options.maxFileBytes ?? 10 * 1024 * 1024
-    this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 120_000
+    this.maxShellTimeoutMs = options.maxShellTimeoutMs ?? 600_000
+    this.maxSearchTimeoutMs = options.maxShellTimeoutMs ?? 120_000
     this.enableReportFindings = options.enableReportFindings ?? false
     this.environment = options.environment
     this.sessionEnvironment = options.sessionEnvironment
@@ -732,7 +758,7 @@ export class LocalToolRegistry implements ToolRegistry {
     command: string,
     context?: ToolExecutionContext,
   ): void {
-    const cwd = this.currentCwd(context)
+    const cwd = this.currentBashCwd(context)
     const protectedWrite = context?.preToolUseAllowed
       ? (filePath: string) => {
           const reason = this.protectedWriteReason(filePath)
@@ -757,6 +783,18 @@ export class LocalToolRegistry implements ToolRegistry {
 
   private currentCwd(context?: ToolExecutionContext): string {
     return resolve(context?.cwd || this.cwdProvider?.() || this.cwd)
+  }
+
+  private currentBashCwd(context?: ToolExecutionContext): string {
+    const hostCwd = this.currentCwd(context)
+    if (context?.sessionId) {
+      const sessionCwd = this.sessionCwds.get(context.sessionId)
+      if (sessionCwd) {
+        if (sessionCwd.hostCwd === hostCwd) return sessionCwd.cwd
+        this.sessionCwds.delete(context.sessionId)
+      }
+    }
+    return hostCwd
   }
 
   definitions(): readonly ModelToolDefinition[] {
@@ -1693,7 +1731,7 @@ export class LocalToolRegistry implements ToolRegistry {
     const requestedPath =
       call.input.path === undefined ? '.' : stringInput(call.input, 'path')
     const root = await this.globRoot(requestedPath, context)
-    const timeoutSignal = AbortSignal.timeout(this.maxShellTimeoutMs)
+    const timeoutSignal = AbortSignal.timeout(this.maxSearchTimeoutMs)
     const searchSignal = context.signal
       ? AbortSignal.any([context.signal, timeoutSignal])
       : timeoutSignal
@@ -1715,7 +1753,7 @@ export class LocalToolRegistry implements ToolRegistry {
       if (context.signal?.aborted) throw abortError()
       if (timeoutSignal.aborted) {
         return {
-          content: `Search timed out after ${this.maxShellTimeoutMs}ms`,
+          content: `Search timed out after ${this.maxSearchTimeoutMs}ms`,
           isError: true,
         }
       }
@@ -1743,14 +1781,14 @@ export class LocalToolRegistry implements ToolRegistry {
     const result = await this.processRunner.run({
       command: 'rg',
       args,
-      timeoutMs: this.maxShellTimeoutMs,
+      timeoutMs: this.maxSearchTimeoutMs,
       cwd: this.currentCwd(context),
       ...(this.environment ? { env: this.environment } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     })
     if (result.timedOut) {
       return {
-        content: `Search timed out after ${this.maxShellTimeoutMs}ms`,
+        content: `Search timed out after ${this.maxSearchTimeoutMs}ms`,
         isError: true,
       }
     }
@@ -1782,35 +1820,130 @@ export class LocalToolRegistry implements ToolRegistry {
     const sandboxed =
       this.sandbox?.shouldUseSandbox(sandboxPolicyInput) ?? false
     const shell = commandShell()
+    let cwdToken: string | undefined
+    let sandboxCommandAttempted = false
     let result: ProcessResult
     try {
       const sessionEnvironment = context.sessionId
         ? await this.sessionEnvironment?.(context.sessionId)
         : undefined
-      const command = sandboxed
-        ? await this.sandbox?.wrapCommand(sandboxPolicyInput, {
-            shell,
-            ...(context.signal ? { signal: context.signal } : {}),
-            commandId: call.id,
-          })
-        : rawCommand
-      result = await this.processRunner.run({
-        command: shell,
-        args: commandShellArguments(command ?? rawCommand),
-        timeoutMs: timeout,
-        cwd: this.currentCwd(context),
-        ...(this.environment || sessionEnvironment
+      const processEnvironment =
+        this.environment || sessionEnvironment
           ? { env: { ...this.environment, ...sessionEnvironment } }
-          : {}),
-        ...(context.signal ? { signal: context.signal } : {}),
-      })
+          : {}
+      let executionTimeout = timeout
+      let syntaxTimeoutResult: ProcessResult | undefined
+      if (context.sessionId) {
+        const syntaxStartedAt = Date.now()
+        const syntaxResult = await this.processRunner.run({
+          command: shell,
+          args: commandShellSyntaxArguments(rawCommand),
+          timeoutMs: timeout,
+          cwd: this.currentBashCwd(context),
+          ...processEnvironment,
+          ...(context.signal ? { signal: context.signal } : {}),
+        })
+        executionTimeout = Math.max(1, timeout - (Date.now() - syntaxStartedAt))
+        if (syntaxResult.timedOut) {
+          syntaxTimeoutResult = syntaxResult
+        } else if (syntaxResult.code === 0) {
+          cwdToken = randomBytes(16).toString('hex')
+        }
+      }
+      const controlOutputFd = cwdToken ? randomInt(5, 10) : undefined
+      const statusVariable = cwdToken
+        ? `_praxis_exit_status_${cwdToken}`
+        : undefined
+      const trapStatusVariable = cwdToken
+        ? `_praxis_trap_status_${cwdToken}`
+        : undefined
+      const cwdReportCommand =
+        cwdToken && controlOutputFd
+          ? `{ printf "%s%s\\0" "${cwdToken}" "$(pwd -P 2>/dev/null)" >&${controlOutputFd}; } 2>/dev/null`
+          : undefined
+      const executionCommand =
+        cwdToken && trapStatusVariable && cwdReportCommand
+          ? `if [ -n "\${ZSH_VERSION-}" ]; then 0=${JSON.stringify(shell)}; fi
+trap '${trapStatusVariable}=$?; ${cwdReportCommand}; exit "$${trapStatusVariable}"' EXIT
+${rawCommand}
+${statusVariable}=$?
+${cwdReportCommand}
+exit "$${statusVariable}"`
+          : rawCommand
+      const scriptLoaderCommand = 'eval "$(cat <&4)"'
+      if (syntaxTimeoutResult) {
+        result = syntaxTimeoutResult
+      } else {
+        let command: string | undefined
+        if (sandboxed) {
+          sandboxCommandAttempted = true
+          command = await this.sandbox?.wrapCommand(
+            cwdToken
+              ? { ...sandboxPolicyInput, executionCommand: scriptLoaderCommand }
+              : sandboxPolicyInput,
+            {
+              shell,
+              ...(context.signal ? { signal: context.signal } : {}),
+              commandId: call.id,
+            },
+          )
+        } else {
+          command = cwdToken ? scriptLoaderCommand : rawCommand
+        }
+        result = await this.processRunner.run({
+          command: shell,
+          args: commandShellArguments(command ?? rawCommand),
+          timeoutMs: executionTimeout,
+          cwd: this.currentBashCwd(context),
+          ...processEnvironment,
+          ...(context.signal ? { signal: context.signal } : {}),
+          ...(cwdToken && controlOutputFd
+            ? {
+                controlOutputBytes: 8192,
+                controlOutputFd,
+                scriptInput: executionCommand,
+              }
+            : {}),
+        })
+      }
     } finally {
-      if (sandboxed) this.sandbox?.cleanupAfterCommand()
+      if (sandboxCommandAttempted) this.sandbox?.cleanupAfterCommand()
     }
-    if (sandboxed && this.sandbox) {
+    if (cwdToken) {
+      result = {
+        ...result,
+        stdout: stripShellControlTrace(result.stdout, cwdToken),
+        stderr: stripShellControlTrace(result.stderr, cwdToken),
+        output: stripShellControlTrace(result.output, cwdToken),
+      }
+    }
+    if (sandboxCommandAttempted && this.sandbox) {
       result = {
         ...result,
         stderr: this.sandbox.annotateStderr(call.id, result.stderr),
+      }
+    }
+    if (cwdToken && !result.timedOut && result.controlOutput) {
+      const controlRecord = result.controlOutput.startsWith(cwdToken)
+        ? result.controlOutput.slice(cwdToken.length)
+        : undefined
+      const terminator = controlRecord?.indexOf('\0') ?? -1
+      const record =
+        controlRecord && terminator > 0
+          ? controlRecord.slice(0, terminator)
+          : undefined
+      if (record) {
+        try {
+          const canonicalCwd = await realpath(record)
+          if ((await stat(canonicalCwd)).isDirectory() && context.sessionId) {
+            this.sessionCwds.set(context.sessionId, {
+              cwd: canonicalCwd,
+              hostCwd: resolve(context.cwd || this.cwdProvider?.() || this.cwd),
+            })
+          }
+        } catch {
+          // A command may remove or replace its final directory. Keep prior state.
+        }
       }
     }
     if (result.timedOut) {

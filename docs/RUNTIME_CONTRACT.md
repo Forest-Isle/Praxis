@@ -110,8 +110,12 @@ Rules:
     transcript/hook decorators may additionally defer execution until the
     assistant tool-use entry is durable. Bash reuses the permission layer's
     conservative read-only analysis, and MCP concurrency requires an explicit
-    read-only annotation. Cancellation produces one terminal result per emitted
-    call while only tools that opt in receive the parent abort.
+    read-only annotation. Foreground Bash has a 600,000 ms default ceiling and
+    retains a validated canonical final cwd per session when the shell returns
+    or runs its exit lifecycle, until an explicit host cwd transition replaces
+    it. A command that replaces the shell process with `exec` keeps the last
+    validated cwd. Cancellation produces one terminal result per emitted call
+    while only tools that opt in receive the parent abort.
 20. Provider-visible prompt context is composed from ordered sections with
     stable identities, placements, and lifetimes. Product policy is the static
     prefix; shared resources, date, runtime snapshot, and capability guidance
