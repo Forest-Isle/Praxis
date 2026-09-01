@@ -21,6 +21,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.52.0](https://github.com/Forest-Isle/Praxis/compare/v0.51.0...v0.52.0) (2026-09-01)
+
+
+### Features
+
+* externalize oversized MCP text results ([#562](https://github.com/Forest-Isle/Praxis/issues/562)) ([de3edbd](https://github.com/Forest-Isle/Praxis/commit/de3edbd88c568de0379333d69eda8d2793bd47da))
+
 ## [0.51.0](https://github.com/Forest-Isle/Praxis/compare/v0.50.0...v0.51.0) (2026-09-01)
 
 
