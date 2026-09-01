@@ -217,7 +217,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
   separate per-attempt connect, byte-idle, and absolute-total timeouts, typed
   recovery for malformed streamed tool arguments without tool execution or
-  lost resumability, and
+  lost resumability, one default-on bounded Anthropic non-streaming replay for
+  eligible stream/idle failures without exposing failed-attempt output, and
   token-only/no-API-dollar accounting for subscription runs.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an

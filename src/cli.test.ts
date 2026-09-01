@@ -1524,6 +1524,7 @@ describe('Praxis CLI', () => {
       deadlineMs: 90_000,
       connectTimeoutMs: 90_000,
       idleTimeoutMs: 90_000,
+      disableNonStreamingFallback: false,
     })
     expect(
       parseProviderEnvironment({
@@ -1538,6 +1539,7 @@ describe('Praxis CLI', () => {
       deadlineMs: 90_000,
       connectTimeoutMs: 90_000,
       idleTimeoutMs: 90_000,
+      disableNonStreamingFallback: false,
       maxOutputTokens: 4096,
       anthropicVersion: '2023-06-01',
       webSearch: true,
@@ -1610,6 +1612,22 @@ describe('Praxis CLI', () => {
         PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL: '1h',
       }),
     ).toThrow('cannot be set when prompt caching is false')
+    expect(
+      parseProviderEnvironment({ PRAXIS_DISABLE_NONSTREAMING_FALLBACK: 'true' })
+        .disableNonStreamingFallback,
+    ).toBe(true)
+    expect(
+      parseProviderEnvironment({
+        PRAXIS_DISABLE_NONSTREAMING_FALLBACK: 'false',
+      }).disableNonStreamingFallback,
+    ).toBe(false)
+    for (const value of ['1', 'TRUE', '', 'yes']) {
+      expect(() =>
+        parseProviderEnvironment({
+          PRAXIS_DISABLE_NONSTREAMING_FALLBACK: value,
+        }),
+      ).toThrow('PRAXIS_DISABLE_NONSTREAMING_FALLBACK')
+    }
   })
 
   it('validates explicit context budget environment', () => {

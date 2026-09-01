@@ -118,16 +118,19 @@ Responses share the provider-neutral diagnostic. Native transcripts persist
 the canonical diagnostic so an interrupted turn resumes to exactly one safe
 error result without scheduling, permission, approval, or execution.
 
-### Task 1.2: Stream timeout model [depends: Task 0.2, #121]
+### Task 1.2: Stream timeout recovery [implemented by #550 and #553; tracks #121]
 
 The #550 lifecycle slice separates connect, byte-idle, and absolute-total
-timeouts, reports typed timeout phases, and preserves retry safety through the
-existing whole-attempt buffer. The remaining #121 slice must add one
-capability-gated non-streaming fallback only where duplicate presentation or
-tool effects are impossible.
+timeouts and reports typed timeout phases. The #553 recovery slice adds one
+default-on Anthropic-only non-streaming replay after explicitly eligible stream
+transport failures or byte-idle timeout. Each attempt has independent clocks;
+both are buffered until terminal success, while connect/total timeout,
+cancellation, HTTP/auth/rate-limit, prompt-too-long, malformed responses, and
+unsupported provider protocols remain ineligible.
 
 Acceptance: outcome fixtures show no duplicated mutation, orphaned tool call,
-or silent partial output across both recovery modules.
+or silent partial output across both recovery modules, including detached
+workers and the explicit fallback opt-out.
 
 ## Phase 2 — Tool and context efficiency
 

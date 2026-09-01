@@ -76,6 +76,15 @@ overrides such as `PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS=120000`,
 `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS=120000`, or
 `PRAXIS_PROVIDER_DEADLINE_MS=180000`.
 
+Anthropic Messages also retries once with a bounded non-streaming response when
+the streaming attempt ends in an eligible stream transport failure or byte-idle
+timeout. Praxis buffers both attempts and exposes only a terminally complete
+result, so failed partial text, thinking, usage, or tool calls do not commit.
+Connect/total timeout, cancellation, HTTP/auth/rate-limit, prompt-too-long, and
+malformed-response errors are not replayed. Set
+`PRAXIS_DISABLE_NONSTREAMING_FALLBACK=true` to disable this Anthropic-only
+recovery path; detached background agents inherit the setting.
+
 ### Custom providers and profiles
 
 User provider configuration is `PRAXIS_HOME/settings.json` (default

@@ -1734,6 +1734,7 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         PRAXIS_API_KEY: 'worker-provider-secret',
         PRAXIS_MODEL: 'worker-model',
         PRAXIS_PROVIDER_PROFILE: 'worker-profile',
+        PRAXIS_DISABLE_NONSTREAMING_FALLBACK: 'true',
         PRAXIS_PROVIDER_DEADLINE_MS: '45000',
         PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: '12000',
         PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: '23000',
@@ -1773,6 +1774,7 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     expect(environment.PRAXIS_API_KEY).toBe('resolved-provider-secret')
     expect(environment.PRAXIS_MODEL).toBe('worker-model')
     expect(environment.PRAXIS_PROVIDER_PROFILE).toBe('worker-profile')
+    expect(environment.PRAXIS_DISABLE_NONSTREAMING_FALLBACK).toBe('true')
     expect(environment.PRAXIS_PROVIDER_DEADLINE_MS).toBe('45000')
     expect(environment.PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS).toBe('12000')
     expect(environment.PRAXIS_PROVIDER_IDLE_TIMEOUT_MS).toBe('23000')
