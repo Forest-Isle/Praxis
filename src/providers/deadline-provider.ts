@@ -3,13 +3,23 @@ import {
   type ModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
+  type ProviderTimeoutPhase,
 } from '../core/runtime.js'
+import {
+  detachProviderTransportActivity,
+  observeProviderTransportActivity,
+  type ProviderTransportActivity,
+} from './provider-transport-activity.js'
 
 export const DEFAULT_PROVIDER_DEADLINE_MS = 90_000
+export const DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS = 90_000
+export const DEFAULT_PROVIDER_IDLE_TIMEOUT_MS = 90_000
 
 export interface DeadlineModelProviderOptions {
   provider: ModelProvider
   deadlineMs?: number
+  connectTimeoutMs?: number
+  idleTimeoutMs?: number
 }
 
 type InterruptionKind = 'cancelled' | 'timeout' | 'return'
@@ -35,6 +45,10 @@ function deferred<T>(): Deferred<T> {
 export class DeadlineModelProvider implements ModelProvider {
   private readonly provider: ModelProvider
   private readonly deadlineMs: number
+  private readonly connectTimeoutMs: number
+  private readonly idleTimeoutMs: number
+  private readonly connectTimeoutExplicit: boolean
+  private readonly idleTimeoutExplicit: boolean
   declare readonly model?: string
 
   constructor(options: DeadlineModelProviderOptions) {
@@ -49,8 +63,26 @@ export class DeadlineModelProvider implements ModelProvider {
     ) {
       throw new Error('Provider deadline must be a positive integer')
     }
+    const connectTimeoutMs = options.connectTimeoutMs ?? deadlineMs
+    if (
+      !Number.isFinite(connectTimeoutMs) ||
+      !Number.isInteger(connectTimeoutMs) ||
+      connectTimeoutMs <= 0
+    )
+      throw new Error('Provider connect timeout must be a positive integer')
+    const idleTimeoutMs = options.idleTimeoutMs ?? deadlineMs
+    if (
+      !Number.isFinite(idleTimeoutMs) ||
+      !Number.isInteger(idleTimeoutMs) ||
+      idleTimeoutMs <= 0
+    )
+      throw new Error('Provider idle timeout must be a positive integer')
     this.provider = options.provider
     this.deadlineMs = deadlineMs
+    this.connectTimeoutMs = connectTimeoutMs
+    this.idleTimeoutMs = idleTimeoutMs
+    this.connectTimeoutExplicit = options.connectTimeoutMs !== undefined
+    this.idleTimeoutExplicit = options.idleTimeoutMs !== undefined
     Object.defineProperty(this, 'model', {
       configurable: false,
       enumerable: true,
@@ -70,16 +102,33 @@ export class DeadlineModelProvider implements ModelProvider {
     let callerSignal: AbortSignal | undefined
     let timer: ReturnType<typeof setTimeout> | undefined
     let deadlineStartedAt: number | undefined
+    let totalDueAt: number | undefined
+    let phaseDueAt: number | undefined
+    let phase: ProviderTimeoutPhase = 'connect'
+    let pullPending = false
+    let hasPulled = false
+    let instrumentedRequest: ModelRequest | undefined
     let underlying: AsyncIterator<ModelStreamEvent> | undefined
     let cleanupStarted = false
     const interruptionDeferred = deferred<Interruption>()
 
     const interruptionError = (): ModelProviderError => {
       if (interruption?.kind === 'timeout') {
-        return new ModelProviderError('Provider request timed out', {
+        const timeoutPhase =
+          interruption.cause instanceof TimeoutCause
+            ? interruption.cause.phase
+            : undefined
+        const message =
+          timeoutPhase === 'connect'
+            ? 'Provider connection timed out'
+            : timeoutPhase === 'idle'
+              ? 'Provider stream idle timed out'
+              : 'Provider request timed out'
+        return new ModelProviderError(message, {
           kind: 'timeout',
           retryable: true,
           cause: interruption.cause,
+          ...(timeoutPhase === undefined ? {} : { timeoutPhase }),
         })
       }
       return new ModelProviderError('Provider request cancelled', {
@@ -114,6 +163,8 @@ export class DeadlineModelProvider implements ModelProvider {
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
       callerSignal?.removeEventListener('abort', onCallerAbort)
+      if (instrumentedRequest)
+        detachProviderTransportActivity(instrumentedRequest)
     }
 
     const finish = (outcome: Interruption): void => {
@@ -129,20 +180,56 @@ export class DeadlineModelProvider implements ModelProvider {
     const onCallerAbort = (): void =>
       finish({ kind: 'cancelled', cause: callerSignal?.reason })
 
-    const timeoutCause = new Error('Provider request timed out')
-    timeoutCause.name = 'TimeoutError'
+    class TimeoutCause extends Error {
+      readonly phase: ProviderTimeoutPhase
+      constructor(timeoutPhase: ProviderTimeoutPhase) {
+        super('Provider request timed out')
+        this.name = 'TimeoutError'
+        this.phase = timeoutPhase
+      }
+    }
     const scheduleDeadline = (): void => {
       if (deadlineStartedAt === undefined || closed) return
-      const elapsedMs = Math.max(0, performance.now() - deadlineStartedAt)
-      const remainingMs = this.deadlineMs - elapsedMs
+      if (timer !== undefined) clearTimeout(timer)
+      const now = performance.now()
+      const remainingTotal = (totalDueAt ?? now) - now
+      const remainingPhase = pullPending
+        ? (phaseDueAt ?? now) - now
+        : Number.POSITIVE_INFINITY
+      const remainingMs = Math.min(remainingTotal, remainingPhase)
       if (remainingMs <= 0) {
-        finish({ kind: 'timeout', cause: timeoutCause })
+        const phaseTimeoutExplicit =
+          phase === 'connect'
+            ? this.connectTimeoutExplicit
+            : this.idleTimeoutExplicit
+        finish({
+          kind: 'timeout',
+          cause: new TimeoutCause(
+            remainingPhase < remainingTotal ||
+              (remainingPhase <= remainingTotal && phaseTimeoutExplicit)
+              ? phase
+              : 'total',
+          ),
+        })
         return
       }
       timer = setTimeout(
         scheduleDeadline,
         Math.min(remainingMs, MAX_TIMER_DELAY_MS),
       )
+    }
+
+    const onTransportActivity = (reported: ProviderTransportActivity): void => {
+      if (closed || deadlineStartedAt === undefined) return
+      const now = performance.now()
+      if (reported === 'request-started') {
+        phase = 'connect'
+        phaseDueAt = now + this.connectTimeoutMs
+      } else {
+        phase = 'idle'
+        phaseDueAt = now + this.idleTimeoutMs
+      }
+      scheduleDeadline()
     }
 
     const start = (): void => {
@@ -155,12 +242,13 @@ export class DeadlineModelProvider implements ModelProvider {
         callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
       if (interruption !== undefined) return
       deadlineStartedAt = performance.now()
+      totalDueAt = deadlineStartedAt + this.deadlineMs
+      phaseDueAt = deadlineStartedAt + this.connectTimeoutMs
       scheduleDeadline()
 
-      const iterable = this.provider.complete({
-        ...request,
-        signal: controller.signal,
-      })
+      instrumentedRequest = { ...request, signal: controller.signal }
+      observeProviderTransportActivity(instrumentedRequest, onTransportActivity)
+      const iterable = this.provider.complete(instrumentedRequest)
       underlying = iterable[Symbol.asyncIterator]()
       if (interruption !== undefined) bestEffortUnderlyingReturn()
     }
@@ -181,10 +269,21 @@ export class DeadlineModelProvider implements ModelProvider {
       if (closed || !underlying) return { done: true, value: undefined }
 
       let nextPromise: Promise<ProviderIteratorResult>
+      pullPending = true
+      if (hasPulled) {
+        phaseDueAt =
+          performance.now() +
+          (phase === 'connect' ? this.connectTimeoutMs : this.idleTimeoutMs)
+      }
+      hasPulled = true
+      scheduleDeadline()
+      if (interruption !== undefined) throw interruptionError()
       try {
         const result = underlying.next()
         nextPromise = Promise.resolve(result)
       } catch (error) {
+        pullPending = false
+        scheduleDeadline()
         if (interruption !== undefined) throw interruptionError()
         closed = true
         clearResources()
@@ -207,6 +306,8 @@ export class DeadlineModelProvider implements ModelProvider {
           outcome,
         })),
       ])
+      pullPending = false
+      scheduleDeadline()
       const observedInterruption =
         interruption ??
         (result.type === 'interruption' ? result.outcome : undefined)
@@ -230,6 +331,9 @@ export class DeadlineModelProvider implements ModelProvider {
       if (result.value.done) {
         closed = true
         clearResources()
+      } else {
+        phase = 'idle'
+        phaseDueAt = performance.now() + this.idleTimeoutMs
       }
       return result.value
     }

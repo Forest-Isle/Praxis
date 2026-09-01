@@ -159,13 +159,16 @@ only after that fingerprint is trusted; user-scope MCPB remains explicitly
 authorized.
 
 Detached workers receive `PRAXIS_PROVIDER`, `PRAXIS_PROVIDER_PROFILE`,
-`PRAXIS_MODEL`, `PRAXIS_BASE_URL`, and `PRAXIS_PROVIDER_DEADLINE_MS` through
-the sanitized environment and use the same provider resolver. Before spawn,
-the parent resolves an API-key credential through the selected target and
-passes only normalized `PRAXIS_API_KEY`; it never forwards the configured
-custom credential variable. Codex OAuth remains in the shared Vault, while
-the credential-store selector and safe/bare/simple policy survive the worker
-boundary.
+`PRAXIS_MODEL`, `PRAXIS_BASE_URL`, `PRAXIS_PROVIDER_DEADLINE_MS`,
+`PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`, and `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`
+through the sanitized environment and use the same provider resolver. The
+provider lifecycle module keeps an absolute-total clock while connect runs
+until response headers and byte-idle resets on every non-empty body chunk.
+Before spawn, the parent resolves an API-key credential through the selected
+target and passes only normalized `PRAXIS_API_KEY`; it never forwards the
+configured custom credential variable. Codex OAuth remains in the shared Vault,
+while the credential-store selector and safe/bare/simple policy survive the
+worker boundary.
 
 Interrupted-tool recovery uses a separate `approveRecovery` port. The runtime
 invokes it after tool/hook preparation so the UI displays the input that would

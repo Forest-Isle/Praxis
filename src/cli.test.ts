@@ -1522,6 +1522,8 @@ describe('Praxis CLI', () => {
       provider: 'openai',
       baseUrl: 'https://api.openai.com/v1',
       deadlineMs: 90_000,
+      connectTimeoutMs: 90_000,
+      idleTimeoutMs: 90_000,
     })
     expect(
       parseProviderEnvironment({
@@ -1534,6 +1536,8 @@ describe('Praxis CLI', () => {
       provider: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
       deadlineMs: 90_000,
+      connectTimeoutMs: 90_000,
+      idleTimeoutMs: 90_000,
       maxOutputTokens: 4096,
       anthropicVersion: '2023-06-01',
       webSearch: true,
@@ -1542,12 +1546,28 @@ describe('Praxis CLI', () => {
       parseProviderEnvironment({ PRAXIS_PROVIDER: 'unknown' }),
     ).toThrow('openai or anthropic')
     expect(
-      parseProviderEnvironment({ PRAXIS_PROVIDER_DEADLINE_MS: '1234' }),
-    ).toMatchObject({ deadlineMs: 1234 })
+      parseProviderEnvironment({
+        PRAXIS_PROVIDER_DEADLINE_MS: '1234',
+        PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: '2345',
+        PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: '3456',
+      }),
+    ).toMatchObject({
+      deadlineMs: 1234,
+      connectTimeoutMs: 2345,
+      idleTimeoutMs: 3456,
+    })
     for (const value of ['0', '-1', '1.5', 'Infinity', '9007199254740992']) {
       expect(() =>
         parseProviderEnvironment({ PRAXIS_PROVIDER_DEADLINE_MS: value }),
       ).toThrow('PRAXIS_PROVIDER_DEADLINE_MS')
+      expect(() =>
+        parseProviderEnvironment({
+          PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: value,
+        }),
+      ).toThrow('PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS')
+      expect(() =>
+        parseProviderEnvironment({ PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: value }),
+      ).toThrow('PRAXIS_PROVIDER_IDLE_TIMEOUT_MS')
     }
     expect(() =>
       parseProviderEnvironment({ PRAXIS_MAX_OUTPUT_TOKENS: '4096' }),

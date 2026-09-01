@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ModelProviderError } from '../core/runtime.js'
 import { CodexOAuthError } from './codex-oauth.js'
@@ -7,6 +7,11 @@ import {
   CodexSubscriptionProvider,
   serializeCodexRequest,
 } from './codex-subscription.js'
+import { DeadlineModelProvider } from './deadline-provider.js'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const access = async () => ({
   accessToken: 'fixture-access-token',
@@ -225,6 +230,99 @@ describe('CodexSubscriptionProvider', () => {
       status: 401,
     })
     expect(second401Accesses).toBe(2)
+  })
+
+  it('re-enters connect timeout when the refreshed request never connects', async () => {
+    vi.useFakeTimers()
+    let accessCalls = 0
+    let requests = 0
+    let errorBodyController!: ReadableStreamDefaultController<Uint8Array>
+    const errorBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        errorBodyController = controller
+      },
+    })
+    const provider = new DeadlineModelProvider({
+      provider: new CodexSubscriptionProvider({
+        model: 'gpt-codex',
+        access: async () => ({
+          accessToken: `token-${++accessCalls}`,
+          accountId: 'account',
+          expiresAt: Date.now() + 100_000,
+        }),
+        fetchImplementation: async () => {
+          requests += 1
+          if (requests === 1) return new Response(errorBody, { status: 401 })
+          return new Promise<Response>(() => {})
+        },
+      }),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 20,
+    })
+    const completion = provider.complete({
+      messages: [{ role: 'user', content: 'hello' }],
+    })
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+
+    await vi.advanceTimersByTimeAsync(15)
+    errorBodyController.enqueue(new TextEncoder().encode('partial-error'))
+    await vi.advanceTimersByTimeAsync(10)
+    errorBodyController.close()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(requests).toBe(2)
+    expect(accessCalls).toBe(2)
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+  })
+
+  it('classifies a hung credential refresh as connect timeout', async () => {
+    vi.useFakeTimers()
+    let accessCalls = 0
+    let requests = 0
+    const provider = new DeadlineModelProvider({
+      provider: new CodexSubscriptionProvider({
+        model: 'gpt-codex',
+        access: async () => {
+          accessCalls += 1
+          if (accessCalls === 1)
+            return {
+              accessToken: 'stale',
+              accountId: 'account',
+              expiresAt: Date.now() + 100_000,
+            }
+          return new Promise<Awaited<ReturnType<typeof access>>>(() => {})
+        },
+        fetchImplementation: async () => {
+          requests += 1
+          return response('', 401)
+        },
+      }),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 100,
+    })
+    const completion = provider.complete({
+      messages: [{ role: 'user', content: 'hello' }],
+    })
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(accessCalls).toBe(2)
+    expect(requests).toBe(1)
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
   })
 
   it('fails closed for unsupported capabilities and incomplete streams', async () => {
@@ -496,4 +594,53 @@ describe('CodexSubscriptionProvider', () => {
     await iterator.return?.()
     expect(cancelled).toBe(true)
   })
+
+  it.each([200, 500])(
+    'resets byte-idle timeout for Codex HTTP %s body activity',
+    async (status) => {
+      vi.useFakeTimers()
+      let controller!: ReadableStreamDefaultController<Uint8Array>
+      const body = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          controller = streamController
+        },
+      })
+      const provider = new DeadlineModelProvider({
+        provider: new CodexSubscriptionProvider({
+          model: 'gpt-codex',
+          access,
+          fetchImplementation: async () => new Response(body, { status }),
+        }),
+        deadlineMs: 1_000,
+        connectTimeoutMs: 100,
+        idleTimeoutMs: 20,
+      })
+      const completion = provider.complete({
+        messages: [{ role: 'user', content: 'hello' }],
+      })
+      const pending = completion[Symbol.asyncIterator]().next()
+      let settled = false
+      void pending.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      const timedOut = expect(pending).rejects.toMatchObject({
+        kind: 'timeout',
+        retryable: true,
+        timeoutPhase: 'idle',
+        message: 'Provider stream idle timed out',
+      })
+
+      await vi.advanceTimersByTimeAsync(15)
+      controller.enqueue(new TextEncoder().encode(': keepalive\n\n'))
+      await vi.advanceTimersByTimeAsync(19)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await timedOut
+    },
+  )
 })

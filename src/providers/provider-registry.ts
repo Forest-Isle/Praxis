@@ -287,9 +287,14 @@ class NativeProviderRegistry implements ProviderRegistry {
   }
 
   private withDeadline(provider: ModelProvider): ModelProvider {
-    const deadlineMs = this.options.providerEnvironment?.deadlineMs
-    return deadlineMs === undefined
+    const environment = this.options.providerEnvironment
+    return environment === undefined
       ? provider
-      : new DeadlineModelProvider({ provider, deadlineMs })
+      : new DeadlineModelProvider({
+          provider,
+          deadlineMs: environment.deadlineMs,
+          connectTimeoutMs: environment.connectTimeoutMs,
+          idleTimeoutMs: environment.idleTimeoutMs,
+        })
   }
 }
