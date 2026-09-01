@@ -3,6 +3,7 @@ import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './openai-compatible.js'
 import { CodexSubscriptionProvider } from './codex-subscription.js'
 import { DeadlineModelProvider } from './deadline-provider.js'
+import { NonStreamingFallbackModelProvider } from './non-streaming-fallback-provider.js'
 import {
   CodexOAuthCredentialManager,
   type CodexOAuthVault,
@@ -236,49 +237,66 @@ class NativeProviderRegistry implements ProviderRegistry {
           'Provider authentication failed: an API key is required',
         )
       }
-      return this.withDeadline(
+      const anthropicOptions = {
+        baseUrl: target.baseUrl,
+        model: target.modelId,
+        apiKey: this.options.credential.secret,
+        ...(this.options.context?.contextWindowTokens === undefined
+          ? {}
+          : {
+              contextWindowTokens: this.options.context.contextWindowTokens,
+            }),
+        ...(this.options.anthropicThinking === undefined
+          ? {}
+          : {
+              thinking: this.options.anthropicThinking,
+            }),
+        ...(this.options.anthropicPromptCacheResolver === undefined
+          ? {}
+          : {
+              promptCaching: this.options.anthropicPromptCacheResolver({
+                baseUrl: target.baseUrl,
+                model: target.modelId,
+              }),
+            }),
+        ...(this.options.providerEnvironment?.maxOutputTokens === undefined
+          ? {}
+          : {
+              maxOutputTokens: this.options.providerEnvironment.maxOutputTokens,
+            }),
+        ...(this.options.providerEnvironment?.anthropicVersion === undefined
+          ? {}
+          : {
+              anthropicVersion:
+                this.options.providerEnvironment.anthropicVersion,
+            }),
+        ...(this.options.providerEnvironment?.webSearch === undefined
+          ? {}
+          : { webSearch: this.options.providerEnvironment.webSearch }),
+        ...(this.options.fetchImplementation === undefined
+          ? {}
+          : { fetchImplementation: this.options.fetchImplementation }),
+      }
+      const streaming = this.withDeadline(
         new AnthropicCompatibleProvider({
-          baseUrl: target.baseUrl,
-          model: target.modelId,
-          apiKey: this.options.credential.secret,
-          ...(this.options.context?.contextWindowTokens === undefined
-            ? {}
-            : {
-                contextWindowTokens: this.options.context.contextWindowTokens,
-              }),
-          ...(this.options.anthropicThinking === undefined
-            ? {}
-            : {
-                thinking: this.options.anthropicThinking,
-              }),
-          ...(this.options.anthropicPromptCacheResolver === undefined
-            ? {}
-            : {
-                promptCaching: this.options.anthropicPromptCacheResolver({
-                  baseUrl: target.baseUrl,
-                  model: target.modelId,
-                }),
-              }),
-          ...(this.options.providerEnvironment?.maxOutputTokens === undefined
-            ? {}
-            : {
-                maxOutputTokens:
-                  this.options.providerEnvironment.maxOutputTokens,
-              }),
-          ...(this.options.providerEnvironment?.anthropicVersion === undefined
-            ? {}
-            : {
-                anthropicVersion:
-                  this.options.providerEnvironment.anthropicVersion,
-              }),
-          ...(this.options.providerEnvironment?.webSearch === undefined
-            ? {}
-            : { webSearch: this.options.providerEnvironment.webSearch }),
-          ...(this.options.fetchImplementation === undefined
-            ? {}
-            : { fetchImplementation: this.options.fetchImplementation }),
+          ...anthropicOptions,
+          streaming: true,
         }),
       )
+      if (
+        this.options.providerEnvironment?.disableNonStreamingFallback === true
+      )
+        return streaming
+      const nonStreaming = this.withDeadline(
+        new AnthropicCompatibleProvider({
+          ...anthropicOptions,
+          streaming: false,
+        }),
+      )
+      return new NonStreamingFallbackModelProvider({
+        provider: streaming,
+        nonStreamingProvider: nonStreaming,
+      })
     }
     throw new ProviderRegistryError(
       'unsupported_provider',

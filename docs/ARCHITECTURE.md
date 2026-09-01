@@ -85,6 +85,17 @@ use this factory, including main sessions, fallback models, auto-mode critics,
 eval judges, scheduled work, and background agents. Provider wire payloads do
 not enter core or transcripts; unsupported capabilities fail closed.
 
+Anthropic Messages providers are composed as two ordinary `ModelProvider`
+adapters, each with its own connect, byte-idle, and absolute-total deadlines.
+The streaming attempt is buffered until terminal success. An explicitly marked
+stream transport failure or byte-idle timeout triggers at most one bounded
+non-streaming replay; partial text, thinking, usage, and tool calls from either
+failed attempt never cross the runtime commit boundary. Connect/total timeout,
+cancellation, HTTP/auth/rate-limit, prompt-too-long, and malformed-response
+errors do not trigger this replay. OpenAI-compatible and Codex providers do not
+install it. `PRAXIS_DISABLE_NONSTREAMING_FALLBACK=true` returns Anthropic to its
+single streaming attempt.
+
 The Registry's billing mode composes metering behavior: API mode receives
 pricing, cost, and budget enforcement, while subscription mode retains token
 and model usage and omits API `costUsd`, rejecting numeric USD budget and
@@ -160,10 +171,11 @@ authorized.
 
 Detached workers receive `PRAXIS_PROVIDER`, `PRAXIS_PROVIDER_PROFILE`,
 `PRAXIS_MODEL`, `PRAXIS_BASE_URL`, `PRAXIS_PROVIDER_DEADLINE_MS`,
-`PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`, and `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`
-through the sanitized environment and use the same provider resolver. The
-provider lifecycle module keeps an absolute-total clock while connect runs
-until response headers and byte-idle resets on every non-empty body chunk.
+`PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`, `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`, and
+`PRAXIS_DISABLE_NONSTREAMING_FALLBACK` through the sanitized environment and
+use the same provider resolver. The provider lifecycle module keeps an
+absolute-total clock while connect runs until response headers and byte-idle
+resets on every non-empty body chunk.
 Before spawn, the parent resolves an API-key credential through the selected
 target and passes only normalized `PRAXIS_API_KEY`; it never forwards the
 configured custom credential variable. Codex OAuth remains in the shared Vault,
@@ -192,12 +204,14 @@ read-only and are never migrated or mutated. See [RELEASE.md](RELEASE.md).
 
 Provider selection stays at the CLI composition root. `core` receives the same
 `ModelProvider` port whether the adapter serializes OpenAI Chat Completions or
-Anthropic Messages. Both adapters expose streaming text, usage, tool schemas,
-tool calls, image input, cancellation, retry classification, and explicit
-context-window capabilities without putting provider-native payloads in shared
-transcripts. Image tool results stay provider-neutral in core: Anthropic keeps
-them nested under `tool_result`, while OpenAI-compatible requests pair the tool
-result with a following user `image_url` message.
+Anthropic Messages, including the registry-owned Anthropic recovery wrapper.
+Both protocol adapters expose streaming text, usage, tool schemas, tool calls,
+image input, cancellation, retry classification, and explicit context-window
+capabilities without putting provider-native payloads in shared transcripts.
+The Anthropic full-response adapter normalizes its bounded response through the
+same event state machine as SSE. Image tool results stay provider-neutral in
+core: Anthropic keeps them nested under `tool_result`, while OpenAI-compatible
+requests pair the tool result with a following user `image_url` message.
 
 Native web search is an optional `ModelProvider` capability, not a generic HTTP
 scraper. The Anthropic adapter translates the provider-neutral search request

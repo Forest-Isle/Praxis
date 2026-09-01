@@ -13,6 +13,7 @@ import {
 } from '../core/runtime.js'
 import { transportFailureKind } from './provider-errors.js'
 import { reportProviderTransportActivity } from './provider-transport-activity.js'
+import { markNonStreamingFallbackEligible } from './non-streaming-fallback-provider.js'
 import {
   createAnthropicPromptCachePolicyResolver,
   type AnthropicPromptCachePolicy,
@@ -34,6 +35,7 @@ export interface AnthropicCompatibleProviderOptions {
   maxToolMetadataBytes?: number
   maxErrorBodyBytes?: number
   fetchImplementation?: typeof fetch
+  streaming?: boolean
 }
 
 interface PendingToolCall {
@@ -66,6 +68,22 @@ interface StreamState {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readNonNegativeTokenCount(
+  usage: Record<string, unknown>,
+  field: string,
+  required: boolean,
+): number | undefined {
+  const value = usage[field]
+  if (value === undefined && !required) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new ModelProviderError(
+      `Provider returned an invalid ${field} counter`,
+      { retryable: false },
+    )
+  }
+  return value
 }
 
 function webSearchLinks(value: unknown): { title: string; url: string }[] {
@@ -896,6 +914,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   private readonly maxErrorBodyBytes: number
   private readonly thinking: ModelThinkingConfig | undefined
   private readonly promptCaching: AnthropicCacheControl | undefined
+  private readonly streaming: boolean
 
   constructor(private readonly options: AnthropicCompatibleProviderOptions) {
     if (options.contextWindowTokens !== undefined) {
@@ -903,6 +922,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     }
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/messages`
     this.model = options.model
+    this.streaming = options.streaming ?? true
     this.fetchImplementation = options.fetchImplementation ?? fetch
     this.maxOutputTokens = positiveInteger(
       options.maxOutputTokens ??
@@ -914,7 +934,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       'Max output tokens',
     )
     this.capabilities = {
-      streaming: true,
+      streaming: this.streaming,
       usage: true,
       tools: true,
       images: true,
@@ -999,7 +1019,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         model: this.options.model,
         max_tokens: maxTokens,
         messages: serialized.messages,
-        stream: true,
+        stream: this.streaming,
         ...(thinkingPayload ? { thinking: thinkingPayload } : {}),
         ...(request.effort
           ? { output_config: { effort: request.effort } }
@@ -1115,11 +1135,174 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         status: response.status,
       })
     }
+    if (!this.streaming) {
+      if (!response.body) {
+        throw new ModelProviderError('Provider response has no body', {
+          kind: 'transport_error',
+          retryable: true,
+        })
+      }
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let size = 0
+      let ended = false
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) {
+            ended = true
+            break
+          }
+          if (value.byteLength > 0)
+            reportProviderTransportActivity(request, 'response-chunk')
+          size += value.byteLength
+          if (size > this.maxStreamBufferBytes) {
+            throw new ModelProviderError(
+              `Provider stream buffer exceeded ${this.maxStreamBufferBytes} bytes`,
+              { retryable: false },
+            )
+          }
+          if (value.byteLength > 0) chunks.push(value)
+        }
+        let payload: unknown
+        try {
+          payload = JSON.parse(
+            Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+              'utf8',
+            ),
+          )
+        } catch (error) {
+          throw new ModelProviderError('Provider returned malformed JSON', {
+            retryable: false,
+            cause: error,
+          })
+        }
+        if (
+          !isRecord(payload) ||
+          payload.type !== 'message' ||
+          payload.role !== 'assistant' ||
+          !Array.isArray(payload.content) ||
+          !isRecord(payload.usage)
+        ) {
+          throw new ModelProviderError('Provider returned an invalid message', {
+            retryable: false,
+          })
+        }
+        const state: StreamState = {
+          blocks: new Map(),
+          thinking: new Map(),
+          tools: new Map(),
+          toolCallsSeen: 0,
+          metadataBytes: 0,
+          inputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          outputTokens: 0,
+          webSearchRequests: 0,
+          usageSeen: false,
+          messageStarted: false,
+          messageDeltaSeen: false,
+          terminal: false,
+        }
+        const inputTokens = readNonNegativeTokenCount(
+          payload.usage,
+          'input_tokens',
+          true,
+        )
+        const outputTokens = readNonNegativeTokenCount(
+          payload.usage,
+          'output_tokens',
+          true,
+        )
+        const cacheReadInputTokens = readNonNegativeTokenCount(
+          payload.usage,
+          'cache_read_input_tokens',
+          false,
+        )
+        const cacheCreationInputTokens = readNonNegativeTokenCount(
+          payload.usage,
+          'cache_creation_input_tokens',
+          false,
+        )
+        const usage = {
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          ...(cacheReadInputTokens === undefined
+            ? {}
+            : { cache_read_input_tokens: cacheReadInputTokens }),
+          ...(cacheCreationInputTokens === undefined
+            ? {}
+            : { cache_creation_input_tokens: cacheCreationInputTokens }),
+          ...(payload.usage.server_tool_use === undefined
+            ? {}
+            : { server_tool_use: payload.usage.server_tool_use }),
+        }
+        const synthetic = [
+          {
+            type: 'message_start',
+            message: { usage },
+          },
+          ...payload.content.flatMap((block, index) => {
+            if (!isRecord(block) || typeof block.type !== 'string') {
+              throw new ModelProviderError(
+                'Provider returned an invalid content block',
+                { retryable: false },
+              )
+            }
+            return [
+              { type: 'content_block_start', index, content_block: block },
+              { type: 'content_block_stop', index },
+            ]
+          }),
+          {
+            type: 'message_delta',
+            delta: { stop_reason: payload.stop_reason },
+            usage: {
+              output_tokens: outputTokens,
+              ...(usage.server_tool_use === undefined
+                ? {}
+                : { server_tool_use: usage.server_tool_use }),
+            },
+          },
+          { type: 'message_stop' },
+        ]
+        for (const event of synthetic) {
+          for (const normalized of parseSseEvent(
+            JSON.stringify(event),
+            state,
+            this.maxToolArgumentsBytes,
+            this.maxToolCallsPerResponse,
+            this.maxToolMetadataBytes,
+          ))
+            yield normalized
+        }
+      } catch (error) {
+        if (error instanceof ModelProviderError) throw error
+        const kind = transportFailureKind(error, request.signal)
+        throw new ModelProviderError('Provider response failed', {
+          kind,
+          retryable: kind === 'timeout' || kind === 'transport_error',
+          cause: error,
+        })
+      } finally {
+        if (!ended) {
+          try {
+            await reader.cancel()
+          } catch {
+            // Preserve the primary provider error.
+          }
+        }
+        reader.releaseLock()
+      }
+      return
+    }
     if (!response.body) {
-      throw new ModelProviderError('Provider response has no body', {
-        kind: 'transport_error',
-        retryable: true,
-      })
+      throw markNonStreamingFallbackEligible(
+        new ModelProviderError('Provider response has no body', {
+          kind: 'transport_error',
+          retryable: true,
+        }),
+      )
     }
 
     const reader = response.body.getReader()
@@ -1187,19 +1370,24 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         }
       }
       if (!state.terminal) {
-        throw new ModelProviderError(
-          'Provider stream ended before a terminal event',
-          { retryable: true },
+        throw markNonStreamingFallbackEligible(
+          new ModelProviderError(
+            'Provider stream ended before a terminal event',
+            { retryable: true },
+          ),
         )
       }
     } catch (error) {
       if (error instanceof ModelProviderError) throw error
       const kind = transportFailureKind(error, request.signal)
-      throw new ModelProviderError('Provider stream failed', {
+      const streamError = new ModelProviderError('Provider stream failed', {
         kind,
         retryable: kind === 'timeout' || kind === 'transport_error',
         cause: error,
       })
+      throw kind === 'timeout' || kind === 'transport_error'
+        ? markNonStreamingFallbackEligible(streamError)
+        : streamError
     } finally {
       if (!streamEnded) {
         try {

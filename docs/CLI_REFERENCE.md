@@ -266,30 +266,31 @@ sessions use `--provider-profile`.
 
 ## Provider environment
 
-| Variable                             | Required           | Meaning                                                                             |
-| ------------------------------------ | ------------------ | ----------------------------------------------------------------------------------- |
-| `PRAXIS_API_KEY`                     | No                 | Legacy highest-priority API secret override (never used by Codex).                  |
-| `PRAXIS_MODEL`                       | Yes for model runs | Provider model identifier.                                                          |
-| `PRAXIS_PROVIDER`                    | No                 | Provider ID: `openai`, `anthropic`, `openai-codex`, or custom.                      |
-| `PRAXIS_PROVIDER_PROFILE`            | No                 | Named provider profile.                                                             |
-| `PRAXIS_BASE_URL`                    | No                 | Provider base URL; defaults by selected provider.                                   |
-| `PRAXIS_PROVIDER_DEADLINE_MS`        | No                 | Positive integer absolute-total timeout per provider attempt; defaults to 90000.    |
-| `PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS` | No                 | Positive integer timeout until provider response headers; defaults to 90000.        |
-| `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`    | No                 | Positive integer timeout between non-empty response-body chunks; defaults to 90000. |
-| `PRAXIS_MAX_OUTPUT_TOKENS`           | No                 | Positive Anthropic-only output-token limit.                                         |
-| `PRAXIS_ANTHROPIC_VERSION`           | No                 | Non-empty Anthropic API version override.                                           |
-| `PRAXIS_ANTHROPIC_WEB_SEARCH`        | No                 | `true` or `false`; enables provider-native Anthropic WebSearch capability.          |
-| `PRAXIS_ANTHROPIC_PROMPT_CACHING`    | No                 | `true` or `false`; explicitly enables or disables Anthropic prompt caching.         |
-| `PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL`  | No                 | `5m` or `1h`; declares endpoint/model support and enables that cache TTL.           |
-| `PRAXIS_CONTEXT_WINDOW_TOKENS`       | No                 | Positive explicit provider context window.                                          |
-| `PRAXIS_CONTEXT_RESERVE_TOKENS`      | No                 | Positive reserve; requires an explicit context window.                              |
-| `PRAXIS_PRICING_JSON`                | No                 | JSON model-pricing overrides used for measured cost and budget enforcement.         |
-| `PRAXIS_HOME`                        | No                 | Native Praxis root; defaults to `~/.praxis`.                                        |
-| `PRAXIS_PROVIDER_CREDENTIAL_STORE`   | No                 | `file` explicitly selects the native file Vault.                                    |
-| `PRAXIS_DISABLE_AUTO_MEMORY`         | No                 | `1` or `true`; disables every native Project-memory capability.                     |
-| `PRAXIS_PROJECT_MEMORY_EXTRACTION`   | No                 | `1` or `true`; enables isolated background Project-memory extraction.               |
-| `PRAXIS_PROJECT_MEMORY_RECALL`       | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.                |
-| `PRAXIS_ENABLE_TEAMS`                | No                 | `true`; explicitly enables experimental local Team commands and tools.              |
+| Variable                               | Required           | Meaning                                                                             |
+| -------------------------------------- | ------------------ | ----------------------------------------------------------------------------------- |
+| `PRAXIS_API_KEY`                       | No                 | Legacy highest-priority API secret override (never used by Codex).                  |
+| `PRAXIS_MODEL`                         | Yes for model runs | Provider model identifier.                                                          |
+| `PRAXIS_PROVIDER`                      | No                 | Provider ID: `openai`, `anthropic`, `openai-codex`, or custom.                      |
+| `PRAXIS_PROVIDER_PROFILE`              | No                 | Named provider profile.                                                             |
+| `PRAXIS_BASE_URL`                      | No                 | Provider base URL; defaults by selected provider.                                   |
+| `PRAXIS_PROVIDER_DEADLINE_MS`          | No                 | Positive integer absolute-total timeout per provider attempt; defaults to 90000.    |
+| `PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`   | No                 | Positive integer timeout until provider response headers; defaults to 90000.        |
+| `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`      | No                 | Positive integer timeout between non-empty response-body chunks; defaults to 90000. |
+| `PRAXIS_DISABLE_NONSTREAMING_FALLBACK` | No                 | `true` or `false`; disables the default Anthropic non-streaming recovery replay.    |
+| `PRAXIS_MAX_OUTPUT_TOKENS`             | No                 | Positive Anthropic-only output-token limit.                                         |
+| `PRAXIS_ANTHROPIC_VERSION`             | No                 | Non-empty Anthropic API version override.                                           |
+| `PRAXIS_ANTHROPIC_WEB_SEARCH`          | No                 | `true` or `false`; enables provider-native Anthropic WebSearch capability.          |
+| `PRAXIS_ANTHROPIC_PROMPT_CACHING`      | No                 | `true` or `false`; explicitly enables or disables Anthropic prompt caching.         |
+| `PRAXIS_ANTHROPIC_PROMPT_CACHE_TTL`    | No                 | `5m` or `1h`; declares endpoint/model support and enables that cache TTL.           |
+| `PRAXIS_CONTEXT_WINDOW_TOKENS`         | No                 | Positive explicit provider context window.                                          |
+| `PRAXIS_CONTEXT_RESERVE_TOKENS`        | No                 | Positive reserve; requires an explicit context window.                              |
+| `PRAXIS_PRICING_JSON`                  | No                 | JSON model-pricing overrides used for measured cost and budget enforcement.         |
+| `PRAXIS_HOME`                          | No                 | Native Praxis root; defaults to `~/.praxis`.                                        |
+| `PRAXIS_PROVIDER_CREDENTIAL_STORE`     | No                 | `file` explicitly selects the native file Vault.                                    |
+| `PRAXIS_DISABLE_AUTO_MEMORY`           | No                 | `1` or `true`; disables every native Project-memory capability.                     |
+| `PRAXIS_PROJECT_MEMORY_EXTRACTION`     | No                 | `1` or `true`; enables isolated background Project-memory extraction.               |
+| `PRAXIS_PROJECT_MEMORY_RECALL`         | No                 | `1` or `true`; enables non-blocking selective Project-memory recall.                |
+| `PRAXIS_ENABLE_TEAMS`                  | No                 | `true`; explicitly enables experimental local Team commands and tools.              |
 
 The default base URLs are `https://api.openai.com/v1` for `openai` and
 `https://api.anthropic.com/v1` for `anthropic`. `openai-codex` always uses
@@ -311,11 +312,12 @@ pricing does not apply. Numeric USD budgets and plugin-eval paid LLM judges
 fail before inference because numeric API-billed cost is unavailable. Detached
 background agents inherit `PRAXIS_PROVIDER`, `PRAXIS_PROVIDER_PROFILE`,
 `PRAXIS_MODEL`, `PRAXIS_BASE_URL`, `PRAXIS_PROVIDER_DEADLINE_MS`,
-`PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`, and `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`
-through the sanitized environment. The parent resolves the selected API-key
-credential and passes only a normalized `PRAXIS_API_KEY`; configured custom
-environment names and unrelated secrets are not inherited. Codex workers
-reopen the same Vault instead of receiving an OAuth token, and
+`PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS`, `PRAXIS_PROVIDER_IDLE_TIMEOUT_MS`, and
+`PRAXIS_DISABLE_NONSTREAMING_FALLBACK` through the sanitized environment. The
+parent resolves the selected API-key credential and passes only a normalized
+`PRAXIS_API_KEY`; configured custom environment names and unrelated secrets are
+not inherited. Codex workers reopen the same Vault instead of receiving an
+OAuth token, and
 `PRAXIS_PROVIDER_CREDENTIAL_STORE` is preserved so parent and worker select the
 same storage backend.
 
@@ -327,6 +329,16 @@ it pauses while the async-iterator consumer holds an event. Total remains
 absolute across the complete attempt. Set the three timeout variables to
 positive integer millisecond values to override their independent 90-second
 defaults.
+
+Anthropic Messages uses one default-on recovery replay after an explicitly
+eligible streaming transport failure or byte-idle timeout. The first attempt is
+fully buffered; only a terminally complete streaming response or terminally
+complete bounded non-streaming response is exposed, so partial text, thinking,
+usage, and tool calls cannot commit twice. Connect/total timeout, cancellation,
+HTTP/auth/rate-limit, prompt-too-long, malformed response, OpenAI-compatible,
+and Codex paths do not activate this replay. Set
+`PRAXIS_DISABLE_NONSTREAMING_FALLBACK=true` to use only the original Anthropic
+streaming attempt. Each attempt still receives independent clocks.
 
 Prompt caching defaults to five minutes on the official Anthropic endpoint and
 to disabled on compatible gateways. Configure it with the native

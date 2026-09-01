@@ -14,6 +14,7 @@ export interface ProviderEnvironment {
   maxOutputTokens?: number
   anthropicVersion?: string
   webSearch?: boolean
+  disableNonStreamingFallback: boolean
 }
 
 export interface ContextEnvironment {
@@ -93,6 +94,16 @@ export function parseProviderEnvironment(
   ) {
     throw new Error('PRAXIS_ANTHROPIC_WEB_SEARCH must be true or false')
   }
+  const disableFallback = environment.PRAXIS_DISABLE_NONSTREAMING_FALLBACK
+  if (
+    disableFallback !== undefined &&
+    disableFallback !== 'true' &&
+    disableFallback !== 'false'
+  ) {
+    throw new Error(
+      'PRAXIS_DISABLE_NONSTREAMING_FALLBACK must be true or false',
+    )
+  }
   if (provider === 'openai' && webSearch !== undefined) {
     throw new Error(
       'PRAXIS_ANTHROPIC_WEB_SEARCH requires PRAXIS_PROVIDER=anthropic',
@@ -124,6 +135,7 @@ export function parseProviderEnvironment(
       : { maxOutputTokens: Number(maxOutputTokens) }),
     ...(anthropicVersion === undefined ? {} : { anthropicVersion }),
     ...(webSearch === undefined ? {} : { webSearch: webSearch === 'true' }),
+    disableNonStreamingFallback: disableFallback === 'true',
   }
 }
 

@@ -527,16 +527,25 @@
       "seam": "FallbackModelProvider",
       "contract": "Provider fallback is allowed only before output and usage cross the commit boundary.",
       "status": "qualified",
-      "modules": ["src/providers/fallback-provider.ts"],
+      "modules": [
+        "src/providers/fallback-provider.ts",
+        "src/providers/non-streaming-fallback-provider.ts"
+      ],
       "outcomes": [
         "Partial failed-attempt output is discarded.",
-        "Successful content and usage commit exactly once."
+        "Successful content and usage commit exactly once.",
+        "Eligible streaming failures replay once through non-streaming without duplicate tool effects."
       ],
       "evidence": [
         {
           "kind": "vitest",
           "file": "src/providers/fallback-provider.test.ts",
           "testName": "FallbackModelProvider > commits successful content and usage once after discarding a partial attempt"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/providers/non-streaming-fallback-provider.test.ts",
+          "testName": "NonStreamingFallbackModelProvider > commits only fallback text usage and tool effects in AgentRuntime"
         }
       ]
     },

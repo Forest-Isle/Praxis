@@ -1,8 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { ModelToolDefinition } from '../core/runtime.js'
+import {
+  ModelProviderError,
+  type ModelToolDefinition,
+} from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 import { DeadlineModelProvider } from './deadline-provider.js'
+import { NonStreamingFallbackModelProvider } from './non-streaming-fallback-provider.js'
 
 const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
   events.filter((event) => event.type !== 'terminal')
@@ -22,6 +26,325 @@ const withoutCacheMetadata = (value: unknown): unknown => {
 }
 
 describe('AnthropicCompatibleProvider', () => {
+  it('normalizes a bounded non-streaming full response through the SSE state machine', async () => {
+    let body: Record<string, unknown> | undefined
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      streaming: false,
+      fetchImplementation: async (_input, init) => {
+        body = JSON.parse(String(init?.body))
+        return new Response(
+          JSON.stringify({
+            type: 'message',
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'reason', signature: 'sig' },
+              { type: 'text', text: 'answer' },
+              {
+                type: 'web_search_tool_result',
+                content: [
+                  {
+                    type: 'web_search_result',
+                    title: 'Docs',
+                    url: 'https://docs.example',
+                  },
+                ],
+              },
+              {
+                type: 'tool_use',
+                id: 'call',
+                name: 'Read',
+                input: { path: 'x' },
+              },
+            ],
+            stop_reason: 'tool_use',
+            usage: {
+              input_tokens: 2,
+              output_tokens: 3,
+              cache_read_input_tokens: 4,
+              cache_creation_input_tokens: 5,
+              server_tool_use: { web_search_requests: 1 },
+            },
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        )
+      },
+    })
+    const events = []
+    for await (const event of provider.complete({ messages: [] }))
+      events.push(event)
+    expect(body?.stream).toBe(false)
+    expect(events).toEqual([
+      {
+        type: 'thinking-start',
+        block: { type: 'thinking', thinking: 'reason' },
+      },
+      {
+        type: 'thinking-stop',
+        block: { type: 'thinking', thinking: 'reason', signature: 'sig' },
+      },
+      { type: 'text-delta', delta: 'answer' },
+      {
+        type: 'text-delta',
+        delta: 'Links: [{"title":"Docs","url":"https://docs.example"}]\n\n',
+      },
+      {
+        type: 'tool-call',
+        call: { id: 'call', name: 'Read', input: { path: 'x' } },
+      },
+      {
+        type: 'usage',
+        usage: {
+          inputTokens: 11,
+          outputTokens: 3,
+          cacheReadInputTokens: 4,
+          cacheCreationInputTokens: 5,
+          webSearchRequests: 1,
+        },
+      },
+      { type: 'terminal', reason: 'tool_use' },
+    ])
+  })
+
+  it('rejects malformed non-streaming envelopes without fabricating usage', async () => {
+    for (const payload of [
+      { content: [{ type: 'text', text: 'x' }] },
+      {
+        type: 'message',
+        role: 'user',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [],
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        content: [{}],
+      },
+    ]) {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.com/v1',
+        apiKey: 'secret',
+        model: 'claude-sonnet-4-20250514',
+        streaming: false,
+        fetchImplementation: async () => new Response(JSON.stringify(payload)),
+      })
+      const consume = async () => {
+        for await (const event of provider.complete({ messages: [] }))
+          void event
+      }
+      await expect(consume()).rejects.toBeInstanceOf(ModelProviderError)
+      await expect(consume()).rejects.toMatchObject({ retryable: false })
+    }
+  })
+
+  it.each([
+    ['missing input tokens', { output_tokens: 1 }],
+    ['missing output tokens', { input_tokens: 1 }],
+    ['negative input tokens', { input_tokens: -1, output_tokens: 1 }],
+    ['fractional output tokens', { input_tokens: 1, output_tokens: 1.5 }],
+    [
+      'unsafe cache tokens',
+      {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_read_input_tokens: Number.MAX_SAFE_INTEGER + 1,
+      },
+    ],
+  ])('rejects %s in a non-streaming response', async (_name, usage) => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      streaming: false,
+      fetchImplementation: async () =>
+        Response.json({
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          stop_reason: 'end_turn',
+          usage,
+        }),
+    })
+    const consume = async () => {
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+
+    await expect(consume()).rejects.toMatchObject({ retryable: false })
+  })
+
+  it('rejects malformed and oversized non-streaming response bodies', async () => {
+    const malformed = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      streaming: false,
+      fetchImplementation: async () => new Response('{'),
+    })
+    const oversized = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      streaming: false,
+      maxStreamBufferBytes: 16,
+      fetchImplementation: async () =>
+        Response.json({
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+    })
+    const consume = async (provider: AnthropicCompatibleProvider) => {
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+
+    await expect(consume(malformed)).rejects.toThrow(
+      'Provider returned malformed JSON',
+    )
+    await expect(consume(oversized)).rejects.toThrow(
+      'Provider stream buffer exceeded 16 bytes',
+    )
+  })
+
+  it('reuses tool, thinking, and terminal invariants for non-streaming responses', async () => {
+    const cases: Array<{
+      options: {
+        maxToolArgumentsBytes?: number
+        maxToolCallsPerResponse?: number
+        maxToolMetadataBytes?: number
+      }
+      content: unknown[]
+      stopReason: unknown
+      error: string
+    }> = [
+      {
+        options: { maxToolCallsPerResponse: 1 },
+        content: [
+          { type: 'tool_use', id: 'one', name: 'Read', input: {} },
+          { type: 'tool_use', id: 'two', name: 'Read', input: {} },
+        ],
+        stopReason: 'tool_use',
+        error: 'Provider exceeded 1 tool calls',
+      },
+      {
+        options: { maxToolArgumentsBytes: 2 },
+        content: [
+          {
+            type: 'tool_use',
+            id: 'one',
+            name: 'Read',
+            input: { path: 'large' },
+          },
+        ],
+        stopReason: 'tool_use',
+        error: 'Provider tool arguments exceeded 2 bytes',
+      },
+      {
+        options: { maxToolMetadataBytes: 1 },
+        content: [{ type: 'tool_use', id: 'one', name: 'Read', input: {} }],
+        stopReason: 'tool_use',
+        error: 'Provider tool metadata exceeded 1 bytes',
+      },
+      {
+        options: {},
+        content: [{ type: 'thinking', thinking: 'reason' }],
+        stopReason: 'end_turn',
+        error: 'Provider returned incomplete thinking block 0',
+      },
+      {
+        options: {},
+        content: [],
+        stopReason: 'unexpected',
+        error: 'Provider returned unsupported stop reason unexpected',
+      },
+    ]
+
+    for (const testCase of cases) {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.com/v1',
+        apiKey: 'secret',
+        model: 'claude-sonnet-4-20250514',
+        streaming: false,
+        ...testCase.options,
+        fetchImplementation: async () =>
+          Response.json({
+            type: 'message',
+            role: 'assistant',
+            content: testCase.content,
+            stop_reason: testCase.stopReason,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+      })
+      const consume = async () => {
+        for await (const event of provider.complete({ messages: [] }))
+          void event
+      }
+
+      await expect(consume()).rejects.toThrow(testCase.error)
+    }
+  })
+
+  it('discards a truncated stream before replaying one non-streaming response', async () => {
+    const requestBodies: Array<Record<string, unknown>> = []
+    const fetchImplementation = vi.fn(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      requestBodies.push(body)
+      if (body.stream === true) {
+        return new Response(
+          'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+            'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"partial"}}\n\n',
+        )
+      }
+      return Response.json({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'complete' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 2, output_tokens: 3 },
+      })
+    })
+    const common = {
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      fetchImplementation,
+    }
+    const provider = new NonStreamingFallbackModelProvider({
+      provider: new AnthropicCompatibleProvider({
+        ...common,
+        streaming: true,
+      }),
+      nonStreamingProvider: new AnthropicCompatibleProvider({
+        ...common,
+        streaming: false,
+      }),
+    })
+    const events = []
+    for await (const event of provider.complete({ messages: [] }))
+      events.push(event)
+
+    expect(requestBodies.map((body) => body.stream)).toEqual([true, false])
+    expect(events).toEqual([
+      {
+        type: 'api-retry',
+        attempt: 1,
+        maxRetries: 1,
+        retryDelayMs: 0,
+        errorStatus: null,
+        error: 'unknown',
+      },
+      { type: 'text-delta', delta: 'complete' },
+      { type: 'usage', usage: { inputTokens: 2, outputTokens: 3 } },
+      { type: 'terminal', reason: 'end_turn' },
+    ])
+    expect(JSON.stringify(events)).not.toContain('partial')
+    expect(fetchImplementation).toHaveBeenCalledTimes(2)
+  })
+
   it('renders official Anthropic cache breakpoints at stable prompt boundaries', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new AnthropicCompatibleProvider({
