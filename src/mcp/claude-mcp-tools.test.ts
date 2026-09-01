@@ -4,6 +4,7 @@ import {
   readdir,
   realpath,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -1302,6 +1303,138 @@ process.stdin.on('data', chunk => {
         ),
       ).rejects.toThrow(
         'MCP binary tool result output directory is unavailable',
+      )
+    } finally {
+      await registry.close()
+    }
+  })
+
+  it('externalizes oversized text-only MCP results with redaction and byte boundaries', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-large-text-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'large-text-server.mjs')
+    const resultDirectory = join(root, 'tool-results')
+    const secret = 'large-text-secret-canary'
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'large-text-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'large', inputSchema: { type: 'object' } }, { name: 'boundary', inputSchema: { type: 'object' } }, { name: 'over-boundary', inputSchema: { type: 'object' } }, { name: 'missing-directory', inputSchema: { type: 'object' } }] }
+        : request.params.name === 'large'
+          ? { content: [{ type: 'text', text: 'large-marker-' + '${'x'.repeat(5 * 1024 * 1024 - 56)}' + '${secret}' }] , isError: true }
+          : request.params.name === 'boundary'
+            ? { content: [{ type: 'text', text: 'x'.repeat(100000) }] }
+            : request.params.name === 'over-boundary'
+              ? { content: [{ type: 'text', text: 'x'.repeat(100001) }] }
+              : { content: [{ type: 'text', text: 'x'.repeat(100001) }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/fixture.json',
+          scope: 'local',
+          value: {
+            mcpServers: {
+              fixture: {
+                command: process.execPath,
+                args: [serverScript],
+                env: { FIXTURE_SECRET: secret },
+              },
+            },
+          },
+        },
+      ],
+    })
+    try {
+      const large = await registry.execute(
+        { id: 'large', name: 'mcp__fixture__large', input: {} },
+        { cwd: root, toolResultDirectory: resultDirectory },
+      )
+      expect(large.isError).toBe(true)
+      expect(large.contentBlocks).toHaveLength(1)
+      expect(large.content).toMatch(
+        /^\[MCP tool result from fixture\] Text content \(5242847 bytes\) saved to .*\.txt$/u,
+      )
+      expect(large.content).not.toContain('large-marker')
+      expect(large.content).not.toContain(secret)
+      expect(large.contentBlocks?.[0]).toEqual({
+        type: 'text',
+        text: large.content,
+      })
+      const largePath = large.content.slice(
+        large.content.indexOf(' saved to ') + 10,
+      )
+      expect((await stat(largePath)).mode & 0o777).toBe(0o600)
+      expect(await readFile(largePath, 'utf8')).toBe(
+        `large-marker-${'x'.repeat(5 * 1024 * 1024 - 56)}[REDACTED]`,
+      )
+      expect(await readdir(resultDirectory)).toEqual([
+        largePath.slice(largePath.lastIndexOf('/') + 1),
+      ])
+
+      const boundary = await registry.execute(
+        { id: 'boundary', name: 'mcp__fixture__boundary', input: {} },
+        { cwd: root, toolResultDirectory: resultDirectory },
+      )
+      expect(boundary.content).toBe('x'.repeat(100000))
+      expect(boundary.contentBlocks).toEqual([
+        { type: 'text', text: 'x'.repeat(100000) },
+      ])
+
+      const overBoundary = await registry.execute(
+        {
+          id: 'over-boundary',
+          name: 'mcp__fixture__over-boundary',
+          input: {},
+        },
+        { cwd: root, toolResultDirectory: 'tool-results' },
+      )
+      expect(overBoundary.content).toMatch(
+        /^\[MCP tool result from fixture\] Text content \(100001 bytes\) saved to .*\.txt$/u,
+      )
+      const overBoundaryPath = overBoundary.content.slice(
+        overBoundary.content.indexOf(' saved to ') + 10,
+      )
+      expect(overBoundaryPath).toMatch(
+        new RegExp(`^${root}/tool-results/mcp-fixture-blob-.*\\.txt$`, 'u'),
+      )
+      expect((await readFile(overBoundaryPath)).byteLength).toBe(100001)
+
+      const filesBeforeMissingDirectory = await readdir(resultDirectory)
+      await expect(
+        registry.execute(
+          {
+            id: 'missing-directory',
+            name: 'mcp__fixture__missing-directory',
+            input: {},
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow(
+        'MCP large text tool result output directory is unavailable',
+      )
+      expect(await readdir(resultDirectory)).toEqual(
+        filesBeforeMissingDirectory,
       )
     } finally {
       await registry.close()
