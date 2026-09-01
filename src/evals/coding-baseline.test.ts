@@ -17,6 +17,7 @@ import type {
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import { executeProjectEvalCommand } from './project-eval.js'
+import { malformedModelToolCall } from '../core/runtime.js'
 
 const FIXTURE_ROOT = join(process.cwd(), 'test/fixtures/project-evals')
 const FIXTURE_FILES = [
@@ -269,14 +270,7 @@ function scriptedProvider(
         if (turn === 2) {
           yield {
             type: 'tool-call',
-            call: {
-              id: 'bad-edit',
-              name: 'Edit',
-              input: {
-                file_path: join(options.cwd, 'target.txt'),
-                old_string: 'broken',
-              },
-            },
+            call: malformedModelToolCall('bad-edit', 'Edit'),
           }
           yield { type: 'usage', usage }
           yield { type: 'terminal', reason: 'tool_use' }

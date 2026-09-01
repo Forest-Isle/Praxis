@@ -9,6 +9,7 @@ import {
   type ModelThinkingConfig,
   type ModelToolCall,
   type ProviderErrorKind,
+  malformedModelToolCall,
 } from '../core/runtime.js'
 import {
   CodexOAuthError,
@@ -760,7 +761,12 @@ function parseEvent(
     try {
       parsed = JSON.parse(call.arguments || '{}')
     } catch {
-      throw invalid('Codex provider returned malformed function arguments')
+      if (!id || !name)
+        throw invalid('Codex provider returned an invalid tool call')
+      call.emitted = true
+      state.toolCallEmitted = true
+      events.push({ type: 'tool-call', call: malformedModelToolCall(id, name) })
+      return events
     }
     if (!isRecord(parsed))
       throw invalid('Codex provider returned non-object function arguments')

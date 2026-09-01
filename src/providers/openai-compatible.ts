@@ -8,6 +8,7 @@ import {
   type ModelThinkingConfig,
   type ModelToolCall,
   type ProviderErrorKind,
+  malformedModelToolCall,
 } from '../core/runtime.js'
 import { transportFailureKind } from './provider-errors.js'
 
@@ -109,11 +110,19 @@ function completedToolCallEvents(
       let input: unknown
       try {
         input = JSON.parse(call.arguments || '{}')
-      } catch (error) {
-        throw new ModelProviderError(
-          `Provider returned malformed tool arguments for ${call.name}`,
-          { retryable: false, cause: error },
-        )
+      } catch {
+        if (!call.id || !call.name) {
+          throw new ModelProviderError(
+            'Provider returned an invalid tool call',
+            {
+              retryable: false,
+            },
+          )
+        }
+        return {
+          type: 'tool-call',
+          call: malformedModelToolCall(call.id, call.name),
+        }
       }
       if (!isRecord(input) || !call.id || !call.name) {
         throw new ModelProviderError('Provider returned an invalid tool call', {

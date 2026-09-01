@@ -30,7 +30,11 @@ import type {
   ContextSnapshot,
 } from '../core/context.js'
 import { assembleContextSnapshot } from '../core/prompt-composer.js'
-import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
+import {
+  AgentRunCancelledError,
+  MALFORMED_TOOL_INPUT_MESSAGE,
+  ModelProviderError,
+} from '../core/runtime.js'
 import { ModelPricingRegistry } from '../core/usage.js'
 import {
   ClaudeConditionalRuleResolver,
@@ -1280,6 +1284,214 @@ describe('ClaudeSessionService', () => {
     )
     await expect(service.interruption(sessionId)).resolves.toEqual({
       kind: 'complete',
+    })
+    await service.close()
+  })
+
+  it('recovers canonical malformed native input without execution and rejects mixed recovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-malformed-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = 'c5c5c5c5-c5c5-45c5-85c5-c5c5c5c5c5c5'
+    const sessionFile = nativeSessionFile(configRoot, cwd, sessionId)
+    await mkdir(dirname(sessionFile), { recursive: true })
+    const call: ModelToolCall = {
+      id: 'malformed-recovery-call',
+      name: 'Edit',
+      input: {},
+      inputError: {
+        kind: 'malformed_json',
+        message: MALFORMED_TOOL_INPUT_MESSAGE,
+      },
+    }
+    await writeFile(
+      sessionFile,
+      [
+        nativeTranscriptLine(
+          nativeMessageEvent({
+            sessionId,
+            id: 'c6c6c6c6-c6c6-46c6-86c6-c6c6c6c6c6c6',
+            parentId: null,
+            role: 'user',
+            content: 'start malformed recovery',
+          }),
+        ),
+        nativeTranscriptLine({
+          kind: 'messages',
+          id: 'c7c7c7c7-c7c7-47c7-87c7-c7c7c7c7c7c7',
+          parentId: 'c6c6c6c6-c6c6-46c6-86c6-c6c6c6c6c6c6',
+          sessionId,
+          timestamp: '2026-08-23T00:00:01.000Z',
+          messages: [{ role: 'assistant', content: '', toolCalls: [call] }],
+        }),
+      ].join(''),
+    )
+
+    let schedulingPolicies = 0
+    let preparations = 0
+    let permissionResolutions = 0
+    let executions = 0
+    let providerCalls = 0
+    const requests: ModelRequest[] = []
+    const runtimeEvents: RuntimeEvent[] = []
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      autoCompact: false,
+      eventSink: (event) => runtimeEvents.push(event),
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          providerCalls += 1
+          requests.push(request)
+          const durableEvents = await readNativeEvents(sessionFile)
+          expect(
+            durableEvents.filter(
+              (event) =>
+                event.kind === 'tool-execution-started' &&
+                event.callId === call.id,
+            ),
+          ).toHaveLength(1)
+          expect(
+            nativeMessages(durableEvents).filter(
+              (message) =>
+                message.role === 'tool' && message.toolCallId === call.id,
+            ),
+          ).toEqual([
+            {
+              role: 'tool',
+              toolCallId: call.id,
+              content: MALFORMED_TOOL_INPUT_MESSAGE,
+              isError: true,
+            },
+          ])
+          yield { type: 'text-delta', delta: 'continued safely' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 1, outputTokens: 1 },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [],
+        schedulingPolicy: () => {
+          schedulingPolicies += 1
+          return { concurrency: 'exclusive' }
+        },
+        async prepare(prepared) {
+          preparations += 1
+          return prepared
+        },
+        async execute() {
+          executions += 1
+          return { content: 'must not execute', isError: false }
+        },
+      },
+      permissions: {
+        resolve: () => {
+          permissionResolutions += 1
+          return { behavior: 'allow' }
+        },
+      },
+    })
+
+    await expect(
+      service.resume(sessionId, 'continue after malformed input'),
+    ).resolves.toMatchObject({ text: 'continued safely' })
+    expect(providerCalls).toBe(1)
+    expect({
+      schedulingPolicies,
+      preparations,
+      permissionResolutions,
+      executions,
+    }).toEqual({
+      schedulingPolicies: 0,
+      preparations: 0,
+      permissionResolutions: 0,
+      executions: 0,
+    })
+    const requestMessages = requests[0]?.messages ?? []
+    expect(
+      requestMessages.filter(
+        (message) =>
+          message.role === 'assistant' &&
+          message.toolCalls?.some((candidate) => candidate.id === call.id),
+      ),
+    ).toHaveLength(1)
+    expect(
+      requestMessages.filter(
+        (message) => message.role === 'tool' && message.toolCallId === call.id,
+      ),
+    ).toEqual([
+      {
+        role: 'tool',
+        toolCallId: call.id,
+        content: MALFORMED_TOOL_INPUT_MESSAGE,
+        isError: true,
+      },
+    ])
+    expect(runtimeEvents.some((event) => event.type === 'failed')).toBe(false)
+    const durableEvents = await readNativeEvents(sessionFile)
+    expect(
+      durableEvents.filter(
+        (event) =>
+          event.kind === 'tool-execution-started' && event.callId === call.id,
+      ),
+    ).toHaveLength(1)
+    expect(
+      nativeMessages(durableEvents).filter(
+        (message) => message.role === 'tool' && message.toolCallId === call.id,
+      ),
+    ).toHaveLength(1)
+    await expect(service.interruption(sessionId)).resolves.toEqual({
+      kind: 'complete',
+    })
+
+    const mixedSessionId = 'd5d5d5d5-d5d5-45d5-85d5-d5d5d5d5d5d5'
+    const mixedSessionFile = nativeSessionFile(configRoot, cwd, mixedSessionId)
+    await mkdir(dirname(mixedSessionFile), { recursive: true })
+    const mixedSource = [
+      nativeTranscriptLine(
+        nativeMessageEvent({
+          sessionId: mixedSessionId,
+          id: 'd6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6',
+          parentId: null,
+          role: 'user',
+          content: 'mixed recovery must wait',
+        }),
+      ),
+      nativeTranscriptLine({
+        kind: 'messages',
+        id: 'd7d7d7d7-d7d7-47d7-87d7-d7d7d7d7d7d7',
+        parentId: 'd6d6d6d6-d6d6-46d6-86d6-d6d6d6d6d6d6',
+        sessionId: mixedSessionId,
+        timestamp: '2026-08-23T00:00:01.000Z',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              { ...call, id: 'mixed-malformed-call' },
+              { id: 'mixed-valid-call', name: 'Read', input: {} },
+            ],
+          },
+        ],
+      }),
+    ].join('')
+    await writeFile(mixedSessionFile, mixedSource)
+    await expect(
+      service.resume(mixedSessionId, 'do not partially recover'),
+    ).rejects.toThrow(/requires explicit recovery approval/u)
+    expect(await readFile(mixedSessionFile, 'utf8')).toBe(mixedSource)
+    expect(providerCalls).toBe(1)
+    expect({ preparations, permissionResolutions, executions }).toEqual({
+      preparations: 0,
+      permissionResolutions: 0,
+      executions: 0,
     })
     await service.close()
   })

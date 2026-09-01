@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AgentRunCancelledError,
   AgentRuntime,
+  malformedModelToolCall,
   annotateAutoModePermissionOutcome,
   annotatePermissionDecision,
   ModelProviderError,
@@ -3125,6 +3126,188 @@ describe('AgentRuntime', () => {
     })
     expect(events.some((event) => event.type === 'tool-call')).toBe(false)
     expect(events.some((event) => event.type === 'tool-result')).toBe(false)
+  })
+
+  it('settles malformed tool input without crossing tool or permission interfaces', async () => {
+    let turn = 0
+    let schedulingPolicies = 0
+    let prepares = 0
+    let executes = 0
+    let resolves = 0
+    let approvals = 0
+    let started = 0
+    const requests: ModelRequest[] = []
+    const events: RuntimeEvent[] = []
+    const persistenceOrder: string[] = []
+    const results: ToolExecutionResult[] = []
+    const runtime = new AgentRuntime(
+      providerFrom(async function* (request) {
+        requests.push(request)
+        turn += 1
+        if (turn === 1) {
+          yield {
+            type: 'tool-call',
+            call: malformedModelToolCall('bad', 'Edit'),
+          }
+          yield { type: 'terminal', reason: 'tool_use' }
+        } else yield { type: 'text-delta', delta: 'recovered' }
+      }),
+      (event) => events.push(event),
+      {
+        tools: {
+          definitions: () => [],
+          schedulingPolicy: () => {
+            schedulingPolicies += 1
+            return { concurrency: 'exclusive' }
+          },
+          async prepare(call) {
+            prepares += 1
+            return call
+          },
+          async execute() {
+            executes += 1
+            return { content: 'executed', isError: false }
+          },
+        },
+        permissions: {
+          resolve: () => {
+            resolves += 1
+            return { behavior: 'allow' }
+          },
+        },
+      },
+    )
+    const result = await runtime.run({
+      messages: [{ role: 'user', content: 'fix' }],
+      approveTool: async () => {
+        approvals += 1
+        return true
+      },
+      observer: {
+        async assistantCompleted(message) {
+          persistenceOrder.push(
+            message.toolCalls?.[0]?.id ?? 'assistant-without-tool',
+          )
+        },
+        async toolCompleted(call, value) {
+          persistenceOrder.push(`result:${call.id}`)
+          results.push(value)
+        },
+        async toolExecutionStarted() {
+          started += 1
+        },
+      },
+    })
+    expect(result.text).toBe('recovered')
+    expect(results).toEqual([
+      { content: 'Malformed tool input', isError: true },
+    ])
+    expect(persistenceOrder).toEqual([
+      'bad',
+      'result:bad',
+      'assistant-without-tool',
+    ])
+    expect(
+      requests[1]?.messages.filter(
+        (message) =>
+          message.role === 'assistant' &&
+          message.toolCalls?.some((call) => call.id === 'bad'),
+      ),
+    ).toHaveLength(1)
+    expect(
+      requests[1]?.messages.filter(
+        (message) => message.role === 'tool' && message.toolCallId === 'bad',
+      ),
+    ).toEqual([
+      {
+        role: 'tool',
+        toolCallId: 'bad',
+        content: 'Malformed tool input',
+        isError: true,
+      },
+    ])
+    expect(
+      events.filter(
+        (event) => event.type === 'tool-call' && event.call.id === 'bad',
+      ),
+    ).toHaveLength(1)
+    expect(
+      events.filter(
+        (event) => event.type === 'tool-result' && event.callId === 'bad',
+      ),
+    ).toHaveLength(1)
+    expect(events.some((event) => event.type === 'failed')).toBe(false)
+
+    const persistedResults: Array<{
+      callId: string
+      result: ToolExecutionResult
+    }> = []
+    const recoveryObserver = {
+      async assistantCompleted() {},
+      async toolCompleted(call: ModelToolCall, value: ToolExecutionResult) {
+        persistedResults.push({ callId: call.id, result: value })
+      },
+      async toolExecutionStarted() {
+        started += 1
+      },
+    }
+    await expect(
+      runtime.executeDirectToolCall(
+        malformedModelToolCall('bad-direct', 'Edit'),
+        {
+          approveRecovery: () => {
+            approvals += 1
+            return true
+          },
+          approveTool: () => {
+            approvals += 1
+            return true
+          },
+          observer: recoveryObserver,
+        },
+      ),
+    ).resolves.toEqual({ content: 'Malformed tool input', isError: true })
+    await expect(
+      runtime.recoverToolCalls(
+        [malformedModelToolCall('bad-recovery', 'Edit')],
+        {
+          approveRecovery: () => {
+            approvals += 1
+            return true
+          },
+          approveTool: () => {
+            approvals += 1
+            return true
+          },
+          observer: recoveryObserver,
+        },
+      ),
+    ).resolves.toEqual([{ content: 'Malformed tool input', isError: true }])
+    expect(persistedResults).toEqual([
+      {
+        callId: 'bad-direct',
+        result: { content: 'Malformed tool input', isError: true },
+      },
+      {
+        callId: 'bad-recovery',
+        result: { content: 'Malformed tool input', isError: true },
+      },
+    ])
+    expect({
+      schedulingPolicies,
+      prepares,
+      executes,
+      resolves,
+      approvals,
+      started,
+    }).toEqual({
+      schedulingPolicies: 0,
+      prepares: 0,
+      executes: 0,
+      resolves: 0,
+      approvals: 0,
+      started: 0,
+    })
   })
 
   it('emits the classifier source for classified permission decisions', async () => {

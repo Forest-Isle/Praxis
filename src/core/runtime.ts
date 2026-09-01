@@ -65,6 +65,29 @@ export interface ModelToolCall {
   id: string
   name: string
   input: Record<string, unknown>
+  inputError?: ModelToolInputError
+}
+
+export const MALFORMED_TOOL_INPUT_MESSAGE = 'Malformed tool input'
+
+export interface ModelToolInputError {
+  kind: 'malformed_json'
+  message: typeof MALFORMED_TOOL_INPUT_MESSAGE
+}
+
+export function malformedModelToolCall(
+  id: string,
+  name: string,
+): ModelToolCall {
+  return {
+    id,
+    name,
+    input: {},
+    inputError: {
+      kind: 'malformed_json',
+      message: MALFORMED_TOOL_INPUT_MESSAGE,
+    },
+  }
 }
 
 export type ModelThinkingMode = 'enabled' | 'adaptive' | 'disabled'
@@ -1296,10 +1319,12 @@ export class AgentRuntime {
               }
               toolCalls.push(event.call)
               this.emit(event)
-              const policy = resolveToolSchedulingPolicy(
-                this.options.tools,
-                event.call,
-              )
+              const policy = event.call.inputError
+                ? {
+                    concurrency: 'exclusive' as const,
+                    startAfterAssistant: true,
+                  }
+                : resolveToolSchedulingPolicy(this.options.tools, event.call)
               toolScheduler.schedule(
                 event.call,
                 request.observer?.toolExecutionStarted
@@ -1812,6 +1837,9 @@ export class AgentRuntime {
     progressTimer?.unref()
     try {
       if (emitPresentation) emitProgress(0)
+      if (call.inputError) {
+        return { content: call.inputError.message, isError: true }
+      }
       const executed = await this.executeTool(
         call,
         { ...request, signal },

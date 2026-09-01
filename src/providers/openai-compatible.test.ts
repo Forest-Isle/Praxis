@@ -574,6 +574,51 @@ describe('OpenAICompatibleProvider', () => {
     )
   })
 
+  it('recovers malformed streamed tool arguments and emits tool_use terminal', async () => {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            `data: ${JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    tool_calls: [
+                      {
+                        index: 0,
+                        id: 'call',
+                        function: { name: 'Read', arguments: '{' },
+                      },
+                    ],
+                  },
+                },
+              ],
+            })}\n\n`,
+            `data: ${JSON.stringify({
+              choices: [{ delta: {}, finish_reason: 'tool_calls' }],
+            })}\n\n`,
+            'data: [DONE]\n\n',
+          ].join(''),
+        ),
+    })
+    const events = []
+    for await (const event of provider.complete({ messages: [] }))
+      events.push(event)
+    expect(events).toContainEqual({
+      type: 'tool-call',
+      call: {
+        id: 'call',
+        name: 'Read',
+        input: {},
+        inputError: { kind: 'malformed_json', message: 'Malformed tool input' },
+      },
+    })
+    expect(events).toContainEqual({ type: 'terminal', reason: 'tool_use' })
+  })
+
   it('bounds pending streamed tool-call cardinality', async () => {
     const provider = new OpenAICompatibleProvider({
       baseUrl: 'https://provider.example/v1',

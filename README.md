@@ -215,8 +215,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   disconnect recovery that never replays an already-dispatched call.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
-  per-attempt bounded deadlines, and token-only/no-API-dollar accounting for
-  subscription runs.
+  per-attempt bounded deadlines, typed recovery for malformed streamed tool
+  arguments without tool execution or lost resumability, and
+  token-only/no-API-dollar accounting for subscription runs.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an
   interruption or crash.
@@ -301,7 +302,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 68-behavior native contract; 60 behaviors
+type-only modules). `npm run test:fixtures` executes the 69-behavior native contract; 61 behaviors
 are qualified and 8 are explicitly excluded. `npm run verify:fixture-contracts`
 performs the structural check and is part of `npm run check`.
 `npm run test:core-completion` is retained as a compatibility alias for

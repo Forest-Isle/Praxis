@@ -383,6 +383,29 @@ describe('CodexSubscriptionProvider', () => {
     ).rejects.toMatchObject({ kind: 'invalid_request' })
   })
 
+  it('recovers malformed function arguments and emits tool_use terminal', async () => {
+    const body = [
+      'event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"type":"function_call","id":"item-1","call_id":"call-1","name":"lookup","arguments":"{"}}',
+      'event: response.completed\ndata: {"type":"response.completed","response":{}}',
+      '',
+    ].join('\n\n')
+    await expect(events(providerFor(body))).resolves.toEqual([
+      {
+        type: 'tool-call',
+        call: {
+          id: 'call-1',
+          name: 'lookup',
+          input: {},
+          inputError: {
+            kind: 'malformed_json',
+            message: 'Malformed tool input',
+          },
+        },
+      },
+      { type: 'terminal', reason: 'tool_use' },
+    ])
+  })
+
   it('rejects invalid thinking modes and bounds parser limits', async () => {
     expect(() =>
       serializeCodexRequest(
