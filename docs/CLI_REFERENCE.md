@@ -82,6 +82,13 @@ praxis update
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
 
+With the default tool selection, Praxis exposes `ToolSearch` instead of sending
+every `mcp__*` schema in the first model request. A search activates at most
+eight matching MCP tools for the next request and resets at the next user turn.
+Concrete `--tools` selections load their selected schemas directly. Use
+`--disallowedTools ToolSearch` to disable deferral and restore the complete MCP
+tool list.
+
 ## Project outcome evaluations
 
 Run strict project cases in isolated workspaces:

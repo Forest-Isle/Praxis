@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, and 1.1 are implemented; Task 1.2 is next.
+Tasks 0.1, 0.2, 1.1, 1.2, and 2.1 are implemented; Task 2.2 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -134,11 +134,17 @@ workers and the explicit fallback opt-out.
 
 ## Phase 2 — Tool and context efficiency
 
-### Task 2.1: Deferred tool catalog [depends: Task 0.2, split from #126]
+### Task 2.1: Deferred tool catalog [implemented by #555; depends: Task 0.2, split from #126]
 
-Introduce `ToolCatalog` and per-turn `ActiveToolSet`. Expose base tools plus a
-search placeholder, then activate stable tool identities with permission and
-scheduling metadata intact.
+`DeferredToolCatalog` creates one turn-scoped active registry. Default tool
+selection exposes non-MCP tools plus `ToolSearch`, activates at most eight
+deterministic name/description matches for the next model request, and retains
+the base registry's permission, preparation, execution, and scheduling
+semantics. Known interrupted MCP calls are preactivated for recovery;
+activation never persists into the next user turn. Explicit tool selection and
+the `ToolSearch` deny opt-out load MCP definitions directly so tools remain
+reachable. This is a Praxis context-efficiency contract, not a claim of
+verified Claude Code 2.1.208 parity.
 
 ### Task 2.2: MCP context bounds [depends: Task 2.1, #147]
 

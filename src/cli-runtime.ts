@@ -296,6 +296,23 @@ const VERSION = (
   createRequire(import.meta.url)('../package.json') as { version: string }
 ).version
 
+export function shouldDeferMcpTools(input: {
+  simpleMode: boolean
+  tools?: readonly string[] | undefined
+  disallowedTools: readonly string[]
+}): boolean {
+  if (input.tools?.includes('ToolSearch')) {
+    throw new Error('Unknown tool in --tools: ToolSearch')
+  }
+  return (
+    !input.simpleMode &&
+    !input.disallowedTools.includes('ToolSearch') &&
+    (input.tools === undefined ||
+      (input.tools.length > 0 &&
+        input.tools.every((tool) => tool === 'default')))
+  )
+}
+
 function fileResourceBaseUrl(
   environment: NodeJS.ProcessEnv,
   providerEnvironment: ReturnType<typeof parseProviderEnvironment> | undefined,
@@ -1576,6 +1593,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
     },
     cwd,
   )
+  const deferMcpTools = shouldDeferMcpTools({
+    simpleMode,
+    tools: cli.tools,
+    disallowedTools: cli.disallowedTools,
+  })
   if (experimentalNativeTranscriptWrites) {
     const incompatible: Array<[string, boolean]> = [
       ['sessionPersistence', cli.sessionPersistence === false],
@@ -1846,6 +1868,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           ),
         }),
     collectMetrics: true,
+    deferMcpTools,
     ...(!experimentalNativeTranscriptWrites && sessionMemoryProviderFactory
       ? { sessionMemoryProviderFactory }
       : {}),

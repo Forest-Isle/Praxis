@@ -212,7 +212,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`,
   with bounded MCP connection, discovery, and tool operations plus safe
-  disconnect recovery that never replays an already-dispatched call.
+  disconnect recovery that never replays an already-dispatched call. Default
+  tool selection defers `mcp__*` schemas behind a turn-scoped `ToolSearch`;
+  each query activates at most eight deterministic matches for the next model
+  request. Explicit concrete `--tools` selections load selected tools directly, while
+  `--disallowedTools ToolSearch` restores the complete tool list.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
   separate per-attempt connect, byte-idle, and absolute-total timeouts, typed
@@ -304,7 +308,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 69-behavior native contract; 61 behaviors
+type-only modules). `npm run test:fixtures` executes the 70-behavior native contract; 62 behaviors
 are qualified and 8 are explicitly excluded. `npm run verify:fixture-contracts`
 performs the structural check and is part of `npm run check`.
 `npm run test:core-completion` is retained as a compatibility alias for

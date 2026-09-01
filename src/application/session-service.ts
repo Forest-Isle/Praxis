@@ -208,6 +208,7 @@ import type {
   ProjectMemoryRecallRuntime,
 } from './project-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
+import { DeferredToolCatalog } from '../tools/deferred-tool-catalog.js'
 import {
   ClaudeCapabilityToolRegistry,
   resolveClaudeToolCapabilities,
@@ -251,6 +252,7 @@ export interface ClaudeSessionServiceOptions {
   claudeVersion: string
   provider?: ModelProvider
   tools?: ToolRegistry
+  deferMcpTools?: boolean
   permissions?: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
   permissionMode?: ClaudePermissionMode
@@ -1926,6 +1928,9 @@ export class ClaudeSessionService {
               ? { providerForModel: this.options.providerForModel }
               : {}),
             baseTools: wrappedBase,
+            ...(this.options.deferMcpTools === undefined
+              ? {}
+              : { deferMcpTools: this.options.deferMcpTools }),
             permissions: this.options.permissions,
             ...(this.options.permissionResolverForMode
               ? {
@@ -4128,6 +4133,9 @@ export class ClaudeSessionService {
                   ? { providerForModel: this.options.providerForModel }
                   : {}),
                 baseTools,
+                ...(this.options.deferMcpTools === undefined
+                  ? {}
+                  : { deferMcpTools: this.options.deferMcpTools }),
                 permissions: turnPermissions,
                 ...(this.options.permissionResolverForMode
                   ? {
@@ -4394,10 +4402,18 @@ export class ClaudeSessionService {
                 structuredCapture,
               )
             : agentScopedTools
+        const activeTurnTools = structuredTools
+          ? new DeferredToolCatalog(structuredTools).startTurn({
+              enabled:
+                this.options.deferMcpTools !== false &&
+                !(agent && agent.tools !== undefined),
+              restoredToolNames: unresolvedToolCalls.map((call) => call.name),
+            })
+          : undefined
         const hookTools =
-          this.options.hooks && structuredTools && turnPermissions
+          this.options.hooks && activeTurnTools && turnPermissions
             ? new ClaudeHookToolCoordinator({
-                tools: structuredTools,
+                tools: activeTurnTools,
                 permissions: turnPermissions,
                 hooks: this.options.hooks,
                 session: hookSession,
@@ -4450,7 +4466,7 @@ export class ClaudeSessionService {
           ...(hookTools
             ? { tools: hookTools, permissions: hookTools }
             : {
-                ...(structuredTools ? { tools: structuredTools } : {}),
+                ...(activeTurnTools ? { tools: activeTurnTools } : {}),
                 ...(turnPermissions ? { permissions: turnPermissions } : {}),
               }),
         })
@@ -4980,9 +4996,10 @@ export class ClaudeSessionService {
           let compactionDurationWithoutRetriesMs: number | undefined
           let compactionModelUsage:
             Readonly<Record<string, ModelUsage>> | undefined
-          const definitions = provider.capabilities.tools
-            ? (structuredTools?.definitions() ?? [])
-            : []
+          const currentDefinitions = () =>
+            provider.capabilities.tools
+              ? (activeTurnTools?.definitions() ?? [])
+              : []
           const budget = this.contextBudget(provider)
           const contextEngine = new ContextEngine({
             ...(budget ? { budget } : {}),
@@ -5082,7 +5099,7 @@ export class ClaudeSessionService {
                     ...pendingMessages,
                   ]),
                 ],
-                tools: definitions,
+                tools: currentDefinitions(),
               }
             },
             irreducible: () => ({
@@ -5096,11 +5113,12 @@ export class ClaudeSessionService {
                   })),
                 ]),
               ],
-              tools: definitions,
+              tools: currentDefinitions(),
             }),
             propose: async () => {
               const activeNativeLease = nativeLease
               if (!budget) throw new Error('Context budget is unavailable')
+              const definitions = currentDefinitions()
               const historyMessages = activeTurnMessages()
               if (historyMessages.length === 0)
                 throw new Error('Cannot compact an empty native transcript')
@@ -5387,7 +5405,10 @@ export class ClaudeSessionService {
                 ]),
               ]
               return {
-                envelope: { messages: proposedMessages, tools: definitions },
+                envelope: {
+                  messages: proposedMessages,
+                  tools: definitions,
+                },
                 commit: async () => {
                   if (signal?.aborted) throw new AgentRunCancelledError()
                   const ids = await nativeLease.appendCompaction({
@@ -5754,6 +5775,7 @@ export class ClaudeSessionService {
             }
           }
           if (shellCommand === undefined && budget) {
+            const definitions = currentDefinitions()
             await contextEngine.prepare(
               contextTransitionPort([], currentTurnUserMessages ?? []),
               signal,
@@ -6197,6 +6219,7 @@ export class ClaudeSessionService {
             ...contextMessages,
             ...injectTurnContext(memorySnapshot),
           ]
+          const definitions = currentDefinitions()
           const currentContextTokens =
             contextEngine.report({
               messages: providerVisibleMessages,

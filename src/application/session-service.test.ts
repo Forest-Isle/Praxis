@@ -306,6 +306,98 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService', () => {
+  it('scopes deferred MCP activation to one user turn and accounts for active definitions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-deferred-mcp-turn-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '55555555-5555-4555-8555-555555555555'
+    const requests: ModelRequest[] = []
+    const contextBudget = new ContextBudget({
+      contextWindowTokens: 100_000,
+      reserveTokens: 1_000,
+    })
+    const evaluate = vi.spyOn(contextBudget, 'evaluate')
+    let providerTurn = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      dataPlane: 'native',
+      experimentalNativeTranscriptWrites: true,
+      contextBudget,
+      provider: {
+        capabilities: {
+          streaming: true,
+          usage: true,
+          tools: true,
+          contextWindowTokens: 100_000,
+        },
+        async *complete(request) {
+          requests.push(request)
+          if (providerTurn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'deferred-search',
+                name: 'ToolSearch',
+                input: { query: 'fixture search' },
+              },
+            }
+          } else {
+            yield {
+              type: 'text-delta',
+              delta:
+                providerTurn === 2 ? 'first turn done' : 'second turn done',
+            }
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 5, outputTokens: 2 },
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read files',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'mcp__fixture__search',
+            description: 'Search fixture documents',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'fixture', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    await expect(
+      service.run('first', undefined, sessionId),
+    ).resolves.toMatchObject({ text: 'first turn done' })
+    await expect(service.resume(sessionId, 'second')).resolves.toMatchObject({
+      text: 'second turn done',
+    })
+
+    expect(
+      requests.map((request) => request.tools?.map(({ name }) => name) ?? []),
+    ).toEqual([
+      ['Read', 'ToolSearch'],
+      ['Read', 'mcp__fixture__search', 'ToolSearch'],
+      ['Read', 'ToolSearch'],
+    ])
+    expect(
+      evaluate.mock.calls.some(([, tools]) =>
+        tools?.some(({ name }) => name === 'mcp__fixture__search'),
+      ),
+    ).toBe(true)
+    await service.close()
+  })
+
   it('registers active turns before await and appends steering only on delivery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-active-steering-'))
     roots.push(root)
@@ -1177,7 +1269,11 @@ describe('ClaudeSessionService', () => {
       sessionId,
     }).sessionFile
     await mkdir(join(sessionFile, '..'), { recursive: true })
-    const call = { id: 'native-recovery-call', name: 'fixture_tool', input: {} }
+    const call = {
+      id: 'native-recovery-call',
+      name: 'mcp__fixture__recover',
+      input: {},
+    }
     await writeFile(
       sessionFile,
       [
@@ -1211,6 +1307,7 @@ describe('ClaudeSessionService', () => {
       dataPlane: 'native',
       experimentalNativeTranscriptWrites: true,
       autoCompact: false,
+      deferMcpTools: true,
       approveRecovery(recovered) {
         approvals += 1
         expect(recovered).toEqual(call)
@@ -1229,7 +1326,13 @@ describe('ClaudeSessionService', () => {
         },
       },
       tools: {
-        definitions: () => [],
+        definitions: () => [
+          {
+            name: 'mcp__fixture__recover',
+            description: 'Recover fixture work',
+            inputSchema: { type: 'object' },
+          },
+        ],
         prepare: async (prepared) => prepared,
         execute: async () => {
           executions += 1
@@ -1282,6 +1385,10 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[0]?.messages)).toContain(
       'native recovered result',
     )
+    expect(requests[0]?.tools?.map(({ name }) => name)).toEqual([
+      'mcp__fixture__recover',
+      'ToolSearch',
+    ])
     await expect(service.interruption(sessionId)).resolves.toEqual({
       kind: 'complete',
     })

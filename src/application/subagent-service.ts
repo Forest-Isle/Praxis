@@ -42,6 +42,7 @@ import {
 } from '../core/runtime.js'
 import { composePermissionResolvers } from '../core/permission-policy.js'
 import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
+import { DeferredToolCatalog } from '../tools/deferred-tool-catalog.js'
 import {
   BUILTIN_STATUSLINE_AGENT_PATH,
   type ClaudeAgentRuntimeDefinition,
@@ -686,6 +687,7 @@ export interface ClaudeSubagentExecutorOptions {
   claudeVersion: string
   provider: ModelProvider
   baseTools: ToolRegistry
+  deferMcpTools?: boolean
   permissions: PermissionResolver
   permissionResolverForMode?: (mode: AgentPermissionMode) => PermissionResolver
   parentPermissionMode?: () => AgentPermissionMode
@@ -2797,9 +2799,15 @@ export class ClaudeSubagentExecutor {
           options.structuredOutput,
         )
       : scopedTools
+    const activeAgentTools = new DeferredToolCatalog(agentTools).startTurn({
+      enabled:
+        this.options.deferMcpTools !== false &&
+        customAgent?.tools === undefined,
+      restoredToolNames: nativeRecoveryCalls.map((call) => call.name),
+    })
     const runtimeTools = scopedHooks
       ? new ClaudeHookToolCoordinator({
-          tools: agentTools,
+          tools: activeAgentTools,
           permissions,
           hooks: scopedHooks,
           session: hookSession,
@@ -2811,7 +2819,7 @@ export class ClaudeSubagentExecutor {
               }
             : {}),
         })
-      : agentTools
+      : activeAgentTools
     const runtimePermissions = scopedHooks
       ? (runtimeTools as ClaudeHookToolCoordinator)
       : permissions
@@ -3006,9 +3014,8 @@ export class ClaudeSubagentExecutor {
               : { reserveTokens: this.options.contextReserveTokens }),
           })
         : null
-      const definitions = options.provider.capabilities.tools
-        ? runtimeTools.definitions()
-        : []
+      const currentDefinitions = () =>
+        options.provider.capabilities.tools ? runtimeTools.definitions() : []
       let observedMessages: readonly ModelMessage[] | undefined
       let stableSystemMessageCount = 0
       const assembleMessages = async () => {
@@ -3046,6 +3053,7 @@ export class ClaudeSubagentExecutor {
         ]
         observedMessages = messages
         if (contextBudget) {
+          const definitions = currentDefinitions()
           contextBudget.assertFits(
             contextBudget.evaluate(messages, definitions),
           )
@@ -3192,7 +3200,7 @@ export class ClaudeSubagentExecutor {
       contextBudget?.observeUsage(
         result.usage,
         observedMessages ?? [],
-        definitions,
+        currentDefinitions(),
       )
       this.options.eventSink?.({
         type: 'task-progress',

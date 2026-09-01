@@ -115,9 +115,9 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 69 behaviors: 61
-are qualified and 8 are explicitly excluded. It contains 111 evidence entries,
-including 81 Vitest evidence entries, across 24 fixture files and 7 gates.
+are the active qualification source. The manifest declares 70 behaviors: 62
+are qualified and 8 are explicitly excluded. It contains 126 evidence entries:
+96 Vitest entries, 24 black-box fixture entries, and 6 gate entries.
 
 `npm run test:fixtures` executes the native contract, while
 `npm run verify:fixture-contracts` performs its structural check and is part of

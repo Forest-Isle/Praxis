@@ -10,6 +10,7 @@ this file from merged Conventional Commit pull requests.
 * add isolated project outcome evaluations with bounded verifier artifacts ([#541](https://github.com/Forest-Isle/Praxis/issues/541))
 * add hermetic coding baseline fixtures and deterministic aggregate comparison ([#544](https://github.com/Forest-Isle/Praxis/issues/544))
 * add bounded Anthropic non-streaming recovery for eligible stream failures ([#553](https://github.com/Forest-Isle/Praxis/issues/553))
+* defer default MCP tool schemas behind turn-scoped ToolSearch activation ([#555](https://github.com/Forest-Isle/Praxis/issues/555))
 * separate provider connect, byte-idle, and absolute-total timeouts ([#550](https://github.com/Forest-Isle/Praxis/issues/550))
 
 ### Bug Fixes
