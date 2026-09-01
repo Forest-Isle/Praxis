@@ -29,6 +29,9 @@ authoritative CLI surface.
   subagent execution and persistence.
 - [Development Roadmap](ROADMAP.md) — historical implementation stages and
   acceptance gates; it is not a runtime or qualification dependency.
+- [Outcome-Driven Coding Agent Roadmap](CODING_AGENT_ROADMAP.md) — current
+  dependency order, evidence contract, and staged plan for measurable coding
+  outcomes.
 
 ## Architecture and security
 

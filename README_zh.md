@@ -91,6 +91,7 @@ praxis doctor
 
 ## Praxis 提供什么
 
+- **结果驱动的评估** — `praxis eval <target>` 会在隔离工作区中运行受控用例，要求显式授权验证器，并在本地写入带版本的产物；用量和成本会明确标记为可用或未知。
 - **本地 Agent 运行时** — C+ Quiet Operator 响应式 TUI，采用线性的
   `❯` 用户 / `⏺` 助手对话、`✻` 思考活动和 `!` Shell 输入语法，以及紧凑稳定的工具行、自适应密度、终端原生背景和精简的输入框/状态行。
   交互界面在不同终端中保持一致，并提供英文权限和配置选择文案，以及明确的 `❯` / Up/Down / Enter / Esc 交互语法。普通 turn 运行期间输入框仍可编辑：Enter 会在下一个安全 continuation boundary steering 当前 turn，Tab 或 Alt+Enter 会排队一个串行 follow-up turn，pending 输入会持续显示，并可用 Up 撤回编辑。界面还包括共享命令斜杠面板、带标签页的帮助和快捷键界面、可搜索的会话恢复选择器、恢复活动分支的对话历史、流式及可展开思考、分组多文件读取、可全局展开的工具结果、命令专用 `/add-dir`、代码感知 `/copy`、`/branch`、`/rename`、`/export`、无需提供商的只读共享 `/hooks`、由提供商支持的 `/compact`、原生 `/rewind`、运行时 `/cd`、不写入 transcript 的 `/btw` 旁支问题及后台 Agent 移交、交互式 `/background` 终端移交、统一的 `/status`/`/config`/`/usage` 设置标签页、`/sandbox` 模式/依赖/覆盖/配置控制、本地缓存的 `/release-notes`、兼容 Claude 的 `/statusline` 命令执行和设置 Agent、与源代码对齐的 `/init` 项目指令引导及增强的技能/钩子流程、无需提供商的每会话 `/color` 提示栏样式、`/mcp`、`/memory` 共享指令和自动记忆访问、实时扩展重载控制、

@@ -29,6 +29,8 @@ export interface RunProcessOptions {
   signal?: AbortSignal
   onOutput?: (output: string) => void | Promise<void>
   env?: Readonly<Record<string, string>>
+  inheritEnvironment?: boolean
+  redactExplicitEnvironment?: boolean
   controlOutputBytes?: number
   controlOutputFd?: number
   scriptInput?: string
@@ -143,7 +145,10 @@ export class BoundedProcessRunner {
   run(options: RunProcessOptions): Promise<ProcessResult> {
     if (options.signal?.aborted) return Promise.reject(abortError())
     return new Promise((resolve, reject) => {
-      const sensitiveValues = sensitiveEnvironmentValues(process.env)
+      const sensitiveValues = sensitiveEnvironmentValues(
+        process.env,
+        ...(options.redactExplicitEnvironment ? [options.env ?? {}] : []),
+      )
       const longestSensitiveValueBytes = sensitiveValues.reduce(
         (longest, value) => Math.max(longest, Buffer.byteLength(value)),
         0,
@@ -177,7 +182,10 @@ export class BoundedProcessRunner {
       const child = spawn(options.command, options.args, {
         cwd: options.cwd ?? this.options.cwd,
         detached: process.platform !== 'win32',
-        env: { ...sanitizeChildEnvironment(), ...options.env },
+        env:
+          options.inheritEnvironment === false
+            ? sanitizeChildEnvironment(options.env ?? {}, {})
+            : sanitizeChildEnvironment(options.env ?? {}),
         stdio,
       })
       const chunks = { stdout: [] as Buffer[], stderr: [] as Buffer[] }

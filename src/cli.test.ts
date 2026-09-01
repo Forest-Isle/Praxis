@@ -1887,6 +1887,7 @@ describe('Praxis CLI', () => {
       [['plugin', 'autoremove', '--help'], 'Usage: praxis plugin prune'],
       [['plugin', 'tag', '--help'], 'Usage: praxis plugin tag'],
       [['plugin', 'validate', '--help'], 'Usage: praxis plugin validate'],
+      [['eval', '--help'], 'Usage: praxis eval'],
       [['plugin', 'marketplace', '--help'], 'Usage: praxis plugin marketplace'],
       [
         ['plugin', 'marketplace', 'list', '--help'],
@@ -1952,6 +1953,7 @@ describe('Praxis CLI', () => {
       [['auto-mode', 'reset', '--help'], '-y, --yes'],
       [['project', 'purge', '--help'], '--json'],
       [['import', '--help'], '--dry-run'],
+      [['eval', '--help'], '--run-verification'],
     ]
     for (const [argv, detail] of detailedRoutes) {
       const capture = captureIO()
@@ -1960,6 +1962,67 @@ describe('Praxis CLI', () => {
       expect(capture.stdout.join('')).toContain(detail)
     }
     expect(constructions).toBe(0)
+  })
+
+  it('routes project eval with a global model prefix', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-project-eval-'))
+    const caseDir = join(root, 'evals', 'basic')
+    const configRoot = join(root, 'config')
+    await mkdir(join(caseDir, 'fixture'), { recursive: true })
+    await writeFile(
+      join(caseDir, 'case.yaml'),
+      `schema_version: "1.0"
+name: basic
+fixture: fixture
+execution:
+  prompt: Inspect the fixture.
+expect:
+  allowed_changed_paths: []
+`,
+    )
+    let selectedModel: string | undefined
+    const projectDependencies: CliDependencies = {
+      ...dependencies(),
+      projectEval: {
+        configRoot,
+        runtimeFactory: {
+          create: async (options) => {
+            selectedModel = options.model
+            return {
+              run: async () => ({ text: 'done', turns: 1 }),
+            }
+          },
+        },
+      },
+    }
+    const capture = captureIO()
+    try {
+      await expect(
+        run(
+          ['--model', 'prefixed-model', 'eval', root, '--json'],
+          capture.io,
+          projectDependencies,
+        ),
+      ).resolves.toBe(0)
+      expect(selectedModel).toBe('prefixed-model')
+      expect(JSON.parse(capture.stdout.join(''))).toMatchObject({
+        model: 'prefixed-model',
+        passed: 1,
+        completed_run_count: 1,
+      })
+      expect(capture.stderr).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps eval tokens after an existing prompt operand on the prompt path', async () => {
+    const capture = captureIO()
+    await expect(
+      run(['-p', 'please', 'eval', 'this'], capture.io, dependencies()),
+    ).resolves.toBe(0)
+    expect(capture.stdout.join('')).toBe('answer:please eval this\n')
+    expect(capture.stderr).toEqual([])
   })
 
   it('keeps provider auth help side-effect free', async () => {

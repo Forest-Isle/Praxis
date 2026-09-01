@@ -5,6 +5,10 @@ this file from merged Conventional Commit pull requests.
 
 ## Unreleased
 
+### Features
+
+* add isolated project outcome evaluations with bounded verifier artifacts ([#541](https://github.com/Forest-Isle/Praxis/issues/541))
+
 ### Bug Fixes
 
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))

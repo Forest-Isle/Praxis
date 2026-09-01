@@ -3,6 +3,14 @@ import { basename, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { parse as parseYaml } from 'yaml'
 
+import type {
+  EvalArm as SharedEvalArm,
+  EvalGraderBase,
+  EvalDeterministicGrader,
+  EvalFocus as SharedEvalFocus,
+  EvalToolMatch as SharedEvalToolMatch,
+} from '../evals/eval-contract.js'
+
 export const EVAL_SCHEMA_VERSION = '1.0'
 export const MAX_EVAL_FILE_BYTES = 1024 * 1024
 export const MAX_EVAL_GRADERS = 256
@@ -13,49 +21,27 @@ export const MAX_EVAL_OBJECT_NODES = 4096
 
 const EVAL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
 
-export type EvalFocus =
-  'last_message' | 'trace' | 'files' | { source: 'file'; path: string }
-export type EvalArm = 'with-only' | 'both'
-
-interface EvalGraderBase {
-  name: string
-  weight: number
-  arm?: EvalArm
-}
+export type EvalFocus = SharedEvalFocus
+export type EvalArm = SharedEvalArm
+export type EvalToolMatch = SharedEvalToolMatch
 
 export type ClaudePluginEvalGrader =
-  | (EvalGraderBase & {
-      type: 'regex'
-      target: EvalFocus
-      pattern: string
-      flags: string
-      match: 'contains' | 'not_contains' | `count:${number}`
-    })
-  | (EvalGraderBase & {
-      type: 'tool_order'
-      before: EvalToolMatch
-      after: EvalToolMatch
-    })
-  | (EvalGraderBase & {
-      type: 'tool_used'
-      tool: string
-      input_match?: Record<string, unknown>
-      min: number
-      max: number
-    })
-  | (EvalGraderBase & { type: 'file_exists'; path: string; exists: boolean })
-  | (EvalGraderBase & { type: 'llm'; criteria: string; focus: EvalFocus })
-  | (EvalGraderBase & {
+  | EvalDeterministicGrader
+  | {
+      name: string
+      weight: number
+      arm?: EvalArm
+      type: 'llm'
+      criteria: string
+      focus: EvalFocus
+    }
+  | {
+      name: string
+      weight: number
+      arm?: EvalArm
       type: 'baseline'
       baseline_file: string
       criteria: string
-    })
-
-export type EvalToolMatch =
-  | string
-  | {
-      tool: string
-      input_match?: Record<string, unknown>
     }
 
 export interface ClaudePluginEvalCase {

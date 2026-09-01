@@ -2,7 +2,6 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import type { RuntimeEvent } from '../core/runtime.js'
 import type { DataPlane } from '../persistence/data-plane.js'
 import {
   BoundedProcessRunner,
@@ -10,42 +9,22 @@ import {
 } from '../platform/bounded-process-runner.js'
 import type { ClaudePluginEvalCase } from './claude-plugin-eval-schema.js'
 import { resolveContainedPath } from './claude-plugin-eval-schema.js'
+import {
+  normalizeEvalTraceEvent,
+  resolveEvalAllowedTools,
+} from '../evals/eval-contract.js'
 import type {
   EvalRunArtifacts,
   EvalTraceEvent,
-} from './claude-plugin-eval-graders.js'
-
-export const DEFAULT_EVAL_ALLOWED_TOOLS = [
-  'Read',
-  'Glob',
-  'Grep',
-  'Skill',
-] as const
-
-export interface PluginEvalRuntime {
-  run(
-    prompt: string,
-    signal: AbortSignal,
-  ): Promise<{ text: string; turns: number; costUsd?: number }>
-  close?(): Promise<void>
-}
-export interface PluginEvalRuntimeFactory {
-  create(options: {
-    dataPlane: DataPlane
-    cwd: string
-    configRoot: string
-    home: string
-    model?: string
-    maxTurns: number
-    pluginDirectories: readonly string[]
-    allowedTools: readonly string[]
-    appendSystemPrompt?: string
-    historyFile?: string
-    addDirs: readonly string[]
-    env: Readonly<Record<string, string>>
-    eventSink(event: RuntimeEvent): void
-  }): Promise<PluginEvalRuntime>
-}
+  EvalRuntime,
+  EvalRuntimeFactory,
+} from '../evals/eval-contract.js'
+export {
+  DEFAULT_EVAL_ALLOWED_TOOLS,
+  resolveEvalAllowedTools,
+} from '../evals/eval-contract.js'
+export type PluginEvalRuntime = EvalRuntime
+export type PluginEvalRuntimeFactory = EvalRuntimeFactory
 
 export interface EvalSingleRunResult {
   text: string
@@ -61,53 +40,6 @@ export interface EvalSingleRunResult {
 
 function abortError(): DOMException {
   return new DOMException('Eval run timed out', 'AbortError')
-}
-
-function toolName(rule: string): string {
-  const separator = rule.indexOf('(')
-  return separator < 0 ? rule : rule.slice(0, separator)
-}
-
-function gatedTool(rule: string): boolean {
-  const name = toolName(rule)
-  return (
-    ['Bash', 'Write', 'Edit', 'NotebookEdit', 'WebFetch', 'WebSearch'].includes(
-      name,
-    ) || name.startsWith('mcp__')
-  )
-}
-
-function operatorGrants(requested: string, grants: readonly string[]): boolean {
-  const name = toolName(requested)
-  const wildcardMatch = (pattern: string): boolean => {
-    const parts = pattern.split('*')
-    if (parts.length === 1) return false
-    if (!requested.startsWith(parts[0] ?? '')) return false
-    let cursor = parts[0]?.length ?? 0
-    for (const part of parts.slice(1, -1)) {
-      const index = requested.indexOf(part, cursor)
-      if (index < 0) return false
-      cursor = index + part.length
-    }
-    const last = parts.at(-1) ?? ''
-    return last.length === 0 || requested.slice(cursor).endsWith(last)
-  }
-  return grants.some(
-    (grant) => grant === requested || grant === name || wildcardMatch(grant),
-  )
-}
-
-export function resolveEvalAllowedTools(
-  requested: readonly string[],
-  grants: readonly string[],
-): string[] {
-  const selected = requested.length ? requested : DEFAULT_EVAL_ALLOWED_TOOLS
-  for (const rule of selected)
-    if (gatedTool(rule) && !operatorGrants(rule, grants))
-      throw new Error(
-        `Eval case requests gated tool ${rule}; grant it with --allow-tools`,
-      )
-  return [...new Set(selected)]
 }
 
 async function scaffold(
@@ -143,23 +75,7 @@ async function scaffold(
     )
 }
 
-function traceEvent(event: RuntimeEvent): EvalTraceEvent {
-  if (event.type === 'tool-call')
-    return {
-      type: 'tool-call',
-      tool: event.call.name,
-      input: event.call.input,
-      id: event.call.id,
-    }
-  if (event.type === 'tool-result')
-    return {
-      type: 'tool-result',
-      callId: event.callId,
-      content: event.content,
-      isError: event.isError,
-    }
-  return event as unknown as EvalTraceEvent
-}
+const traceEvent = normalizeEvalTraceEvent
 
 export async function runClaudePluginEvalOnce(options: {
   case: ClaudePluginEvalCase
