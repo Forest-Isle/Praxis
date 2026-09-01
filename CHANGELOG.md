@@ -14,6 +14,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.47.0](https://github.com/Forest-Isle/Praxis/compare/v0.46.5...v0.47.0) (2026-09-01)
+
+
+### Features
+
+* add project outcome evaluation harness ([#542](https://github.com/Forest-Isle/Praxis/issues/542)) ([8a65de1](https://github.com/Forest-Isle/Praxis/commit/8a65de1ef3a8d899aad5b4f61ca5d797d3cac79b)), closes [#541](https://github.com/Forest-Isle/Praxis/issues/541)
+
 ## [0.46.5](https://github.com/Forest-Isle/Praxis/compare/v0.46.4...v0.46.5) (2026-08-31)
 
 
