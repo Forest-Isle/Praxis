@@ -215,8 +215,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   disconnect recovery that never replays an already-dispatched call. Default
   tool selection defers `mcp__*` schemas behind a turn-scoped `ToolSearch`;
   each query activates at most eight deterministic matches for the next model
-  request. Explicit concrete `--tools` selections load selected tools directly, while
-  `--disallowedTools ToolSearch` restores the complete tool list.
+  request, and published MCP tool descriptions are capped at 2,048 Unicode
+  code points. Explicit concrete `--tools` selections load selected tools
+  directly, while `--disallowedTools ToolSearch` restores the complete tool
+  list.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
   separate per-attempt connect, byte-idle, and absolute-total timeouts, typed
