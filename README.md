@@ -103,7 +103,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Outcome-driven evaluation** — `praxis eval <target>` runs contained cases
   in isolated workspaces, requires explicit verifier authorization, and writes
   versioned artifacts locally; usage and cost remain explicitly available or
-  unknown.
+  unknown. Separate runs can be compared with `praxis eval compare`; unknown
+  token/cost evidence produces null deltas, while the gate requires no pass-rate
+  or safety-rate regression and rejects incomplete safety evidence.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
@@ -299,7 +301,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 67-behavior native contract; 59 behaviors
+type-only modules). `npm run test:fixtures` executes the 68-behavior native contract; 60 behaviors
 are qualified and 8 are explicitly excluded. `npm run verify:fixture-contracts`
 performs the structural check and is part of `npm run check`.
 `npm run test:core-completion` is retained as a compatibility alias for

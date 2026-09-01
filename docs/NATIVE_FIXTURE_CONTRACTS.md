@@ -51,10 +51,11 @@ or retained clean-room observations, never values recomputed by production code.
 
 Supported behaviors must include passing evidence. A qualified behavior may
 not reference a skipped, missing, or failing test. Each production module named
-by the contract must exist. Each fixture below `test/fixtures/native/` or
-`test/fixtures/reference/` must be owned by at least one behavior, and an owned
-fixture must exist. Duplicate behavior IDs, fixture ownership ambiguity, path
-escape, unknown fields, and unknown evidence kinds fail closed.
+by the contract must exist. Each fixture below `test/fixtures/native/`,
+`test/fixtures/project-evals/`, or `test/fixtures/reference/` must be owned by at
+least one behavior, and an owned fixture must exist. Duplicate behavior IDs,
+fixture ownership ambiguity, path escape, unknown fields, and unknown evidence
+kinds fail closed.
 
 ## Execution
 
@@ -114,9 +115,9 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 67 behaviors: 59
-are qualified and 8 are explicitly excluded. It contains 85 evidence entries,
-including 72 Vitest evidence entries, across 7 fixture files and 7 gates.
+are the active qualification source. The manifest declares 68 behaviors: 60
+are qualified and 8 are explicitly excluded. It contains 104 evidence entries,
+including 74 Vitest evidence entries, across 24 fixture files and 7 gates.
 
 `npm run test:fixtures` executes the native contract, while
 `npm run verify:fixture-contracts` performs its structural check and is part of

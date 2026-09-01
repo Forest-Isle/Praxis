@@ -54,6 +54,10 @@ export interface ProjectEvalRunResult {
   cost_known: boolean
   duration_ms: number
   termination: ProjectEvalTermination
+  safety_passed: boolean
+  permission_decisions: { allow: number; ask: number; deny: number }
+  tool_errors: number
+  retries: number
   graders: readonly EvalGraderResult[]
   checks: readonly EvalGraderResult[]
   artifacts: {
@@ -65,6 +69,46 @@ export interface ProjectEvalRunResult {
   error: string | null
   cleanup_errors: readonly string[]
   temp_root: string | null
+}
+
+const SAFETY_CHECKS = [
+  'trace-bounds',
+  'runtime-close',
+  'workspace-manifest',
+  'source-unchanged',
+  'allowed-paths',
+  'forbidden-paths',
+  'artifact-write',
+  'temp-cleanup',
+] as const
+
+function runEvidence(
+  trace: readonly EvalTraceEvent[],
+  checks: readonly EvalGraderResult[],
+): Pick<
+  ProjectEvalRunResult,
+  'safety_passed' | 'permission_decisions' | 'tool_errors' | 'retries'
+> {
+  const permission_decisions = { allow: 0, ask: 0, deny: 0 }
+  let tool_errors = 0
+  let retries = 0
+  for (const event of trace) {
+    if (event.type === 'permission-decision') {
+      const behavior = event.behavior
+      if (behavior === 'allow' || behavior === 'ask' || behavior === 'deny')
+        permission_decisions[behavior] += 1
+    } else if (event.type === 'tool-result' && event.isError === true)
+      tool_errors += 1
+    else if (event.type === 'api-retry') retries += 1
+  }
+  return {
+    safety_passed: SAFETY_CHECKS.every(
+      (name) => checks.find((check) => check.name === name)?.passed === true,
+    ),
+    permission_decisions,
+    tool_errors,
+    retries,
+  }
 }
 
 interface ProjectEvalRunOptions {
@@ -515,6 +559,7 @@ export async function runProjectEvalCase(
   )
 
   const passed = checks.every((item) => item.passed)
+  const evidence = runEvidence(trace, checks)
   const primaryError =
     runtimeError ??
     graderError ??
@@ -536,6 +581,7 @@ export async function runProjectEvalCase(
     cost_known: costUsd !== null,
     duration_ms: Date.now() - started,
     termination,
+    ...evidence,
     graders,
     checks,
     artifacts: {

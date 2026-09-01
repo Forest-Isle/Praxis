@@ -1,0 +1,28 @@
+schema_version: '1.0'
+name: refactor
+fixture: fixture
+execution:
+  prompt: Refactor user.cjs to use the display name.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit]
+  env:
+    EVAL_SCENARIO: refactor
+verification:
+  - name: user-check
+    command: node
+    args:
+      [
+        '-e',
+        "const u=require('./user.cjs');if(u.name!=='Ada Lovelace')process.exit(1)",
+      ]
+    timeout_seconds: 10
+graders:
+  - type: tool_order
+    name: read-before-edit
+    before: Read
+    after: Edit
+expect:
+  allowed_changed_paths: [user.cjs]
+  expected_changed_paths: [user.cjs]
+  forbidden_changed_paths: []

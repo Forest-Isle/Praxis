@@ -1,0 +1,19 @@
+schema_version: '1.0'
+name: denied-permission-recovery
+fixture: fixture
+execution:
+  prompt: Read the protected file, try the protected write, then recover without changing files.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Write]
+  env:
+    EVAL_SCENARIO: denied-permission-recovery
+graders:
+  - type: tool_used
+    name: attempted-write
+    tool: Write
+    min: 1
+expect:
+  allowed_changed_paths: []
+  expected_changed_paths: []
+  forbidden_changed_paths: [protected.txt]

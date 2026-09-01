@@ -7,6 +7,7 @@ import {
   runProjectEvalCase,
   type ProjectEvalRunResult,
 } from './project-eval-runner.js'
+import { executeProjectEvalCompareCommand } from './project-eval-comparison.js'
 import { discoverProjectEvalCases } from './project-eval-schema.js'
 
 export const PROJECT_EVAL_HELP = `Usage: praxis eval [options] <target>
@@ -24,7 +25,9 @@ Options:
   --keep-temp            Preserve temporary workspaces
   --json                 Print exactly one aggregate JSON value
   --verbose              Print run progress to stderr
-  -h, --help             Display help`
+  -h, --help             Display help
+
+Use praxis eval compare --help to compare two completed aggregate artifacts.`
 
 export interface ProjectEvalDependencies {
   runtimeFactory: EvalRuntimeFactory
@@ -67,6 +70,10 @@ export interface ProjectEvalRunSummary {
   cost_known: boolean
   duration_ms: number
   termination: ProjectEvalRunResult['termination']
+  safety_passed: boolean
+  permission_decisions: { allow: number; ask: number; deny: number }
+  tool_errors: number
+  retries: number
   error: string | null
   artifact_dir: string
 }
@@ -93,6 +100,12 @@ export interface ProjectEvalAggregate {
   known_cost_total_usd: number | null
   known_cost_runs: number
   unknown_cost_runs: number
+  safety_passed: number
+  safety_failed: number
+  permission_decisions: { allow: number; ask: number; deny: number }
+  tool_errors: number
+  retries: number
+  terminations: { completed: number; timeout: number; interrupted: number }
   partial: boolean
   interrupted: boolean
   runs: readonly ProjectEvalRunSummary[]
@@ -206,6 +219,10 @@ function runSummary(
     cost_known: result.cost_known,
     duration_ms: result.duration_ms,
     termination: result.termination,
+    safety_passed: result.safety_passed,
+    permission_decisions: result.permission_decisions,
+    tool_errors: result.tool_errors,
+    retries: result.retries,
     error: result.error,
     artifact_dir: relative(
       outputDirectory,
@@ -221,6 +238,13 @@ export async function executeProjectEvalCommand(
   callerCwd = process.cwd(),
   signal?: AbortSignal,
 ): Promise<number> {
+  if (argv[0] === 'compare')
+    return executeProjectEvalCompareCommand(
+      argv.slice(1),
+      io,
+      callerCwd,
+      signal,
+    )
   const options = parseProjectEvalOptions(argv)
   if (options.help) {
     io.stdout(PROJECT_EVAL_HELP)
@@ -315,6 +339,35 @@ export async function executeProjectEvalCommand(
           ),
     known_cost_runs: knownCostResults.length,
     unknown_cost_runs: results.length - knownCostResults.length,
+    safety_passed: results.filter((result) => result.safety_passed).length,
+    safety_failed: results.filter((result) => !result.safety_passed).length,
+    permission_decisions: {
+      allow: results.reduce(
+        (total, result) => total + result.permission_decisions.allow,
+        0,
+      ),
+      ask: results.reduce(
+        (total, result) => total + result.permission_decisions.ask,
+        0,
+      ),
+      deny: results.reduce(
+        (total, result) => total + result.permission_decisions.deny,
+        0,
+      ),
+    },
+    tool_errors: results.reduce(
+      (total, result) => total + result.tool_errors,
+      0,
+    ),
+    retries: results.reduce((total, result) => total + result.retries, 0),
+    terminations: {
+      completed: results.filter((result) => result.termination === null).length,
+      timeout: results.filter((result) => result.termination === 'timeout')
+        .length,
+      interrupted: results.filter(
+        (result) => result.termination === 'interrupted',
+      ).length,
+    },
     partial: interrupted || results.length < plannedRunCount,
     interrupted,
     runs: results.map((result) => runSummary(result, outputDirectory)),

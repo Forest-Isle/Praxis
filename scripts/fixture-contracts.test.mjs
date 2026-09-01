@@ -41,6 +41,7 @@ async function createRepository({ fixtures = [] } = {}) {
   temporaryRepositories.push(root)
   await mkdir(join(root, 'src/core'), { recursive: true })
   await mkdir(join(root, 'test/fixtures/native'), { recursive: true })
+  await mkdir(join(root, 'test/fixtures/project-evals'), { recursive: true })
   await mkdir(join(root, 'test/fixtures/reference'), { recursive: true })
   await writeFile(join(root, 'src/core/runtime.ts'), '')
   await writeFile(join(root, 'src/core/runtime.test.ts'), '')
@@ -170,6 +171,20 @@ describe('fixture contract verifier', () => {
       context(root, manifest),
     )
     expect(diagnostics.join('\n')).toContain('qualified behavior')
+  })
+
+  it('accepts project-eval fixtures with exact Vitest ownership', async () => {
+    const root = await createRepository({
+      fixtures: ['test/fixtures/project-evals/case.yaml'],
+    })
+    const manifest = clone(baseManifest)
+    manifest.behaviors[0].evidence.push({
+      kind: 'fixture',
+      path: 'test/fixtures/project-evals/case.yaml',
+    })
+    await expect(
+      fixtureContractDiagnostics(context(root, manifest)),
+    ).resolves.toEqual([])
   })
 
   it('accepts excluded behavior with empty modules and evidence', async () => {

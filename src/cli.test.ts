@@ -1954,6 +1954,7 @@ describe('Praxis CLI', () => {
       [['project', 'purge', '--help'], '--json'],
       [['import', '--help'], '--dry-run'],
       [['eval', '--help'], '--run-verification'],
+      [['eval', 'compare', '--help'], '--baseline-name'],
     ]
     for (const [argv, detail] of detailedRoutes) {
       const capture = captureIO()
@@ -2005,12 +2006,45 @@ expect:
         ),
       ).resolves.toBe(0)
       expect(selectedModel).toBe('prefixed-model')
-      expect(JSON.parse(capture.stdout.join(''))).toMatchObject({
+      const aggregate = JSON.parse(capture.stdout.join('')) as {
+        output_dir: string
+        model: string
+        passed: number
+        completed_run_count: number
+      }
+      expect(aggregate).toMatchObject({
         model: 'prefixed-model',
         passed: 1,
         completed_run_count: 1,
       })
       expect(capture.stderr).toEqual([])
+
+      const aggregatePath = join(aggregate.output_dir, 'aggregate-result.json')
+      const compareCapture = captureIO()
+      await expect(
+        run(
+          [
+            'eval',
+            'compare',
+            '--baseline',
+            aggregatePath,
+            '--baseline-name',
+            'baseline',
+            '--candidate',
+            aggregatePath,
+            '--candidate-name',
+            'candidate',
+            '--json',
+          ],
+          compareCapture.io,
+          projectDependencies,
+        ),
+      ).resolves.toBe(0)
+      expect(JSON.parse(compareCapture.stdout.join(''))).toMatchObject({
+        passed: true,
+        comparable_run_count: 1,
+      })
+      expect(compareCapture.stderr).toEqual([])
     } finally {
       await rm(root, { recursive: true, force: true })
     }

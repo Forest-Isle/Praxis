@@ -1,0 +1,28 @@
+schema_version: '1.0'
+name: bug-fix
+fixture: fixture
+execution:
+  prompt: Fix the subtraction bug in math.cjs.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit]
+  env:
+    EVAL_SCENARIO: bug-fix
+verification:
+  - name: math-check
+    command: node
+    args: ['-e', "const m=require('./math.cjs');if(m(2,3)!==5)process.exit(1)"]
+    timeout_seconds: 10
+graders:
+  - type: tool_used
+    name: read-first
+    tool: Read
+    min: 1
+  - type: file_exists
+    name: math-file
+    path: math.cjs
+    exists: true
+expect:
+  allowed_changed_paths: [math.cjs]
+  expected_changed_paths: [math.cjs]
+  forbidden_changed_paths: []

@@ -1,0 +1,20 @@
+schema_version: '1.0'
+name: active-turn-steering
+fixture: fixture
+execution:
+  prompt: Read the README and wait for steering.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read]
+  env:
+    EVAL_SCENARIO: active-turn-steering
+graders:
+  - type: regex
+    name: steering
+    target: last_message
+    pattern: STEERED_OK
+    match: contains
+expect:
+  allowed_changed_paths: []
+  expected_changed_paths: []
+  forbidden_changed_paths: []

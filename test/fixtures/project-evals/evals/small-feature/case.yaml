@@ -1,0 +1,28 @@
+schema_version: '1.0'
+name: small-feature
+fixture: fixture
+execution:
+  prompt: Add a greeting output file.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Write]
+  env:
+    EVAL_SCENARIO: small-feature
+verification:
+  - name: greeting-check
+    command: node
+    args:
+      [
+        '-e',
+        "const fs=require('node:fs');if(fs.readFileSync('greeting.txt','utf8')!=='hello\\n')process.exit(1)",
+      ]
+    timeout_seconds: 10
+graders:
+  - type: file_exists
+    name: greeting-file
+    path: greeting.txt
+    exists: true
+expect:
+  allowed_changed_paths: [greeting.txt]
+  expected_changed_paths: [greeting.txt]
+  forbidden_changed_paths: []
