@@ -220,8 +220,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   into mode-`0600` `.txt` files under the session-scoped `tool-results`
   directory; providers and transcripts receive only a bounded instruction with
   the absolute file path. Results at or below the limit remain inline, while
-  structured, mixed-media, and binary-resource handling is unchanged. Explicit
-  concrete `--tools` selections load selected tools directly, while
+  structured, mixed-media, and binary-resource handling is unchanged. MCP
+  tools that declare `readOnlyHint: true` default to allow through
+  provider-neutral permission metadata; explicit PreToolUse and permission
+  ask/deny decisions retain precedence, and missing or false hints retain the
+  existing default behavior. This is a Praxis permission contract, not a claim
+  of verified Claude Code 2.1.208 parity. Explicit concrete `--tools`
+  selections load selected tools directly, while
   `--disallowedTools ToolSearch` restores the complete tool list.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,

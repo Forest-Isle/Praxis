@@ -386,7 +386,14 @@ or below 100,000 UTF-8 bytes remain inline. Larger results are redacted, stored
 as mode-`0600` `.txt` files in the same session-scoped directory, and replaced
 in provider and transcript content by one bounded instruction containing the
 absolute path. Structured content, mixed media, and binary-resource handling
-remain unchanged.
+remain unchanged. A connected tool declaring `readOnlyHint: true` contributes
+grant-only, provider-neutral `ToolPermissionMetadata` during tool preparation.
+The permission resolver consumes it only at its final default-decision seam;
+explicit PreToolUse outcomes, permission rules and modes, sandbox/path/shell
+safety, and automatic classification retain precedence. Missing or false hints
+do not grant permission, and this metadata never enters tool definitions,
+provider requests, transcripts, persisted state, or MCP protocol payloads. This
+is a Praxis permission contract, not verified Claude Code 2.1.208 parity.
 Stdio and HTTP clients are connected before model execution and closed after
 the run or resume turn completes. Stdio transports inherit sanitized ambient
 runtime variables, then apply server-local `env` as an explicit grant.

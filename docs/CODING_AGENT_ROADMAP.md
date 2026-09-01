@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, 1.1, 1.2, and 2.1 are implemented; Task 2.2 is next.
+Tasks 0.1, 0.2, 1.1, 1.2, 2.1, and 2.2 are implemented; Task 2.3 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -146,11 +146,17 @@ the `ToolSearch` deny opt-out load MCP definitions directly so tools remain
 reachable. This is a Praxis context-efficiency contract, not a claim of
 verified Claude Code 2.1.208 parity.
 
-### Task 2.2: MCP context bounds [depends: Task 2.1, #147]
+### Task 2.2: MCP context bounds [implemented by #558, #561, and #564; depends: Task 2.1, #147]
 
-Bound descriptions, externalize oversized text results, preserve existing
-binary resource behavior, and verify how `readOnlyHint` affects both scheduling
-and permission policy.
+Published descriptions are capped at 2,048 Unicode code points. Text-only
+results above 100,000 UTF-8 bytes are redacted and externalized to mode-`0600`
+session files, while structured, mixed-media, and binary-resource behavior is
+preserved. `readOnlyHint: true` retains validated concurrent scheduling and now
+supplies grant-only, provider-neutral metadata at tool preparation so the final
+default permission decision allows the tool. Explicit PreToolUse outcomes,
+permission ask/deny rules, modes, and safety checks retain precedence; missing
+or false hints keep existing behavior. These are Praxis MCP context and
+permission contracts, not claims of verified Claude Code 2.1.208 parity.
 
 ### Task 2.3: Volatile repository context [depends: Task 0.2, #152]
 

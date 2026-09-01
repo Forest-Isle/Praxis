@@ -13,6 +13,7 @@ this file from merged Conventional Commit pull requests.
 * bound model-visible MCP tool descriptions to 2,048 Unicode code points ([#558](https://github.com/Forest-Isle/Praxis/issues/558))
 * defer default MCP tool schemas behind turn-scoped ToolSearch activation ([#555](https://github.com/Forest-Isle/Praxis/issues/555))
 * externalize oversized text-only MCP results to redacted session files ([#561](https://github.com/Forest-Isle/Praxis/issues/561))
+* honor MCP read-only hints in default permission decisions ([#564](https://github.com/Forest-Isle/Praxis/issues/564))
 * separate provider connect, byte-idle, and absolute-total timeouts ([#550](https://github.com/Forest-Isle/Praxis/issues/550))
 
 ### Bug Fixes

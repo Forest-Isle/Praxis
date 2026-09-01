@@ -66,6 +66,111 @@ describe('permission update runtime integration', () => {
     expect(approvals).toBe(0)
   })
 
+  it('allows read-only tool metadata by default while preserving rule precedence', async () => {
+    const toolName = 'mcp__fixture__read'
+    let executions = 0
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [
+          {
+            name: toolName,
+            description: 'Read-only fixture tool',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call, context) => {
+          if (call.name === toolName) {
+            context.toolPermission = { readOnly: true }
+          }
+          return call
+        },
+        execute: async () => {
+          executions += 1
+          return { content: 'read', isError: false }
+        },
+      },
+      permissions: new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+      }),
+    })
+
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'read-default', name: toolName, input: {} },
+        {
+          cwd: '/workspace',
+          observer,
+          approveTool() {
+            throw new Error('read-only default should not ask')
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ content: 'read', isError: false })
+    expect(executions).toBe(1)
+
+    let approvals = 0
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'read-ask', name: toolName, input: {} },
+        {
+          cwd: '/workspace',
+          observer,
+          permissionUpdates: [
+            {
+              type: 'addRules',
+              rules: [{ toolName, ruleContent: '' }],
+              behavior: 'ask',
+              destination: 'session',
+            },
+          ],
+          approveTool() {
+            approvals += 1
+            return true
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ content: 'read', isError: false })
+    expect(approvals).toBe(1)
+    expect(executions).toBe(2)
+
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'read-deny', name: toolName, input: {} },
+        {
+          cwd: '/workspace',
+          observer,
+          permissionUpdates: [
+            {
+              type: 'addRules',
+              rules: [{ toolName, ruleContent: '' }],
+              behavior: 'deny',
+              destination: 'session',
+            },
+          ],
+          approveTool() {
+            throw new Error('denied read-only tool should not ask')
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ isError: true })
+    expect(executions).toBe(2)
+
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'unknown', name: 'mcp__fixture__unknown', input: {} },
+        {
+          cwd: '/workspace',
+          observer,
+          approveTool() {
+            throw new Error('unknown tool should not ask')
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ isError: true })
+    expect(executions).toBe(2)
+  })
+
   it('prompts for a workspace symlink that resolves outside the workspace', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-permission-symlink-'))
     const cwd = join(root, 'workspace')

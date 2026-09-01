@@ -140,6 +140,58 @@ describe('ClaudeHookToolCoordinator', () => {
     expect(outcomes).toHaveBeenCalledTimes(2)
   })
 
+  it.each([
+    { decision: 'ask' as const, reason: 'hook asked' },
+    { decision: 'deny' as const, reason: 'hook denied' },
+  ])(
+    'keeps PreToolUse $decision authoritative over read-only metadata',
+    async ({ decision, reason }) => {
+      const resolve = vi.fn(() => ({ behavior: 'allow' as const }))
+      const permissions: PermissionResolver = { resolve }
+      const tools: ToolRegistry = {
+        definitions: () => [],
+        prepare: vi.fn(
+          async (value: ModelToolCall, context: ToolExecutionContext) => {
+            context.toolPermission = { readOnly: true }
+            return value
+          },
+        ),
+        execute: vi.fn(async () => ({ content: 'unexpected', isError: false })),
+      }
+      const executeCommand = vi
+        .fn<ClaudeHookCommandExecutor>()
+        .mockResolvedValue({
+          stdout: JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PreToolUse',
+              permissionDecision: decision,
+              permissionDecisionReason: reason,
+            },
+          }),
+          stderr: '',
+          exitCode: 0,
+          durationMs: 1,
+        })
+      const { coordinator, outcomes } = fixture(
+        executeCommand,
+        tools,
+        permissions,
+      )
+      const context: ToolExecutionContext = { cwd: '/workspace' }
+      const prepared = await coordinator.prepare(call, context)
+
+      expect(context.toolPermission).toEqual({ readOnly: true })
+      await expect(coordinator.resolve(prepared, context)).resolves.toEqual({
+        behavior: decision,
+        reason,
+      })
+      expect(resolve).not.toHaveBeenCalled()
+      expect(executeCommand.mock.calls.map((item) => item[0])).toEqual(['pre'])
+      expect(outcomes).toHaveBeenCalledTimes(1)
+      expect(tools.execute).not.toHaveBeenCalled()
+    },
+  )
+
   it('preserves wrapped cancellation and error flags while enforcing hook scheduling', () => {
     const tools: ToolRegistry = {
       definitions: () => [],

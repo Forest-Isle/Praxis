@@ -850,7 +850,10 @@ export class ClaudePermissionResolver implements PermissionResolver {
       return annotatePermissionDecision({ behavior: 'allow' }, 'default')
     }
 
-    const defaultBehavior = DEFAULT_BEHAVIOR[call.name]
+    const defaultBehavior =
+      context?.toolPermission?.readOnly === true
+        ? 'allow'
+        : DEFAULT_BEHAVIOR[call.name]
     return defaultBehavior === 'ask'
       ? this.askDecision(
           call,
