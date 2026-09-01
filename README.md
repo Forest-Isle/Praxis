@@ -227,7 +227,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   existing default behavior. This is a Praxis permission contract, not a claim
   of verified Claude Code 2.1.208 parity. Explicit concrete `--tools`
   selections load selected tools directly, while
-  `--disallowedTools ToolSearch` restores the complete tool list.
+  `--disallowedTools ToolSearch` restores the complete tool list. For each
+  context assembly, Git status is refreshed from the caller-resolved cwd while
+  environment and memory remain lifecycle-stable; collection uses
+  `--no-optional-locks`, fails closed on repository/status errors, and bounds
+  the rendered status to 2,048 UTF-8 bytes.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
   separate per-attempt connect, byte-idle, and absolute-total timeouts, typed

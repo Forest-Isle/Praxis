@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, 1.1, 1.2, 2.1, and 2.2 are implemented; Task 2.3 is next.
+Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, and 2.3 are implemented; Task 3.1 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -158,14 +158,19 @@ permission ask/deny rules, modes, and safety checks retain precedence; missing
 or false hints keep existing behavior. These are Praxis MCP context and
 permission contracts, not claims of verified Claude Code 2.1.208 parity.
 
-### Task 2.3: Volatile repository context [depends: Task 0.2, #152]
+### Task 2.3: Volatile repository context [implemented by #152; depends: Task 0.2]
 
-Make git status turn-volatile, bounded, no-optional-locks, and worktree-aware.
-Subagents collect their own cwd projection rather than inheriting a stale parent
-snapshot.
+Native context keeps environment and memory lifecycle-stable while refreshing
+Git status on every assembly from the caller-resolved cwd, including isolated
+subagent worktrees. Default Git status is a volatile system section outside the
+stable-system prefix; explicit relocation remains a volatile first-user
+wrapper. The rendered block is bounded to 2,048 UTF-8 bytes with an exact
+`... [truncated]` marker, uses `--no-optional-locks`, and fails closed by
+omitting Git context when repository detection or status fails.
 
-Acceptance: large MCP and repository fixtures reduce prompt bytes without
-regressing tool selection, task outcome, or permission safety.
+Acceptance: focused native context and run/resume fixtures prove fresh Git
+status, stable environment/memory, cwd-specific subagent context, bounded
+UTF-8 output, volatile placement, and non-persistence.
 
 ## Phase 3 — Provider-native depth
 

@@ -315,6 +315,14 @@ without teaching the composer any provider wire format.
 `ContextAssembler` loads the composer inputs and always returns the canonical
 lifecycle-scoped snapshot.
 
+Native context keeps environment and memory stable for a lifecycle and resolved
+cwd, while recomputing Git status for every assembly from the caller-resolved
+cwd (including isolated subagent worktrees). Default Git status is a volatile
+`system` section outside the stable-system prefix; explicit relocation keeps a
+volatile first-user wrapper. The rendered Git block is capped at 2,048 UTF-8
+bytes with an exact `... [truncated]` marker, collected with
+`--no-optional-locks`, and omitted when repository detection or status fails.
+
 The private turn execution module owns the complete per-submission order:
 transcript lease, hooks and recovery, context projection, AgentRuntime rounds,
 accounting, and Session/Project memory observation. It is the sole owner of a

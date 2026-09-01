@@ -75,7 +75,9 @@ interface ClaudeLoaderSnapshot {
   lifecycleId: string
   cwd?: string
   resources?: Promise<ClaudeContextResources>
-  dynamic?: Promise<ClaudeDynamicContextSections>
+  stableDynamic?: Promise<
+    Pick<ClaudeDynamicContextSections, 'environment' | 'memory'>
+  >
   mcpInstructions?: Promise<readonly ClaudeMcpInstruction[]>
   sessionGuidance?: Promise<string | undefined>
   currentDate?: string
@@ -217,7 +219,7 @@ ${sections.join('\n\n')}`,
         tailSections.push({
           id: 'relocated-runtime-context',
           placement: 'first-user',
-          stability: 'session',
+          stability: 'volatile',
           content: renderClaudeDynamicUserContext({
             environment: dynamic.environment,
             ...(dynamic.gitStatus ? { gitStatus: dynamic.gitStatus } : {}),
@@ -228,8 +230,19 @@ ${sections.join('\n\n')}`,
           id: 'runtime-context',
           placement: 'system',
           stability: 'session',
-          content: renderClaudeDynamicSystemContext(dynamic),
+          content: renderClaudeDynamicSystemContext({
+            environment: dynamic.environment,
+            ...(dynamic.memory ? { memory: dynamic.memory } : {}),
+          }),
         })
+        if (dynamic.gitStatus) {
+          tailSections.push({
+            id: 'git-status',
+            placement: 'system',
+            stability: 'volatile',
+            content: dynamic.gitStatus,
+          })
+        }
       }
     }
     const composition = this.composer.compose({
@@ -323,14 +336,23 @@ ${sections.join('\n\n')}`,
     const load = this.options.loadDynamicContext
     if (!load) throw new Error('Dynamic context loader is unavailable')
     if (!snapshot) return load(cwd)
-    if (!snapshot.dynamic) {
-      const pending = load(cwd)
-      snapshot.dynamic = pending
+    const current = load(cwd)
+    if (!snapshot.stableDynamic) {
+      const pending = current.then(({ environment, memory }) => ({
+        environment,
+        ...(memory ? { memory } : {}),
+      }))
+      snapshot.stableDynamic = pending
       void pending.catch(() => {
-        if (snapshot.dynamic === pending) delete snapshot.dynamic
+        if (snapshot.stableDynamic === pending) delete snapshot.stableDynamic
       })
     }
-    return snapshot.dynamic
+    return Promise.all([current, snapshot.stableDynamic]).then(
+      ([fresh, stable]) => ({
+        ...stable,
+        ...(fresh.gitStatus ? { gitStatus: fresh.gitStatus } : {}),
+      }),
+    )
   }
 
   private loadMcpInstructions(

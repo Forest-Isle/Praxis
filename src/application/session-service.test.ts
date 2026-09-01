@@ -11772,6 +11772,66 @@ return 'done'`,
     expect(transcript).not.toContain('DYNAMIC_CONTEXT')
   })
 
+  it('refreshes volatile git context across run and resume while keeping stable context', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-volatile-git-context-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const requests: ModelRequest[] = []
+    let version = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          requests.push(request)
+          yield { type: 'text-delta', delta: 'done' }
+        },
+      },
+      contextAssembler: new ClaudeContextAssembler({
+        loadResources: async () => ({
+          instructions: [],
+          conditionalRules: [],
+          memoryIndex: null,
+        }),
+        loadDynamicContext: async () => {
+          version += 1
+          return {
+            environment: 'ENVIRONMENT_1',
+            memory: 'MEMORY_1',
+            gitStatus: `GIT_STATUS_${version}`,
+          }
+        },
+      }),
+    })
+
+    const first = await service.run('first prompt')
+    await service.resume(first.sessionId, 'second prompt')
+
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.messages)).toContain('GIT_STATUS_1')
+    expect(JSON.stringify(requests[1]?.messages)).toContain('GIT_STATUS_2')
+    expect(JSON.stringify(requests[1]?.messages)).toContain('ENVIRONMENT_1')
+    expect(requests[0]?.stableSystemMessageCount).toBe(
+      requests[1]?.stableSystemMessageCount,
+    )
+    expect(requests[0]?.stableSystemMessageCount).toBeLessThan(
+      requests[0]?.messages.filter(({ role }) => role === 'system').length ?? 0,
+    )
+    const { resolveNativePaths } = await import('../native/paths.js')
+    const transcript = await readFile(
+      resolveNativePaths({
+        configDir: configRoot,
+        cwd,
+        sessionId: first.sessionId,
+      }).sessionFile,
+      'utf8',
+    )
+    expect(transcript).not.toContain('GIT_STATUS_')
+  })
+
   it('delegates brief and structured-output section policy to canonical context assembly', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-turn-context-policy-'))
     roots.push(root)
