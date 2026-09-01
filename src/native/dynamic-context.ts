@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process'
 import { basename } from 'node:path'
 import { platform, release, type } from 'node:os'
 
-const MAX_GIT_OUTPUT_BYTES = 128 * 1024
+const MAX_GIT_OUTPUT_BYTES = 2_048
+const MAX_GIT_STATUS_BYTES = 2_048
 const MAX_GIT_ERROR_BYTES = 8 * 1024
 const GIT_TIMEOUT_MS = 5_000
 
@@ -47,6 +48,21 @@ function collectBounded(
   chunks.push(accepted)
   state.bytes += accepted.length
   if (accepted.length < chunk.length) state.truncated = true
+}
+
+function boundUtf8(value: string, limit: number, marker: string): string {
+  if (Buffer.byteLength(value, 'utf8') <= limit) return value
+  const markerBytes = Buffer.byteLength(marker, 'utf8')
+  const prefixLimit = Math.max(0, limit - markerBytes)
+  let bytes = 0
+  let prefix = ''
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8')
+    if (bytes + characterBytes > prefixLimit) break
+    prefix += character
+    bytes += characterBytes
+  }
+  return `${prefix}${marker}`
 }
 
 function defaultRunGit(
@@ -141,9 +157,15 @@ async function renderGitStatus(
     optionalGit(runGit, ['branch', '--show-current']),
     optionalGit(runGit, ['branch', '--format=%(refname:short)']),
     optionalGit(runGit, ['config', 'user.name']),
-    optionalGit(runGit, ['status', '--short', '--untracked-files=all']),
+    optionalGit(runGit, [
+      '--no-optional-locks',
+      'status',
+      '--short',
+      '--untracked-files=all',
+    ]),
     optionalGit(runGit, ['log', '-5', '--oneline']),
   ])
+  if (!status.available) return undefined
   const branch = branchValue.output || 'HEAD'
   const sections = [
     '# gitStatus',
@@ -156,18 +178,20 @@ async function renderGitStatus(
   if (user.available && user.output) {
     sections.push('', `Git user: ${user.output}`)
   }
-  const renderedStatus = !status.available
-    ? 'Unavailable'
-    : status.output
-      ? `${status.output}${status.truncated ? '\n... [truncated]' : ''}`
-      : status.truncated
-        ? '... [truncated]'
-        : 'Clean'
+  const renderedStatus = status.output
+    ? `${status.output}${status.truncated ? '\n... [truncated]' : ''}`
+    : status.truncated
+      ? '... [truncated]'
+      : 'Clean'
   sections.push('', 'Status:', renderedStatus)
   if (commits.available && commits.output) {
     sections.push('', 'Recent commits:', commits.output)
   }
-  return sections.join('\n')
+  return boundUtf8(
+    sections.join('\n'),
+    MAX_GIT_STATUS_BYTES,
+    '\n... [truncated]',
+  )
 }
 
 export async function loadClaudeDynamicContext(
