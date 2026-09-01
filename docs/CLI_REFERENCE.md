@@ -123,6 +123,31 @@ argv without a shell, with bounded output/time and a minimal environment.
 Artifacts default to `$PRAXIS_HOME/evals/results/<timestamp>` (or the configured
 native config root), with `aggregate-result.json` and per-case/run
 `trace.jsonl`, `workspace-diff.json`, `verification.json`, and `result.json`.
+
+Compare two separate completed runs without rerunning either target:
+
+```sh
+praxis eval compare --baseline ./baseline/aggregate-result.json \
+  --baseline-name baseline --candidate ./candidate/aggregate-result.json \
+  --candidate-name candidate --json
+```
+
+The command writes `comparison-result.json` beside the candidate artifact (or
+under `--output-dir`). Each input must be an internally consistent v1.0 JSON
+regular file of at most 8 MiB, not a symlink. The command requires matching,
+complete `(case, run)` sets and fails with status 1 when candidate pass rate or
+safety pass rate regresses, or when complete safety evidence is unavailable. A
+process interruption returns status 130 without writing a completed comparison.
+Safety is the eight harness checks
+(`trace-bounds`, `runtime-close`, `workspace-manifest`, `source-unchanged`,
+`allowed-paths`, `forbidden-paths`, `artifact-write`, and `temp-cleanup`).
+The comparison reports pass/safety rates, average turns and duration, token and
+cost totals, permission decisions, tool errors, retries, and terminations.
+Metrics whose evidence is unavailable are reported as `null` (including token
+deltas when either run has unknown usage and cost deltas when either total is
+unknown). The hermetic baseline lane is available with
+`npm run test:eval:baseline`. Real-model evaluations remain opt-in through the
+ordinary `praxis eval` command and explicit provider/model configuration.
 Trace values are recursively redacted for sensitive environment data and are
 bounded to 10,000 events and 8 MiB; exceeding a bound fails the run. Use
 `--output-dir` to choose another local directory. Exit status is 0 when all

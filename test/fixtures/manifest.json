@@ -1001,6 +1001,101 @@
       "reason": "The prose-only implemented/qualified audit is replaced by this executable contract, which never treats implementation claims as qualification evidence."
     },
     {
+      "id": "eval.coding.baseline",
+      "seam": "Project eval baseline comparison",
+      "contract": "Hermetic coding scenarios execute through the native session and tool lifecycle, and complete aggregate artifacts compare with fail-closed outcome and safety gates.",
+      "status": "qualified",
+      "modules": [
+        "src/evals/project-eval.ts",
+        "src/evals/project-eval-runner.ts",
+        "src/evals/project-eval-comparison.ts"
+      ],
+      "outcomes": [
+        "Eight bounded coding scenarios exercise bug fixing, feature work, refactoring, navigation, resume, permission denial, malformed input recovery, and active-turn steering without changing source fixtures.",
+        "Named complete aggregate artifacts report deterministic pass, safety, efficiency, permission, error, retry, and termination deltas and fail closed when safety evidence is unavailable."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/evals/coding-baseline.test.ts",
+          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/project-eval-comparison.test.ts",
+          "testName": "project eval comparison > rejects internally inconsistent, partial, and mismatched aggregates"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/active-turn-steering/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/active-turn-steering/fixture/README.md"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/bug-fix/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/bug-fix/fixture/math.cjs"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/denied-permission-recovery/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/denied-permission-recovery/fixture/protected.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/long-context-resume/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/long-context-resume/fixture/notes.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/malformed-tool-input-recovery/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/malformed-tool-input-recovery/fixture/target.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/refactor/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/refactor/fixture/user.cjs"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/repository-navigation/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/repository-navigation/fixture/README.md"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/repository-navigation/fixture/src/config.js"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/small-feature/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/project-evals/evals/small-feature/fixture/greeting.cjs"
+        }
+      ]
+    },
+    {
       "id": "native.deletion.gate",
       "seam": "Native deletion verification",
       "contract": "Removed compatibility and migration surfaces remain absent from source, build, and package output.",

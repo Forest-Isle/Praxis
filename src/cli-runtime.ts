@@ -270,6 +270,7 @@ import {
   PROJECT_EVAL_HELP,
   type ProjectEvalDependencies,
 } from './evals/project-eval.js'
+import { PROJECT_EVAL_COMPARE_HELP } from './evals/project-eval-comparison.js'
 import {
   CLAUDE_PLUGIN_PRUNE_HELP,
   CLAUDE_PLUGIN_TAG_HELP,
@@ -6379,6 +6380,15 @@ async function execute(
         }
       : { args: [...argv] }
   if (special.args[0] === 'eval') {
+    if (
+      special.args[1] === 'compare' &&
+      special.args
+        .slice(2)
+        .some((value) => value === '-h' || value === '--help')
+    ) {
+      io.stdout(PROJECT_EVAL_COMPARE_HELP)
+      return 0
+    }
     if (
       special.args
         .slice(1)

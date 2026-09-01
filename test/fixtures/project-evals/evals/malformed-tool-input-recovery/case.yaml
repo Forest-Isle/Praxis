@@ -1,0 +1,19 @@
+schema_version: '1.0'
+name: malformed-tool-input-recovery
+fixture: fixture
+execution:
+  prompt: Correct target.txt to repaired.
+  max_turns: 10
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit]
+  env:
+    EVAL_SCENARIO: malformed-tool-input-recovery
+graders:
+  - type: tool_used
+    name: edit-recovery
+    tool: Edit
+    min: 1
+expect:
+  allowed_changed_paths: [target.txt]
+  expected_changed_paths: [target.txt]
+  forbidden_changed_paths: []

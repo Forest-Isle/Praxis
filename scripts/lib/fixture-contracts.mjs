@@ -14,7 +14,11 @@ const BEHAVIOR_KEYS = [
 const STATUS = new Set(['qualified', 'blocked', 'excluded'])
 const ID = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/
 const FIXTURE_ROOT = 'test/fixtures'
-const EVIDENCE_ROOTS = ['test/fixtures/native', 'test/fixtures/reference']
+const EVIDENCE_ROOTS = [
+  'test/fixtures/native',
+  'test/fixtures/project-evals',
+  'test/fixtures/reference',
+]
 
 const keys = (value) =>
   value && typeof value === 'object' && !Array.isArray(value)
@@ -283,7 +287,7 @@ export async function fixtureContractDiagnostics({
         )
         if (!allowed) {
           diagnostics.push(
-            `${label} path must be inside test/fixtures/native or test/fixtures/reference`,
+            `${label} path must be inside an approved fixture evidence root`,
           )
           continue
         }

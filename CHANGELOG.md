@@ -8,6 +8,7 @@ this file from merged Conventional Commit pull requests.
 ### Features
 
 * add isolated project outcome evaluations with bounded verifier artifacts ([#541](https://github.com/Forest-Isle/Praxis/issues/541))
+* add hermetic coding baseline fixtures and deterministic aggregate comparison ([#544](https://github.com/Forest-Isle/Praxis/issues/544))
 
 ### Bug Fixes
 

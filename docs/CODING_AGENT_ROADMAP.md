@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Task 0.1 is implemented; Task 0.2 is the next dependency-ready slice.
+Task 0.1 is implemented; Task 0.2 is implemented and Task 1.1 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -102,7 +102,10 @@ input, and active-turn steering. Start with deterministic provider scripts;
 add opt-in real-model lanes after artifact stability.
 
 Acceptance: one command compares named baseline and candidate configurations
-and reports pass-rate, safety, turn, token, cost, and latency deltas.
+and reports pass-rate, safety, turn, token, cost, and latency deltas. The
+comparison consumes separate local artifacts; its null metrics and pass/safety
+gate are documented in the CLI reference. The hermetic eight-case lane is
+available with `npm run test:eval:baseline`; real-model lanes remain opt-in.
 
 ## Phase 1 — Recovery correctness
 
