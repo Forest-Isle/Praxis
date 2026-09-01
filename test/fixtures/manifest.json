@@ -2,6 +2,61 @@
   "schemaVersion": 1,
   "behaviors": [
     {
+      "id": "core.malformed.tool.input.recovery",
+      "seam": "Malformed tool input recovery",
+      "contract": "Malformed streamed tool arguments become safe typed calls and settle without tool execution while native transcripts remain recoverable.",
+      "status": "qualified",
+      "modules": [
+        "src/core/runtime.ts",
+        "src/core/transcript-event.ts",
+        "src/providers/anthropic-compatible.ts",
+        "src/providers/openai-compatible.ts",
+        "src/providers/codex-subscription.ts",
+        "src/application/session-service.ts"
+      ],
+      "outcomes": [
+        "Malformed calls produce a paired error result without authorization or execution.",
+        "Native transcript diagnostics are strictly canonical and provider terminals continue."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > settles malformed tool input without crossing tool or permission interfaces"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/core/transcript-event.test.ts",
+          "testName": "TranscriptEvent > accepts only the canonical malformed tool input diagnostic"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/providers/anthropic-compatible.test.ts",
+          "testName": "AnthropicCompatibleProvider > recovers malformed and rejects oversized streamed tool input"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/providers/openai-compatible.test.ts",
+          "testName": "OpenAICompatibleProvider > recovers malformed streamed tool arguments and emits tool_use terminal"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/providers/codex-subscription.test.ts",
+          "testName": "CodexSubscriptionProvider > recovers malformed function arguments and emits tool_use terminal"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > recovers canonical malformed native input without execution and rejects mixed recovery"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/coding-baseline.test.ts",
+          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline"
+        }
+      ]
+    },
+    {
       "id": "core.agent.loop",
       "seam": "AgentRuntime",
       "contract": "The provider-neutral Agent loop continues through allowed tool calls and enforces a bounded model-turn limit.",

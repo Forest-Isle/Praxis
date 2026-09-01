@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Task 0.1 is implemented; Task 0.2 is implemented and Task 1.1 is next.
+Tasks 0.1, 0.2, and 1.1 are implemented; Task 1.2 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -109,10 +109,14 @@ available with `npm run test:eval:baseline`; real-model lanes remain opt-in.
 
 ## Phase 1 — Recovery correctness
 
-### Task 1.1: Recover malformed tool input [depends: Task 0.2, #138]
+### Task 1.1: Recover malformed tool input [implemented by #138]
 
 Provider decoders return a typed invalid-input call. The runtime emits a paired,
 model-visible error result without executing the tool or losing the turn.
+Anthropic Messages, OpenAI-compatible Chat Completions, and Codex subscription
+Responses share the provider-neutral diagnostic. Native transcripts persist
+the canonical diagnostic so an interrupted turn resumes to exactly one safe
+error result without scheduling, permission, approval, or execution.
 
 ### Task 1.2: Stream timeout model [depends: Task 0.2, #121]
 

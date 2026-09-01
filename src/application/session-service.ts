@@ -83,6 +83,7 @@ import {
   type ModelToolCall,
   type ModelToolDefinition,
   type ModelProvider,
+  MALFORMED_TOOL_INPUT_MESSAGE,
   ModelProviderError,
   type ModelUsage,
   type PermissionApproval,
@@ -4837,7 +4838,16 @@ export class ClaudeSessionService {
               : {}),
           }
           const unresolvedToolCall = unresolvedToolCalls[0]
-          if (unresolvedToolCall && !approveRecovery) {
+          if (
+            unresolvedToolCall &&
+            !unresolvedToolCalls.every(
+              (call) =>
+                (call as ModelToolCall).inputError?.kind === 'malformed_json' &&
+                (call as ModelToolCall).inputError?.message ===
+                  MALFORMED_TOOL_INPUT_MESSAGE,
+            ) &&
+            !approveRecovery
+          ) {
             throw new Error(
               `Claude session tool call ${unresolvedToolCall.id} requires explicit recovery approval`,
             )

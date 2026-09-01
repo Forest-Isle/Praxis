@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import {
-  ModelProviderError,
-  type ModelToolDefinition,
-} from '../core/runtime.js'
+import type { ModelToolDefinition } from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 
 const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
@@ -1482,7 +1479,7 @@ describe('AnthropicCompatibleProvider', () => {
     },
   )
 
-  it('rejects malformed and oversized streamed tool input', async () => {
+  it('recovers malformed and rejects oversized streamed tool input', async () => {
     const malformed = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
@@ -1494,6 +1491,8 @@ describe('AnthropicCompatibleProvider', () => {
             'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"Read","input":{}}}\n\n',
             'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}\n\n',
             'data: {"type":"content_block_stop","index":0}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{}}\n\n',
+            'data: {"type":"message_stop"}\n\n',
           ].join(''),
         ),
     })
@@ -1512,9 +1511,23 @@ describe('AnthropicCompatibleProvider', () => {
         ),
     })
 
-    await expect(
-      malformed.complete({ messages: [] })[Symbol.asyncIterator]().next(),
-    ).rejects.toBeInstanceOf(ModelProviderError)
+    const malformedEvents = []
+    for await (const event of malformed.complete({ messages: [] })) {
+      malformedEvents.push(event)
+    }
+    expect(malformedEvents).toContainEqual({
+      type: 'tool-call',
+      call: {
+        id: 'call',
+        name: 'Read',
+        input: {},
+        inputError: { kind: 'malformed_json', message: 'Malformed tool input' },
+      },
+    })
+    expect(malformedEvents).toContainEqual({
+      type: 'terminal',
+      reason: 'tool_use',
+    })
     await expect(
       oversized.complete({ messages: [] })[Symbol.asyncIterator]().next(),
     ).rejects.toThrow('tool arguments exceeded 4 bytes')

@@ -68,6 +68,42 @@ describe('TranscriptEvent', () => {
     ).toBe(false)
   })
 
+  it('accepts only the canonical malformed tool input diagnostic', () => {
+    const call = {
+      id: 'call-1',
+      name: 'Read',
+      input: {},
+      inputError: { kind: 'malformed_json', message: 'Malformed tool input' },
+    }
+    expect(
+      isTranscriptEvent({
+        ...identity,
+        kind: 'messages',
+        messages: [{ role: 'assistant', content: '', toolCalls: [call] }],
+      }),
+    ).toBe(true)
+    for (const inputError of [
+      { kind: 'unknown', message: 'Malformed tool input' },
+      { kind: 'malformed_json', message: 'Malformed tool input: raw' },
+      { kind: 'malformed_json', message: 'Malformed tool input', extra: true },
+      { kind: 'malformed_json' },
+    ]) {
+      expect(
+        isTranscriptEvent({
+          ...identity,
+          kind: 'messages',
+          messages: [
+            {
+              role: 'assistant',
+              content: '',
+              toolCalls: [{ ...call, inputError }],
+            },
+          ],
+        }),
+      ).toBe(false)
+    }
+  })
+
   it('rejects provider fields at every nested message boundary', () => {
     const invalidMessages = [
       { role: 'user', content: 'hi', providerMessageId: 'provider' },

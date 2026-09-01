@@ -7,6 +7,7 @@ import type {
   ModelThinkingBlock,
   ModelToolCall,
 } from './runtime.js'
+import { MALFORMED_TOOL_INPUT_MESSAGE } from './runtime.js'
 
 export interface TranscriptEventIdentity {
   readonly id: string
@@ -115,12 +116,18 @@ export function isModelContentBlock(
   return isModelMedia(value)
 }
 function isModelToolCall(value: unknown): value is ModelToolCall {
+  const inputError = isRecord(value) ? value.inputError : undefined
   return (
     isRecord(value) &&
-    hasOnlyKeys(value, ['id', 'name', 'input']) &&
+    hasOnlyKeys(value, ['id', 'name', 'input', 'inputError']) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.name) &&
-    isRecord(value.input)
+    isRecord(value.input) &&
+    (inputError === undefined ||
+      (isRecord(inputError) &&
+        hasOnlyKeys(inputError, ['kind', 'message']) &&
+        inputError.kind === 'malformed_json' &&
+        inputError.message === MALFORMED_TOOL_INPUT_MESSAGE))
   )
 }
 function isModelThinkingBlock(value: unknown): value is ModelThinkingBlock {
