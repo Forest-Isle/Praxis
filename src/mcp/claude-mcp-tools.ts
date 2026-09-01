@@ -211,6 +211,12 @@ function sanitizeMcpUnicode(value: string): string {
       '',
     )
 }
+const MAX_MCP_TOOL_DESCRIPTION_CODE_POINTS = 2_048
+
+function capMcpToolDescription(value: string): string {
+  return [...value].slice(0, MAX_MCP_TOOL_DESCRIPTION_CODE_POINTS).join('')
+}
+
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024
 const NO_MCP_RESOURCES =
   'No resources found. MCP servers may still provide tools even if they have no resources.'
@@ -1793,9 +1799,11 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         sensitiveValues,
         definition: {
           name,
-          description: redactSensitiveText(
-            tool.description ?? `MCP tool ${tool.name} from ${serverName}`,
-            sensitiveValues,
+          description: capMcpToolDescription(
+            redactSensitiveText(
+              tool.description ?? `MCP tool ${tool.name} from ${serverName}`,
+              sensitiveValues,
+            ),
           ),
           inputSchema: redactSensitiveValue(tool.inputSchema, sensitiveValues),
         },

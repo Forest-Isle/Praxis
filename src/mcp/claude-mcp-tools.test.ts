@@ -861,6 +861,98 @@ process.stdin.on('data', chunk => {
     }
   })
 
+  it('caps published MCP descriptions by Unicode code points after redaction', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-description-cap-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'description-server.mjs')
+    const secret = 'description-secret-canary'
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'description-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [
+            { name: 'ascii', description: 'a'.repeat(10 * 1024), inputSchema: { type: 'object' } },
+            { name: 'unicode', description: '😀'.repeat(2048) + 'tail', inputSchema: { type: 'object' } },
+            { name: 'short', description: 'short description', inputSchema: { type: 'object' } },
+            { name: 'secret', description: process.env.MCP_DESCRIPTION_SECRET + ' trailing text', inputSchema: { type: 'object' } },
+          ] }
+        : { content: [{ type: 'text', text: 'ok' }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+
+    const registry = await ClaudeMcpToolRegistry.connect({
+      base,
+      cwd: root,
+      resources: [
+        {
+          path: '/description.json',
+          scope: 'user',
+          value: {
+            mcpServers: {
+              fixture: {
+                command: process.execPath,
+                args: [serverScript],
+                env: { MCP_DESCRIPTION_SECRET: secret },
+              },
+            },
+          },
+        },
+      ],
+    })
+
+    try {
+      const definitions = registry
+        .definitions()
+        .filter((tool) => tool.name.startsWith('mcp__fixture__'))
+      const byName = new Map(
+        definitions.map((definition) => [definition.name, definition]),
+      )
+      const ascii = byName.get('mcp__fixture__ascii')?.description
+      const unicode = byName.get('mcp__fixture__unicode')?.description
+      const short = byName.get('mcp__fixture__short')?.description
+      const redacted = byName.get('mcp__fixture__secret')?.description
+      expect(ascii).toBe('a'.repeat(2048))
+      expect(unicode).toBe('😀'.repeat(2048))
+      expect([...(unicode ?? '')]).toHaveLength(2048)
+      expect(short).toBe('short description')
+      expect(redacted).toBe('[REDACTED] trailing text')
+      expect(redacted).not.toContain(secret)
+      await expect(registry.tools('fixture')).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'ascii',
+            fullName: 'mcp__fixture__ascii',
+            description: ascii,
+          }),
+          expect.objectContaining({
+            name: 'unicode',
+            fullName: 'mcp__fixture__unicode',
+            description: unicode,
+          }),
+        ]),
+      )
+    } finally {
+      await registry.close()
+    }
+  })
+
   it('discovers and calls layered stdio and HTTP tools', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-mcp-tools-')),
