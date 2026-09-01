@@ -15,6 +15,7 @@ import {
   type ToolRegistry,
 } from './runtime.js'
 import { ActiveTurnInputMailbox } from './active-turn-input.js'
+import { DeferredToolCatalog } from '../tools/deferred-tool-catalog.js'
 
 function providerFrom(complete: ModelProvider['complete']): ModelProvider {
   return {
@@ -52,6 +53,81 @@ const image = {
 }
 
 describe('AgentRuntime', () => {
+  it('refreshes deferred tool definitions for each provider request', async () => {
+    const requests: ModelRequest[] = []
+    const observedToolNames: string[][] = []
+    let turn = 0
+    const tools = new DeferredToolCatalog({
+      definitions: () => [
+        {
+          name: 'Read',
+          description: 'Read files',
+          inputSchema: { type: 'object' },
+        },
+        {
+          name: 'mcp__fixture__search',
+          description: 'Search fixture documents',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async () => ({ content: 'fixture', isError: false }),
+    }).startTurn()
+    const runtime = new AgentRuntime(
+      providerFrom(async function* (request) {
+        requests.push(request)
+        if (turn++ === 0) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'tool-search',
+              name: 'ToolSearch',
+              input: { query: 'fixture search' },
+            },
+          }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 4, outputTokens: 1 },
+          }
+          return
+        }
+        yield { type: 'text-delta', delta: 'found' }
+        yield {
+          type: 'usage',
+          usage: { inputTokens: 5, outputTokens: 2 },
+        }
+      }),
+      undefined,
+      {
+        tools,
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      },
+    )
+
+    await expect(
+      runtime.run({
+        cwd: '/workspace',
+        messages: [{ role: 'user', content: 'find it' }],
+        observer: {
+          async assistantCompleted() {},
+          async toolCompleted() {},
+          async modelRequestCompleted({ tools: observed }) {
+            observedToolNames.push(observed.map(({ name }) => name))
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ text: 'found' })
+
+    const requestToolNames = requests.map(
+      (request) => request.tools?.map(({ name }) => name) ?? [],
+    )
+    expect(requestToolNames).toEqual([
+      ['Read', 'ToolSearch'],
+      ['Read', 'mcp__fixture__search', 'ToolSearch'],
+    ])
+    expect(observedToolNames).toEqual(requestToolNames)
+  })
+
   it('delivers pre-enqueued steering one item per boundary before final stop', async () => {
     let nextId = 0
     const mailbox = new ActiveTurnInputMailbox(() => `steer-${++nextId}`)

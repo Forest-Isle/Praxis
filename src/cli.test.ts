@@ -43,6 +43,7 @@ import {
   readConsoleSecret,
   resolveInteractiveProviderStartup,
   resolveRuntimeModel,
+  shouldDeferMcpTools,
 } from './cli-runtime.js'
 import { projectRuntimeSettings } from './cli/tui/runtime-settings.js'
 
@@ -393,6 +394,163 @@ function costDependencies(
 }
 
 describe('Praxis CLI', () => {
+  it('defers MCP tools only for default CLI tool selection', () => {
+    const enabled = (
+      tools: readonly string[] | undefined,
+      options: {
+        simpleMode?: boolean
+        disallowedTools?: readonly string[]
+      } = {},
+    ) =>
+      shouldDeferMcpTools({
+        simpleMode: options.simpleMode ?? false,
+        tools,
+        disallowedTools: options.disallowedTools ?? [],
+      })
+
+    expect(enabled(undefined)).toBe(true)
+    expect(enabled(['default'])).toBe(true)
+    expect(enabled([], {})).toBe(false)
+    expect(enabled(['mcp__fixture__search'])).toBe(false)
+    expect(enabled(['default', 'mcp__fixture__search'])).toBe(false)
+    expect(enabled(undefined, { simpleMode: true })).toBe(false)
+    expect(enabled(undefined, { disallowedTools: ['ToolSearch'] })).toBe(false)
+    expect(enabled(undefined, { disallowedTools: ['Bash'] })).toBe(true)
+    expect(() => enabled(['ToolSearch'])).toThrow(
+      'Unknown tool in --tools: ToolSearch',
+    )
+    expect(() => enabled(['default', 'ToolSearch'])).toThrow(
+      'Unknown tool in --tools: ToolSearch',
+    )
+  })
+
+  it('wires deferred MCP selection through the default service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-cli-deferred-mcp-'))
+    const configRoot = join(root, 'config')
+    const serverScript = join(root, 'mcp-server.mjs')
+    await mkdir(configRoot, { recursive: true })
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+const send = (request, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'echo', description: 'Echo fixture input', inputSchema: { type: 'object' } }] }
+        : { content: [{ type: 'text', text: 'unused' }] }
+    send(request, result)
+  }
+})
+`,
+    )
+
+    const previousFetch = globalThis.fetch
+    const providerToolNames: string[][] = []
+    globalThis.fetch = (async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        tools?: Array<{
+          function?: { name?: unknown }
+        }>
+      }
+      providerToolNames.push(
+        (body.tools ?? []).flatMap((tool) =>
+          typeof tool.function?.name === 'string' ? [tool.function.name] : [],
+        ),
+      )
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    }) as typeof fetch
+
+    const providerEnvironment = {
+      PRAXIS_PROVIDER: 'openai',
+      PRAXIS_MODEL: 'fixture-model',
+      PRAXIS_API_KEY: 'fixture-key',
+      PRAXIS_BASE_URL: 'https://fixture.example/v1',
+    }
+    const mcpConfigs = [
+      JSON.stringify({
+        mcpServers: {
+          fixture: { command: process.execPath, args: [serverScript] },
+        },
+      }),
+    ]
+    const requestTools = async (
+      controls: Partial<CliControls>,
+    ): Promise<string[]> => {
+      const before = providerToolNames.length
+      const service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment,
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          dataPlane: 'native',
+          strictMcpConfig: true,
+          mcpConfigs,
+          ...controls,
+        },
+      })
+      try {
+        await service.run('hello')
+      } finally {
+        await service.close?.()
+      }
+      expect(providerToolNames).toHaveLength(before + 1)
+      return providerToolNames[before] ?? []
+    }
+
+    try {
+      const deferred = await requestTools({})
+      expect(deferred).toContain('ToolSearch')
+      expect(deferred).not.toContain('mcp__fixture__echo')
+
+      const explicit = await requestTools({
+        tools: ['mcp__fixture__echo'],
+      })
+      expect(explicit).toContain('mcp__fixture__echo')
+      expect(explicit).not.toContain('ToolSearch')
+
+      const optedOut = await requestTools({
+        disallowedTools: ['ToolSearch'],
+      })
+      expect(optedOut).toContain('mcp__fixture__echo')
+      expect(optedOut).not.toContain('ToolSearch')
+
+      await expect(
+        createDefaultDependencies().createService({
+          eventSink: () => undefined,
+          requireProvider: false,
+          cwd: root,
+          configRoot,
+          providerEnvironment: {},
+          controls: {
+            ...DEFAULT_CLI_CONTROLS,
+            dataPlane: 'native',
+            tools: ['default', 'ToolSearch'],
+          },
+        }),
+      ).rejects.toThrow('Unknown tool in --tools: ToolSearch')
+      expect(providerToolNames).toHaveLength(3)
+    } finally {
+      globalThis.fetch = previousFetch
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   it('reads console secrets without echo and restores terminal state', async () => {
     const input = new SecretInputFixture()
     const output: string[] = []

@@ -123,7 +123,7 @@ describe('ClaudeHookToolCoordinator', () => {
         durationMs: 1,
       })
     const { coordinator, outcomes } = fixture(executeCommand, tools)
-    expect(coordinator.schedulingPolicy()).toEqual({
+    expect(coordinator.schedulingPolicy(call)).toEqual({
       concurrency: 'exclusive',
       startAfterAssistant: true,
     })
@@ -138,6 +138,26 @@ describe('ClaudeHookToolCoordinator', () => {
     ).resolves.toEqual({ content: 'RESULT', isError: false })
     expect(executionContext?.preToolUseAllowed).toBe(true)
     expect(outcomes).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves wrapped cancellation and error flags while enforcing hook scheduling', () => {
+    const tools: ToolRegistry = {
+      definitions: () => [],
+      schedulingPolicy: () => ({
+        concurrency: 'concurrent',
+        cancelOnInterrupt: true,
+        abortGroupOnError: true,
+      }),
+      prepare: async (value) => value,
+      execute: async () => ({ content: 'ok', isError: false }),
+    }
+    const { coordinator } = fixture(vi.fn<ClaudeHookCommandExecutor>(), tools)
+    expect(coordinator.schedulingPolicy(call)).toEqual({
+      concurrency: 'exclusive',
+      startAfterAssistant: true,
+      cancelOnInterrupt: true,
+      abortGroupOnError: true,
+    })
   })
 
   it('blocks before execution on exit two', async () => {

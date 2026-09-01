@@ -289,6 +289,94 @@ describe('foreground Claude Agent execution', () => {
     expect(result.content).toBe('owned result')
   })
 
+  it('defers MCP schemas for default subagent turns and supports direct loading opt-out', async () => {
+    const run = async (deferMcpTools: boolean | undefined) => {
+      const root = await mkdtemp(
+        join(tmpdir(), 'praxis-subagent-deferred-mcp-'),
+      )
+      roots.push(root)
+      const requests: ModelRequest[] = []
+      let searched = false
+      const executor = new ClaudeSubagentExecutor({
+        configRoot: join(root, 'config'),
+        dataPlane: 'native',
+        cwd: join(root, 'project'),
+        claudeVersion: '2.1.208',
+        provider: {
+          capabilities: { streaming: true, usage: true, tools: true },
+          async *complete(request) {
+            requests.push(request)
+            if (
+              !searched &&
+              request.tools?.some(({ name }) => name === 'ToolSearch')
+            ) {
+              searched = true
+              yield {
+                type: 'tool-call',
+                call: {
+                  id: 'subagent-tool-search',
+                  name: 'ToolSearch',
+                  input: { query: 'fixture search' },
+                },
+              }
+            } else {
+              yield { type: 'text-delta', delta: 'SUBAGENT_DONE' }
+            }
+            yield {
+              type: 'usage',
+              usage: { inputTokens: 4, outputTokens: 2 },
+            }
+          },
+        },
+        baseTools: {
+          definitions: () => [
+            {
+              name: 'Read',
+              description: 'Read files',
+              inputSchema: { type: 'object' },
+            },
+            {
+              name: 'mcp__fixture__search',
+              description: 'Search fixture documents',
+              inputSchema: { type: 'object' },
+            },
+          ],
+          prepare: async (call) => call,
+          execute: async () => ({ content: 'fixture', isError: false }),
+        },
+        ...(deferMcpTools === undefined ? {} : { deferMcpTools }),
+        permissions: { resolve: () => ({ behavior: 'allow' }) },
+      })
+
+      try {
+        await executor.runWorkflowAgent({
+          sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          runId: 'deferred-mcp-run',
+          agentId: 'a1234567890abcdef',
+          transcriptDirectory: join(root, 'workflow'),
+          prompt: 'Search the fixture',
+        })
+      } finally {
+        await executor.close()
+      }
+      return requests.map(
+        (request) => request.tools?.map(({ name }) => name) ?? [],
+      )
+    }
+
+    const deferred = await run(undefined)
+    expect(deferred).toHaveLength(2)
+    expect(deferred[0]).toContain('ToolSearch')
+    expect(deferred[0]).not.toContain('mcp__fixture__search')
+    expect(deferred[1]).toContain('mcp__fixture__search')
+
+    const direct = await run(false)
+    expect(direct).toHaveLength(1)
+    expect(direct[0]).toContain('mcp__fixture__search')
+    expect(direct[0]).not.toContain('ToolSearch')
+  })
+
   it('assembles one canonical structured-output section for workflow subagents', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-context-test-'))
     roots.push(root)

@@ -1069,9 +1069,6 @@ export class AgentRuntime {
     let linesRemoved = 0
     let activeAttemptHasPresentation = false
     let activeAttemptDiscarded = false
-    const definitions = this.provider.capabilities.tools
-      ? (this.options.tools?.definitions() ?? [])
-      : []
     const maxModelTurns = request.maxModelTurns ?? this.options.maxModelTurns
     if (
       maxModelTurns !== undefined &&
@@ -1183,6 +1180,9 @@ export class AgentRuntime {
                 stableSystemMessageCount: request.stableSystemMessageCount,
               }),
         }
+        const definitions = this.provider.capabilities.tools
+          ? (this.options.tools?.definitions() ?? [])
+          : []
         if (definitions.length > 0) providerRequest.tools = definitions
         if (request.signal) providerRequest.signal = request.signal
         if (request.effort) providerRequest.effort = request.effort

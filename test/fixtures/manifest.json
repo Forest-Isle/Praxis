@@ -80,6 +80,98 @@
       ]
     },
     {
+      "id": "tools.deferred.mcp.catalog",
+      "seam": "Turn-scoped deferred MCP tool catalog",
+      "contract": "Default turns expose a bounded ToolSearch surface, activate matching MCP schemas for the next model request, and restore interrupted MCP calls without persisting activation across user turns.",
+      "status": "qualified",
+      "modules": [
+        "src/tools/deferred-tool-catalog.ts",
+        "src/hooks/claude-hook-tools.ts",
+        "src/core/runtime.ts",
+        "src/application/session-service.ts",
+        "src/application/subagent-service.ts",
+        "src/cli-runtime.ts",
+        "src/permissions/claude-permission-resolver.ts"
+      ],
+      "outcomes": [
+        "Inactive MCP schemas stay out of default requests until ToolSearch activates bounded matches.",
+        "Activation is turn-scoped while known interrupted MCP calls are preactivated for recovery.",
+        "Explicit CLI selection and ToolSearch denial preserve direct MCP reachability."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/core/runtime.test.ts",
+          "testName": "AgentRuntime > refreshes deferred tool definitions for each provider request"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > scopes deferred MCP activation to one user turn and accounts for active definitions"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > recovers an approved native tool exactly once before provider continuation"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/subagent-service.test.ts",
+          "testName": "foreground Claude Agent execution > defers MCP schemas for default subagent turns and supports direct loading opt-out"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/cli.test.ts",
+          "testName": "Praxis CLI > wires deferred MCP selection through the default service"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > matches names and descriptions in deterministic rank and base order"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > activates at most eight matches and keeps repeated searches idempotent"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > bounds Unicode queries, summaries, and total search output by code point"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > rejects invalid searches without activation"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > fails closed before activation and delegates every interface afterward"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > restores known MCP tools and isolates activation between turns"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/tools/deferred-tool-catalog.test.ts",
+          "testName": "DeferredToolCatalog > preserves the base registry when disabled or when no MCP tools exist"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/hooks/claude-hook-tools.test.ts",
+          "testName": "ClaudeHookToolCoordinator > preserves wrapped cancellation and error flags while enforcing hook scheduling"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/permissions/permission-runtime.test.ts",
+          "testName": "permission update runtime integration > allows ToolSearch by default without approval"
+        }
+      ]
+    },
+    {
       "id": "persistence.native.sessions",
       "seam": "Native data plane",
       "contract": "Native sessions resolve entirely from Praxis-owned state without consulting Claude configuration.",

@@ -30,6 +30,42 @@ const observer = {
 }
 
 describe('permission update runtime integration', () => {
+  it('allows ToolSearch by default without approval', async () => {
+    let approvals = 0
+    const runtime = new AgentRuntime(provider, undefined, {
+      tools: {
+        definitions: () => [
+          {
+            name: 'ToolSearch',
+            description: 'Search deferred tools',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'searched', isError: false }),
+      },
+      permissions: new ClaudePermissionResolver({
+        cwd: '/workspace',
+        settings: [],
+      }),
+    })
+
+    await expect(
+      runtime.executeDirectToolCall(
+        { id: 'tool-search', name: 'ToolSearch', input: { query: 'mcp' } },
+        {
+          cwd: '/workspace',
+          observer,
+          approveTool() {
+            approvals += 1
+            return true
+          },
+        },
+      ),
+    ).resolves.toMatchObject({ content: 'searched', isError: false })
+    expect(approvals).toBe(0)
+  })
+
   it('prompts for a workspace symlink that resolves outside the workspace', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-permission-symlink-'))
     const cwd = join(root, 'workspace')

@@ -90,6 +90,7 @@ export type ClaudePermissionMode =
   | 'default'
 
 const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
+  ToolSearch: 'allow',
   Agent: 'allow',
   SendMessage: 'allow',
   SendUserMessage: 'allow',

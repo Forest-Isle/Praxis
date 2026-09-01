@@ -47,8 +47,15 @@ export class ClaudeHookToolCoordinator
     return this.options.tools.definitions()
   }
 
-  schedulingPolicy() {
+  schedulingPolicy(call: ModelToolCall) {
+    const wrapped = this.options.tools.schedulingPolicy?.(call)
     return {
+      ...(wrapped?.cancelOnInterrupt === undefined
+        ? {}
+        : { cancelOnInterrupt: wrapped.cancelOnInterrupt }),
+      ...(wrapped?.abortGroupOnError === undefined
+        ? {}
+        : { abortGroupOnError: wrapped.abortGroupOnError }),
       concurrency: 'exclusive' as const,
       startAfterAssistant: true,
     }
