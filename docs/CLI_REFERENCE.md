@@ -82,6 +82,53 @@ praxis update
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
 
+## Project outcome evaluations
+
+Run strict project cases in isolated workspaces:
+
+```sh
+praxis eval ./my-project
+praxis eval --case bug-* --tag regression --runs 2 --model <model> ./my-project
+praxis eval --allow-tools Bash --run-verification --output-dir ./eval-results ./my-project
+praxis eval --json ./my-project
+```
+
+Cases are discovered under `<target>/evals/**/case.yaml`. A minimal case is:
+
+```yaml
+schema_version: '1.0'
+name: writes-result
+fixture: fixture
+execution:
+  prompt: 'Update the result file.'
+verification:
+  - name: result-check
+    command: node
+    args: ['-e', "process.exit(require('fs').existsSync('result.txt') ? 0 : 1)"]
+expect:
+  allowed_changed_paths: [result.txt]
+  expected_changed_paths: [result.txt]
+  forbidden_changed_paths: [.env]
+```
+
+Fixtures and paths must be contained, bounded, and free of symlinks, special
+files, `.git`, and `node_modules`. Defaults are one run, ten turns, 120 seconds,
+and `Read`, `Glob`, and `Grep` tools. Gated tools require `--allow-tools`.
+`expect.allowed_changed_paths` is optional; when omitted (or empty), no
+workspace mutation is allowed. Cases may also define deterministic `graders`
+using `regex`, `tool_used`, `tool_order`, and `file_exists` checks.
+Verifiers require `--run-verification`; they run sequentially by executable and
+argv without a shell, with bounded output/time and a minimal environment.
+
+Artifacts default to `$PRAXIS_HOME/evals/results/<timestamp>` (or the configured
+native config root), with `aggregate-result.json` and per-case/run
+`trace.jsonl`, `workspace-diff.json`, `verification.json`, and `result.json`.
+Trace values are recursively redacted for sensitive environment data and are
+bounded to 10,000 events and 8 MiB; exceeding a bound fails the run. Use
+`--output-dir` to choose another local directory. Exit status is 0 when all
+runs pass, 1 for a completed failure, and 130 when interrupted. Unknown cost is
+recorded as unavailable (`null`) rather than zero; artifacts remain local.
+
 ## Self-update lifecycle
 
 ```sh

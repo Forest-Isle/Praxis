@@ -100,6 +100,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 ## What Praxis provides
 
+- **Outcome-driven evaluation** — `praxis eval <target>` runs contained cases
+  in isolated workspaces, requires explicit verifier authorization, and writes
+  versioned artifacts locally; usage and cost remain explicitly available or
+  unknown.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,

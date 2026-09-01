@@ -266,6 +266,11 @@ import {
   type PluginEvalDependencies,
 } from './plugins/claude-plugin-eval.js'
 import {
+  executeProjectEvalCommand,
+  PROJECT_EVAL_HELP,
+  type ProjectEvalDependencies,
+} from './evals/project-eval.js'
+import {
   CLAUDE_PLUGIN_PRUNE_HELP,
   CLAUDE_PLUGIN_TAG_HELP,
   executeClaudePluginPrune,
@@ -349,6 +354,7 @@ Usage:
   praxis mcp <list|get|add|add-json|remove|reset-project-choices|login|logout|serve> ...
   praxis auto-mode <config|defaults|critique>
   praxis plugin|plugins <details|list|install|uninstall|enable|disable|update|init|prune|tag|validate|marketplace> ...
+  praxis eval [options] <target>
   praxis doctor [--json]
   praxis auth <status|set-key|login|logout> ...
   praxis import [options] [source]
@@ -1253,6 +1259,7 @@ export interface CliDependencies extends InteractiveServiceFactory {
     statePath?: string
   }): Promise<ModelProvider>
   pluginEval?: PluginEvalDependencies
+  projectEval?: ProjectEvalDependencies
   runInteractive?(options: {
     agent?: string
     controls?: CliControls
@@ -3124,7 +3131,7 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
           dataPlane: options.dataPlane,
           sessionPersistence: false,
           maxTurns: options.maxTurns,
-          pluginDirectories: [...options.pluginDirectories],
+          pluginDirectories: [...(options.pluginDirectories ?? [])],
           addDirectories: [...options.addDirs],
           allowedTools: [...options.allowedTools],
           disallowedTools: [],
@@ -3151,6 +3158,7 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
             ...(result.costUsd === undefined
               ? {}
               : { costUsd: result.costUsd }),
+            usage: result.usage,
           }
         },
         close: () => service.close?.() ?? Promise.resolve(),
@@ -3398,6 +3406,11 @@ export function createDefaultDependencies(
     pluginEval: {
       runtimeFactory: defaultPluginEvalRuntimeFactory,
       judge: defaultPluginEvalJudge,
+    },
+    projectEval: {
+      runtimeFactory: defaultPluginEvalRuntimeFactory,
+      version: VERSION,
+      configRoot: resolveDataPlaneRoot(),
     },
     cliPath: entrypoint,
     runInteractive: async ({
@@ -6272,6 +6285,7 @@ async function executeTeamCommand(
 
 function specialCommandIndex(argv: readonly string[]): number {
   const commands = new Set([
+    'eval',
     'team',
     'plugin',
     'plugins',
@@ -6353,7 +6367,9 @@ async function execute(
   }
   const specialPrefix =
     commandIndex > 0 &&
-    (argv[commandIndex] === 'plugin' || argv[commandIndex] === 'plugins')
+    (argv[commandIndex] === 'plugin' ||
+      argv[commandIndex] === 'plugins' ||
+      argv[commandIndex] === 'eval')
       ? parseCliInvocation([...argv.slice(0, commandIndex), '__probe__'])
       : undefined
   const special =
@@ -6362,6 +6378,29 @@ async function execute(
           args: argv.slice(commandIndex),
         }
       : { args: [...argv] }
+  if (special.args[0] === 'eval') {
+    if (
+      special.args
+        .slice(1)
+        .some((value) => value === '-h' || value === '--help')
+    ) {
+      io.stdout(PROJECT_EVAL_HELP)
+      return 0
+    }
+    if (!dependencies.projectEval) throw new Error('Project eval unavailable')
+    return executeProjectEvalCommand(
+      [
+        ...(specialPrefix?.model === undefined
+          ? []
+          : ['--model', specialPrefix.model]),
+        ...special.args.slice(1),
+      ],
+      io,
+      dependencies.projectEval,
+      process.cwd(),
+      signal,
+    )
+  }
   if (
     (special.args[0] === 'plugin' || special.args[0] === 'plugins') &&
     special.args[1] === 'eval'

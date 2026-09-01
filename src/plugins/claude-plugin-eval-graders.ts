@@ -1,64 +1,23 @@
 import { readFile } from 'node:fs/promises'
 
-import { minimatch } from 'minimatch'
-
 import type {
   ClaudePluginEvalCase,
-  ClaudePluginEvalGrader,
   EvalFocus,
-  EvalToolMatch,
 } from './claude-plugin-eval-schema.js'
 import { resolveContainedPath } from './claude-plugin-eval-schema.js'
-
-export interface EvalTraceEvent {
-  type: string
-  tool?: string
-  input?: Record<string, unknown>
-  [key: string]: unknown
-}
-export interface EvalRunArtifacts {
-  lastMessage: string
-  trace: readonly EvalTraceEvent[]
-  cwd: string
-}
-export interface EvalGraderResult {
-  name: string
-  passed: boolean
-  weight: number
-  explanation: string
-  judge_votes?: readonly boolean[]
-  evidence?: string
-  with_only?: boolean
-}
-export interface EvalJudge {
-  vote(request: {
-    criteria: string
-    focus: string
-    baseline?: string
-    model: string
-    signal?: AbortSignal
-  }): Promise<{ passed: boolean; explanation?: string; costUsd: number }>
-}
-
-function subset(actual: unknown, expected: unknown): boolean {
-  if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
-    if (!actual || typeof actual !== 'object' || Array.isArray(actual))
-      return false
-    return Object.entries(expected as Record<string, unknown>).every(
-      ([key, value]) => subset((actual as Record<string, unknown>)[key], value),
-    )
-  }
-  return Object.is(actual, expected)
-}
-
-function matches(event: EvalTraceEvent, match: EvalToolMatch): boolean {
-  const selected = typeof match === 'string' ? { tool: match } : match
-  return (
-    event.type === 'tool-call' &&
-    event.tool === selected.tool &&
-    (!selected.input_match || subset(event.input, selected.input_match))
-  )
-}
+export type {
+  EvalTraceEvent,
+  EvalRunArtifacts,
+  EvalGraderResult,
+  EvalJudge,
+} from '../evals/eval-contract.js'
+import type {
+  EvalDeterministicGrader,
+  EvalRunArtifacts,
+  EvalGraderResult,
+  EvalJudge,
+} from '../evals/eval-contract.js'
+import { gradeDeterministicEvalRun } from '../evals/eval-graders.js'
 
 async function focusText(
   focus: EvalFocus,
@@ -83,65 +42,6 @@ async function focusText(
   )
 }
 
-async function freeGrade(
-  grader: Exclude<ClaudePluginEvalGrader, { type: 'llm' | 'baseline' }>,
-  artifacts: EvalRunArtifacts,
-): Promise<EvalGraderResult> {
-  let passed = false
-  let evidence = ''
-  if (grader.type === 'regex') {
-    const target = await focusText(grader.target, artifacts)
-    const expression = new RegExp(
-      grader.pattern,
-      grader.flags.includes('g') ? grader.flags : `${grader.flags}g`,
-    )
-    const count = [...target.matchAll(expression)].length
-    passed =
-      grader.match === 'contains'
-        ? count > 0
-        : grader.match === 'not_contains'
-          ? count === 0
-          : count === Number(grader.match.slice(6))
-    evidence = `matches=${count}`
-  } else if (grader.type === 'tool_used') {
-    const count = artifacts.trace.filter((event) =>
-      matches(event, {
-        tool: grader.tool,
-        ...(grader.input_match ? { input_match: grader.input_match } : {}),
-      }),
-    ).length
-    passed = count >= grader.min && count <= grader.max
-    evidence = `uses=${count}`
-  } else if (grader.type === 'tool_order') {
-    const before = artifacts.trace.findIndex((event) =>
-      matches(event, grader.before),
-    )
-    const after = artifacts.trace.findIndex(
-      (event, index) => index > before && matches(event, grader.after),
-    )
-    passed = before >= 0 && after > before
-    evidence = `before=${before},after=${after}`
-  } else {
-    const { glob } = await import('node:fs/promises')
-    let count = 0
-    for await (const path of glob('**/*', { cwd: artifacts.cwd })) {
-      if (!minimatch(path, grader.path)) continue
-      await resolveContainedPath(artifacts.cwd, path, 'file_exists match')
-      count += 1
-    }
-    passed = grader.exists ? count > 0 : count === 0
-    evidence = `files=${count}`
-  }
-  return {
-    name: grader.name,
-    passed,
-    weight: grader.weight,
-    explanation: passed ? 'passed' : 'failed',
-    evidence,
-    ...(grader.arm === 'with-only' ? { with_only: true } : {}),
-  }
-}
-
 export async function gradeClaudePluginEvalRun(options: {
   case: ClaudePluginEvalCase
   artifacts: EvalRunArtifacts
@@ -162,7 +62,11 @@ export async function gradeClaudePluginEvalRun(options: {
   for (const item of options.case.graders) {
     if (options.arm === 'without' && item.arm === 'with-only') continue
     if (item.type !== 'llm' && item.type !== 'baseline') {
-      results.push(await freeGrade(item, options.artifacts))
+      const [result] = await gradeDeterministicEvalRun({
+        graders: [item as EvalDeterministicGrader],
+        artifacts: options.artifacts,
+      })
+      if (result) results.push(result)
       continue
     }
     if (options.skipPaid) {
