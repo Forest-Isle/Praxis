@@ -110,7 +110,7 @@ praxis doctor
   Swarm 只会接纳相互独立、依赖已就绪且无冲突的任务，并受持久化的 agent 数量、并发、token、时长和 shutdown drain 预算约束。子 agent 权限只能收紧父级权限；并发请求进入带来源信息的单一 FIFO Lead Decision 队列。Coordinator Lead 仅可编排，Team 自定义 agent 不获得 MCP 能力。
   原生 CLI 还提供 `praxis team status`、`logs` 和 `attach`，支持人类可读及 JSON 输出；durable-local attach 不要求 tmux。原生 task、notification、context 和 Team resume/inbox seam 已实现，并对不支持的负载执行 fail-closed 校验；这些状态以 Native Fixture Contracts 及 manifest 中的可执行证据为准。
 - **原生资源生态** — 支持递归 `@` 导入的共享 Praxis 指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件，以及位于 `~/.praxis` 下的 append-only `praxis.transcript` JSONL 会话；MCP 连接、发现和工具操作均有明确时限，断开后可安全恢复，且绝不重放已派发的调用。
-- **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次请求有界的 deadline、对 malformed 流式工具参数进行 typed recovery（不执行工具且不丢失会话恢复能力），以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。
+- **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次请求独立的 connect、字节级 idle 与 absolute-total timeout、对 malformed 流式工具参数进行 typed recovery（不执行工具且不丢失会话恢复能力），以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。
 - **事务式自更新** — `praxis update` 会在安装前验证软件包，拒绝并发更新，并可在中断或崩溃后回滚。
 
 当前 qualification 状态和可执行证据位于

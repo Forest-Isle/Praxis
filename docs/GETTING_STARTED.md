@@ -69,9 +69,11 @@ Do not commit provider credentials to a repository, settings file, transcript,
 or shell script. Prefer your shell's private environment or a local secret
 manager.
 
-Praxis bounds every direct, retried, and fallback provider attempt with a
-90-second absolute deadline. For slower local or compatible endpoints, set a
-positive integer millisecond override such as
+Praxis gives every direct, retried, and fallback provider attempt independent
+connect, byte-idle, and absolute-total timeouts, each defaulting to 90 seconds.
+For slower local or compatible endpoints, set positive integer millisecond
+overrides such as `PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS=120000`,
+`PRAXIS_PROVIDER_IDLE_TIMEOUT_MS=120000`, or
 `PRAXIS_PROVIDER_DEADLINE_MS=180000`.
 
 ### Custom providers and profiles

@@ -11,6 +11,7 @@ import {
   malformedModelToolCall,
 } from '../core/runtime.js'
 import { transportFailureKind } from './provider-errors.js'
+import { reportProviderTransportActivity } from './provider-transport-activity.js'
 
 export interface OpenAICompatibleProviderOptions {
   baseUrl: string
@@ -451,7 +452,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (request.signal) requestInit.signal = request.signal
     let response: Response
     try {
+      reportProviderTransportActivity(request, 'request-started')
       response = await this.fetchImplementation(this.endpoint, requestInit)
+      reportProviderTransportActivity(request, 'response-received')
     } catch (error) {
       const kind = transportFailureKind(error, request.signal)
       throw new ModelProviderError(
@@ -484,6 +487,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
                 ended = true
                 break
               }
+              if (value.byteLength > 0)
+                reportProviderTransportActivity(request, 'response-chunk')
               size += value.byteLength
               if (size > this.maxErrorBodyBytes) {
                 throw new ModelProviderError(
@@ -541,6 +546,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     try {
       stream: while (true) {
         const { done, value } = await reader.read()
+        if (!done && value.byteLength > 0)
+          reportProviderTransportActivity(request, 'response-chunk')
         buffer += decoder.decode(value, { stream: !done })
         buffer = buffer.replaceAll('\r\n', '\n')
         if (Buffer.byteLength(buffer) > this.maxStreamBufferBytes) {

@@ -1735,6 +1735,8 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
         PRAXIS_MODEL: 'worker-model',
         PRAXIS_PROVIDER_PROFILE: 'worker-profile',
         PRAXIS_PROVIDER_DEADLINE_MS: '45000',
+        PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: '12000',
+        PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: '23000',
         PRAXIS_PROVIDER_CREDENTIAL_STORE: 'file',
         CLAUDE_CODE_SIMPLE: 'true',
         CUSTOM_PROVIDER_SECRET: 'ambient-custom-secret',
@@ -1772,6 +1774,8 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify(process.env))
     expect(environment.PRAXIS_MODEL).toBe('worker-model')
     expect(environment.PRAXIS_PROVIDER_PROFILE).toBe('worker-profile')
     expect(environment.PRAXIS_PROVIDER_DEADLINE_MS).toBe('45000')
+    expect(environment.PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS).toBe('12000')
+    expect(environment.PRAXIS_PROVIDER_IDLE_TIMEOUT_MS).toBe('23000')
     expect(environment.PRAXIS_PROVIDER_CREDENTIAL_STORE).toBe('file')
     expect(environment.CLAUDE_CODE_SIMPLE).toBe('true')
     expect(environment.PRAXIS_ANTHROPIC_PROMPT_CACHING).toBe('true')

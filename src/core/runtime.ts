@@ -650,6 +650,7 @@ export class ModelProviderError extends Error {
   readonly status?: number
   readonly retryDelayMs?: number
   readonly kind?: ProviderErrorKind
+  readonly timeoutPhase?: ProviderTimeoutPhase
 
   constructor(
     message: string,
@@ -658,6 +659,7 @@ export class ModelProviderError extends Error {
       kind?: ProviderErrorKind
       status?: number
       retryDelayMs?: number
+      timeoutPhase?: ProviderTimeoutPhase
       cause?: unknown
     },
   ) {
@@ -670,8 +672,12 @@ export class ModelProviderError extends Error {
     if (options.status !== undefined) this.status = options.status
     if (options.retryDelayMs !== undefined)
       this.retryDelayMs = options.retryDelayMs
+    if (options.timeoutPhase !== undefined)
+      this.timeoutPhase = options.timeoutPhase
   }
 }
+
+export type ProviderTimeoutPhase = 'connect' | 'idle' | 'total'
 
 export class AgentRunCancelledError extends Error {
   override readonly name = 'AgentRunCancelledError'

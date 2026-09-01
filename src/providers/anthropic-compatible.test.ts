@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ModelToolDefinition } from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
+import { DeadlineModelProvider } from './deadline-provider.js'
 
 const withoutTerminal = <T extends { type: string }>(events: readonly T[]) =>
   events.filter((event) => event.type !== 'terminal')
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const withoutCacheMetadata = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(withoutCacheMetadata)
@@ -1745,4 +1750,52 @@ describe('AnthropicCompatibleProvider', () => {
     ])
     expect(cancelled).toBe(true)
   })
+
+  it.each([200, 500])(
+    'resets byte-idle timeout for Anthropic HTTP %s body activity',
+    async (status) => {
+      vi.useFakeTimers()
+      let controller!: ReadableStreamDefaultController<Uint8Array>
+      const body = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          controller = streamController
+        },
+      })
+      const provider = new DeadlineModelProvider({
+        provider: new AnthropicCompatibleProvider({
+          baseUrl: 'https://api.anthropic.example/v1',
+          apiKey: 'secret',
+          model: 'fixture-model',
+          fetchImplementation: async () => new Response(body, { status }),
+        }),
+        deadlineMs: 1_000,
+        connectTimeoutMs: 100,
+        idleTimeoutMs: 20,
+      })
+      const completion = provider.complete({ messages: [] })
+      const pending = completion[Symbol.asyncIterator]().next()
+      let settled = false
+      void pending.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      const timedOut = expect(pending).rejects.toMatchObject({
+        kind: 'timeout',
+        retryable: true,
+        timeoutPhase: 'idle',
+        message: 'Provider stream idle timed out',
+      })
+
+      await vi.advanceTimersByTimeAsync(15)
+      controller.enqueue(new TextEncoder().encode(': keepalive\n\n'))
+      await vi.advanceTimersByTimeAsync(19)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await timedOut
+    },
+  )
 })

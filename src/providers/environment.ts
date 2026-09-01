@@ -1,10 +1,16 @@
 import { createAnthropicPromptCachePolicyResolver } from './anthropic-prompt-cache.js'
-import { DEFAULT_PROVIDER_DEADLINE_MS } from './deadline-provider.js'
+import {
+  DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS,
+  DEFAULT_PROVIDER_DEADLINE_MS,
+  DEFAULT_PROVIDER_IDLE_TIMEOUT_MS,
+} from './deadline-provider.js'
 
 export interface ProviderEnvironment {
   provider: 'openai' | 'anthropic'
   baseUrl: string
   deadlineMs: number
+  connectTimeoutMs: number
+  idleTimeoutMs: number
   maxOutputTokens?: number
   anthropicVersion?: string
   webSearch?: boolean
@@ -37,6 +43,25 @@ export function parseProviderEnvironment(
     rawDeadlineMs === undefined
       ? DEFAULT_PROVIDER_DEADLINE_MS
       : Number(rawDeadlineMs)
+  const parseTimeout = (name: string, fallback: number): number => {
+    const raw = environment[name]
+    if (
+      raw !== undefined &&
+      (!/^\d+$/.test(raw) ||
+        Number(raw) <= 0 ||
+        !Number.isSafeInteger(Number(raw)))
+    )
+      throw new Error(`${name} must be a positive safe integer`)
+    return raw === undefined ? fallback : Number(raw)
+  }
+  const connectTimeoutMs = parseTimeout(
+    'PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS',
+    DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS,
+  )
+  const idleTimeoutMs = parseTimeout(
+    'PRAXIS_PROVIDER_IDLE_TIMEOUT_MS',
+    DEFAULT_PROVIDER_IDLE_TIMEOUT_MS,
+  )
   const maxOutputTokens = environment.PRAXIS_MAX_OUTPUT_TOKENS
   if (
     maxOutputTokens !== undefined &&
@@ -92,6 +117,8 @@ export function parseProviderEnvironment(
         ? 'https://api.anthropic.com/v1'
         : 'https://api.openai.com/v1'),
     deadlineMs,
+    connectTimeoutMs,
+    idleTimeoutMs,
     ...(maxOutputTokens === undefined
       ? {}
       : { maxOutputTokens: Number(maxOutputTokens) }),

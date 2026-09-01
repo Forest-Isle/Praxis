@@ -10,9 +10,12 @@ import {
   type ModelStreamEvent,
 } from '../core/runtime.js'
 import {
+  DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS,
   DEFAULT_PROVIDER_DEADLINE_MS,
+  DEFAULT_PROVIDER_IDLE_TIMEOUT_MS,
   DeadlineModelProvider,
 } from './deadline-provider.js'
+import { reportProviderTransportActivity } from './provider-transport-activity.js'
 
 const event: ModelStreamEvent = { type: 'text-delta', delta: 'ok' }
 const execFileAsync = promisify(execFile)
@@ -34,6 +37,160 @@ afterEach(() => {
 })
 
 describe('DeadlineModelProvider', () => {
+  it('reports a typed connect timeout before response activity', async () => {
+    vi.useFakeTimers()
+    const completion = new DeadlineModelProvider({
+      provider: provider(() => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+        }),
+      })),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 1_000,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+  })
+
+  it('switches from connect to typed idle timeout when headers arrive', async () => {
+    vi.useFakeTimers()
+    const completion = new DeadlineModelProvider({
+      provider: provider((request) => {
+        reportProviderTransportActivity(request, 'response-received')
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+          }),
+        }
+      }),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 30,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+      timeoutPhase: 'idle',
+      message: 'Provider stream idle timed out',
+    })
+    await vi.advanceTimersByTimeAsync(30)
+    await timedOut
+  })
+
+  it('resets idle on non-event byte activity', async () => {
+    vi.useFakeTimers()
+    let observedRequest: ModelRequest | undefined
+    const completion = new DeadlineModelProvider({
+      provider: provider((request) => {
+        observedRequest = request
+        reportProviderTransportActivity(request, 'response-received')
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+          }),
+        }
+      }),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 100,
+      idleTimeoutMs: 30,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    const timedOut = expect(pending).rejects.toMatchObject({
+      timeoutPhase: 'idle',
+    })
+    await vi.advanceTimersByTimeAsync(25)
+    reportProviderTransportActivity(
+      observedRequest as ModelRequest,
+      'response-chunk',
+    )
+    await vi.advanceTimersByTimeAsync(29)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await timedOut
+  })
+
+  it('keeps the absolute total deadline despite byte activity', async () => {
+    vi.useFakeTimers()
+    let observedRequest: ModelRequest | undefined
+    const completion = new DeadlineModelProvider({
+      provider: provider((request) => {
+        observedRequest = request
+        reportProviderTransportActivity(request, 'response-received')
+        return {
+          [Symbol.asyncIterator]: () => ({
+            next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+          }),
+        }
+      }),
+      deadlineMs: 100,
+      connectTimeoutMs: 50,
+      idleTimeoutMs: 50,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      retryable: true,
+      timeoutPhase: 'total',
+      message: 'Provider request timed out',
+    })
+    await vi.advanceTimersByTimeAsync(40)
+    reportProviderTransportActivity(
+      observedRequest as ModelRequest,
+      'response-chunk',
+    )
+    await vi.advanceTimersByTimeAsync(40)
+    reportProviderTransportActivity(
+      observedRequest as ModelRequest,
+      'response-chunk',
+    )
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+  })
+
+  it('prefers the specific phase when connect and total expire together', async () => {
+    vi.useFakeTimers()
+    const completion = new DeadlineModelProvider({
+      provider: provider(() => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+        }),
+      })),
+      deadlineMs: 20,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 100,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+  })
+
   it('starts its deadline on first consumption and times out a hung first next', async () => {
     vi.useFakeTimers()
     const complete = vi.fn(() => ({
@@ -56,6 +213,63 @@ describe('DeadlineModelProvider', () => {
     })
     await vi.advanceTimersByTimeAsync(100)
     await timedOut
+  })
+
+  it('keeps an explicit legacy deadline as the implicit phase bound', async () => {
+    vi.useFakeTimers()
+    const completion = new DeadlineModelProvider({
+      provider: provider(() => ({
+        [Symbol.asyncIterator]: () => ({
+          next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+        }),
+      })),
+      deadlineMs: 180_000,
+    }).complete({ messages: [] })
+
+    const pending = completion[Symbol.asyncIterator]().next()
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    const timedOut = expect(pending).rejects.toMatchObject({
+      timeoutPhase: 'total',
+      message: 'Provider request timed out',
+    })
+    await vi.advanceTimersByTimeAsync(90_000)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(90_000)
+    await timedOut
+  })
+
+  it('counts synchronous provider setup against the first connect phase', async () => {
+    vi.useFakeTimers()
+    const underlyingNext = vi.fn(
+      () => new Promise<IteratorResult<ModelStreamEvent>>(() => {}),
+    )
+    const completion = new DeadlineModelProvider({
+      provider: provider(() => {
+        vi.advanceTimersByTime(25)
+        return {
+          [Symbol.asyncIterator]: () => ({ next: underlyingNext }),
+        }
+      }),
+      deadlineMs: 1_000,
+      connectTimeoutMs: 20,
+      idleTimeoutMs: 100,
+    }).complete({ messages: [] })
+
+    await expect(
+      completion[Symbol.asyncIterator]().next(),
+    ).rejects.toMatchObject({
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+    expect(underlyingNext).not.toHaveBeenCalled()
   })
 
   it('keeps an otherwise idle process alive until the typed deadline', async () => {
@@ -90,7 +304,7 @@ describe('DeadlineModelProvider', () => {
     const { stdout } = await execFileAsync(
       process.execPath,
       ['--import', 'tsx', '--input-type=module', '--eval', source],
-      { cwd: process.cwd(), timeout: 2_000 },
+      { cwd: process.cwd(), timeout: 5_000 },
     )
     expect(JSON.parse(stdout)).toEqual({
       kind: 'timeout',
@@ -292,6 +506,40 @@ describe('DeadlineModelProvider', () => {
     await timedOut
   })
 
+  it('does not treat a consumer pause as stream idle time', async () => {
+    vi.useFakeTimers()
+    let count = 0
+    const complete = vi.fn(() => ({
+      [Symbol.asyncIterator]: () => ({
+        next: () => {
+          count += 1
+          return count === 1
+            ? Promise.resolve({ value: event, done: false as const })
+            : new Promise<IteratorResult<ModelStreamEvent>>(() => {})
+        },
+      }),
+    }))
+    const completion = new DeadlineModelProvider({
+      provider: provider(complete),
+      deadlineMs: 1_000,
+      idleTimeoutMs: 100,
+    }).complete({ messages: [] })
+    const iterator = completion[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toEqual({
+      value: event,
+      done: false,
+    })
+    await vi.advanceTimersByTimeAsync(200)
+    const pending = iterator.next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      timeoutPhase: 'idle',
+      message: 'Provider stream idle timed out',
+    })
+    await vi.advanceTimersByTimeAsync(100)
+    await timedOut
+  })
+
   it('keeps the timeout outcome when caller cancellation follows it', async () => {
     vi.useFakeTimers()
     const controller = new AbortController()
@@ -484,7 +732,23 @@ describe('DeadlineModelProvider', () => {
             deadlineMs,
           }),
       ).toThrow('positive integer')
+      expect(
+        () =>
+          new DeadlineModelProvider({
+            provider: provider(async function* () {}),
+            connectTimeoutMs: deadlineMs,
+          }),
+      ).toThrow('Provider connect timeout must be a positive integer')
+      expect(
+        () =>
+          new DeadlineModelProvider({
+            provider: provider(async function* () {}),
+            idleTimeoutMs: deadlineMs,
+          }),
+      ).toThrow('Provider idle timeout must be a positive integer')
     }
     expect(DEFAULT_PROVIDER_DEADLINE_MS).toBe(90_000)
+    expect(DEFAULT_PROVIDER_CONNECT_TIMEOUT_MS).toBe(90_000)
+    expect(DEFAULT_PROVIDER_IDLE_TIMEOUT_MS).toBe(90_000)
   })
 })

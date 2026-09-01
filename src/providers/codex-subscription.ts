@@ -16,6 +16,7 @@ import {
   type CodexOAuthAccess,
   type CodexOAuthAccessOptions,
 } from './codex-oauth.js'
+import { reportProviderTransportActivity } from './provider-transport-activity.js'
 
 export const CODEX_RESPONSES_ENDPOINT =
   'https://chatgpt.com/backend-api/codex/responses'
@@ -859,7 +860,11 @@ export function parseCodexSseFrame(data: string): ModelStreamEvent[] {
   })
 }
 
-async function drainBody(response: Response, maxBytes: number): Promise<void> {
+async function drainBody(
+  response: Response,
+  maxBytes: number,
+  request: ModelRequest,
+): Promise<void> {
   const reader = response.body?.getReader()
   if (!reader) return
   let total = 0
@@ -871,6 +876,8 @@ async function drainBody(response: Response, maxBytes: number): Promise<void> {
         ended = true
         return
       }
+      if (next.value.byteLength > 0)
+        reportProviderTransportActivity(request, 'response-chunk')
       total += next.value.byteLength
       if (total > maxBytes) return
     }
@@ -962,23 +969,26 @@ export class CodexSubscriptionProvider implements ModelProvider {
         'content-type': 'application/json',
       }
       try {
+        reportProviderTransportActivity(request, 'request-started')
         response = await this.fetchImplementation(CODEX_RESPONSES_ENDPOINT, {
           method: 'POST',
           headers,
           body: JSON.stringify(body),
           ...(signal ? { signal } : {}),
         })
+        reportProviderTransportActivity(request, 'response-received')
       } catch (error) {
         throw transportError(error, signal)
       }
       if (response.status === 401 && !refreshed) {
         refreshed = true
         try {
-          await drainBody(response, this.maxErrorBodyBytes)
+          await drainBody(response, this.maxErrorBodyBytes, request)
         } catch {
           /* ignore unread body failures */
         }
         try {
+          reportProviderTransportActivity(request, 'request-started')
           access = await this.options.access({
             forceAfter: access.accessToken,
             ...(signal === undefined ? {} : { signal }),
@@ -990,7 +1000,7 @@ export class CodexSubscriptionProvider implements ModelProvider {
       }
       if (!response.ok) {
         try {
-          await drainBody(response, this.maxErrorBodyBytes)
+          await drainBody(response, this.maxErrorBodyBytes, request)
         } catch {
           /* preserve generic error */
         }
@@ -1025,6 +1035,8 @@ export class CodexSubscriptionProvider implements ModelProvider {
     try {
       while (true) {
         const next = await reader.read()
+        if (!next.done && next.value.byteLength > 0)
+          reportProviderTransportActivity(request, 'response-chunk')
         buffer += decoder.decode(next.value, { stream: !next.done })
         buffer = buffer.replaceAll('\r\n', '\n')
         if (bytes(buffer) > this.maxStreamBufferBytes)

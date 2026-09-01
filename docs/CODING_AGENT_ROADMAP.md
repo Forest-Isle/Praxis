@@ -120,9 +120,11 @@ error result without scheduling, permission, approval, or execution.
 
 ### Task 1.2: Stream timeout model [depends: Task 0.2, #121]
 
-Separate connect, idle, and total timeouts. Define retry eligibility before and
-after presentation or tool side effects. Add one capability-gated fallback only
-where duplicate effects are impossible.
+The #550 lifecycle slice separates connect, byte-idle, and absolute-total
+timeouts, reports typed timeout phases, and preserves retry safety through the
+existing whole-attempt buffer. The remaining #121 slice must add one
+capability-gated non-streaming fallback only where duplicate presentation or
+tool effects are impossible.
 
 Acceptance: outcome fixtures show no duplicated mutation, orphaned tool call,
 or silent partial output across both recovery modules.

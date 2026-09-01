@@ -215,8 +215,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   disconnect recovery that never replays an already-dispatched call.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
-  per-attempt bounded deadlines, typed recovery for malformed streamed tool
-  arguments without tool execution or lost resumability, and
+  separate per-attempt connect, byte-idle, and absolute-total timeouts, typed
+  recovery for malformed streamed tool arguments without tool execution or
+  lost resumability, and
   token-only/no-API-dollar accounting for subscription runs.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createProviderRegistry,
@@ -10,6 +10,10 @@ import {
 } from './provider-registry.js'
 import { ProviderAuthenticationError } from './provider-auth.js'
 import type { ProviderTarget } from './provider-settings.js'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const target = (protocol: ProviderTarget['protocol']): ProviderTarget => ({
   providerId: 'fixture',
@@ -50,6 +54,61 @@ describe('ProviderRegistry', () => {
     })
     expect(openai.create().model).toBe('fixture-model')
     expect(anthropic.create('other-model').model).toBe('other-model')
+  })
+
+  it('composes resolved connect and idle timeouts around providers', async () => {
+    vi.useFakeTimers()
+    const credential = {
+      type: 'api-key' as const,
+      secret: 'secret',
+      source: { source: 'env' as const, name: 'FIXTURE_KEY' },
+    }
+    const connectRegistry = createProviderRegistry({
+      target: target('openai-compatible'),
+      credential,
+      providerEnvironment: {
+        provider: 'openai',
+        baseUrl: 'https://relay.example/v1',
+        deadlineMs: 1_000,
+        connectTimeoutMs: 20,
+        idleTimeoutMs: 100,
+      },
+      fetchImplementation: async () => new Promise<Response>(() => {}),
+    })
+    const connectCompletion = connectRegistry
+      .create()
+      .complete({ messages: [] })
+    const connectPending = connectCompletion[Symbol.asyncIterator]().next()
+    const connectTimedOut = expect(connectPending).rejects.toMatchObject({
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await connectTimedOut
+
+    const idleRegistry = createProviderRegistry({
+      target: target('openai-compatible'),
+      credential,
+      providerEnvironment: {
+        provider: 'openai',
+        baseUrl: 'https://relay.example/v1',
+        deadlineMs: 1_000,
+        connectTimeoutMs: 100,
+        idleTimeoutMs: 30,
+      },
+      fetchImplementation: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({ start: () => undefined }),
+        ),
+    })
+    const idleCompletion = idleRegistry.create().complete({ messages: [] })
+    const idlePending = idleCompletion[Symbol.asyncIterator]().next()
+    const idleTimedOut = expect(idlePending).rejects.toMatchObject({
+      timeoutPhase: 'idle',
+      message: 'Provider stream idle timed out',
+    })
+    await vi.advanceTimersByTimeAsync(30)
+    await idleTimedOut
   })
 
   it('resolves Anthropic prompt caching for each created model', () => {
