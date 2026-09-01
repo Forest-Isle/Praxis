@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdir, mkdtemp, open, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve as resolvePath } from 'node:path'
 
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
@@ -218,6 +218,7 @@ function capMcpToolDescription(value: string): string {
 }
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024
+const MAX_INLINE_MCP_TEXT_RESULT_BYTES = 100_000
 const NO_MCP_RESOURCES =
   'No resources found. MCP servers may still provide tools even if they have no resources.'
 
@@ -723,7 +724,7 @@ async function writeToolBlob(
 function mcpTextBlock(
   text: string,
   sensitiveValues: readonly string[],
-): ModelContentBlock {
+): Extract<ModelContentBlock, { type: 'text' }> {
   return { type: 'text', text: redactSensitiveText(text, sensitiveValues) }
 }
 
@@ -759,6 +760,32 @@ async function mcpBinaryText(
   )
 }
 
+async function externalizeMcpTextResult(
+  serverName: string,
+  content: string,
+  context: ToolExecutionContext,
+  sensitiveValues: readonly string[],
+  createdFiles: string[],
+): Promise<Extract<ModelContentBlock, { type: 'text' }>> {
+  if (!context.toolResultDirectory) {
+    throw new Error(
+      'MCP large text tool result output directory is unavailable',
+    )
+  }
+  const bytes = Buffer.from(content, 'utf8')
+  const filePath = await writeToolBlob(
+    resolvePath(context.cwd, context.toolResultDirectory),
+    serverName,
+    bytes,
+    '.txt',
+  )
+  createdFiles.push(filePath)
+  return mcpTextBlock(
+    `[MCP tool result from ${serverName}] Text content (${bytes.length} bytes) saved to ${filePath}`,
+    sensitiveValues,
+  )
+}
+
 async function mcpToolResultUnchecked(
   serverName: string,
   result: Record<string, unknown>,
@@ -770,6 +797,7 @@ async function mcpToolResultUnchecked(
     throw new Error('MCP tool result content must be an array')
   }
   const blocks: ModelContentBlock[] = []
+  let textOnly = result.structuredContent === undefined
   let resultBytes = 0
   const consumeBytes = (bytes: number) => {
     resultBytes += bytes
@@ -795,6 +823,7 @@ async function mcpToolResultUnchecked(
       }
       continue
     }
+    textOnly = false
     if (item.type === 'image') {
       if (
         typeof item.mimeType !== 'string' ||
@@ -914,6 +943,23 @@ async function mcpToolResultUnchecked(
     .join('\n')
   if (Buffer.byteLength(content) > MAX_RESOURCE_BYTES) {
     throw new Error(`MCP tool result exceeded ${MAX_RESOURCE_BYTES} bytes`)
+  }
+  if (
+    textOnly &&
+    Buffer.byteLength(content) > MAX_INLINE_MCP_TEXT_RESULT_BYTES
+  ) {
+    const pointerBlock = await externalizeMcpTextResult(
+      serverName,
+      content,
+      context,
+      sensitiveValues,
+      createdFiles,
+    )
+    return {
+      content: pointerBlock.text,
+      contentBlocks: [pointerBlock],
+      isError: result.isError === true,
+    }
   }
   const images = blocks.filter(
     (block): block is Extract<ModelContentBlock, { type: 'image' }> =>

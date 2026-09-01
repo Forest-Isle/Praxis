@@ -216,9 +216,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   tool selection defers `mcp__*` schemas behind a turn-scoped `ToolSearch`;
   each query activates at most eight deterministic matches for the next model
   request, and published MCP tool descriptions are capped at 2,048 Unicode
-  code points. Explicit concrete `--tools` selections load selected tools
-  directly, while `--disallowedTools ToolSearch` restores the complete tool
-  list.
+  code points. Text-only MCP results above 100,000 UTF-8 bytes are redacted
+  into mode-`0600` `.txt` files under the session-scoped `tool-results`
+  directory; providers and transcripts receive only a bounded instruction with
+  the absolute file path. Results at or below the limit remain inline, while
+  structured, mixed-media, and binary-resource handling is unchanged. Explicit
+  concrete `--tools` selections load selected tools directly, while
+  `--disallowedTools ToolSearch` restores the complete tool list.
 - **Provider-neutral models** — native Provider Registry/Vault routing, API
   adapters, an experimental Codex OAuth adapter, explicit capability checks,
   separate per-attempt connect, byte-idle, and absolute-total timeouts, typed

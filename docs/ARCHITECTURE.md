@@ -381,7 +381,12 @@ bounded paginated resource listings, and exposes Claude's three resource tool
 schemas only while at least one resource-capable server is live. Text reads are
 serialized into ordinary tool results; binary reads use the session-scoped
 `tool-results` directory passed through `ToolExecutionContext` and never embed
-the raw blob in provider or transcript content.
+the raw blob in provider or transcript content. Text-only MCP tool results at
+or below 100,000 UTF-8 bytes remain inline. Larger results are redacted, stored
+as mode-`0600` `.txt` files in the same session-scoped directory, and replaced
+in provider and transcript content by one bounded instruction containing the
+absolute path. Structured content, mixed media, and binary-resource handling
+remain unchanged.
 Stdio and HTTP clients are connected before model execution and closed after
 the run or resume turn completes. Stdio transports inherit sanitized ambient
 runtime variables, then apply server-local `env` as an explicit grant.
