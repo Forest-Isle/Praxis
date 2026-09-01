@@ -1125,6 +1125,36 @@ process.stdin.on('data', chunk => {
       await registry.authenticate('stdio')
       expect(authenticateServer).toHaveBeenCalledWith('stdio')
       await registry.reload()
+      const stdioPermissionContext: Parameters<typeof registry.prepare>[1] = {
+        cwd: root,
+      }
+      await expect(
+        registry.prepare(
+          { id: 'stdio-permission', name: 'mcp__stdio__marker', input: {} },
+          stdioPermissionContext,
+        ),
+      ).resolves.toEqual({
+        id: 'stdio-permission',
+        name: 'mcp__stdio__marker',
+        input: {},
+      })
+      expect(stdioPermissionContext.toolPermission).toEqual({
+        readOnly: true,
+      })
+      const httpPermissionContext: Parameters<typeof registry.prepare>[1] = {
+        cwd: root,
+      }
+      await expect(
+        registry.prepare(
+          { id: 'http-permission', name: 'mcp__http__marker', input: {} },
+          httpPermissionContext,
+        ),
+      ).resolves.toEqual({
+        id: 'http-permission',
+        name: 'mcp__http__marker',
+        input: {},
+      })
+      expect(httpPermissionContext.toolPermission).toBeUndefined()
       await expect(
         registry.execute(
           { id: '1', name: 'mcp__stdio__marker', input: {} },

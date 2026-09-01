@@ -355,6 +355,7 @@ export interface ToolExecutionContext {
   toolResultDirectory?: string
   originalCall?: ModelToolCall
   permissionUpdates?: readonly PermissionUpdate[]
+  toolPermission?: ToolPermissionMetadata
   permissionPhase?: 'request' | 'execute'
   permissionApproved?: boolean
   /** Internal marker for an explicit PreToolUse allow decision. */
@@ -447,6 +448,10 @@ export type PermissionApproval =
     }
   | { behavior: 'deny'; message: string; interrupt?: boolean }
 
+export interface ToolPermissionMetadata {
+  readonly readOnly: true
+}
+
 export interface PermissionResolutionContext {
   cwd: string
   messages?: readonly ModelMessage[]
@@ -454,6 +459,7 @@ export interface PermissionResolutionContext {
   toolResultDirectory?: string
   originalCall?: ModelToolCall
   permissionUpdates?: readonly PermissionUpdate[]
+  toolPermission?: ToolPermissionMetadata
 }
 
 export type PermissionDecisionSource =

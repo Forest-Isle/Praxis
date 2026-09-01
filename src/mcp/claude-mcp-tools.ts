@@ -1421,7 +1421,9 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ModelToolCall> {
-    return this.connectedTools.has(call.name) ||
+    const tool = this.connectedTools.get(call.name)
+    if (tool?.readOnly === true) context.toolPermission = { readOnly: true }
+    return tool ||
       MCP_RESOURCE_TOOL_DEFINITIONS.some(
         (definition) => definition.name === call.name,
       )
