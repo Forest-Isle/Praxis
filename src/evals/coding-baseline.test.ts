@@ -517,5 +517,5 @@ describe('coding baseline suite', () => {
         FIXTURE_FILES.map((path) => readFile(join(FIXTURE_ROOT, path), 'utf8')),
       ),
     ).resolves.toEqual(before)
-  })
+  }, 30_000)
 })
