@@ -18,6 +18,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.49.0](https://github.com/Forest-Isle/Praxis/compare/v0.48.1...v0.49.0) (2026-09-01)
+
+
+### Features
+
+* add non-streaming provider fallback ([#554](https://github.com/Forest-Isle/Praxis/issues/554)) ([afa43bf](https://github.com/Forest-Isle/Praxis/commit/afa43bf30572295e0fbbe59e8430e665188f9be0))
+* separate provider timeout phases ([#551](https://github.com/Forest-Isle/Praxis/issues/551)) ([7e94d11](https://github.com/Forest-Isle/Praxis/commit/7e94d11185475d49bdd5900f4add58db623bf664)), closes [#540](https://github.com/Forest-Isle/Praxis/issues/540)
+
 ## [0.48.1](https://github.com/Forest-Isle/Praxis/compare/v0.48.0...v0.48.1) (2026-09-01)
 
 
