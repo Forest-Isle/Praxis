@@ -16,6 +16,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.48.1](https://github.com/Forest-Isle/Praxis/compare/v0.48.0...v0.48.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* recover malformed tool input ([#547](https://github.com/Forest-Isle/Praxis/issues/547)) ([1bf1e20](https://github.com/Forest-Isle/Praxis/commit/1bf1e209c3392ca188d79c80e464e35b33a46102)), closes [#138](https://github.com/Forest-Isle/Praxis/issues/138)
+
 ## [0.48.0](https://github.com/Forest-Isle/Praxis/compare/v0.47.0...v0.48.0) (2026-09-01)
 
 
