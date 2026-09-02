@@ -2276,6 +2276,74 @@ describe('CLI protocol', () => {
     ])
   })
 
+  it('preserves partial thinking without synthesizing a cancelled assistant', () => {
+    const partialRecords: Record<string, unknown>[] = []
+    const partialOutput = new StreamJsonOutput(
+      (record) => partialRecords.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      { includePartialMessages: true },
+    )
+    partialOutput.sink({ type: 'state', state: 'awaiting-model' })
+    partialOutput.sink({
+      type: 'thinking-start',
+      block: { type: 'thinking', thinking: '' },
+    })
+    partialOutput.sink({ type: 'thinking-delta', delta: 'partial' })
+    partialOutput.sink({ type: 'state', state: 'cancelled' })
+
+    expect(
+      partialRecords.filter((record) => record.type === 'assistant'),
+    ).toHaveLength(0)
+    expect(partialRecords).toContainEqual(
+      expect.objectContaining({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'partial' },
+        },
+      }),
+    )
+    expect(partialRecords).not.toContainEqual(
+      expect.objectContaining({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index: 0 },
+      }),
+    )
+
+    const completedRecords: Record<string, unknown>[] = []
+    const completedOutput = new StreamJsonOutput(
+      (record) => completedRecords.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      { includePartialMessages: true },
+    )
+    completedOutput.sink({ type: 'state', state: 'awaiting-model' })
+    completedOutput.sink({
+      type: 'thinking-start',
+      block: { type: 'thinking', thinking: '' },
+    })
+    completedOutput.sink({ type: 'thinking-delta', delta: 'complete' })
+    completedOutput.sink({
+      type: 'thinking-stop',
+      block: { type: 'thinking', thinking: 'complete', signature: 'signed' },
+    })
+    completedOutput.sink({ type: 'state', state: 'cancelled' })
+
+    const assistants = completedRecords.filter(
+      (record) => record.type === 'assistant',
+    )
+    expect(assistants).toHaveLength(1)
+    expect(assistants[0]).toMatchObject({
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'complete', signature: 'signed' },
+        ],
+      },
+    })
+  })
+
   it('emits prompt suggestion records after the result', () => {
     const records: Record<string, unknown>[] = []
     const output = new StreamJsonOutput(

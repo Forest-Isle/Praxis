@@ -483,6 +483,8 @@ records are excluded by Stage 49.
 - [x] built-package native stream-json gate against a local Anthropic SSE provider
 - [x] local command output classified as assistant records by the 2.1.208
       mapper; remote BYOC file persistence excluded from single-user CLI scope
+- [x] direct print-mode SIGINT exits silently without a synthetic stream-json
+      assistant record; SIGTERM and non-print cancellation retain exit 130
 
 ## Stage 46 - machine result envelope contract
 
@@ -501,6 +503,7 @@ the provider-free local-command result shape.
       zero-turn envelopes that preserve accumulated cost/model usage, with
       provider-only fields omitted
 - [x] exact protocol and CLI redaction tests
+- [x] direct print-mode SIGINT emits no synthetic machine result or error
 
 ## Stage 47 - MCP elicitation stream control
 

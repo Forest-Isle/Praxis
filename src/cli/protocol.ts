@@ -2498,11 +2498,15 @@ export class StreamJsonOutput {
         event.state === 'cancelled' ||
         event.state === 'failed'
       ) {
-        if (
-          event.state !== 'failed' ||
-          this.pendingFailureMessage === undefined
-        )
-          this.flushAssistant()
+        const shouldFlush =
+          event.state === 'cancelled'
+            ? this.turnText.length > 0 ||
+              this.turnThinking.length > 0 ||
+              this.turnCalls.length > 0
+            : event.state !== 'failed' ||
+              this.pendingFailureMessage === undefined
+        if (shouldFlush) this.flushAssistant()
+        else if (event.state === 'cancelled') this.flushPartialOnly()
         if (event.state === 'awaiting-permission')
           this.writeSessionState('requires_action')
       }
@@ -3078,6 +3082,20 @@ export class StreamJsonOutput {
       session_id: this.sessionId,
     })
     this.finishPartialTail()
+  }
+
+  private flushPartialOnly(): void {
+    if (
+      !this.includePartialMessages ||
+      this.assistantFlushed ||
+      this.partialEvents.length === 0
+    )
+      return
+    this.assistantFlushed = true
+    this.writePartialMessageStart()
+    for (const event of this.partialEvents) this.write(event)
+    this.partialEvents = []
+    this.pendingPartialStop = undefined
   }
 
   private finishTurn(): void {
