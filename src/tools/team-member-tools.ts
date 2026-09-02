@@ -18,9 +18,10 @@ import {
 import { validateBashPathSafety } from '../permissions/bash-path-safety.js'
 import { shellInputIsReadOnly } from '../permissions/permission-updates.js'
 import { isPathWithin } from '../platform/path-containment.js'
+import { parseApplyPatchInput } from './apply-patch.js'
 
 const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'Bash'])
-const WRITE_TOOLS = new Set([...READ_ONLY_TOOLS, 'Write', 'Edit'])
+const WRITE_TOOLS = new Set([...READ_ONLY_TOOLS, 'Write', 'Edit', 'ApplyPatch'])
 const SAFE_GIT_COMMANDS = new Set([
   'status',
   'diff',
@@ -106,6 +107,9 @@ function within(root: string, candidate: string): boolean {
 function toolInputPaths(call: ModelToolCall): readonly unknown[] {
   if (call.name === 'Read' || call.name === 'Write' || call.name === 'Edit')
     return [call.input.file_path]
+  if (call.name === 'ApplyPatch') {
+    return parseApplyPatchInput(call.input).map((edit) => edit.file_path)
+  }
   if (call.name === 'Glob' || call.name === 'Grep')
     return call.input.path === undefined ? [] : [call.input.path]
   return []

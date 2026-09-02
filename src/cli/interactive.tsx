@@ -3231,7 +3231,11 @@ export function InteractiveApp({
         }
         break
       case 'tool-call':
-        if (['Edit', 'Write', 'NotebookEdit'].includes(event.call.name))
+        if (
+          ['Edit', 'Write', 'ApplyPatch', 'NotebookEdit'].includes(
+            event.call.name,
+          )
+        )
           turnMutatedFilesRef.current = true
         permissionCallsRef.current.set(event.call.id, event.call)
         append({
@@ -5688,7 +5692,7 @@ export function InteractiveApp({
           permission.kind === 'tool' &&
           selected.action === 'allow-session-edits'
         ) {
-          for (const rule of ['Write', 'Edit', 'NotebookEdit']) {
+          for (const rule of ['Write', 'Edit', 'ApplyPatch', 'NotebookEdit']) {
             if (!immediatePermissionRulesRef.current.includes(rule))
               immediatePermissionRulesRef.current.push(rule)
           }

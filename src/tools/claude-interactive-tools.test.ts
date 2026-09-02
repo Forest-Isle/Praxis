@@ -55,7 +55,7 @@ async function fixture(
   const permissionResolverForMode = vi.fn(
     (mode: string): PermissionResolver => ({
       resolve: (call) =>
-        mode === 'plan' && call.name === 'Write'
+        mode === 'plan' && ['Write', 'ApplyPatch'].includes(call.name)
           ? { behavior: 'deny', reason: 'plan mode' }
           : options.askForBash && call.name === 'Bash'
             ? { behavior: 'ask' }
@@ -166,6 +166,36 @@ describe('ClaudeInteractiveToolManager', () => {
         id: 'project-write',
         name: 'Write',
         input: { file_path: join(configRoot, 'project.ts'), content: 'x' },
+      }),
+    ).toEqual({ behavior: 'deny', reason: 'plan mode' })
+    expect(
+      await manager.permissions(sessionId).resolve({
+        id: 'plan-patch',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            {
+              file_path: planPath,
+              old_string: '# Plan',
+              new_string: '# Updated plan',
+            },
+          ],
+        },
+      }),
+    ).toEqual({ behavior: 'allow' })
+    expect(
+      await manager.permissions(sessionId).resolve({
+        id: 'project-patch',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            {
+              file_path: join(configRoot, 'project.ts'),
+              old_string: 'x',
+              new_string: 'y',
+            },
+          ],
+        },
       }),
     ).toEqual({ behavior: 'deny', reason: 'plan mode' })
 

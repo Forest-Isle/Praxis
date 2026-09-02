@@ -2,14 +2,23 @@ import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ModelToolCall, ToolRegistry } from '../core/runtime.js'
 import { TeamMemberToolRegistry } from './team-member-tools.js'
 
 const base: ToolRegistry = {
   definitions: () =>
-    ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Agent'].map((name) => ({
+    [
+      'Read',
+      'Write',
+      'Edit',
+      'ApplyPatch',
+      'Glob',
+      'Grep',
+      'Bash',
+      'Agent',
+    ].map((name) => ({
       name,
       description: name,
       inputSchema: {},
@@ -57,6 +66,100 @@ describe('TeamMemberToolRegistry', () => {
       ).rejects.toThrow(/read-only|outside|denied|approval/u)
     } finally {
       await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('allows valid ApplyPatch only for write members', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-team-tools-'))
+    const execute = vi.fn(async () => ({ content: 'ok', isError: false }))
+    const prepare = vi.fn(async (toolCall: ModelToolCall) => toolCall)
+    await writeFile(join(cwd, 'file.txt'), 'before')
+    try {
+      const writable = new TeamMemberToolRegistry({
+        base: { ...base, prepare, execute },
+        access: 'write',
+        cwd,
+      })
+      expect(writable.definitions().map((entry) => entry.name)).toContain(
+        'ApplyPatch',
+      )
+      const patch = {
+        edits: [
+          { file_path: 'file.txt', old_string: 'before', new_string: 'after' },
+        ],
+      }
+      await writable.execute(call('ApplyPatch', patch), { cwd })
+      expect(execute).toHaveBeenCalledOnce()
+
+      const readOnly = new TeamMemberToolRegistry({
+        base: { ...base, prepare, execute },
+        access: 'read-only',
+        cwd,
+      })
+      expect(readOnly.definitions().map((entry) => entry.name)).not.toContain(
+        'ApplyPatch',
+      )
+      await expect(
+        readOnly.execute(call('ApplyPatch', patch), { cwd }),
+      ).rejects.toThrow(/unavailable/u)
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects malformed, escaping, mixed, and prepared ApplyPatch calls before execution', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-team-tools-'))
+    const outside = await mkdtemp(join(tmpdir(), 'praxis-team-outside-'))
+    const prepare = vi.fn(async (toolCall: ModelToolCall) => toolCall)
+    const execute = vi.fn(async () => ({ content: 'ok', isError: false }))
+    await writeFile(join(cwd, 'file.txt'), 'before')
+    await writeFile(join(outside, 'secret.txt'), 'secret')
+    await symlink(outside, join(cwd, 'escape'))
+    try {
+      const registry = new TeamMemberToolRegistry({
+        base: { ...base, prepare, execute },
+        access: 'write',
+        cwd,
+      })
+      const valid = {
+        file_path: 'file.txt',
+        old_string: 'before',
+        new_string: 'after',
+      }
+      for (const input of [
+        {},
+        { edits: [{}] },
+        { edits: [{ ...valid, extra: true }] },
+        { edits: [{ ...valid, file_path: '../secret.txt' }] },
+        { edits: [{ ...valid, file_path: 'escape/secret.txt' }] },
+        { edits: [valid, { ...valid, file_path: '../outside' }] },
+      ]) {
+        await expect(
+          registry.execute(call('ApplyPatch', input), { cwd }),
+        ).rejects.toThrow()
+      }
+      expect(prepare).not.toHaveBeenCalled()
+      expect(execute).not.toHaveBeenCalled()
+
+      const preparedEscape = new TeamMemberToolRegistry({
+        base: {
+          ...base,
+          prepare: async () =>
+            call('ApplyPatch', {
+              edits: [{ ...valid, file_path: '../outside' }],
+            }),
+          execute,
+        },
+        access: 'write',
+        cwd,
+      })
+      await expect(
+        preparedEscape.prepare(call('ApplyPatch', { edits: [valid] }), { cwd }),
+      ).rejects.toThrow(/outside/u)
+      expect(execute).not.toHaveBeenCalled()
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
     }
   })
 

@@ -12,6 +12,7 @@ import type {
   ToolRegistry,
 } from '../core/runtime.js'
 import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
+import { parseApplyPatchInput } from './apply-patch.js'
 import type { ClaudePermissionMode } from '../permissions/claude-permission-resolver.js'
 
 export interface ClaudeQuestionOption {
@@ -528,6 +529,19 @@ Use AskUserQuestion for decisions that genuinely require the user. Write a compl
       typeof call.input.file_path === 'string'
     ) {
       return this.resolvePlanFile(state, call, context)
+    }
+    if (state.mode === 'plan' && call.name === 'ApplyPatch') {
+      const edits = parseApplyPatchInput(call.input)
+      if (
+        (
+          await Promise.all(
+            edits.map((edit) => this.isPlanFileForState(state, edit.file_path)),
+          )
+        ).every(Boolean)
+      ) {
+        return { behavior: 'allow' }
+      }
+      return this.resolver(state.mode).resolve(call, context)
     }
     const decision = await this.resolver(
       this.planPermissionMode(sessionId),

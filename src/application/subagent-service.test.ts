@@ -3010,6 +3010,157 @@ describe('foreground Claude Agent execution', () => {
     ).resolves.toMatchObject({ status: 'completed' })
   })
 
+  it('exposes ApplyPatch to background general-purpose agents', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-background-agent-tools-'))
+    roots.push(root)
+    const requests: ModelRequest[] = []
+    let launched = false
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        const source = JSON.stringify(request.messages)
+        const child = source.includes('general-purpose subagent')
+        if (child) {
+          yield { type: 'text-delta', delta: 'BACKGROUND_TOOLS_DONE' }
+        } else if (!launched) {
+          launched = true
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_background_tools',
+              name: 'Agent',
+              input: {
+                description: 'Inspect tools',
+                prompt: 'Inspect tools',
+                subagent_type: 'general-purpose',
+                run_in_background: true,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'BACKGROUND_TOOLS_MAIN_DONE' }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Read', 'ApplyPatch', 'Bash'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      async prepare(call) {
+        return call
+      },
+      async execute(call) {
+        return { content: call.name, isError: false }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      enableSubagents: true,
+    })
+
+    expect((await service.run('Launch a background tools check.')).text).toBe(
+      'BACKGROUND_TOOLS_MAIN_DONE',
+    )
+    const childRequest = requests.find((request) =>
+      JSON.stringify(request.messages).includes('general-purpose subagent'),
+    )
+    const childTools = childRequest?.tools?.map(({ name }) => name) ?? []
+    expect(childTools).toContain('ApplyPatch')
+    expect(childTools).not.toContain('Agent')
+  })
+
+  it('keeps explicit custom-agent tool restrictions in background runs', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-background-custom-tools-'),
+    )
+    roots.push(root)
+    const requests: ModelRequest[] = []
+    let launched = false
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete(request) {
+        requests.push(request)
+        const source = JSON.stringify(request.messages)
+        const child = source.includes('CUSTOM_BACKGROUND_POLICY')
+        if (child) {
+          yield { type: 'text-delta', delta: 'CUSTOM_BACKGROUND_DONE' }
+        } else if (!launched) {
+          launched = true
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'call_custom_background',
+              name: 'Agent',
+              input: {
+                description: 'Restricted tools',
+                prompt: 'Inspect tools',
+                subagent_type: 'restricted-background',
+                run_in_background: true,
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'CUSTOM_BACKGROUND_MAIN_DONE' }
+        }
+      },
+    }
+    const tools: ToolRegistry = {
+      definitions: () =>
+        ['Read', 'ApplyPatch', 'Bash'].map((name) => ({
+          name,
+          description: name,
+          inputSchema: { type: 'object' },
+        })),
+      async prepare(call) {
+        return call
+      },
+      async execute(call) {
+        return { content: call.name, isError: false }
+      },
+    }
+    const extensions = new ClaudeExtensionCatalog({
+      commands: [],
+      skills: [],
+      agents: [
+        {
+          path: join(root, 'config', 'agents', 'restricted-background.md'),
+          scope: 'user',
+          content:
+            '---\nname: restricted-background\ndescription: Restricted background agent.\ntools: [Read]\n---\nCUSTOM_BACKGROUND_POLICY',
+        },
+      ],
+    })
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.208',
+      provider,
+      tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      extensions,
+      enableSubagents: true,
+    })
+
+    expect(
+      (await service.run('Launch a restricted background check.')).text,
+    ).toBe('CUSTOM_BACKGROUND_MAIN_DONE')
+    const childRequest = requests.find((request) =>
+      JSON.stringify(request.messages).includes('CUSTOM_BACKGROUND_POLICY'),
+    )
+    const childTools = childRequest?.tools?.map(({ name }) => name) ?? []
+    expect(childTools).toContain('Read')
+    expect(childTools).not.toContain('ApplyPatch')
+  })
+
   it('persists a failed background lifecycle before exposing terminal output', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-failed-agent-state-'))
     roots.push(root)

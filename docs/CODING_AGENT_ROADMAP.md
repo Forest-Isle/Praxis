@@ -286,6 +286,22 @@ claim crash-atomic multi-file writes. Production admission must preserve the
 existing Edit path, read-before-write, permission, protected-path, scheduling,
 and input-stability boundaries.
 
+### Task 5.2: Bounded ApplyPatch production module — implemented by #603 [depends: Task 5.1]
+
+The admitted production module exposes a bounded ordered batch of exact
+replacements for existing text files: at most 32 edits, 8 canonical files, and
+256 KiB of encoded input, with canonical path, protected-path, read-before-
+write, regular-file, size, and input-stability checks before atomic commits.
+The accepted four-case evidence remains 4/4 for task and safety outcomes, with
+18 Edit-baseline turns versus 14 ApplyPatch turns (average delta -1) and no
+tool-error, retry, timeout, or interruption regression. Permission aggregation,
+file history, Project-memory maintenance, background Agent, writable Team,
+simple mode, MCP ordering, and eval gating are wired to the same bounded
+contract.
+
+This module does not provide crash-atomic transactions across multiple files,
+and it makes no claim of external tool parity.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,

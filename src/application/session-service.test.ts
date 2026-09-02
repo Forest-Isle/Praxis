@@ -2182,6 +2182,90 @@ describe('ClaudeSessionService', () => {
     )
   })
 
+  it('marks ApplyPatch accessedPaths as direct Project-memory maintenance', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-project-memory-apply-patch-'),
+    )
+    roots.push(root)
+    const memoryDirectory = join(root, 'memory')
+    const memoryPath = join(memoryDirectory, 'topic.md')
+    await mkdir(memoryDirectory, { recursive: true })
+    await writeFile(memoryPath, 'before\n')
+    let request = 0
+    const extraction = { observe: vi.fn(), close: vi.fn(async () => undefined) }
+    const service = new ClaudeSessionService({
+      configRoot: join(root, 'config'),
+      cwd: join(root, 'project'),
+      claudeVersion: '2.1.237',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          request += 1
+          if (request === 1) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'read-memory',
+                name: 'Read',
+                input: { file_path: memoryPath },
+              },
+            }
+          } else if (request === 2) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'patch-memory',
+                name: 'ApplyPatch',
+                input: {
+                  edits: [
+                    {
+                      file_path: memoryPath,
+                      old_string: 'before',
+                      new_string: 'after',
+                    },
+                  ],
+                },
+              },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'maintained' }
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read',
+            inputSchema: { type: 'object' },
+          },
+          {
+            name: 'ApplyPatch',
+            description: 'ApplyPatch',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async (call) =>
+          call.name === 'Read'
+            ? { content: 'before\n', isError: false }
+            : {
+                content: 'patched',
+                isError: false,
+                accessedPaths: [memoryPath],
+              },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      projectMemoryDirectory: memoryDirectory,
+      projectMemoryExtraction: extraction,
+    })
+
+    await service.run('Maintain project memory')
+    expect(extraction.observe).toHaveBeenCalledWith(
+      expect.objectContaining({ directMaintenance: true }),
+    )
+  })
+
   it('returns the main result before extraction and drains it during close', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-test-'))
     roots.push(root)
@@ -3662,6 +3746,312 @@ describe('ClaudeSessionService', () => {
       code: 'ENOENT',
     })
     expect(providerTurn).toBe(2)
+  })
+
+  it('checkpoints only normal ApplyPatch targets in a mixed plan batch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-apply-patch-rewind-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd)
+    const planPath = join(cwd, 'plan.md')
+    const normalPath = join(cwd, 'normal.md')
+    await writeFile(planPath, 'plan before\n')
+    await writeFile(normalPath, 'normal before\n')
+    const planRealPath = await realpath(planPath)
+    let providerTurn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        providerTurn += 1
+        if (providerTurn === 1 || providerTurn === 2) {
+          yield {
+            type: 'tool-call',
+            call:
+              providerTurn === 1
+                ? {
+                    id: 'read-plan',
+                    name: 'Read',
+                    input: { file_path: planPath },
+                  }
+                : {
+                    id: 'read-normal',
+                    name: 'Read',
+                    input: { file_path: normalPath },
+                  },
+          }
+        } else if (providerTurn === 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'patch-mixed',
+              name: 'ApplyPatch',
+              input: {
+                edits: [
+                  {
+                    file_path: planPath,
+                    old_string: 'plan before',
+                    new_string: 'plan after',
+                  },
+                  {
+                    file_path: normalPath,
+                    old_string: 'normal before',
+                    new_string: 'normal after',
+                  },
+                ],
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'done' }
+        }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const interactiveTools = new ClaudeInteractiveToolManager({
+      configRoot,
+      initialMode: 'default',
+      enabledTools: [],
+      callbacks: {
+        askUser: async () => null,
+        approvePlan: async () => ({
+          behavior: 'allow',
+          permissionMode: 'default',
+        }),
+      },
+      permissionResolverForMode: () => ({
+        resolve: () => ({ behavior: 'allow' }),
+      }),
+    })
+    const originalIsPlanFile =
+      interactiveTools.isPlanFile.bind(interactiveTools)
+    vi.spyOn(interactiveTools, 'isPlanFile').mockImplementation(
+      async (_sessionId, path) =>
+        path === planRealPath || originalIsPlanFile(_sessionId, path),
+    )
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      interactiveTools,
+      fileCheckpointing: true,
+    })
+
+    const result = await service.run('patch both')
+    const events = await readNativeEvents(
+      resolveDataPlanePaths({
+        dataPlane: 'native',
+        root: configRoot,
+        cwd,
+        sessionId: result.sessionId,
+      }).sessionFile,
+    )
+    await expect(readFile(planPath, 'utf8')).resolves.toBe('plan after\n')
+    await expect(readFile(normalPath, 'utf8')).resolves.toBe('normal after\n')
+    const user = events.find(
+      (event) =>
+        event.kind === 'messages' &&
+        nativeMessages([event]).some(
+          (message) =>
+            message.role === 'user' && message.content === 'patch both',
+        ),
+    )
+    const points = await service.rewindPoints(result.sessionId)
+    expect(points).toEqual([
+      expect.objectContaining({
+        messageId: user?.id,
+        fileChanges: [expect.stringMatching(/normal\.md$/u)],
+        fileRestoreAvailable: true,
+      }),
+    ])
+    await service.rewindFiles(
+      result.sessionId,
+      typeof user?.id === 'string' ? user.id : '',
+    )
+    await expect(readFile(normalPath, 'utf8')).resolves.toBe('normal before\n')
+    await expect(readFile(planPath, 'utf8')).resolves.toBe('plan after\n')
+  })
+
+  it('records one file-history delta per distinct ApplyPatch target', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-apply-patch-distinct-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd)
+    const firstPath = join(cwd, 'first.md')
+    const secondPath = join(cwd, 'second.md')
+    await writeFile(firstPath, 'first one\nfirst two\n')
+    await writeFile(secondPath, 'second one\n')
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        turn += 1
+        if (turn < 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: `read-${turn}`,
+              name: 'Read',
+              input: { file_path: turn === 1 ? firstPath : secondPath },
+            },
+          }
+        } else if (turn === 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'patch-distinct',
+              name: 'ApplyPatch',
+              input: {
+                edits: [
+                  {
+                    file_path: firstPath,
+                    old_string: 'first one',
+                    new_string: 'first changed',
+                  },
+                  {
+                    file_path: firstPath,
+                    old_string: 'first two',
+                    new_string: 'first also changed',
+                  },
+                  {
+                    file_path: secondPath,
+                    old_string: 'second one',
+                    new_string: 'second changed',
+                  },
+                ],
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'done' }
+        }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      fileCheckpointing: true,
+    })
+    const result = await service.run('patch distinct')
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    const user = events.find(
+      (event) =>
+        event.kind === 'messages' &&
+        nativeMessages([event]).some(
+          (message) =>
+            message.role === 'user' && message.content === 'patch distinct',
+        ),
+    )
+    const points = await service.rewindPoints(result.sessionId)
+    const point = points.find((candidate) => candidate.messageId === user?.id)
+    expect(point?.fileChanges).toHaveLength(2)
+    expect(point?.fileChanges).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/first\.md$/u),
+        expect.stringMatching(/second\.md$/u),
+      ]),
+    )
+    await service.rewindFiles(
+      result.sessionId,
+      typeof user?.id === 'string' ? user.id : '',
+    )
+    await expect(readFile(firstPath, 'utf8')).resolves.toBe(
+      'first one\nfirst two\n',
+    )
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('second one\n')
+  })
+
+  it('rolls back all ApplyPatch history receipts when execution fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-apply-patch-rollback-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd)
+    const firstPath = join(cwd, 'first.md')
+    const secondPath = join(cwd, 'second.md')
+    await writeFile(firstPath, 'first before\n')
+    await writeFile(secondPath, 'second before\n')
+    let turn = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      async *complete() {
+        turn += 1
+        if (turn < 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: `read-${turn}`,
+              name: 'Read',
+              input: { file_path: turn === 1 ? firstPath : secondPath },
+            },
+          }
+        } else if (turn === 3) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'patch-fails',
+              name: 'ApplyPatch',
+              input: {
+                edits: [
+                  {
+                    file_path: firstPath,
+                    old_string: 'first before',
+                    new_string: 'first after',
+                  },
+                  {
+                    file_path: secondPath,
+                    old_string: 'stale value',
+                    new_string: 'second after',
+                  },
+                ],
+              },
+            },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'recovered' }
+        }
+        yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      tools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      fileCheckpointing: true,
+    })
+    const result = await service.run('patch with stale match')
+    await expect(readFile(firstPath, 'utf8')).resolves.toBe('first before\n')
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('second before\n')
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, result.sessionId),
+    )
+    const user = events.find(
+      (event) =>
+        event.kind === 'messages' &&
+        nativeMessages([event]).some(
+          (message) =>
+            message.role === 'user' &&
+            message.content === 'patch with stale match',
+        ),
+    )
+    const point = (await service.rewindPoints(result.sessionId)).find(
+      (candidate) => candidate.messageId === user?.id,
+    )
+    expect(point?.fileChanges ?? []).toHaveLength(0)
   })
 
   it('manually compacts an existing session into native summary records', async () => {

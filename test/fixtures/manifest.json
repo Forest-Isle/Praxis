@@ -1287,7 +1287,7 @@
         {
           "kind": "vitest",
           "file": "src/evals/apply-patch-admission.test.ts",
-          "testName": "ApplyPatch admission eval > validates the bounded test-local tool and preserves the production registry"
+          "testName": "ApplyPatch admission eval > validates the bounded production tool and its safety boundaries"
         },
         {
           "kind": "vitest",

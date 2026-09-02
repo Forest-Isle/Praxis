@@ -8095,108 +8095,130 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).toContain('Esc to back')
   })
 
-  it('captures file-mutating turns as navigable diff sources', async () => {
-    const turnSnapshot = {
-      files: [
-        {
-          path: 'turn-one.txt',
-          additions: 1,
-          deletions: 1,
-          patch: '@@ -1 +1 @@\n-before\n+after\n',
-        },
-      ],
-      additions: 1,
-      deletions: 1,
-    }
-    const currentSnapshot = {
-      files: [
-        {
-          path: 'current.txt',
-          additions: 1,
-          deletions: 0,
-          patch: '@@ -0,0 +1 @@\n+current\n',
-        },
-      ],
-      additions: 1,
-      deletions: 0,
-    }
-    let loadCount = 0
-    const app = render(
-      <InteractiveApp
-        factory={{
-          async createService({ eventSink }) {
-            return {
-              async run() {
-                eventSink({
-                  type: 'tool-call',
-                  call: {
-                    id: 'edit-one',
-                    name: 'Edit',
-                    input: {
-                      file_path: '/tmp/turn-one.txt',
-                      old_string: 'before',
-                      new_string: 'after',
-                    },
-                  },
-                })
-                eventSink({
-                  type: 'tool-result',
-                  callId: 'edit-one',
-                  content: 'Replaced 1 occurrence(s)',
-                  isError: false,
-                })
-                return {
-                  sessionId: 'session-1',
-                  text: 'done',
-                  usage: { inputTokens: 1, outputTokens: 1 },
-                }
-              },
-              async resume() {
-                throw new Error('unused')
-              },
-              async fork() {
-                throw new Error('unused')
-              },
-              async sessions() {
-                return []
-              },
-            }
+  it.each([
+    {
+      id: 'edit-one',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/turn-one.txt',
+        old_string: 'before',
+        new_string: 'after',
+      },
+    },
+    {
+      id: 'apply-patch-one',
+      name: 'ApplyPatch',
+      input: {
+        edits: [
+          {
+            file_path: '/tmp/turn-one.txt',
+            old_string: 'before',
+            new_string: 'after',
           },
-        }}
-        initialSessions={[]}
-        diffLoader={async () =>
-          loadCount++ === 0 ? turnSnapshot : currentSnapshot
-        }
-      />,
-    )
+        ],
+      },
+    },
+  ] satisfies ModelToolCall[])(
+    'captures file-mutating turns as navigable diff sources ($name)',
+    async (mutationCall) => {
+      const turnSnapshot = {
+        files: [
+          {
+            path: 'turn-one.txt',
+            additions: 1,
+            deletions: 1,
+            patch: '@@ -1 +1 @@\n-before\n+after\n',
+          },
+        ],
+        additions: 1,
+        deletions: 1,
+      }
+      const currentSnapshot = {
+        files: [
+          {
+            path: 'current.txt',
+            additions: 1,
+            deletions: 0,
+            patch: '@@ -0,0 +1 @@\n+current\n',
+          },
+        ],
+        additions: 1,
+        deletions: 0,
+      }
+      let loadCount = 0
+      const app = render(
+        <InteractiveApp
+          factory={{
+            async createService({ eventSink }) {
+              return {
+                async run() {
+                  eventSink({
+                    type: 'tool-call',
+                    call: {
+                      ...mutationCall,
+                    },
+                  })
+                  eventSink({
+                    type: 'tool-result',
+                    callId: mutationCall.id,
+                    content: 'Replaced 1 occurrence(s)',
+                    isError: false,
+                  })
+                  return {
+                    sessionId: 'session-1',
+                    text: 'done',
+                    usage: { inputTokens: 1, outputTokens: 1 },
+                  }
+                },
+                async resume() {
+                  throw new Error('unused')
+                },
+                async fork() {
+                  throw new Error('unused')
+                },
+                async sessions() {
+                  return []
+                },
+              }
+            },
+          }}
+          initialSessions={[]}
+          diffLoader={async () =>
+            loadCount++ === 0 ? turnSnapshot : currentSnapshot
+          }
+        />,
+      )
 
-    app.stdin.write('edit it')
-    app.stdin.write('\r')
-    await flush()
-    app.stdin.write('/diff')
-    await flush()
-    app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('current.txt')
-    expect(app.lastFrame()).toContain('T1')
+      app.stdin.write('edit it')
+      app.stdin.write('\r')
+      await flush()
+      app.stdin.write('/diff')
+      await flush()
+      app.stdin.write('\r')
+      await flush()
+      expect(app.lastFrame()).toContain('current.txt')
+      expect(app.lastFrame()).toContain('T1')
 
-    app.stdin.write('\r')
-    await flush()
-    expect(app.lastFrame()).toContain('+current')
-    expect(app.lastFrame()).toContain('Esc to back')
+      app.stdin.write('\r')
+      await flush()
+      expect(app.lastFrame()).toContain('+current')
+      expect(app.lastFrame()).toContain('Esc to back')
 
-    app.stdin.write('\u001B[C')
-    await flush()
-    expect(app.lastFrame()).toContain('turn-one.txt')
-    expect(app.lastFrame()).not.toContain('current.txt')
-    expect(app.lastFrame()).toContain('Esc to close')
-    expect(app.lastFrame()).not.toContain('Esc to back')
+      app.stdin.write('\u001B[C')
+      await flush()
+      expect(app.lastFrame()).toContain('turn-one.txt')
+      expect(app.lastFrame()).not.toContain('current.txt')
+      expect(app.lastFrame()).toContain('Esc to close')
+      expect(app.lastFrame()).not.toContain('Esc to back')
 
-    app.stdin.write('\u001B')
-    await new Promise((resolve) => setTimeout(resolve, 75))
-    await flush()
-    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
-  })
+      app.stdin.write('\u001B')
+      await new Promise((resolve) => setTimeout(resolve, 75))
+      await flush()
+      expect(app.lastFrame()).not.toContain(
+        'Uncommitted changes (git diff HEAD)',
+      )
+    },
+  )
 
   it('routes semantic screen-reader diff summary, detail, back, and close', async () => {
     const snapshot = {
@@ -9544,6 +9566,21 @@ describe('InteractiveApp', () => {
                     input: {
                       file_path: '/work/project/output.ts',
                       content: 'export {}',
+                    },
+                  }),
+                ).toBe(true)
+                expect(
+                  isSessionActionApproved?.({
+                    id: 'apply-patch-later',
+                    name: 'ApplyPatch',
+                    input: {
+                      edits: [
+                        {
+                          file_path: '/work/project/output.ts',
+                          old_string: 'export {}',
+                          new_string: 'export const applied = true',
+                        },
+                      ],
                     },
                   }),
                 ).toBe(true)

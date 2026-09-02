@@ -47,6 +47,14 @@ import { countLineChanges } from './line-changes.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
 import { validateBashPathSafety } from '../permissions/bash-path-safety.js'
+import {
+  APPLY_PATCH_DEFINITION,
+  APPLY_PATCH_MAX_FILES,
+  parseApplyPatchInput,
+  planApplyPatch,
+  type ApplyPatchEdit,
+} from './apply-patch.js'
+import { writeFileAtomically } from '../platform/atomic-write.js'
 import { protectedWritePathReason } from '../permissions/bypass-immune-paths.js'
 import {
   effectiveAdditionalDirectories,
@@ -253,6 +261,7 @@ const TOOL_DEFINITIONS: readonly ModelToolDefinition[] = [
       additionalProperties: false,
     },
   },
+  APPLY_PATCH_DEFINITION,
   {
     name: 'NotebookEdit',
     description:
@@ -813,9 +822,15 @@ export class LocalToolRegistry implements ToolRegistry {
       return definitions
     }
     return definitions.map((definition) =>
-      ['Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep'].includes(
-        definition.name,
-      )
+      [
+        'Read',
+        'Write',
+        'Edit',
+        'ApplyPatch',
+        'NotebookEdit',
+        'Glob',
+        'Grep',
+      ].includes(definition.name)
         ? {
             ...definition,
             description: `${definition.description}${
@@ -965,6 +980,41 @@ export class LocalToolRegistry implements ToolRegistry {
         this.mutationTargetExisted.set(prepared, targetExisted)
         return prepared
       }
+      case 'ApplyPatch': {
+        const edits = parseApplyPatchInput(call.input)
+        const preparedEdits: ApplyPatchEdit[] = []
+        for (const edit of edits) {
+          const filePath = await this.filePath(
+            edit.file_path,
+            false,
+            false,
+            context,
+          )
+          this.assertProtectedWritePath(filePath)
+          if (
+            !(await this.wasSuccessfullyRead(
+              filePath,
+              context.messages ?? [],
+              context,
+            ))
+          ) {
+            throw new Error(
+              '<tool_use_error>File has not been read yet. Read it first before writing to it.</tool_use_error>',
+            )
+          }
+          preparedEdits.push({
+            file_path: filePath,
+            old_string: edit.old_string,
+            new_string: edit.new_string,
+          })
+        }
+        if (
+          new Set(preparedEdits.map((edit) => edit.file_path)).size >
+          APPLY_PATCH_MAX_FILES
+        )
+          throw new Error('ApplyPatch may touch at most 8 files')
+        return { ...call, input: { edits: preparedEdits } }
+      }
       case 'NotebookEdit': {
         const requestedPath = stringInput(call.input, 'notebook_path')
         if (!isAbsolute(requestedPath)) {
@@ -1103,6 +1153,8 @@ export class LocalToolRegistry implements ToolRegistry {
         return this.write(prepared, context, targetExisted)
       case 'Edit':
         return this.edit(prepared, targetExisted)
+      case 'ApplyPatch':
+        return this.applyPatch(prepared, context)
       case 'NotebookEdit':
         return this.notebookEdit(prepared)
       case 'Glob':
@@ -1586,6 +1638,79 @@ export class LocalToolRegistry implements ToolRegistry {
       }
     } finally {
       await handle.close()
+    }
+  }
+
+  private async applyPatch(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult> {
+    const edits = parseApplyPatchInput(call.input)
+    const sources = new Map<string, string>()
+    const modes = new Map<string, number>()
+    const identities = new Map<string, { dev: number; ino: number }>()
+    const paths: string[] = []
+    for (const edit of edits) {
+      const filePath = edit.file_path
+      if (sources.has(filePath)) continue
+      paths.push(filePath)
+      const handle = await open(
+        filePath,
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      )
+      try {
+        await this.assertStablePath(filePath)
+        const metadata = await handle.stat()
+        if (!metadata.isFile()) throw new Error(`Not a file: ${filePath}`)
+        if (metadata.size > this.maxFileBytes)
+          throw new Error(`File exceeds ${this.maxFileBytes} byte edit limit`)
+        sources.set(filePath, await handle.readFile('utf8'))
+        identities.set(filePath, { dev: metadata.dev, ino: metadata.ino })
+        modes.set(filePath, metadata.mode & 0o7777)
+      } finally {
+        await handle.close()
+      }
+    }
+    const plan = planApplyPatch(edits, sources, this.maxFileBytes)
+    for (const file of plan.files) {
+      if (context.signal?.aborted) throw abortError()
+      const mode = modes.get(file.filePath)
+      const committed = await writeFileAtomically(file.filePath, file.after, {
+        ...(mode === undefined ? {} : { mode }),
+        beforeCommit: async () => {
+          let handle: FileHandle | undefined
+          try {
+            handle = await open(
+              file.filePath,
+              constants.O_RDONLY | constants.O_NOFOLLOW,
+            )
+            await this.assertStablePath(file.filePath)
+            const metadata = await handle.stat()
+            if (!metadata.isFile()) return false
+            const identity = identities.get(file.filePath)
+            if (
+              !identity ||
+              metadata.dev !== identity.dev ||
+              metadata.ino !== identity.ino
+            )
+              return false
+            return (await handle.readFile('utf8')) === file.before
+          } catch {
+            return false
+          } finally {
+            await handle?.close()
+          }
+        },
+      })
+      if (!committed)
+        throw new Error('Tool input changed after permission approval')
+    }
+    return {
+      content: `Applied ${edits.length} replacement(s) to ${paths.length} file(s)`,
+      isError: false,
+      linesAdded: plan.linesAdded,
+      linesRemoved: plan.linesRemoved,
+      accessedPaths: paths,
     }
   }
 

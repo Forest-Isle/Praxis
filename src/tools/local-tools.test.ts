@@ -1,4 +1,5 @@
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -18,6 +19,44 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ModelMessage, ToolExecutionContext } from '../core/runtime.js'
+import {
+  APPLY_PATCH_MAX_EDITS,
+  APPLY_PATCH_MAX_FILES,
+  APPLY_PATCH_MAX_INPUT_BYTES,
+  parseApplyPatchInput,
+} from './apply-patch.js'
+
+const atomicWriteState = vi.hoisted(() => ({
+  beforeWrite: undefined as
+    ((filePath: string, content: string) => Promise<void>) | undefined,
+  calls: 0,
+}))
+
+vi.mock('../platform/atomic-write.js', async (importOriginal) => {
+  const actual = await importOriginal<{
+    writeFileAtomically: (
+      filePath: string,
+      content: string,
+      options?: { mode?: number; beforeCommit?: () => Promise<boolean> },
+    ) => Promise<boolean>
+  }>()
+  return {
+    ...actual,
+    writeFileAtomically: async (
+      ...args: Parameters<typeof actual.writeFileAtomically>
+    ) => {
+      const [filePath, content] = args
+      atomicWriteState.calls += 1
+      if (atomicWriteState.beforeWrite) {
+        const beforeWrite = atomicWriteState.beforeWrite
+        atomicWriteState.beforeWrite = undefined
+        await beforeWrite(filePath, content)
+      }
+      return actual.writeFileAtomically(...args)
+    },
+  }
+})
+
 import { LocalToolRegistry } from './local-tools.js'
 
 const roots: string[] = []
@@ -54,6 +93,8 @@ async function contextAfterRead(
 }
 
 afterEach(async () => {
+  atomicWriteState.beforeWrite = undefined
+  atomicWriteState.calls = 0
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true })),
   )
@@ -854,6 +895,7 @@ describe('LocalToolRegistry', () => {
       'Read',
       'Write',
       'Edit',
+      'ApplyPatch',
       'NotebookEdit',
       'Glob',
       'Grep',
@@ -2356,6 +2398,268 @@ describe('LocalToolRegistry', () => {
       linesAdded: 2,
       linesRemoved: 2,
     })
+  })
+
+  it('applies ordered replacements across read files with line deltas and modes', async () => {
+    const { cwd } = await workspace()
+    const firstPath = join(cwd, 'first.txt')
+    const secondPath = join(cwd, 'second.txt')
+    await writeFile(firstPath, 'one\nkeep\n')
+    await writeFile(secondPath, 'two\n')
+    await chmod(firstPath, 0o7640)
+    const registry = new LocalToolRegistry({ cwd })
+    let context = { cwd }
+    context = await contextAfterRead(registry, context, firstPath)
+    context = await contextAfterRead(registry, context, secondPath)
+    const call = await registry.prepare(
+      {
+        id: 'apply-patch',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            { file_path: firstPath, old_string: 'one', new_string: 'ONE' },
+            {
+              file_path: firstPath,
+              old_string: 'keep',
+              new_string: 'extra\nkeep',
+            },
+            { file_path: secondPath, old_string: 'two', new_string: 'TWO' },
+          ],
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(call, context)).resolves.toMatchObject({
+      content: 'Applied 3 replacement(s) to 2 file(s)',
+      isError: false,
+      linesAdded: 3,
+      linesRemoved: 2,
+      accessedPaths: [await realpath(firstPath), await realpath(secondPath)],
+    })
+    await expect(readFile(firstPath, 'utf8')).resolves.toBe(
+      'ONE\nextra\nkeep\n',
+    )
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('TWO\n')
+    await expect(stat(firstPath)).resolves.toMatchObject({ mode: 0o107640 })
+  })
+
+  it('stops later file commits when interrupted during an earlier commit', async () => {
+    const { cwd } = await workspace()
+    const firstPath = join(cwd, 'first.txt')
+    const secondPath = join(cwd, 'second.txt')
+    await writeFile(firstPath, 'first\n')
+    await writeFile(secondPath, 'second\n')
+    const registry = new LocalToolRegistry({ cwd })
+    const controller = new AbortController()
+    let context: ToolExecutionContext = { cwd, signal: controller.signal }
+    context = await contextAfterRead(registry, context, firstPath)
+    context = await contextAfterRead(registry, context, secondPath)
+    atomicWriteState.beforeWrite = async () => {
+      controller.abort()
+    }
+    const call = await registry.prepare(
+      {
+        id: 'interrupt-apply',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            { file_path: firstPath, old_string: 'first', new_string: 'FIRST' },
+            {
+              file_path: secondPath,
+              old_string: 'second',
+              new_string: 'SECOND',
+            },
+          ],
+        },
+      },
+      context,
+    )
+
+    await expect(registry.execute(call, context)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    await expect(readFile(firstPath, 'utf8')).resolves.toBe('FIRST\n')
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('second\n')
+    expect(atomicWriteState.calls).toBe(1)
+  })
+
+  it('accepts 32 ordered edits and rejects a 33rd edit', async () => {
+    const { cwd } = await workspace()
+    const filePath = join(cwd, 'ordered.txt')
+    await writeFile(filePath, '0')
+    const registry = new LocalToolRegistry({ cwd })
+    const context = await contextAfterRead(registry, { cwd }, filePath)
+    const edits = Array.from({ length: APPLY_PATCH_MAX_EDITS }, (_, index) => ({
+      file_path: filePath,
+      old_string: String(index),
+      new_string: String(index + 1),
+    }))
+    const call = await registry.prepare(
+      { id: 'apply-32', name: 'ApplyPatch', input: { edits } },
+      context,
+    )
+    await expect(registry.execute(call, context)).resolves.toMatchObject({
+      content: 'Applied 32 replacement(s) to 1 file(s)',
+    })
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('32')
+    await expect(
+      registry.prepare(
+        {
+          id: 'apply-33',
+          name: 'ApplyPatch',
+          input: { edits: [...edits, edits[0]] },
+        },
+        context,
+      ),
+    ).rejects.toThrow('1 to 32 operations')
+  })
+
+  it('enforces the inclusive eight canonical-file limit without writing a ninth batch', async () => {
+    const { cwd } = await workspace()
+    const paths = await Promise.all(
+      Array.from({ length: APPLY_PATCH_MAX_FILES + 1 }, async (_, index) => {
+        const filePath = join(cwd, `file-${index}.txt`)
+        await writeFile(filePath, `value-${index}`)
+        return filePath
+      }),
+    )
+    const registry = new LocalToolRegistry({ cwd })
+    let context: ToolExecutionContext = { cwd }
+    for (const filePath of paths)
+      context = await contextAfterRead(registry, context, filePath)
+    const edits = paths.map((filePath, index) => ({
+      file_path: filePath,
+      old_string: `value-${index}`,
+      new_string: `changed-${index}`,
+    }))
+    await expect(
+      registry.prepare(
+        { id: 'apply-9', name: 'ApplyPatch', input: { edits } },
+        context,
+      ),
+    ).rejects.toThrow('at most 8 files')
+    await expect(
+      Promise.all(paths.map((filePath) => readFile(filePath, 'utf8'))),
+    ).resolves.toEqual(paths.map((_, index) => `value-${index}`))
+    const eightCall = await registry.prepare(
+      {
+        id: 'apply-8',
+        name: 'ApplyPatch',
+        input: { edits: edits.slice(0, APPLY_PATCH_MAX_FILES) },
+      },
+      context,
+    )
+    await expect(registry.execute(eightCall, context)).resolves.toMatchObject({
+      content: 'Applied 8 replacement(s) to 8 file(s)',
+    })
+  })
+
+  it('accepts exactly 256 KiB of encoded input and rejects one additional byte', () => {
+    const prefix = {
+      edits: [{ file_path: 'x', old_string: 'a', new_string: '' }],
+    }
+    const prefixBytes = Buffer.byteLength(JSON.stringify(prefix), 'utf8')
+    const newString = 'x'.repeat(APPLY_PATCH_MAX_INPUT_BYTES - prefixBytes)
+    const input = {
+      edits: [{ file_path: 'x', old_string: 'a', new_string: newString }],
+    }
+    expect(Buffer.byteLength(JSON.stringify(input), 'utf8')).toBe(
+      APPLY_PATCH_MAX_INPUT_BYTES,
+    )
+    expect(parseApplyPatchInput(input)).toHaveLength(1)
+    const oversized = {
+      edits: [{ file_path: 'x', old_string: 'a', new_string: `${newString}x` }],
+    }
+    expect(() => parseApplyPatchInput(oversized)).toThrow('256 KiB')
+  })
+
+  it('rejects protected ApplyPatch targets before mutation', async () => {
+    const { cwd } = await workspace()
+    const filePath = join(cwd, '.env')
+    await writeFile(filePath, 'SECRET=old\n')
+    const registry = new LocalToolRegistry({ cwd })
+    const context = await contextAfterRead(registry, { cwd }, filePath)
+    await expect(
+      registry.prepare(
+        {
+          id: 'protected-apply',
+          name: 'ApplyPatch',
+          input: {
+            edits: [
+              { file_path: filePath, old_string: 'old', new_string: 'new' },
+            ],
+          },
+        },
+        context,
+      ),
+    ).rejects.toThrow('Refusing to write protected path')
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('SECRET=old\n')
+  })
+
+  it('preflights every file before the first ApplyPatch write', async () => {
+    const { cwd } = await workspace()
+    const firstPath = join(cwd, 'first.txt')
+    const secondPath = join(cwd, 'second.txt')
+    await writeFile(firstPath, 'first\n')
+    await writeFile(secondPath, 'second\n')
+    const registry = new LocalToolRegistry({ cwd })
+    let context: ToolExecutionContext = { cwd }
+    context = await contextAfterRead(registry, context, firstPath)
+    context = await contextAfterRead(registry, context, secondPath)
+    const call = await registry.prepare(
+      {
+        id: 'preflight',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            { file_path: firstPath, old_string: 'first', new_string: 'FIRST' },
+            {
+              file_path: secondPath,
+              old_string: 'missing',
+              new_string: 'SECOND',
+            },
+          ],
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(call, context)).rejects.toThrow(
+      'old_string was not found',
+    )
+    await expect(readFile(firstPath, 'utf8')).resolves.toBe('first\n')
+    await expect(readFile(secondPath, 'utf8')).resolves.toBe('second\n')
+  })
+
+  it('rejects a same-byte replacement inode at the atomic commit boundary', async () => {
+    const { cwd } = await workspace()
+    const filePath = join(cwd, 'identity.txt')
+    const replacementPath = join(cwd, 'identity.replacement')
+    await writeFile(filePath, 'before\n')
+    const originalInode = (await stat(filePath)).ino
+    const registry = new LocalToolRegistry({ cwd })
+    const context = await contextAfterRead(registry, { cwd }, filePath)
+    atomicWriteState.beforeWrite = async (target) => {
+      await writeFile(replacementPath, 'before\n')
+      await rename(replacementPath, target)
+    }
+    const call = await registry.prepare(
+      {
+        id: 'identity',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            { file_path: filePath, old_string: 'before', new_string: 'after' },
+          ],
+        },
+      },
+      context,
+    )
+    await expect(registry.execute(call, context)).rejects.toThrow(
+      'Tool input changed after permission approval',
+    )
+    expect(atomicWriteState.calls).toBe(1)
+    expect((await stat(filePath)).ino).not.toBe(originalInode)
+    await expect(readFile(filePath, 'utf8')).resolves.toBe('before\n')
   })
 
   it('rejects Write, Edit, and NotebookEdit on bypass-immune protected paths', async () => {

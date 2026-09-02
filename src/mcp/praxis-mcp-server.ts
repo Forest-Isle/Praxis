@@ -10,6 +10,7 @@ import {
 import type {
   ModelToolCall,
   ModelToolDefinition,
+  ModelMessage,
   RuntimeEvent,
   ToolExecutionContext,
   ToolExecutionResult,
@@ -359,6 +360,7 @@ class PraxisMcpRuntime {
     PraxisMcpToolRegistry | undefined
   >
   private closed = false
+  private readonly messageHistory: ModelMessage[] = []
 
   constructor(private readonly options: PraxisMcpServerOptions) {
     this.localTools = new LocalToolRegistry({
@@ -374,6 +376,7 @@ class PraxisMcpRuntime {
       'Bash',
       'Read',
       'Edit',
+      'ApplyPatch',
       'Write',
       'NotebookEdit',
       'Glob',
@@ -433,10 +436,23 @@ class PraxisMcpRuntime {
     const call: ModelToolCall = { id: randomUUID(), name, input }
     const context: ToolExecutionContext = {
       cwd: this.options.cwd,
+      messages: [...this.messageHistory],
       ...(signal ? { signal } : {}),
     }
     const prepared = await registry.prepare(call, context)
-    return registry.execute(prepared, context)
+    const result = await registry.execute(prepared, context)
+    if (name === 'Read' && !result.isError) {
+      this.messageHistory.push(
+        { role: 'assistant', content: '', toolCalls: [prepared] },
+        {
+          role: 'tool',
+          toolCallId: prepared.id,
+          content: result.content,
+          isError: false,
+        },
+      )
+    }
+    return result
   }
 
   async close(): Promise<void> {
