@@ -26,6 +26,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.55.0](https://github.com/Forest-Isle/Praxis/compare/v0.54.0...v0.55.0) (2026-09-02)
+
+
+### Features
+
+* scope auxiliary provider turn ownership ([#578](https://github.com/Forest-Isle/Praxis/issues/578)) ([152f07d](https://github.com/Forest-Isle/Praxis/commit/152f07dd84c9e60b2886e26c36ff1116b3001512))
+
 ## [0.54.0](https://github.com/Forest-Isle/Praxis/compare/v0.53.1...v0.54.0) (2026-09-02)
 
 
