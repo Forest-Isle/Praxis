@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 
 export type ProviderProtocol =
-  'openai-compatible' | 'anthropic-messages' | 'codex-subscription'
+  | 'openai-compatible'
+  | 'openai-responses'
+  | 'anthropic-messages'
+  | 'codex-subscription'
 
 export type CredentialSource =
   | { source: 'env'; name: string }
@@ -63,6 +66,15 @@ interface Selection {
 const BUILT_INS: Record<string, ProviderDefinition> = {
   openai: {
     protocol: 'openai-compatible',
+    profiles: {
+      default: {
+        baseUrl: 'https://api.openai.com/v1',
+        credential: { source: 'env', name: 'OPENAI_API_KEY' },
+      },
+    },
+  },
+  'openai-responses': {
+    protocol: 'openai-responses',
     profiles: {
       default: {
         baseUrl: 'https://api.openai.com/v1',
@@ -224,9 +236,13 @@ function parseProvider(value: unknown, providerId: string): ProviderDefinition {
     'profiles',
   ])
   const protocol = value.protocol
-  if (protocol !== 'openai-compatible' && protocol !== 'anthropic-messages') {
+  if (
+    protocol !== 'openai-compatible' &&
+    protocol !== 'openai-responses' &&
+    protocol !== 'anthropic-messages'
+  ) {
     fail(
-      `providers.${providerId}.protocol must be openai-compatible or anthropic-messages`,
+      `providers.${providerId}.protocol must be openai-compatible, openai-responses, or anthropic-messages`,
     )
   }
   if (!isRecord(value.profiles) || Object.keys(value.profiles).length === 0)

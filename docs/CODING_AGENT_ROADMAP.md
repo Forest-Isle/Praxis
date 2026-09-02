@@ -92,7 +92,7 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, and 2.3 are implemented; Task 3.1 is next.
+Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 2.3, and 3.1 are implemented; Task 3.2 is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -174,10 +174,14 @@ UTF-8 output, volatile placement, and non-persistence.
 
 ## Phase 3 — Provider-native depth
 
-### Task 3.1: API-key Responses adapter [depends: Tasks 1.2, 2.1]
+### Task 3.1: API-key Responses adapter [implemented by #569; depends: Tasks 1.2, 2.1]
 
-Add a public OpenAI Responses protocol adapter with explicit model capability
-selection, reasoning/tool item continuity, and request capture fixtures.
+Delivered a public `openai-responses` provider with explicit model capability
+selection, API-key authentication, and `/responses` SSE transport. A shared
+stateless Responses codec preserves full provider-neutral local history,
+reasoning/tool/output continuity, and `store:false` without
+`previous_response_id` or provider-native transcript fields. Request capture
+and codec fixtures cover the public API-key path.
 
 ### Task 3.2: Turn-scoped provider client [depends: Task 3.1]
 

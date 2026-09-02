@@ -256,6 +256,104 @@ describe('ProviderRegistry', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(1)
   })
 
+  it('creates API-key Responses without a non-streaming replay', async () => {
+    const requestBodies: Array<Record<string, unknown>> = []
+    const requestHeaders: Headers[] = []
+    const fetchImplementation = vi.fn(async (_input, init) => {
+      requestBodies.push(
+        JSON.parse(String(init?.body)) as Record<string, unknown>,
+      )
+      requestHeaders.push(new Headers(init?.headers))
+      return Response.json(
+        { error: { type: 'server_error', message: 'temporary' } },
+        { status: 503 },
+      )
+    })
+    const registry = createProviderRegistry({
+      target: target('openai-responses'),
+      credential: {
+        type: 'api-key',
+        secret: 'responses-secret',
+        source: { source: 'env', name: 'FIXTURE_KEY' },
+      },
+      providerEnvironment: {
+        provider: 'openai',
+        baseUrl: 'https://relay.example/v1',
+        deadlineMs: 1_000,
+        connectTimeoutMs: 100,
+        idleTimeoutMs: 100,
+        disableNonStreamingFallback: false,
+      },
+      fetchImplementation,
+    })
+    const consume = async () => {
+      for await (const event of registry.create().complete({ messages: [] }))
+        void event
+    }
+
+    await expect(consume()).rejects.toMatchObject({
+      kind: 'server_error',
+      retryable: true,
+      status: 503,
+    })
+    expect(requestBodies).toHaveLength(1)
+    expect(requestBodies[0]).toMatchObject({ stream: true, store: false })
+    expect(requestHeaders[0]?.get('authorization')).toBe(
+      'Bearer responses-secret',
+    )
+    expect(requestHeaders[0]?.has('chatgpt-account-id')).toBe(false)
+    expect(fetchImplementation).toHaveBeenCalledTimes(1)
+  })
+
+  it('wraps Responses with the resolved deadline controls', async () => {
+    vi.useFakeTimers()
+    const registry = createProviderRegistry({
+      target: target('openai-responses'),
+      credential: {
+        type: 'api-key',
+        secret: 'secret',
+        source: { source: 'env', name: 'FIXTURE_KEY' },
+      },
+      providerEnvironment: {
+        provider: 'openai',
+        baseUrl: 'https://relay.example/v1',
+        deadlineMs: 1_000,
+        connectTimeoutMs: 20,
+        idleTimeoutMs: 100,
+        disableNonStreamingFallback: false,
+      },
+      fetchImplementation: async () => new Promise<Response>(() => {}),
+    })
+    const completion = registry.create().complete({ messages: [] })
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      timeoutPhase: 'connect',
+      message: 'Provider connection timed out',
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+  })
+
+  it('rejects OAuth credentials for public Responses', () => {
+    expect(() =>
+      createProviderRegistry({
+        target: target('openai-responses'),
+        credential: {
+          type: 'oauth',
+          accessToken: 'access',
+          refreshToken: 'refresh',
+          expiresAt: Date.now() + 100_000,
+          source: {
+            source: 'vault',
+            providerId: 'fixture',
+            profileId: 'default',
+          },
+        },
+      }).create(),
+    ).toThrow(ProviderAuthenticationError)
+  })
+
   it('composes resolved connect and idle timeouts around providers', async () => {
     vi.useFakeTimers()
     const credential = {

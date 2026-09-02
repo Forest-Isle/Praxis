@@ -15,6 +15,7 @@ this file from merged Conventional Commit pull requests.
 * externalize oversized text-only MCP results to redacted session files ([#561](https://github.com/Forest-Isle/Praxis/issues/561))
 * honor MCP read-only hints in default permission decisions ([#564](https://github.com/Forest-Isle/Praxis/issues/564))
 * separate provider connect, byte-idle, and absolute-total timeouts ([#550](https://github.com/Forest-Isle/Praxis/issues/550))
+* add the explicit API-key OpenAI Responses provider ([#569](https://github.com/Forest-Isle/Praxis/issues/569))
 
 ### Bug Fixes
 
