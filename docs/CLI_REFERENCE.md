@@ -97,6 +97,23 @@ records; unset, empty, `0`, `false`, and every other value leave them disabled.
 When enabled, `running` precedes the turn's `system/init` record and terminal
 `idle` follows the `result` record, so `result` is not the final JSON line.
 
+## Machine result envelopes
+
+JSON and stream JSON result records use the Claude Code 2.1.208 machine-result
+shape. Provider-backed successes expose numeric API duration and cost values,
+the observed stop reason when available, `terminal_reason: "completed"`, rich
+zero-filled usage fields, numeric per-model costs, and provider timing fields
+only when request/output boundaries were observed. Provider API failures use
+`subtype: "success"` with `is_error: true`, `api_error_status`, a normalized
+`API Error: <status> ...` result, `stop_reason: "stop_sequence"`, and
+`terminal_reason: "api_error"`; the CLI still exits 1.
+
+Provider-free `/color` produces a zero-turn success envelope with zero duration,
+cost, rich zero usage, and empty `modelUsage`. Provider-free `/cost` also has
+zero turns and zero current-turn API duration, but preserves its accumulated
+`total_cost_usd` and populated `modelUsage`. Provider-only status, timing, and
+terminal fields are omitted for both commands; the CLI exits 0.
+
 ## Project outcome evaluations
 
 Run strict project cases in isolated workspaces:

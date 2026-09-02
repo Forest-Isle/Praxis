@@ -73,8 +73,10 @@ import {
 import { resolveProjectIdentity } from './platform/project-identity.js'
 import {
   AgentRunCancelledError,
+  ModelProviderError,
   type ModelDocument,
   type ModelImage,
+  type ModelTerminalReason,
   type ModelUsage,
   type ModelProvider,
   type ModelToolCall,
@@ -218,6 +220,7 @@ import {
   isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
+  projectProtocolTimings,
   readStreamJsonMessages,
   StreamJsonOutput,
   type CliOutputFormat,
@@ -6942,6 +6945,9 @@ async function execute(
   }
   let streamOutput: StreamJsonOutput | undefined
   let jsonModelTurns = 0
+  let jsonRequestAt: number | undefined
+  let jsonOutputAt: number | undefined
+  let jsonTerminalReason: ModelTerminalReason | undefined
   const pendingEvents: Parameters<RuntimeEventSink>[0][] = []
   let streamIterator: AsyncGenerator<StreamJsonMessage> | undefined
   let firstStreamMessage: StreamUserMessage | undefined
@@ -7154,9 +7160,12 @@ async function execute(
       output.init()
       output.sink({ type: 'text-delta', delta: text })
       output.sink({ type: 'usage', usage: result.usage })
-      output.result(result, startedAt)
+      output.result(result, startedAt, { localCommand: true })
     } else if (outputFormat === 'json' || invocation.legacyJson) {
-      writeJson(io, createSuccessResult(result, info, startedAt, 0))
+      writeJson(
+        io,
+        createSuccessResult(result, info, startedAt, 0, { localCommand: true }),
+      )
     } else {
       io.stdout(`${text}\n`)
     }
@@ -7209,6 +7218,21 @@ async function execute(
           ? (event) => {
               if (event.type === 'state' && event.state === 'awaiting-model') {
                 jsonModelTurns += 1
+                if (jsonRequestAt === undefined) jsonRequestAt = Date.now()
+              }
+              if (event.type === 'terminal') {
+                jsonTerminalReason = event.reason
+              }
+              if (
+                (event.type === 'text-delta' ||
+                  event.type === 'thinking-start' ||
+                  event.type === 'thinking-delta' ||
+                  event.type === 'thinking-signature-delta' ||
+                  event.type === 'thinking-stop' ||
+                  event.type === 'tool-call') &&
+                jsonOutputAt === undefined
+              ) {
+                jsonOutputAt = Date.now()
               }
               if (event.type === 'warning') {
                 io.stderr(
@@ -7396,8 +7420,12 @@ async function execute(
       currentTurnAbort = streamIterator ? turnAbort : undefined
       const runSignal = streamIterator ? turnAbort.signal : signal
       await ensureCostBaseline(activeSessionId)
+      jsonModelTurns = 0
+      jsonRequestAt = undefined
+      jsonOutputAt = undefined
+      jsonTerminalReason = undefined
       if (streamOutput) {
-        streamOutput.init()
+        streamOutput.init(startedAt)
         if (isFirstTurn) {
           for (const event of pendingEvents) streamOutput.sink(event)
         }
@@ -7519,7 +7547,19 @@ async function execute(
           error instanceof Error ? error.message : String(error),
           sensitiveEnvironmentValues(process.env),
         )
-        if (streamOutput) streamOutput.error(message, startedAt)
+        const providerApiError =
+          error instanceof ModelProviderError &&
+          (error.status !== undefined || error.kind === 'api_error')
+        const errorContext = providerApiError
+          ? {
+              providerApiError: true,
+              apiErrorStatus:
+                error instanceof ModelProviderError
+                  ? (error.status ?? null)
+                  : null,
+            }
+          : {}
+        if (streamOutput) streamOutput.error(message, startedAt, errorContext)
         else if (outputFormat === 'json') {
           writeJson(
             io,
@@ -7528,6 +7568,7 @@ async function execute(
               activeSessionId,
               startedAt,
               jsonModelTurns,
+              errorContext,
             ),
           )
         } else {
@@ -7546,7 +7587,7 @@ async function execute(
         if (localCommand) {
           streamOutput.syntheticAssistant(result.text)
         }
-        streamOutput.result(result, startedAt)
+        streamOutput.result(result, startedAt, { localCommand })
       } else if (outputFormat === 'json') {
         const resultRuntimeInfo = service.runtimeInfo?.() ?? runtimeInfo
         writeJson(
@@ -7556,6 +7597,13 @@ async function execute(
             resultRuntimeInfo,
             startedAt,
             localCommand ? 0 : Math.max(1, jsonModelTurns),
+            {
+              localCommand,
+              ...(jsonTerminalReason === undefined
+                ? {}
+                : { stopReason: jsonTerminalReason }),
+              ...projectProtocolTimings(startedAt, jsonRequestAt, jsonOutputAt),
+            },
           ),
         )
       } else if (outputFormat !== 'text')
