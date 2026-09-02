@@ -234,6 +234,7 @@ import {
   type StreamJsonMessage,
   type StreamControlResponse,
 } from './cli/protocol.js'
+import { isDirectProcessSigint } from './cli/process-signal.js'
 import { executeProviderAuthCommand } from './cli/provider-auth-command.js'
 import {
   describeClaudePlugin,
@@ -7659,6 +7660,13 @@ export async function run(
     return await execute(argv, io, dependencies, signal)
   } catch (error) {
     if (isCancellation(error, signal)) {
+      if (isDirectProcessSigint(signal)) {
+        try {
+          if (parseCliInvocation(argv).print) return 0
+        } catch {
+          // Preserve the ordinary cancellation boundary when parsing fails.
+        }
+      }
       io.stderr('Praxis run cancelled.\n')
       return 130
     }

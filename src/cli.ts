@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import type { RuntimeEventSink } from './core/runtime.js'
 import type { CliDependencies, CliIO } from './cli-runtime.js'
+import { DIRECT_PROCESS_SIGINT } from './cli/process-signal.js'
 
 export {
   parseContextEnvironment,
@@ -62,8 +63,9 @@ function isDirectExecution(moduleUrl: string, argvPath: string | undefined) {
 
 if (isDirectExecution(import.meta.url, process.argv[1])) {
   const controller = new AbortController()
+  const cancelWithSigint = () => controller.abort(DIRECT_PROCESS_SIGINT)
   const cancel = () => controller.abort()
-  process.on('SIGINT', cancel)
+  process.on('SIGINT', cancelWithSigint)
   process.on('SIGTERM', cancel)
   try {
     process.exitCode = await run(
@@ -73,7 +75,7 @@ if (isDirectExecution(import.meta.url, process.argv[1])) {
       controller.signal,
     )
   } finally {
-    process.removeListener('SIGINT', cancel)
+    process.removeListener('SIGINT', cancelWithSigint)
     process.removeListener('SIGTERM', cancel)
   }
 }
