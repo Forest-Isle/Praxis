@@ -382,18 +382,18 @@
     },
     {
       "id": "application.turn.lifecycle",
-      "seam": "TurnTerminalController",
-      "contract": "Inner terminal states are filtered into exactly one outer turn terminal state.",
+      "seam": "TurnCoordinator",
+      "contract": "The coordinator owns active-turn registration, steering, cleanup, and exactly one outer terminal state.",
       "status": "qualified",
       "modules": ["src/application/turn-lifecycle.ts"],
       "outcomes": [
-        "A turn exposes one terminal transition even when inner operations terminate."
+        "A turn exposes filtered runtime events, safe steering, pending-input rejection, and one terminal transition."
       ],
       "evidence": [
         {
           "kind": "vitest",
           "file": "src/application/turn-lifecycle.test.ts",
-          "testName": "TurnTerminalController > filters inner terminal states and emits one outer terminal state"
+          "testName": "TurnCoordinator > filters inner terminal states and emits one outer terminal state"
         }
       ]
     },

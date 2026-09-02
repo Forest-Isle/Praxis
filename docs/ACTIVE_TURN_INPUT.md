@@ -13,9 +13,9 @@ Praxis 的交互式 TUI 在普通 agent turn 运行期间保持 composer 可编�
 
 ## 方案选择 & 理由
 
-采用“分离队列 + turn 生命周期边界”：session service 持有 active steering mailbox，交互层持有 follow-up FIFO。
+采用“分离队列 + turn 生命周期边界”：TurnCoordinator 持有 active steering mailbox 和 turn 生命周期，交互层持有 follow-up FIFO。
 
-- Steering 必须进入正在运行的 `AgentRuntime`，所以 mailbox 由 session service 注册，并通过 runtime request port 在安全点读取。
+- Steering 必须进入正在运行的 `AgentRuntime`，所以 mailbox 由 `TurnCoordinator` 注册，并通过 runtime request port 在安全点读取；session service 只负责把 coordinator 的 scope 接入 runtime。
 - Follow-up 是一个新的用户 turn，需要独立的 turn terminal state、hook lifecycle、用量和成本记录，所以由 TUI 在前一 turn 成功完成后调用下一次 `resume()`；它不在同一个 runtime run 内伪装成 tool follow-up。
 - 两种输入只在实际交付时写入 native transcript。队列状态是短暂的本地操作状态，不是 transcript event。
 
@@ -25,7 +25,7 @@ Praxis 的交互式 TUI 在普通 agent turn 运行期间保持 composer 可编�
 
 ### Active steering mailbox
 
-新增一个小型、同步的 FIFO mailbox，状态为 `accepting` 或 `sealed`。每个普通 prompt turn 在 session service 进入第一个异步步骤前注册一个 mailbox，并在结束时移除。
+新增一个小型、同步的 FIFO mailbox，状态为 `accepting` 或 `sealed`。每个普通 prompt turn 在 `TurnCoordinator` 进入第一个异步步骤前注册一个 mailbox，并在结束时移除。
 
 Mailbox 提供：
 
@@ -35,7 +35,7 @@ Mailbox 提供：
 - `withdraw(id)`：仅移除尚未交付的 item。
 - `close()`：返回所有未交付 item，供失败或取消路径显式拒绝。
 
-Session service 暴露有判别结果的 `steer` 和 `withdrawSteering` 命令。结果至少区分 `accepted`、`no-active-turn`、`not-steerable`、`turn-completing` 和 `not-pending`；调用方不得把拒绝当成功。
+`TurnCoordinator` 暴露有判别结果的 `steer` 和 `withdrawSteering` 命令，session service 委托这些命令。结果至少区分 `accepted`、`no-active-turn`、`not-steerable`、`turn-completing` 和 `not-pending`；调用方不得把拒绝当成功。
 
 Shell turn 不注册 steering mailbox。重复 active turn 注册必须失败，不能替换既有 mailbox。
 
@@ -47,7 +47,7 @@ Shell turn 不注册 steering mailbox。重复 active turn 注册必须失败，
 2. Stop hook 有 await，因此 stop hook 返回且没有内部 continuation 时，再以 completion 操作检查 steering；为空则 seal 并允许完成。
 3. Provider 返回 tool calls 时，等待整批 tools settle、持久化 tool results 和内部 tool/hook follow-up，再尝试一次 steering，然后继续模型循环。
 
-交付顺序为：observer 追加 native user message成功 → runtime messages 可见 → 发出 `user-input-delivered` presentation event。持久化失败会失败当前 turn，不能只在内存中继续。
+交付顺序为：observer 追加 native user message成功 → runtime messages 可见 → 发出 `user-input-delivered` presentation event。持久化失败会失败当前 turn，不能只在内存中继续；scope 只向 runtime 暴露过滤后的 sink 和 steering port。
 
 现有 `followUpUserMessages` 保持 tool/hook 内部上下文语义，不复用为用户队列。
 
@@ -87,7 +87,8 @@ Withdraw：Up on empty busy composer → newest local pending item → mailbox w
 
 - Mailbox unit tests: FIFO, one-at-a-time drain, seal/enqueue race, withdraw, close.
 - Runtime tests: no-tool boundary, post-tool-batch boundary, stop-hook await race, one-per-boundary ordering, observer-before-provider visibility.
-- Session service tests: active registration timing, native transcript append only on delivery, shell/non-active rejection, cancellation rejection, mailbox cleanup.
+- TurnCoordinator tests: active registration timing, terminal filtering, shell/non-active rejection, cancellation/failure rejection, close handling, mailbox cleanup.
+- Session service tests: native transcript append only on delivery and coordinator wiring.
 - Router tests: busy editing, cancellation priority, decision-layer priority, delegated submit/follow-up actions.
 - Interactive Ink tests: Enter steering, Tab and Alt+Enter follow-up, FIFO turn pump, pending rows, Up-to-edit, failure preservation, `/btw` independence.
 - Quiet-frame tests: semantic pending labels, stable keys, clipping and bounded viewport.

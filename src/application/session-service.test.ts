@@ -537,8 +537,10 @@ describe('ClaudeSessionService', () => {
       role: 'user',
       content: 'steer me',
     })
-    await expect(service.resume(sessionId, 'duplicate')).rejects.toThrow(
-      'already has an active turn',
+    await expect(service.resume(sessionId, 'duplicate')).rejects.toThrowError(
+      new Error(
+        `conflict: locked (session ${sessionId} already has an active turn)`,
+      ),
     )
     releaseProvider()
     await run

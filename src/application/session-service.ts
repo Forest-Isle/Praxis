@@ -107,7 +107,6 @@ import { usageCostUsd } from '../core/usage.js'
 import type { ModelPricingRegistry } from '../core/usage.js'
 import { isSessionId } from '../core/session.js'
 import {
-  ActiveTurnInputMailbox,
   type ActiveTurnInputCommandResult,
   type SteeringItem,
 } from '../core/active-turn-input.js'
@@ -175,7 +174,7 @@ import {
   ScheduledPromptManager,
   type ScheduledPrompt,
 } from './scheduled-prompt-manager.js'
-import { TurnTerminalController, type TurnRequest } from './turn-lifecycle.js'
+import { TurnCoordinator, type TurnRequest } from './turn-lifecycle.js'
 import { ClaudeScheduledToolRegistry } from '../tools/claude-scheduled-tools.js'
 import { ClaudeTaskToolRegistry } from '../tools/claude-task-tools.js'
 import { ClaudeWorkflowToolRegistry } from '../tools/claude-workflow-tools.js'
@@ -1307,16 +1306,17 @@ export class ClaudeSessionService {
   private readonly hookLifecycle: HookLifecycle
   private readonly leadOperations: TeamLeadOperations | null
   private readonly fileChangeWatcher: ClaudeFileChangeWatcher | null
-  private readonly activeTurnInputs = new Map<
-    string,
-    { readonly mailbox?: ActiveTurnInputMailbox }
-  >()
+  private readonly turnCoordinator: TurnCoordinator
   private runtimeCwd: string
 
   constructor(options: ClaudeSessionServiceOptions) {
     const dataPlane = options.dataPlane ?? 'native'
     assertNativeDataPlane(dataPlane)
     this.options = { ...options, dataPlane }
+    this.turnCoordinator = new TurnCoordinator({
+      eventSink: options.eventSink ?? (() => undefined),
+      createSteeringId: randomUUID,
+    })
     this.assertNativeTranscriptOptions()
     this.leadOperations = options.teamLeadOperations ?? null
     this.hookLifecycle = new HookLifecycle(options.hooks, options.eventSink)
@@ -1622,17 +1622,7 @@ export class ClaudeSessionService {
 
   async close(): Promise<void> {
     this.closing = true
-    for (const { mailbox } of this.activeTurnInputs.values()) {
-      if (!mailbox) continue
-      for (const item of mailbox.close()) {
-        this.options.eventSink?.({
-          type: 'user-input-rejected',
-          id: item.id,
-          content: item.content,
-          reason: 'closed',
-        })
-      }
-    }
+    this.turnCoordinator.close()
     await this.fileChangeWatcher?.close(5_000)
     await this.hookLifecycle.close()
     await this.drainDetachedHookRuns(5_000)
@@ -2223,26 +2213,14 @@ export class ClaudeSessionService {
   }
 
   steer(sessionId: string, content: string): ActiveTurnInputCommandResult {
-    const active = this.activeTurnInputs.get(sessionId)
-    if (!active) return { kind: 'no-active-turn' }
-    const mailbox = active.mailbox
-    if (!mailbox) return { kind: 'not-steerable' }
-    const result = mailbox.enqueue(content)
-    if (result.kind === 'accepted') return result
-    if (result.kind === 'empty') return result
-    return { kind: 'turn-completing' }
+    return this.turnCoordinator.steer(sessionId, content)
   }
 
   withdrawSteering(
     sessionId: string,
     id: string,
   ): ActiveTurnInputCommandResult {
-    const active = this.activeTurnInputs.get(sessionId)
-    if (!active) return { kind: 'no-active-turn' }
-    const mailbox = active.mailbox
-    if (!mailbox) return { kind: 'not-steerable' }
-    const result = mailbox.withdraw(id)
-    return result.kind === 'withdrawn' ? result : { kind: 'not-pending' }
+    return this.turnCoordinator.withdrawSteering(sessionId, id)
   }
 
   async resumeShell(
@@ -3734,36 +3712,8 @@ export class ClaudeSessionService {
     const shellCommand =
       submission.kind === 'shell' ? submission.command : undefined
     const skipUserPrompt = submission.kind === 'retry'
-    const controller = new TurnTerminalController(
-      this.options.eventSink ?? (() => undefined),
-    )
-    let activeTurnInput: ActiveTurnInputMailbox | undefined
-    let activeTurnRecord:
-      { readonly mailbox?: ActiveTurnInputMailbox } | undefined
-    try {
+    return this.turnCoordinator.run(request, async ({ emit, steering }) => {
       this.assertTurnWritable()
-      if (prompt.length === 0 && images.length === 0 && documents.length === 0)
-        throw new Error('Prompt must not be empty')
-      if (name !== undefined && name.length === 0) {
-        throw new Error('Session name must not be empty')
-      }
-      if (shellCommand !== undefined && shellCommand.trim().length === 0) {
-        throw new Error('Shell command must not be empty')
-      }
-      if (this.activeTurnInputs.has(sessionId)) {
-        throw new Error(
-          `conflict: locked (session ${sessionId} already has an active turn)`,
-        )
-      }
-      activeTurnRecord =
-        shellCommand === undefined
-          ? {
-              mailbox: (activeTurnInput = new ActiveTurnInputMailbox(
-                randomUUID,
-              )),
-            }
-          : {}
-      this.activeTurnInputs.set(sessionId, activeTurnRecord)
 
       await this.activateSessionCostTracker(sessionId)
 
@@ -4450,7 +4400,7 @@ export class ClaudeSessionService {
                   pendingRecoveryToolCallIds.has(call.id),
               })
             : null
-        const runtime = new AgentRuntime(provider, controller.emit, {
+        const runtime = new AgentRuntime(provider, emit, {
           emitInitialContextState: false,
           ...(this.options.emitToolUseSummaries
             ? {
@@ -5821,7 +5771,7 @@ export class ClaudeSessionService {
             cwd: this.activeCwd(),
             toolResultDirectory,
             observer,
-            ...(activeTurnInput ? { steering: activeTurnInput } : {}),
+            ...(steering ? { steering } : {}),
             ...(this.options.effort ? { effort: this.options.effort } : {}),
             ...(this.options.maxModelTurns !== undefined
               ? { maxModelTurns: this.options.maxModelTurns }
@@ -6338,25 +6288,8 @@ export class ClaudeSessionService {
           },
         )
       }
-      controller.complete()
       return result
-    } catch (error) {
-      controller.fail(error, signal)
-      throw error
-    } finally {
-      if (activeTurnInput !== undefined) {
-        for (const item of activeTurnInput.close()) {
-          this.options.eventSink?.({
-            type: 'user-input-rejected',
-            id: item.id,
-            content: item.content,
-            reason: signal?.aborted ? 'cancelled' : 'failed',
-          })
-        }
-      }
-      if (this.activeTurnInputs.get(sessionId) === activeTurnRecord)
-        this.activeTurnInputs.delete(sessionId)
-    }
+    })
   }
 
   private async ensureFileResources(
