@@ -363,6 +363,26 @@
       ]
     },
     {
+      "id": "application.turn.accounting",
+      "seam": "TurnAccounting",
+      "contract": "The active main turn aggregates usage, cost, durations, and line changes with atomic preflight and no double counting across compaction and auxiliary metrics.",
+      "status": "qualified",
+      "modules": [
+        "src/application/turn-accounting.ts",
+        "src/application/session-service.ts"
+      ],
+      "outcomes": [
+        "Committed compaction metrics are included in public turn results exactly once while tracker mutations exclude externally committed rows."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-accounting.test.ts",
+          "testName": "TurnAccounting > keeps inclusive runtime output separate from unrecorded tracker metrics"
+        }
+      ]
+    },
+    {
       "id": "core.context.recovery",
       "seam": "ContextEngine recovery",
       "contract": "Automatic context recovery is bounded and never commits a no-progress attempt.",
