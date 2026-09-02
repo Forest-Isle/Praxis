@@ -11,6 +11,7 @@ import {
   type ContextBudget,
   type ContextBudgetReport,
 } from '../core/context-budget.js'
+import { StaleContextGenerationError } from './context-preparation.js'
 
 export interface ContextEnvelope {
   readonly messages: readonly ModelMessage[]
@@ -159,7 +160,11 @@ export class ContextEngine {
       await this.memory.afterCompact?.()
       return { kind: 'retry', envelope: proposal.envelope }
     } catch (cause) {
-      if (signal?.aborted || cause instanceof AgentRunCancelledError)
+      if (
+        signal?.aborted ||
+        cause instanceof AgentRunCancelledError ||
+        cause instanceof StaleContextGenerationError
+      )
         throw cause
       return { kind: 'exhausted', error }
     }

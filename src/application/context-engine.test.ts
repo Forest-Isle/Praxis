@@ -6,6 +6,7 @@ import {
   type ContextEnvelope,
   type ContextTransitionPort,
 } from './context-engine.js'
+import { StaleContextGenerationError } from './context-preparation.js'
 
 const message = (content: string): ModelMessage => ({ role: 'user', content })
 const portFor = (
@@ -138,6 +139,37 @@ describe('ContextEngine', () => {
     })
     expect(propose).toHaveBeenCalledOnce()
     expect(commit).not.toHaveBeenCalled()
+  })
+
+  it('propagates a stale replacement without running post-commit memory effects', async () => {
+    const beforeCompact = vi.fn(async () => undefined)
+    const afterCompact = vi.fn(async () => undefined)
+    const stale = new StaleContextGenerationError(1, 2)
+    const commit = vi.fn(async () => {
+      throw stale
+    })
+    const engine = new ContextEngine({
+      budget: new ContextBudget({ contextWindowTokens: 30, reserveTokens: 5 }),
+      memory: { beforeCompact, afterCompact },
+    })
+    const error = new ModelProviderError('too long', {
+      retryable: false,
+      kind: 'prompt_too_long',
+    })
+
+    await expect(
+      engine.recover(error, {
+        current: () => ({ messages: [message('x'.repeat(200))], tools: [] }),
+        irreducible: () => ({ messages: [message('small')], tools: [] }),
+        propose: async () => ({
+          envelope: { messages: [message('small')], tools: [] },
+          commit,
+        }),
+      }),
+    ).rejects.toBe(stale)
+    expect(beforeCompact).toHaveBeenCalledOnce()
+    expect(commit).toHaveBeenCalledOnce()
+    expect(afterCompact).not.toHaveBeenCalled()
   })
 
   it('anchors later occupancy to observed provider usage', () => {

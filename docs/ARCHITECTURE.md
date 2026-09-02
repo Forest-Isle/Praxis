@@ -349,6 +349,13 @@ without teaching the composer any provider wire format.
 `ContextAssembler` loads the composer inputs and always returns the canonical
 lifecycle-scoped snapshot.
 
+`ContextPreparation` owns the turn-scoped provider-visible boundary around that
+snapshot: it combines stable then volatile system messages with decorated
+active Transcript history, Project-memory recall, and pending input, followed
+by a snapshot of active-tool definitions. Live history, settled memory,
+volatile context, and tool activation are refreshed at projection time without
+advancing the private history generation.
+
 Native context keeps environment and memory stable for a lifecycle and resolved
 cwd, while recomputing Git status for every assembly from the caller-resolved
 cwd (including isolated subagent worktrees). Default Git status is a volatile
@@ -454,7 +461,10 @@ latest summary onward while retaining historical nested-memory attachments.
 When compaction happens inside an active turn, current user messages are
 replayed verbatim after the summary before model execution continues.
 Compaction failure, cancellation, or an oversized summary leaves no partial
-compact records.
+compact records. Automatic and reactive replacements use a guarded monotonic
+generation commit: the native Transcript append is the durable callback, and
+hooks, invalidation, events, and accounting run only after that commit
+succeeds.
 
 `ClaudeSessionService.fork` is a version-gated native transcript operation,
 not model-history replay. It loads one leased source snapshot, validates the

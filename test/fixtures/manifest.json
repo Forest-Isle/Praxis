@@ -313,6 +313,26 @@
       ]
     },
     {
+      "id": "application.context.preparation",
+      "seam": "ContextPreparation",
+      "contract": "Provider-visible context uses a stable canonical prefix and guarded monotonic history replacements.",
+      "status": "qualified",
+      "modules": [
+        "src/application/context-preparation.ts",
+        "src/application/session-service.ts"
+      ],
+      "outcomes": [
+        "Live context projections retain their generation while successful replacements advance monotonically."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/context-preparation.test.ts",
+          "testName": "ContextPreparation > guards monotonic replacements and preserves failed proposals"
+        }
+      ]
+    },
+    {
       "id": "core.context.recovery",
       "seam": "ContextEngine recovery",
       "contract": "Automatic context recovery is bounded and never commits a no-progress attempt.",
