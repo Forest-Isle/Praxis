@@ -135,6 +135,83 @@ describe('ClaudeTeamAgentRuntime', () => {
     vi.restoreAllMocks()
   })
 
+  it('allocates one turn provider per generation and retains it through tool continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-team-turn-providers-'))
+    const cwd = await mkdtemp(join(root, 'checkout-'))
+    const clients: ModelProvider[] = []
+    const providerForTurn = vi.fn(() => {
+      const generation = clients.length
+      let calls = 0
+      const client: ModelProvider = {
+        model: `team-model-${generation}`,
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (generation === 0 && calls++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'team-turn-send',
+                name: 'SendMessage',
+                input: { to: 'lead', message: 'progress' },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: `generation-${generation}` }
+        },
+      }
+      clients.push(client)
+      return client
+    })
+    const sent: unknown[] = []
+    const endpoint = {
+      participant: 'worker',
+      send: async (message: unknown) => {
+        sent.push(message)
+        return {} as never
+      },
+      project: async () => null,
+    } as unknown as TeamMailboxEndpoint
+    const runtime = new ClaudeTeamAgentRuntime({
+      nativeRoot: root,
+      configRoot: root,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      },
+      providerForTurn,
+    })
+    const run = (generation: number) =>
+      runtime.run({
+        teamId: 'team-turn-providers',
+        task,
+        member: {
+          name: 'worker',
+          agentType: 'general-purpose',
+          access: 'read-only',
+        },
+        generation,
+        cwd,
+        branch: null,
+        tools,
+        permissions,
+        signal: new AbortController().signal,
+        mailbox: endpoint,
+        reportProgress: () => undefined,
+      })
+
+    await expect(run(1)).resolves.toMatchObject({ status: 'completed' })
+    await expect(run(2)).resolves.toMatchObject({ status: 'completed' })
+    expect(providerForTurn).toHaveBeenCalledTimes(2)
+    expect(clients).toHaveLength(2)
+    expect(clients[0]).not.toBe(clients[1])
+    expect(sent).toHaveLength(1)
+    await rm(root, { recursive: true, force: true })
+  })
+
   it('routes worker SendMessage through the required scoped mailbox and acks inbox after completion', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-team-agent-mailbox-'))
     const cwd = await mkdtemp(join(root, 'checkout-'))

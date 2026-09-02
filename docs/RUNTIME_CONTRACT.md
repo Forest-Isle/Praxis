@@ -156,6 +156,19 @@ Rules:
     Praxis-only operational fields. Retained worktrees restore only after Git
     registration validation, otherwise recovery warns and uses the unchanged
     parent cwd.
+22. The CLI composition root may provide one fresh
+    `(model?: string) => ModelProvider` factory for auxiliary logical Turns. An Agent initial execution, Workflow
+    invocation, Team generation, and Project-memory extraction/selection
+    operation allocates one client before its request or model/tool loop and
+    keeps that client through the loop. A later background `SendMessage` continuation or
+    recovered execution allocates a new client from the selected primary route.
+    Native sidechain metadata may retain only an optional provider-neutral
+    selected model identifier; it never retains provider/profile, fallback
+    route or seal, protocol, response, credential, or wire state. Session-memory
+    requests reuse a service-owned completion-scoped client whose routing
+    restarts from primary for each request; auto-mode critics and eval-judge
+    votes remain independently constructed one-shot clients. Callers without
+    the factory retain their stable-provider/provider-for-model behavior.
 
 ## Core ports
 
@@ -196,8 +209,13 @@ wrapper owns bounded retry, failed-attempt buffering, request-aware fallback
 admission, and the sealed route through that turn's tool continuations.
 Incompatible fallback routes fail closed; the next main user turn starts from
 the primary route. A `prompt_too_long` reactive compaction retry retains the
-same turn client. This contract does not yet propagate the seam to auxiliary
-consumers.
+same turn client. The same optional factory gives each multi-completion
+auxiliary logical Turn its own client: Agent initial/follow-up/recovery,
+Workflow, Team, and Project-memory extraction/selection remain sticky through
+their own tool continuations, while independent follow-ups and recovered runs
+start fresh from primary. Session-memory requests remain isolated through
+completion-scoped routing that restarts from primary; auto critic and eval-judge
+calls remain independently constructed one-shot requests.
 
 A typed `prompt_too_long` failure bypasses ordinary retry and provider fallback.
 The runtime settles any scheduled tool calls but commits no assistant output and
@@ -310,6 +328,11 @@ Extraction runs after a successful final main-agent stop, never blocks response
 delivery, advances its private cursor only after success, coalesces overlapping
 turns, and is drained with a bounded close. Its isolated agent has no
 transcript, subagent, remote, or non-memory tools.
+
+Each Project-memory selection or extraction operation obtains one fresh client
+from the optional turn factory and retains it through its complete request and
+tool loop. The next operation obtains another client and starts from its
+primary route; no provider route or native state is persisted.
 
 Selective recall starts at most once per user turn and never delays the main
 loop. A settled selector may attach zero to five previously unsurfaced topics

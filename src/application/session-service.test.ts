@@ -217,6 +217,73 @@ it('allocates a fresh main-turn provider for each outer run and resume', async (
   await service.close()
 })
 
+it('gives an auxiliary Agent its own turn provider and forwards its model', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-aux-agent-provider-'))
+  roots.push(root)
+  const cwd = join(root, 'project')
+  let mainCalls = 0
+  const mainProvider: ModelProvider = {
+    model: 'main-model',
+    capabilities: { streaming: true, usage: true, tools: true },
+    async *complete() {
+      if (mainCalls++ === 0) {
+        yield {
+          type: 'tool-call',
+          call: {
+            id: 'aux-agent',
+            name: 'Agent',
+            input: {
+              description: 'Auxiliary task',
+              prompt: 'Do the auxiliary task',
+              model: 'child-model',
+              run_in_background: false,
+            },
+          },
+        }
+        return
+      }
+      yield { type: 'text-delta', delta: 'main done' }
+    },
+  }
+  const childProvider: ModelProvider = {
+    model: 'child-model',
+    capabilities: { streaming: true, usage: true, tools: false },
+    async *complete() {
+      yield { type: 'text-delta', delta: 'child done' }
+    },
+  }
+  const providerForTurn = vi.fn((model?: string) =>
+    model === 'child-model' ? childProvider : mainProvider,
+  )
+  const tools: ToolRegistry = {
+    definitions: () => [],
+    prepare: async (call) => call,
+    execute: async () => ({ content: '', isError: false }),
+  }
+  const service = new ClaudeSessionService({
+    configRoot: join(root, 'config'),
+    cwd,
+    claudeVersion: '2.1.208',
+    provider: mainProvider,
+    providerForTurn,
+    tools,
+    permissions: { resolve: () => ({ behavior: 'allow' }) },
+    enableSubagents: true,
+    sessionPersistence: false,
+  })
+
+  const result = await service.run('Run the main task')
+
+  expect(result.text).toBe('main done')
+  expect(providerForTurn).toHaveBeenCalledWith('main-model')
+  expect(providerForTurn).toHaveBeenCalledWith('child-model')
+  expect(providerForTurn).toHaveBeenCalledTimes(2)
+  expect(providerForTurn.mock.results[0]?.value).not.toBe(
+    providerForTurn.mock.results[1]?.value,
+  )
+  await service.close()
+})
+
 it('uses the injected Team registry factory for hosted and foreground registries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'praxis-team-registry-factory-'))
   const sessionId = '11111111-1111-4111-8111-111111111111'

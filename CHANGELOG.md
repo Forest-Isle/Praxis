@@ -17,6 +17,7 @@ this file from merged Conventional Commit pull requests.
 * separate provider connect, byte-idle, and absolute-total timeouts ([#550](https://github.com/Forest-Isle/Praxis/issues/550))
 * add the explicit API-key OpenAI Responses provider ([#569](https://github.com/Forest-Isle/Praxis/issues/569))
 * add turn-scoped main-session provider fallback routing ([#574](https://github.com/Forest-Isle/Praxis/issues/574))
+* scope turn-provider fallback routing to independent auxiliary operations ([#576](https://github.com/Forest-Isle/Praxis/issues/576))
 
 ### Bug Fixes
 

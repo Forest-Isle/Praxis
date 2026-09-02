@@ -88,9 +88,15 @@ tool continuations. Incompatible fallback routes fail closed, and the next
 main user turn starts from the primary route. Provider wire payloads do not
 enter core or transcripts; unsupported capabilities fail closed.
 
-This turn-scoped seam is currently limited to the main session. Auxiliary
-consumers such as subagents, Workflow, Team, background recovery, memory,
-auto-mode critics, and eval judges remain separate follow-up work.
+This turn-scoped seam is also propagated to auxiliary consumers. Each Agent
+initial execution, Workflow invocation, Team generation, and Project-memory
+extraction/selection operation allocates a fresh client and retains it through
+its logical Turn's tool loop. Later background SendMessage continuations and
+fresh-process recovered executions allocate another client and start from
+primary. Session-memory requests reuse one service-owned completion-scoped
+client but restart routing from primary for every request; auto-mode critics
+and eval judges remain independently constructed one-shot clients. Recovery
+hydration itself performs no provider work.
 
 Anthropic Messages providers are composed as two ordinary `ModelProvider`
 adapters, each with its own connect, byte-idle, and absolute-total deadlines.
@@ -275,7 +281,10 @@ against an independently leased native sidechain. A per-turn task manager owns
 independent cancellation, bounded output waits, ordered messages, completion
 notifications, and usage aggregation. Completed sidechains remain authoritative:
 a later Praxis turn can hydrate one by its `a` plus 16-hex agent ID and continue
-it through `SendMessage` without a private conversation store.
+it through `SendMessage` without a private conversation store. Recovery rebuilds
+the selected model client only when execution starts, using optional
+provider-neutral model metadata; provider/profile, fallback route or seal,
+protocol, response, credential, and wire state are never persisted or restored.
 
 `ClaudeTaskToolRegistry` wraps selected base tools once per persisted session.
 `ClaudeTaskStore` reads and writes native `tasks/<session-id>` JSON files,

@@ -2154,8 +2154,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
         cwd,
       })
   if (memoryDirectory) await mkdir(memoryDirectory, { recursive: true })
-  const projectMemoryProviderFactory =
-    providerForMainModel && model
+  const projectMemoryProviderFactory = providerForTurn
+    ? () => providerForTurn()
+    : providerForMainModel && model
       ? () => providerForMainModel(model)
       : undefined
   const projectMemoryRecall =
@@ -2661,6 +2662,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
               ...(hooks ? { hooks } : {}),
               ...(contextAssembler ? { contextAssembler } : {}),
               ...(providerForModel ? { providerForModel } : {}),
+              ...(providerForTurn ? { providerForTurn } : {}),
               permissionResolverForMode,
               eventSink: runtimeEventSink,
             }),
