@@ -1270,7 +1270,8 @@
       ],
       "outcomes": [
         "Eight bounded coding scenarios exercise bug fixing, feature work, refactoring, navigation, resume, permission denial, malformed input recovery, and active-turn steering without changing source fixtures.",
-        "Named complete aggregate artifacts report deterministic pass, safety, efficiency, permission, error, retry, and termination deltas and fail closed when safety evidence is unavailable."
+        "Named complete aggregate artifacts report deterministic pass, safety, efficiency, permission, error, retry, and termination deltas and fail closed when safety evidence is unavailable.",
+        "The four-case bounded ApplyPatch admission comparison preserves pass, safety, and error outcomes while measuring a turn reduction."
       ],
       "evidence": [
         {
@@ -1282,6 +1283,16 @@
           "kind": "vitest",
           "file": "src/evals/project-eval-comparison.test.ts",
           "testName": "project eval comparison > rejects internally inconsistent, partial, and mismatched aggregates"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/apply-patch-admission.test.ts",
+          "testName": "ApplyPatch admission eval > validates the bounded test-local tool and preserves the production registry"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/apply-patch-admission.test.ts",
+          "testName": "ApplyPatch admission eval > compares Edit baseline and ApplyPatch candidate across four project eval cases"
         },
         {
           "kind": "fixture",
@@ -1350,6 +1361,46 @@
         {
           "kind": "fixture",
           "path": "test/fixtures/project-evals/evals/small-feature/fixture/greeting.cjs"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/multi-file/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/multi-file/fixture/alpha.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/multi-file/fixture/beta.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/multi-hunk/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/multi-hunk/fixture/settings.cjs"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/path-escape/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/path-escape/fixture/inside.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/stale-context/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/stale-context/fixture/first.txt"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/apply-patch-admission/evals/stale-context/fixture/second.txt"
         }
       ]
     },

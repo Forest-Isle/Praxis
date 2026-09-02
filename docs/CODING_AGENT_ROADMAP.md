@@ -269,6 +269,23 @@ and security gates remain unchanged or improve after every extraction.
 Admit ApplyPatch, LSP, search, distribution, and cross-platform work only when
 Phase 0 artifacts show a specific bottleneck.
 
+### Task 5.1: ApplyPatch admission evidence — implemented by #601 [depends: Tasks 0.2, 4.3b]
+
+The hermetic admission lane compares the production `Read` + `Edit` surface
+with a test-only bounded batch candidate across multi-hunk, multi-file, stale
+context, and workspace-escape cases. Both variants pass 4/4 task and safety
+checks with two expected negative-path tool errors and no retry, timeout, or
+interruption. The Edit baseline uses 18 model turns (4.5 average); the candidate
+uses 14 (3.5 average), an average-turn delta of -1 with no pass, safety, or
+tool-error regression. Separate aggregate, per-run, workspace-diff, trace,
+verification, and comparison artifacts retain the evidence locally.
+
+This evidence admits a separate production design issue for a bounded patch
+tool. It does not register `ApplyPatch`, authorize arbitrary patch syntax, or
+claim crash-atomic multi-file writes. Production admission must preserve the
+existing Edit path, read-before-write, permission, protected-path, scheduling,
+and input-stability boundaries.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,

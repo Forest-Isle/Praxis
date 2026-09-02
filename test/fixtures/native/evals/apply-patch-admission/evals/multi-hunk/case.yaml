@@ -1,0 +1,22 @@
+schema_version: '1.0'
+name: multi-hunk
+fixture: fixture
+execution:
+  prompt: Update both settings in settings.cjs.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit, ApplyPatch]
+  env:
+    EVAL_SCENARIO: multi-hunk
+verification:
+  - name: settings-check
+    command: node
+    args:
+      - -e
+      - "const s=require('./settings.cjs');if(s.theme!=='dark'||s.retries!==3)process.exit(1)"
+    timeout_seconds: 10
+graders: []
+expect:
+  allowed_changed_paths: [settings.cjs]
+  expected_changed_paths: [settings.cjs]
+  forbidden_changed_paths: []
