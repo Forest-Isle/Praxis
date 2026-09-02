@@ -13,7 +13,8 @@ Praxis is a local-first, single-user general agent for the command line.
 
 It provides an interactive or headless agent loop, local tools, permissions,
 sessions, skills, hooks, MCP, plugins, background agents, and provider-neutral
-Anthropic/OpenAI-compatible model access. Praxis deliberately excludes
+Anthropic, OpenAI-compatible Chat Completions, and OpenAI Responses model
+access. Praxis deliberately excludes
 accounts, organizations, billing, managed enterprise policy, remote control,
 IDE surfaces, and telemetry control planes.
 
@@ -27,9 +28,9 @@ sessions, configuration, or compatibility directories.
 - macOS or Linux
 - Node.js 24 or newer
 - [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep tool
-- an API key and model ID for an Anthropic or OpenAI-compatible provider (the
-  stable setup), or the explicitly enabled experimental ChatGPT-backed Codex
-  subscription integration
+- an API key and model ID for an Anthropic, OpenAI-compatible, or OpenAI
+  Responses provider (the stable setup), or the explicitly enabled experimental
+  ChatGPT-backed Codex subscription integration
 
 Praxis does not use Claude subscription authentication. Claude-shaped message,
 tool, and CLI protocol forms remain supported where they are part of the
@@ -62,6 +63,20 @@ export PRAXIS_MODEL="your-model-id"
 cd /path/to/project
 praxis
 ```
+
+To use OpenAI's Responses API with an explicit API-key provider:
+
+```sh
+export PRAXIS_PROVIDER="openai-responses"
+export OPENAI_API_KEY="your-api-key"
+export PRAXIS_MODEL="your-responses-model-id"
+
+cd /path/to/project
+praxis
+```
+
+The `openai` provider remains OpenAI-compatible Chat Completions. Provider
+protocols are selected explicitly; model IDs never switch protocols implicitly.
 
 Praxis also has an experimental `openai-codex` provider for ChatGPT-backed
 Codex subscriptions. It is separate from OpenAI API-key access, requires

@@ -79,11 +79,12 @@ user settings + CLI/environment + project/local selection as inert data
   -> existing ModelProvider port -> Agent runtime consumers
 ```
 
-The Registry creates OpenAI-compatible Chat Completions, Anthropic Messages,
-or the private experimental Codex subscription adapter. All runtime consumers
-use this factory, including main sessions, fallback models, auto-mode critics,
-eval judges, scheduled work, and background agents. Provider wire payloads do
-not enter core or transcripts; unsupported capabilities fail closed.
+The Registry creates OpenAI-compatible Chat Completions, the public OpenAI
+Responses adapter, Anthropic Messages, or the private experimental Codex
+subscription adapter. All runtime consumers use this factory, including main
+sessions, fallback models, auto-mode critics, eval judges, scheduled work, and
+background agents. Provider wire payloads do not enter core or transcripts;
+unsupported capabilities fail closed.
 
 Anthropic Messages providers are composed as two ordinary `ModelProvider`
 adapters, each with its own connect, byte-idle, and absolute-total deadlines.
@@ -101,10 +102,22 @@ pricing, cost, and budget enforcement, while subscription mode retains token
 and model usage and omits API `costUsd`, rejecting numeric USD budget and
 paid-judge paths before inference.
 
-Codex OAuth, token refresh, account identity, fixed endpoint, Responses/SSE
-mapping, and streaming parsing remain private to `CodexSubscriptionProvider`.
-This keeps the existing core port small and prevents subscription-specific
-behavior from spreading into the Agent loop.
+The public API-key OpenAI Responses adapter and the private Codex subscription
+transport share one stateless Responses codec. The codec maps full,
+provider-neutral local history to Responses items and parses Responses SSE;
+each transport owns its authentication and headers. Public Responses uses the
+standard Bearer, JSON, and SSE headers, while Codex retains its OAuth/account,
+private headers, and fixed endpoint. The codec uses `store:false`, preserves
+encrypted reasoning/function-call/output continuity locally, and never uses
+`previous_response_id` or provider-native transcript fields. Public Responses
+also does not receive the Anthropic non-streaming replay path.
+
+Codex OAuth, token refresh, account identity, fixed endpoint, and
+subscription-specific private headers remain private to
+`CodexSubscriptionProvider`; its Responses mapping and streaming parsing are
+implemented through the shared codec. This keeps the existing core port small
+and prevents subscription-specific behavior from spreading into the Agent
+loop.
 
 The Ink interactive CLI is an event adapter under `src/cli`: it renders
 `RuntimeEvent` state and streaming deltas, requests user decisions through the
@@ -203,11 +216,14 @@ v1 is writable; unsupported schema versions and non-native files remain
 read-only and are never migrated or mutated. See [RELEASE.md](RELEASE.md).
 
 Provider selection stays at the CLI composition root. `core` receives the same
-`ModelProvider` port whether the adapter serializes OpenAI Chat Completions or
-Anthropic Messages, including the registry-owned Anthropic recovery wrapper.
-Both protocol adapters expose streaming text, usage, tool schemas, tool calls,
-image input, cancellation, retry classification, and explicit context-window
-capabilities without putting provider-native payloads in shared transcripts.
+`ModelProvider` port whether the adapter serializes OpenAI Chat Completions,
+OpenAI Responses, or Anthropic Messages, including the registry-owned
+Anthropic recovery wrapper. Protocol adapters expose streaming text, usage,
+tool schemas, tool calls, image input, cancellation, retry classification, and
+explicit context-window capabilities without putting provider-native payloads
+in shared transcripts. The public and Codex Responses transports share the
+stateless Responses codec while retaining transport-owned authentication and
+header differences.
 The Anthropic full-response adapter normalizes its bounded response through the
 same event state machine as SSE. Image tool results stay provider-neutral in
 core: Anthropic keeps them nested under `tool_result`, while OpenAI-compatible

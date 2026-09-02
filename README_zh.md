@@ -12,7 +12,8 @@
 Praxis 是一个本地优先、面向单用户的命令行通用 Agent。
 
 它提供交互式或无头 Agent 循环、本地工具、权限、会话、技能、钩子、MCP、
-插件、后台 Agent，以及与提供商无关的 Anthropic/OpenAI 兼容模型访问。
+插件、后台 Agent，以及与提供商无关的 Anthropic、OpenAI 兼容 Chat Completions 和
+OpenAI Responses 模型访问。
 Praxis 明确不包含账户、组织、计费、托管企业策略、远程控制、IDE 界面和遥测控制平面。
 
 Claude Code 2.1.208 仅作为开发者 CLI 界面的 clean-room 行为参考，不是运行时依赖或数据源。
@@ -23,8 +24,8 @@ Praxis 只使用一个 native 数据平面，不读取或写入 Claude Code 会�
 - macOS 或 Linux
 - Node.js 24 或更高版本
 - 用于 Grep 工具的 [`ripgrep`](https://github.com/BurntSushi/ripgrep)（`rg`）
-- Anthropic 或 OpenAI 兼容提供商的 API 密钥和模型 ID（稳定路径），或显式启用的
-  实验性 ChatGPT-backed Codex 订阅集成
+- Anthropic、OpenAI 兼容或 OpenAI Responses 提供商的 API 密钥和模型 ID（稳定路径），
+  或显式启用的实验性 ChatGPT-backed Codex 订阅集成
 
 Praxis 不使用 Claude 订阅认证。Claude-shaped 消息、工具和 CLI 协议形状在公开界面需要时仍受支持，
 但所有持久化状态都使用 Praxis native 格式。
@@ -66,6 +67,20 @@ export PRAXIS_MODEL="claude-sonnet-4-20250514"
 cd /path/to/project
 praxis
 ```
+
+如需使用 OpenAI Responses API 的显式 API 密钥提供商：
+
+```sh
+export PRAXIS_PROVIDER="openai-responses"
+export OPENAI_API_KEY="your-api-key"
+export PRAXIS_MODEL="your-responses-model-id"
+
+cd /path/to/project
+praxis
+```
+
+`openai` 提供商仍然使用 OpenAI 兼容的 Chat Completions。提供商协议必须显式选择；
+模型 ID 不会隐式切换协议。
 
 Praxis 还提供实验性的 `openai-codex` 提供商，用于 ChatGPT-backed Codex 订阅。
 它与 OpenAI API 密钥访问相互独立，需要设置

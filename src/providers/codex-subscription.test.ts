@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ModelProviderError } from '../core/runtime.js'
+import { ModelProviderError, type ModelRequest } from '../core/runtime.js'
 import { CodexOAuthError } from './codex-oauth.js'
 import {
   CODEX_RESPONSES_ENDPOINT,
   CodexSubscriptionProvider,
-  serializeCodexRequest,
 } from './codex-subscription.js'
 import { DeadlineModelProvider } from './deadline-provider.js'
+import { ResponsesCodec } from './responses-codec.js'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -18,6 +18,11 @@ const access = async () => ({
   accountId: 'fixture-account',
   expiresAt: Date.now() + 60 * 60_000,
 })
+
+const serializeCodexRequest = (request: ModelRequest, model: string) =>
+  new ResponsesCodec({
+    providerLabel: 'Codex subscription provider',
+  }).serialize(request, model)
 
 function response(body: string, status = 200): Response {
   return new Response(body, {

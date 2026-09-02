@@ -1,6 +1,7 @@
 import type { ModelProvider, ModelThinkingConfig } from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './openai-compatible.js'
+import { OpenAIResponsesProvider } from './openai-responses.js'
 import { CodexSubscriptionProvider } from './codex-subscription.js'
 import { DeadlineModelProvider } from './deadline-provider.js'
 import { NonStreamingFallbackModelProvider } from './non-streaming-fallback-provider.js'
@@ -213,6 +214,32 @@ class NativeProviderRegistry implements ProviderRegistry {
       }
       return this.withDeadline(
         new OpenAICompatibleProvider({
+          baseUrl: target.baseUrl,
+          model: target.modelId,
+          apiKey: this.options.credential.secret,
+          ...(this.options.context?.contextWindowTokens === undefined
+            ? {}
+            : {
+                contextWindowTokens: this.options.context.contextWindowTokens,
+              }),
+          ...(this.options.openAiThinking === undefined
+            ? {}
+            : { thinking: this.options.openAiThinking }),
+          ...(this.options.fetchImplementation === undefined
+            ? {}
+            : { fetchImplementation: this.options.fetchImplementation }),
+        }),
+      )
+    }
+    if (target.protocol === 'openai-responses') {
+      if (this.options.credential.type !== 'api-key') {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: an API key is required',
+        )
+      }
+      return this.withDeadline(
+        new OpenAIResponsesProvider({
           baseUrl: target.baseUrl,
           model: target.modelId,
           apiKey: this.options.credential.secret,

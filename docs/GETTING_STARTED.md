@@ -46,6 +46,21 @@ export PRAXIS_BASE_URL="https://api.example.com/v1"
 
 Keep `PRAXIS_PROVIDER` unset or set it explicitly to `openai`.
 
+### OpenAI Responses API
+
+Select the built-in Responses adapter explicitly when using an OpenAI API key:
+
+```sh
+export PRAXIS_PROVIDER="openai-responses"
+export OPENAI_API_KEY="your-api-key"
+export PRAXIS_MODEL="your-responses-model-id"
+```
+
+This uses `https://api.openai.com/v1` and the OpenAI Responses `/responses`
+endpoint. The `openai` provider remains Chat Completions; model IDs never
+switch protocols implicitly. Keep API keys in the environment or a local
+secret manager, not in settings files or command arguments.
+
 ### Anthropic Messages
 
 ```sh
@@ -110,7 +125,8 @@ references, never key or token values:
 }
 ```
 
-Custom protocols are `openai-compatible` and `anthropic-messages`. Credentials
+Custom protocols are `openai-compatible`, `openai-responses`, and
+`anthropic-messages`. Credentials
 may reference an environment variable, an argv `command`, or a native Vault
 profile; these are alternative credential sources. Select a target per session
 with `--provider`, `--provider-profile`, and `--model` (or `PRAXIS_PROVIDER`,

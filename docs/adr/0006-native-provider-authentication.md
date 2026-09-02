@@ -53,9 +53,10 @@ not accepted in provider definitions.
 }
 ```
 
-Built-in provider IDs are `openai`, `anthropic`, and `openai-codex`. Custom
-providers use `openai-compatible` or `anthropic-messages`. A selected target is
-the tuple `providerId`, `profileId`, and `modelId`.
+Built-in provider IDs are `openai`, `openai-responses`, `anthropic`, and
+`openai-codex`. Custom providers use `openai-compatible`, `openai-responses`,
+or `anthropic-messages`. A selected target is the tuple `providerId`,
+`profileId`, and `modelId`.
 
 Selection precedence is explicit CLI input, `PRAXIS_PROVIDER`,
 `PRAXIS_PROVIDER_PROFILE`, `PRAXIS_MODEL`, trusted local defaults, trusted
@@ -107,6 +108,7 @@ One Provider Registry creates protocol Adapters at the existing `ModelProvider`
 Seam:
 
 - `OpenAICompatibleProvider` for OpenAI-compatible chat completions.
+- `OpenAIResponsesProvider` for the public OpenAI Responses API-key transport.
 - `AnthropicCompatibleProvider` for Anthropic Messages.
 - `CodexSubscriptionProvider` for the ChatGPT Codex responses transport.
 
@@ -117,6 +119,25 @@ protocols after output or tool side effects begin.
 Every runtime consumer uses one provider factory, including main sessions,
 fallback models, auto-mode critic, eval judges, scheduled work, and background
 agents.
+
+### Public OpenAI Responses transport
+
+`openai-responses` is an explicit built-in or custom API-key provider. The
+built-in target uses `https://api.openai.com/v1`, resolves `OPENAI_API_KEY`, and
+posts the standard JSON/SSE Responses request to `/responses`. The existing
+`openai` provider remains OpenAI-compatible Chat Completions; model IDs never
+switch protocols implicitly. The public adapter uses API billing and the
+ordinary provider deadlines, and does not receive Anthropic's non-streaming
+replay behavior.
+
+The public API-key transport and `CodexSubscriptionProvider` share one
+stateless Responses codec for provider-neutral history-to-item mapping and SSE
+parsing. It sends `store:false`, carries full local history, and keeps encrypted
+reasoning, function-call, and output continuity locally. It never sends
+`previous_response_id` and never puts provider-native transcript fields into
+core or transcripts. Authentication and headers remain transport-owned: the
+public adapter uses standard Bearer/JSON/SSE headers, while Codex retains its
+OAuth/account/private headers and fixed endpoint.
 
 ## Codex OAuth and transport
 
@@ -135,9 +156,10 @@ Tokens are refreshed within five minutes of expiry with in-process singleflight
 and cross-process double-checked vault mutation. Rotated refresh tokens are
 committed before the lock is released.
 
-The first transport is SSE. Codex headers, account identity, request mapping,
-and streaming parsing stay private to `CodexSubscriptionProvider`. Subscription
-usage reports tokens and model usage but does not calculate pay-as-you-go API
+The first transport is SSE. Codex headers, account identity, and fixed endpoint
+stay private to `CodexSubscriptionProvider`; its request mapping and streaming
+parsing use the shared Responses codec. Subscription usage reports tokens and
+model usage but does not calculate pay-as-you-go API
 charges. API pricing tables are ignored for subscription runs; USD budgets and
 plugin-eval paid LLM judges reject before inference when numeric API-billed cost
 is unavailable. Subscription usage is never represented as a fabricated zero
@@ -166,6 +188,9 @@ account identity, refresh failure, and unsupported capability all fail closed.
 - Resolver source, helper, redaction, and no-OAuth-fallback fixtures.
 - Shared provider contract tests for request, stream, tool, usage, error, and
   cancellation behavior.
+- Public Responses request-capture and shared-codec fixtures cover explicit
+  protocol selection, local continuity, `store:false`, and transport-owned
+  authentication/headers.
 - Fake OAuth and Codex HTTP servers; no real credential is required by CI.
 - Browser-launch fixtures verify that authorization state and PKCE challenges
   never enter child-process arguments.

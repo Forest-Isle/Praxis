@@ -30,6 +30,98 @@ describe('resolveProviderTarget', () => {
     })
   })
 
+  it('selects Responses explicitly while preserving OpenAI Chat Completions', async () => {
+    const { root, cwd } = await fixture()
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        environment: {
+          PRAXIS_PROVIDER: 'openai-responses',
+          PRAXIS_MODEL: 'gpt-responses',
+        },
+      }),
+    ).resolves.toMatchObject({
+      providerId: 'openai-responses',
+      profileId: 'default',
+      modelId: 'gpt-responses',
+      protocol: 'openai-responses',
+      baseUrl: 'https://api.openai.com/v1',
+      credential: { source: 'env', name: 'OPENAI_API_KEY' },
+      billingMode: 'api',
+    })
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        environment: {
+          PRAXIS_PROVIDER: 'openai',
+          PRAXIS_MODEL: 'gpt-responses',
+        },
+      }),
+    ).resolves.toMatchObject({
+      providerId: 'openai',
+      protocol: 'openai-compatible',
+      modelId: 'gpt-responses',
+    })
+  })
+
+  it('accepts explicit custom Responses profiles and rejects invalid variants', async () => {
+    const { root, cwd } = await fixture()
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        provider: 'vendor',
+        model: 'vendor-model',
+        providers: {
+          vendor: {
+            protocol: 'openai-responses',
+            profiles: {
+              default: {
+                baseUrl: 'https://responses.example/v1',
+                credential: { source: 'env', name: 'VENDOR_API_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
+    ).resolves.toMatchObject({
+      providerId: 'vendor',
+      protocol: 'openai-responses',
+      baseUrl: 'https://responses.example/v1',
+      credential: { source: 'env', name: 'VENDOR_API_KEY' },
+    })
+
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        providers: {
+          vendor: {
+            protocol: 'responses-auto',
+            profiles: {
+              default: {
+                baseUrl: 'https://responses.example/v1',
+                credential: { source: 'env', name: 'VENDOR_API_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'vendor',
+        model: 'm',
+        environment: {},
+      }),
+    ).rejects.toThrow(/openai-responses/)
+  })
+
   it('uses trusted local selection but ignores local provider definitions', async () => {
     const { root, cwd } = await fixture()
     await writeFile(
