@@ -25,6 +25,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.54.0](https://github.com/Forest-Isle/Praxis/compare/v0.53.1...v0.54.0) (2026-09-02)
+
+
+### Features
+
+* add API-key OpenAI Responses adapter ([#572](https://github.com/Forest-Isle/Praxis/issues/572)) ([1b843b4](https://github.com/Forest-Isle/Praxis/commit/1b843b4bffc27a5dfde96677fde29710fd1afa76)), closes [#569](https://github.com/Forest-Isle/Praxis/issues/569)
+* scope main-turn provider fallback routing ([#575](https://github.com/Forest-Isle/Praxis/issues/575)) ([924bb5d](https://github.com/Forest-Isle/Praxis/commit/924bb5dc9fd7a392b48cda73e6e2c2d84063f88e)), closes [#574](https://github.com/Forest-Isle/Praxis/issues/574)
+
 ## [0.53.1](https://github.com/Forest-Isle/Praxis/compare/v0.53.0...v0.53.1) (2026-09-01)
 
 
