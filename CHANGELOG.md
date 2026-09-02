@@ -18,6 +18,7 @@ this file from merged Conventional Commit pull requests.
 * add the explicit API-key OpenAI Responses provider ([#569](https://github.com/Forest-Isle/Praxis/issues/569))
 * add turn-scoped main-session provider fallback routing ([#574](https://github.com/Forest-Isle/Praxis/issues/574))
 * scope turn-provider fallback routing to independent auxiliary operations ([#576](https://github.com/Forest-Isle/Praxis/issues/576))
+* add bounded ordered ApplyPatch exact replacements with read-before-write, path/protected-file, permission, and file-history safety integration ([#603](https://github.com/Forest-Isle/Praxis/issues/603))
 
 ### Bug Fixes
 

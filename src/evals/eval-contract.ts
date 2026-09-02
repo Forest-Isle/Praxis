@@ -116,9 +116,15 @@ function toolName(rule: string): string {
 function gatedTool(rule: string): boolean {
   const name = toolName(rule)
   return (
-    ['Bash', 'Write', 'Edit', 'NotebookEdit', 'WebFetch', 'WebSearch'].includes(
-      name,
-    ) || name.startsWith('mcp__')
+    [
+      'Bash',
+      'Write',
+      'Edit',
+      'ApplyPatch',
+      'NotebookEdit',
+      'WebFetch',
+      'WebSearch',
+    ].includes(name) || name.startsWith('mcp__')
   )
 }
 function grants(requested: string, allowed: readonly string[]): boolean {

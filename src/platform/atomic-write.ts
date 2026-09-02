@@ -16,6 +16,7 @@ export async function writeFileAtomically(
     const handle = await open(temporary, 'wx', options.mode ?? 0o600)
     try {
       await handle.writeFile(content)
+      if (options.mode !== undefined) await handle.chmod(options.mode)
       await handle.sync()
     } finally {
       await handle.close()

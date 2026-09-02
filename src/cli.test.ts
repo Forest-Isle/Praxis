@@ -4220,7 +4220,7 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
 
       for (const value of ['1', 'true', 'yes', 'on', 'TRUE', ' On ']) {
         const names = (await toolNames({ CLAUDE_CODE_SIMPLE: value })).sort()
-        expect(names).toEqual(['Bash', 'Edit', 'Read'])
+        expect(names).toEqual(['ApplyPatch', 'Bash', 'Edit', 'Read'])
       }
 
       for (const value of ['0', 'false', 'off', 'sometimes', '']) {

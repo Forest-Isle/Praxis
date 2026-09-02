@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -70,6 +70,7 @@ describe('Praxis MCP stdio server', () => {
         'Bash',
         'Read',
         'Edit',
+        'ApplyPatch',
         'Write',
         'NotebookEdit',
         'Glob',
@@ -81,6 +82,39 @@ describe('Praxis MCP stdio server', () => {
         arguments: { file_path: 'fixture.txt' },
       })
       expect(textContent(read)).toContain('shared local tool')
+      const unreadTarget = join(root, 'unread.txt')
+      await writeFile(unreadTarget, 'unread original\n')
+      const patch = {
+        edits: [
+          {
+            file_path: unreadTarget,
+            old_string: 'unread original',
+            new_string: 'should not change',
+          },
+        ],
+      }
+      const unreadPatch = await client.callTool({
+        name: 'ApplyPatch',
+        arguments: patch,
+      })
+      expect(unreadPatch).toMatchObject({ isError: true })
+      expect(await readFile(unreadTarget, 'utf8')).toBe('unread original\n')
+      const applied = await client.callTool({
+        name: 'ApplyPatch',
+        arguments: {
+          edits: [
+            {
+              file_path: join(root, 'fixture.txt'),
+              old_string: 'shared local tool',
+              new_string: 'patched local tool',
+            },
+          ],
+        },
+      })
+      expect(applied).toMatchObject({ isError: false })
+      expect(await readFile(join(root, 'fixture.txt'), 'utf8')).toContain(
+        'patched local tool',
+      )
       const image = await client.callTool({
         name: 'Read',
         arguments: { file_path: 'pixel.png' },

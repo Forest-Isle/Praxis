@@ -8,18 +8,11 @@ import type {
   ModelProvider,
   ModelRequest,
   ModelToolCall,
-  ModelToolDefinition,
-  PermissionDecision,
-  PermissionResolutionContext,
   PermissionResolver,
-  ToolExecutionContext,
-  ToolExecutionResult,
-  ToolRegistry,
-  ToolSchedulingPolicy,
 } from '../core/runtime.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
-import { writeFileAtomically } from '../platform/atomic-write.js'
+import type { ApplyPatchEdit } from '../tools/apply-patch.js'
 import type {
   EvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
@@ -34,218 +27,8 @@ const roots: string[] = []
 const keptWorkspaceRoots: string[] = []
 const externalEscapeFiles: string[] = []
 
-interface ApplyPatchEdit {
-  file_path: string
-  old_string: string
-  new_string: string
-}
-
-const APPLY_PATCH_DEFINITION: ModelToolDefinition = {
-  name: 'ApplyPatch',
-  description:
-    'Applies a bounded batch of exact, unique string replacements atomically through preflight.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      edits: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            file_path: { type: 'string' },
-            old_string: { type: 'string' },
-            new_string: { type: 'string' },
-          },
-          required: ['file_path', 'old_string', 'new_string'],
-          additionalProperties: false,
-        },
-      },
-    },
-    required: ['edits'],
-    additionalProperties: false,
-  },
-}
-
-function objectInput(input: unknown, label: string): Record<string, unknown> {
-  if (!input || typeof input !== 'object' || Array.isArray(input))
-    throw new Error(`${label} must be an object`)
-  return input as Record<string, unknown>
-}
-
-function exactKeys(input: Record<string, unknown>, keys: readonly string[]) {
-  const unexpected = Object.keys(input).find((key) => !keys.includes(key))
-  if (unexpected) throw new Error(`Unexpected ApplyPatch field: ${unexpected}`)
-}
-
-function requiredString(input: Record<string, unknown>, key: string): string {
-  const value = input[key]
-  if (typeof value !== 'string') throw new Error(`${key} must be a string`)
-  return value
-}
-
-function parseApplyPatchInput(
-  input: Record<string, unknown>,
-): ApplyPatchEdit[] {
-  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 256 * 1024)
-    throw new Error('ApplyPatch input exceeds 256 KiB')
-  exactKeys(input, ['edits'])
-  const rawEdits = input.edits
-  if (!Array.isArray(rawEdits) || rawEdits.length < 1 || rawEdits.length > 32)
-    throw new Error('ApplyPatch edits must contain 1 to 32 operations')
-  return rawEdits.map((raw, index) => {
-    const item = objectInput(raw, `edits[${index}]`)
-    exactKeys(item, ['file_path', 'old_string', 'new_string'])
-    const edit = {
-      file_path: requiredString(item, 'file_path'),
-      old_string: requiredString(item, 'old_string'),
-      new_string: requiredString(item, 'new_string'),
-    }
-    if (!edit.old_string) throw new Error('old_string must be non-empty')
-    if (edit.old_string === edit.new_string)
-      throw new Error('new_string must differ from old_string')
-    return edit
-  })
-}
-
-class ApplyPatchCandidateRegistry implements ToolRegistry {
-  constructor(private readonly base: ToolRegistry) {}
-
-  definitions(): readonly ModelToolDefinition[] {
-    return [...this.base.definitions(), APPLY_PATCH_DEFINITION]
-  }
-
-  schedulingPolicy(call: ModelToolCall): ToolSchedulingPolicy {
-    if (call.name === 'ApplyPatch')
-      return { concurrency: 'exclusive', cancelOnInterrupt: true }
-    return this.base.schedulingPolicy?.(call) ?? { concurrency: 'exclusive' }
-  }
-
-  async prepare(
-    call: ModelToolCall,
-    context: ToolExecutionContext,
-  ): Promise<ModelToolCall> {
-    if (call.name !== 'ApplyPatch') return this.base.prepare(call, context)
-    const edits = parseApplyPatchInput(call.input)
-    const prepared: ApplyPatchEdit[] = []
-    for (const [index, edit] of edits.entries()) {
-      const result = await this.base.prepare(
-        {
-          id: `${call.id}:edit:${index}`,
-          name: 'Edit',
-          input: { ...edit },
-        },
-        context,
-      )
-      const input = objectInput(result.input, `prepared edit ${index}`)
-      prepared.push({
-        file_path: requiredString(input, 'file_path'),
-        old_string: requiredString(input, 'old_string'),
-        new_string: requiredString(input, 'new_string'),
-      })
-    }
-    if (new Set(prepared.map((edit) => edit.file_path)).size > 8)
-      throw new Error('ApplyPatch may touch at most 8 files')
-    return { ...call, input: { edits: prepared } }
-  }
-
-  async execute(
-    call: ModelToolCall,
-    context: ToolExecutionContext,
-  ): Promise<ToolExecutionResult> {
-    if (call.name !== 'ApplyPatch') return this.base.execute(call, context)
-    const prepared = await this.prepare(call, context)
-    if (JSON.stringify(prepared.input) !== JSON.stringify(call.input))
-      throw new Error('Tool input changed after permission approval')
-    const edits = parseApplyPatchInput(prepared.input)
-    const snapshots = new Map<string, string>()
-    for (const edit of edits) {
-      if (!snapshots.has(edit.file_path))
-        snapshots.set(edit.file_path, await readFile(edit.file_path, 'utf8'))
-    }
-    for (const edit of edits) {
-      const source = snapshots.get(edit.file_path)
-      if (source === undefined)
-        throw new Error('ApplyPatch target is unreadable')
-      const first = source.indexOf(edit.old_string)
-      const second = source.indexOf(
-        edit.old_string,
-        first + edit.old_string.length,
-      )
-      if (first < 0) throw new Error('old_string was not found')
-      if (second >= 0) throw new Error('old_string must match exactly once')
-      snapshots.set(
-        edit.file_path,
-        `${source.slice(0, first)}${edit.new_string}${source.slice(first + edit.old_string.length)}`,
-      )
-    }
-    for (const [filePath, content] of snapshots)
-      await writeFileAtomically(filePath, content)
-    const touchedPaths = [...snapshots.keys()]
-    const summary = touchedPaths.sort().map((filePath) => ({
-      file_path: filePath,
-      bytes: Buffer.byteLength(snapshots.get(filePath) ?? ''),
-    }))
-    return {
-      content: JSON.stringify({ edits: edits.length, files: summary }),
-      isError: false,
-      accessedPaths: touchedPaths,
-      nativeToolUseResult: { files: summary },
-    }
-  }
-}
-
 interface RequestCapture {
   requests: ModelRequest[]
-}
-
-class ApplyPatchPermissionResolver implements PermissionResolver {
-  constructor(private readonly base: PermissionResolver) {}
-
-  async resolve(
-    call: ModelToolCall,
-    context?: PermissionResolutionContext,
-  ): Promise<PermissionDecision> {
-    if (call.name !== 'ApplyPatch') return this.base.resolve(call, context)
-    const edits = parseApplyPatchInput(call.input)
-    const decisions: PermissionDecision[] = []
-    for (const [index, edit] of edits.entries()) {
-      decisions.push(
-        await this.base.resolve(
-          {
-            id: `${call.id}:edit:${index}`,
-            name: 'Edit',
-            input: { ...edit },
-          },
-          context,
-        ),
-      )
-    }
-    const deny = decisions.find((decision) => decision.behavior === 'deny')
-    if (deny) return deny
-    const ask = decisions.find((decision) => decision.behavior === 'ask')
-    if (ask) return ask
-    const allow = decisions.find((decision) => decision.behavior === 'allow')
-    if (allow) return allow
-    throw new Error('ApplyPatch permission resolution produced no decision')
-  }
-}
-
-class PassThroughToolRegistry implements ToolRegistry {
-  definitions(): readonly ModelToolDefinition[] {
-    return []
-  }
-
-  schedulingPolicy(): ToolSchedulingPolicy {
-    return { concurrency: 'exclusive' }
-  }
-
-  async prepare(call: ModelToolCall): Promise<ModelToolCall> {
-    return call
-  }
-
-  async execute(): Promise<ToolExecutionResult> {
-    return { content: '', isError: false }
-  }
 }
 
 function scriptedProvider(
@@ -436,10 +219,7 @@ function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
       const basePermissions: PermissionResolver = {
         resolve: () => ({ behavior: 'allow' }),
       }
-      const permissions: PermissionResolver =
-        variant === 'candidate'
-          ? new ApplyPatchPermissionResolver(basePermissions)
-          : basePermissions
+      const permissions: PermissionResolver = basePermissions
       const base = new LocalToolRegistry({
         cwd: options.cwd,
         dataPlane: 'native',
@@ -449,10 +229,9 @@ function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
       expect(
         base
           .definitions()
-          .some((definition) => definition.name === 'ApplyPatch'),
-      ).toBe(false)
-      const registry: ToolRegistry =
-        variant === 'candidate' ? new ApplyPatchCandidateRegistry(base) : base
+          .filter((definition) => definition.name === 'ApplyPatch'),
+      ).toHaveLength(1)
+      const registry = base
       const selectedTools = options.allowedTools.filter(
         (name) => variant === 'candidate' || name !== 'ApplyPatch',
       )
@@ -658,7 +437,7 @@ describe('ApplyPatch admission eval', () => {
     )
   })
 
-  it('validates the bounded test-local tool and preserves the production registry', async () => {
+  it('validates the bounded production tool and its safety boundaries', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-apply-patch-unit-'))
     roots.push(root)
     const base = new LocalToolRegistry({
@@ -667,11 +446,12 @@ describe('ApplyPatch admission eval', () => {
       homeDirectory: join(root, 'home'),
       configRoot: join(root, 'config'),
     })
-    const candidate = new ApplyPatchCandidateRegistry(base)
     expect(
-      base.definitions().some((definition) => definition.name === 'ApplyPatch'),
-    ).toBe(false)
-    const definition = candidate
+      base
+        .definitions()
+        .filter((definition) => definition.name === 'ApplyPatch'),
+    ).toHaveLength(1)
+    const definition = base
       .definitions()
       .find((item) => item.name === 'ApplyPatch')
     expect(definition?.inputSchema).toMatchObject({
@@ -679,24 +459,21 @@ describe('ApplyPatch admission eval', () => {
       properties: { edits: { items: { additionalProperties: false } } },
     })
     expect(
-      candidate.schedulingPolicy({
+      base.schedulingPolicy({
         id: 'policy',
         name: 'ApplyPatch',
         input: {},
       }),
     ).toEqual({ concurrency: 'exclusive', cancelOnInterrupt: true })
-    const context: ToolExecutionContext = { cwd: root }
-    const bounds = new ApplyPatchCandidateRegistry(
-      new PassThroughToolRegistry(),
-    )
+    const context = { cwd: root }
     await expect(
-      candidate.prepare(
+      base.prepare(
         { id: 'empty', name: 'ApplyPatch', input: { edits: [] } },
         context,
       ),
     ).rejects.toThrow()
     await expect(
-      candidate.prepare(
+      base.prepare(
         {
           id: 'too-many',
           name: 'ApplyPatch',
@@ -712,7 +489,7 @@ describe('ApplyPatch admission eval', () => {
       ),
     ).rejects.toThrow()
     await expect(
-      bounds.prepare(
+      base.prepare(
         {
           id: 'large',
           name: 'ApplyPatch',
@@ -730,7 +507,7 @@ describe('ApplyPatch admission eval', () => {
       ),
     ).rejects.toThrow('256 KiB')
     await expect(
-      bounds.prepare(
+      base.prepare(
         {
           id: 'empty-old',
           name: 'ApplyPatch',
@@ -742,7 +519,7 @@ describe('ApplyPatch admission eval', () => {
       ),
     ).rejects.toThrow('old_string')
     await expect(
-      bounds.prepare(
+      base.prepare(
         {
           id: 'equal',
           name: 'ApplyPatch',
@@ -753,23 +530,6 @@ describe('ApplyPatch admission eval', () => {
         context,
       ),
     ).rejects.toThrow('differ')
-    await expect(
-      bounds.prepare(
-        {
-          id: 'too-many-files',
-          name: 'ApplyPatch',
-          input: {
-            edits: Array.from({ length: 9 }, (_, index) => ({
-              file_path: `file-${index}`,
-              old_string: 'x',
-              new_string: 'y',
-            })),
-          },
-        },
-        context,
-      ),
-    ).rejects.toThrow('8 files')
-
     const nonUniquePath = join(root, 'non-unique.txt')
     await writeFile(nonUniquePath, 'duplicate duplicate\n', 'utf8')
     const nonUniqueCall: ModelToolCall = {
@@ -785,9 +545,35 @@ describe('ApplyPatch admission eval', () => {
         ],
       },
     }
-    await expect(bounds.execute(nonUniqueCall, context)).rejects.toThrow(
-      'exactly once',
+    const nonUniqueContext = {
+      cwd: root,
+      messages: [
+        {
+          role: 'assistant' as const,
+          content: '',
+          toolCalls: [
+            {
+              id: 'non-unique-read',
+              name: 'Read' as const,
+              input: { file_path: nonUniquePath },
+            },
+          ],
+        },
+        {
+          role: 'tool' as const,
+          toolCallId: 'non-unique-read',
+          content: 'duplicate duplicate',
+          isError: false,
+        },
+      ],
+    }
+    const nonUniquePrepared = await base.prepare(
+      nonUniqueCall,
+      nonUniqueContext,
     )
+    await expect(
+      base.execute(nonUniquePrepared, nonUniqueContext),
+    ).rejects.toThrow('exactly once')
     await expect(readFile(nonUniquePath, 'utf8')).resolves.toBe(
       'duplicate duplicate\n',
     )
@@ -796,7 +582,7 @@ describe('ApplyPatch admission eval', () => {
     await mkdir(dirname(protectedPath), { recursive: true })
     await writeFile(protectedPath, 'protected=original\n', 'utf8')
     await expect(
-      candidate.prepare(
+      base.prepare(
         {
           id: 'protected',
           name: 'ApplyPatch',
@@ -816,7 +602,7 @@ describe('ApplyPatch admission eval', () => {
     const unreadPath = join(root, 'unread.txt')
     await writeFile(unreadPath, 'unread=original\n', 'utf8')
     await expect(
-      candidate.prepare(
+      base.prepare(
         {
           id: 'unread',
           name: 'ApplyPatch',
@@ -833,64 +619,6 @@ describe('ApplyPatch admission eval', () => {
         context,
       ),
     ).rejects.toThrow('not been read')
-
-    const permissionCalls: ModelToolCall[] = []
-    const deniedDecision: PermissionDecision = {
-      behavior: 'deny',
-      reason: 'denied target',
-      source: 'rule',
-    }
-    const allowedDecision: PermissionDecision = {
-      behavior: 'allow',
-      source: 'rule',
-    }
-    const delegatedDecision: PermissionDecision = {
-      behavior: 'ask',
-      reason: 'delegated',
-      source: 'rule',
-    }
-    const recordingResolver: PermissionResolver = {
-      resolve: (call) => {
-        permissionCalls.push(call)
-        if (call.name === 'Read') return delegatedDecision
-        return call.input.file_path === join(root, 'denied.txt')
-          ? deniedDecision
-          : allowedDecision
-      },
-    }
-    const permission = new ApplyPatchPermissionResolver(recordingResolver)
-    const permissionCall: ModelToolCall = {
-      id: 'permission-patch',
-      name: 'ApplyPatch',
-      input: {
-        edits: [
-          {
-            file_path: join(root, 'allowed.txt'),
-            old_string: 'allowed=original',
-            new_string: 'allowed=changed',
-          },
-          {
-            file_path: join(root, 'denied.txt'),
-            old_string: 'denied=original',
-            new_string: 'denied=changed',
-          },
-        ],
-      },
-    }
-    await expect(permission.resolve(permissionCall, context)).resolves.toBe(
-      deniedDecision,
-    )
-    expect(permissionCalls).toHaveLength(2)
-    expect(permissionCalls.map((call) => call.name)).toEqual(['Edit', 'Edit'])
-    expect(permissionCalls.map((call) => call.input)).toEqual(
-      permissionCall.input.edits,
-    )
-    await expect(
-      permission.resolve(
-        { id: 'delegated-read', name: 'Read', input: { file_path: 'x' } },
-        context,
-      ),
-    ).resolves.toBe(delegatedDecision)
   })
 
   it('compares Edit baseline and ApplyPatch candidate across four project eval cases', async () => {

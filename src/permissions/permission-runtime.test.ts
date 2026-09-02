@@ -13,8 +13,11 @@ import { describe, expect, it } from 'vitest'
 
 import {
   AgentRuntime,
+  autoModePermissionOutcome,
+  type PermissionBehavior,
   type ModelProvider,
   type PermissionUpdate,
+  permissionDecisionSource,
 } from '../core/runtime.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { ClaudePermissionResolver } from './claude-permission-resolver.js'
@@ -29,7 +32,249 @@ const observer = {
   async toolCompleted() {},
 }
 
+const exactRule = (filePath: string) => `/${filePath.replaceAll('\\', '/')}`
+
 describe('permission update runtime integration', () => {
+  it('resolves ApplyPatch batches with rule, mode, and target precedence', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-apply-permission-'))
+    const call = (filePath = join(cwd, 'file.txt')) => ({
+      id: 'apply',
+      name: 'ApplyPatch',
+      input: {
+        edits: [{ file_path: filePath, old_string: 'old', new_string: 'new' }],
+      },
+    })
+    const update = (
+      toolName: 'ApplyPatch' | 'Edit',
+      behavior: PermissionBehavior,
+      ruleContent = '',
+    ): PermissionUpdate => ({
+      type: 'addRules',
+      rules: [{ toolName, ruleContent }],
+      behavior,
+      destination: 'session',
+    })
+    const resolveCall = (
+      permissionMode: ConstructorParameters<
+        typeof ClaudePermissionResolver
+      >[0]['permissionMode'],
+      permissionUpdates: PermissionUpdate[] = [],
+      filePath = join(cwd, 'file.txt'),
+    ) =>
+      new ClaudePermissionResolver({
+        cwd,
+        settings: [],
+        ...(permissionMode ? { permissionMode } : {}),
+      }).resolve(call(filePath), { cwd, permissionUpdates })
+
+    await expect(resolveCall('default')).resolves.toMatchObject({
+      behavior: 'ask',
+    })
+    await expect(
+      resolveCall('default', [update('ApplyPatch', 'allow')]),
+    ).resolves.toMatchObject({ behavior: 'allow' })
+    await expect(
+      resolveCall('default', [update('Edit', 'allow')]),
+    ).resolves.toMatchObject({ behavior: 'allow' })
+    await expect(
+      resolveCall('default', [
+        update('ApplyPatch', 'allow', exactRule(join(cwd, 'file.txt'))),
+      ]),
+    ).resolves.toMatchObject({ behavior: 'allow' })
+    await expect(
+      resolveCall('default', [
+        update('Edit', 'allow', exactRule(join(cwd, 'file.txt'))),
+      ]),
+    ).resolves.toMatchObject({ behavior: 'allow' })
+    await expect(
+      resolveCall('default', [
+        update('ApplyPatch', 'ask'),
+        update('Edit', 'allow'),
+      ]),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolveCall('default', [
+        update('Edit', 'ask'),
+        update('ApplyPatch', 'allow'),
+      ]),
+    ).resolves.toMatchObject({ behavior: 'ask' })
+    await expect(
+      resolveCall('default', [
+        update('ApplyPatch', 'deny'),
+        update('Edit', 'allow'),
+      ]),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      resolveCall('plan', [update('ApplyPatch', 'allow')]),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(
+      resolveCall('plan', [update('Edit', 'allow')]),
+    ).resolves.toMatchObject({ behavior: 'deny' })
+    await expect(resolveCall('dontAsk')).resolves.toMatchObject({
+      behavior: 'deny',
+    })
+    await expect(resolveCall('acceptEdits')).resolves.toMatchObject({
+      behavior: 'allow',
+    })
+    await expect(resolveCall('bypassPermissions')).resolves.toMatchObject({
+      behavior: 'allow',
+    })
+
+    const deniedTarget = join(cwd, 'denied.txt')
+    await expect(
+      new ClaudePermissionResolver({ cwd, settings: [] }).resolve(
+        {
+          id: 'apply-mixed',
+          name: 'ApplyPatch',
+          input: {
+            edits: [
+              {
+                file_path: join(cwd, 'allowed.txt'),
+                old_string: 'old',
+                new_string: 'new',
+              },
+              {
+                file_path: deniedTarget,
+                old_string: 'old',
+                new_string: 'new',
+              },
+            ],
+          },
+        },
+        {
+          cwd,
+          permissionUpdates: [
+            update('ApplyPatch', 'allow'),
+            update('Edit', 'deny', exactRule(deniedTarget)),
+          ],
+        },
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'deny',
+      reason: `Denied by Claude permission rule Edit(${exactRule(deniedTarget)})`,
+    })
+  })
+
+  it('aggregates outside-directory suggestions across ApplyPatch targets', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-apply-suggestions-'))
+    const firstOutside = await mkdtemp(
+      join(tmpdir(), 'praxis-apply-first-outside-'),
+    )
+    const secondOutside = await mkdtemp(
+      join(tmpdir(), 'praxis-apply-second-outside-'),
+    )
+    const decision = await new ClaudePermissionResolver({
+      cwd,
+      settings: [],
+    }).resolve(
+      {
+        id: 'apply-outside',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            {
+              file_path: join(firstOutside, 'first.txt'),
+              old_string: 'old',
+              new_string: 'new',
+            },
+            {
+              file_path: join(secondOutside, 'second.txt'),
+              old_string: 'old',
+              new_string: 'new',
+            },
+          ],
+        },
+      },
+      { cwd },
+    )
+    const suggestedDirectories =
+      decision.behavior === 'ask'
+        ? (decision.suggestions ?? []).flatMap((suggestion) =>
+            suggestion.type === 'addDirectories' ? suggestion.directories : [],
+          )
+        : []
+
+    expect(decision).toMatchObject({
+      behavior: 'ask',
+      reason: 'Path is outside allowed working directories',
+    })
+    expect(new Set(suggestedDirectories)).toEqual(
+      new Set([firstOutside, secondOutside]),
+    )
+  })
+
+  it('denies ApplyPatch when the auto classifier is unavailable', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'praxis-apply-auto-'))
+    const decision = await new ClaudePermissionResolver({
+      cwd,
+      settings: [],
+      permissionMode: 'auto',
+      autoClassifier: async () => {
+        throw new Error('classifier unavailable')
+      },
+    }).resolve(
+      {
+        id: 'apply-auto',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            {
+              file_path: join(cwd, 'file.txt'),
+              old_string: 'old',
+              new_string: 'new',
+            },
+          ],
+        },
+      },
+      { cwd },
+    )
+
+    expect(decision).toEqual({
+      behavior: 'deny',
+      reason: 'Auto mode classifier failed: classifier unavailable',
+    })
+    expect(permissionDecisionSource(decision)).toBe('auto-classifier')
+    expect(autoModePermissionOutcome(decision)).toBe('unavailable')
+  })
+
+  it('retains indexed original ApplyPatch paths for outside-root safety', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-apply-original-'))
+    const outside = await mkdtemp(join(tmpdir(), 'praxis-apply-outside-'))
+    const linked = join(outside, 'linked.txt')
+    const inside = join(root, 'inside.txt')
+    await writeFile(inside, 'old')
+    await symlink(inside, linked)
+    const resolver = new ClaudePermissionResolver({ cwd: root, settings: [] })
+    await expect(
+      resolver.resolve(
+        {
+          id: 'apply',
+          name: 'ApplyPatch',
+          input: {
+            edits: [
+              { file_path: inside, old_string: 'old', new_string: 'new' },
+            ],
+          },
+        },
+        {
+          cwd: root,
+          originalCall: {
+            id: 'original',
+            name: 'ApplyPatch',
+            input: {
+              edits: [
+                { file_path: linked, old_string: 'old', new_string: 'new' },
+              ],
+            },
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      behavior: 'ask',
+      reason: 'Path is outside allowed working directories',
+    })
+  })
+
   it('allows ToolSearch by default without approval', async () => {
     let approvals = 0
     const runtime = new AgentRuntime(provider, undefined, {

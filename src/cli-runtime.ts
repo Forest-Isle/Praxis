@@ -2534,7 +2534,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
     const filteredTools = new FilteredToolRegistry(extensionAndLspTools, {
       ...(cli.tools === undefined
         ? simpleMode
-          ? { tools: ['Bash', 'Edit', 'Read'] }
+          ? { tools: ['Bash', 'Edit', 'ApplyPatch', 'Read'] }
           : {}
         : { tools: selectedBaseTools ?? [] }),
       disallowedTools: cli.disallowedTools,

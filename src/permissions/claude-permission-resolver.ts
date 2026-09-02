@@ -10,6 +10,8 @@ import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   annotateAutoModePermissionOutcome,
   annotatePermissionDecision,
+  autoModePermissionOutcome,
+  permissionDecisionSource,
 } from '../core/runtime.js'
 import type {
   ModelToolCall,
@@ -20,6 +22,7 @@ import type {
   PermissionResolver,
   PermissionUpdateDestination,
 } from '../core/runtime.js'
+import { parseApplyPatchInput } from '../tools/apply-patch.js'
 import {
   loadClaudeAutoModeConfig,
   type ClaudeAutoClassifier,
@@ -108,6 +111,7 @@ const DEFAULT_BEHAVIOR: Readonly<Record<string, 'allow' | 'ask'>> = {
   Grep: 'allow',
   Write: 'ask',
   Edit: 'ask',
+  ApplyPatch: 'ask',
   NotebookEdit: 'ask',
   Glob: 'allow',
   LSP: 'allow',
@@ -129,6 +133,7 @@ const FILE_TOOLS = new Set([
   'Read',
   'Write',
   'Edit',
+  'ApplyPatch',
   'NotebookEdit',
   'Glob',
   'Grep',
@@ -302,6 +307,13 @@ function permissionTarget(call: ModelToolCall): string | null {
       ? call.input.notebook_path
       : null
   }
+  if (call.name === 'ApplyPatch') {
+    const edits = call.input.edits
+    const first = Array.isArray(edits) ? edits[0] : undefined
+    return isRecord(first) && typeof first.file_path === 'string'
+      ? first.file_path
+      : null
+  }
   if (call.name === 'WebFetch') {
     return typeof call.input.url === 'string' ? call.input.url : null
   }
@@ -320,7 +332,7 @@ function matchesRule(
   const toolMatches =
     rule.toolName === call.name ||
     (rule.toolName === 'Edit' &&
-      ['Edit', 'Write', 'NotebookEdit'].includes(call.name)) ||
+      ['Edit', 'Write', 'NotebookEdit', 'ApplyPatch'].includes(call.name)) ||
     (rule.toolName === 'Read' && ['Read', 'Glob', 'Grep'].includes(call.name))
   if (!toolMatches) return false
   if (rule.pattern === null) return true
@@ -550,6 +562,185 @@ export class ClaudePermissionResolver implements PermissionResolver {
       ...call,
       input: { ...call.input, command: subcommand },
     })
+    if (call.name === 'ApplyPatch') {
+      const edits = parseApplyPatchInput(call.input)
+      const originalEdits =
+        context?.originalCall?.name === 'ApplyPatch'
+          ? parseApplyPatchInput(context.originalCall.input)
+          : edits
+      if (originalEdits.length !== edits.length) {
+        throw new Error('ApplyPatch original and canonical edits must match')
+      }
+      const targetInputs = edits.map((edit, index) => {
+        const originalEdit = originalEdits[index]
+        if (!originalEdit) {
+          throw new Error('ApplyPatch original and canonical edits must match')
+        }
+        const targetCall: ModelToolCall = {
+          ...call,
+          name: 'Edit',
+          input: { ...edit },
+        }
+        const applyView: ModelToolCall = {
+          ...call,
+          input: { edits: [{ ...edit }] },
+        }
+        const originalView: ModelToolCall = {
+          ...call,
+          input: { edits: [{ ...originalEdit }] },
+        }
+        const originalTargetCall: ModelToolCall = {
+          ...targetCall,
+          input: { ...originalEdit },
+        }
+        return {
+          edit,
+          originalEdit,
+          targetCall,
+          applyView,
+          originalView,
+          originalTargetCall,
+        }
+      })
+      const directDenied = targetInputs.flatMap(
+        ({ applyView, originalView, targetCall, originalTargetCall }) =>
+          effectiveRules('deny').filter(
+            (rule) =>
+              matchesRule(rule, applyView, cwd, this.homeDirectory) ||
+              matchesRule(rule, originalView, cwd, this.homeDirectory) ||
+              matchesRule(rule, targetCall, cwd, this.homeDirectory) ||
+              matchesRule(rule, originalTargetCall, cwd, this.homeDirectory),
+          ),
+      )[0]
+      if (directDenied) {
+        const suffix =
+          directDenied.pattern === null ? '' : `(${directDenied.pattern})`
+        return annotatePermissionDecision(
+          {
+            behavior: 'deny',
+            reason: `Denied by Claude permission rule ${directDenied.toolName}${suffix}`,
+          },
+          'rule',
+        )
+      }
+      const targetDecisions = await Promise.all(
+        targetInputs.map(
+          async ({ originalEdit, targetCall, applyView, originalView }) => {
+            if (permissionMode === 'plan') {
+              return annotatePermissionDecision(
+                {
+                  behavior: 'deny',
+                  reason: 'Cannot use ApplyPatch while in plan mode',
+                },
+                'mode',
+              )
+            }
+            const directAsked = effectiveRules('ask').find(
+              (rule) =>
+                matchesRule(rule, applyView, cwd, this.homeDirectory) ||
+                matchesRule(rule, originalView, cwd, this.homeDirectory),
+            )
+            if (directAsked)
+              return this.askDecision(
+                targetCall,
+                cwd,
+                permissionMode,
+                context,
+                'rule',
+                undefined,
+                true,
+              )
+            const directAllowed = effectiveRules('allow').find(
+              (rule) =>
+                matchesRule(rule, applyView, cwd, this.homeDirectory) ||
+                matchesRule(rule, originalView, cwd, this.homeDirectory),
+            )
+            const resolved = await this.resolve(
+              targetCall,
+              context
+                ? {
+                    ...context,
+                    originalCall: {
+                      ...call,
+                      input: { edits: [{ ...originalEdit }] },
+                    },
+                  }
+                : { cwd, originalCall: originalView },
+            )
+            if (
+              resolved.behavior === 'allow' &&
+              permissionDecisionSource(resolved) === 'default' &&
+              !directAllowed
+            ) {
+              return this.askDecision(
+                targetCall,
+                cwd,
+                permissionMode,
+                context
+                  ? {
+                      ...context,
+                      originalCall: {
+                        ...call,
+                        input: { edits: [{ ...originalEdit }] },
+                      },
+                    }
+                  : { cwd, originalCall: originalView },
+                'default',
+                undefined,
+                true,
+              )
+            }
+            if (
+              directAllowed &&
+              resolved.behavior === 'ask' &&
+              resolved.reason !==
+                'Path is outside allowed working directories' &&
+              (permissionMode !== 'auto' || !this.shouldClassify(targetCall))
+            ) {
+              return annotatePermissionDecision({ behavior: 'allow' }, 'rule')
+            }
+            return resolved
+          },
+        ),
+      )
+      const deniedDecision = targetDecisions.find(
+        (decision) => decision.behavior === 'deny',
+      )
+      if (deniedDecision) return deniedDecision
+      const askedDecisions = targetDecisions.filter(
+        (decision) => decision.behavior === 'ask',
+      )
+      if (askedDecisions.length > 0) {
+        const first = askedDecisions[0]
+        if (!first) throw new Error('ApplyPatch permission decision is missing')
+        const suggestions = [
+          ...new Map(
+            askedDecisions
+              .flatMap((decision) =>
+                decision.behavior === 'ask' ? (decision.suggestions ?? []) : [],
+              )
+              .map((suggestion) => [JSON.stringify(suggestion), suggestion]),
+          ).values(),
+        ]
+        const aggregate: PermissionDecision = {
+          ...first,
+          suggestions,
+        }
+        const source = permissionDecisionSource(first)
+        const annotated = source
+          ? annotatePermissionDecision(aggregate, source)
+          : aggregate
+        const outcome = autoModePermissionOutcome(first)
+        return outcome
+          ? annotateAutoModePermissionOutcome(annotated, outcome)
+          : annotated
+      }
+      const allowed = targetDecisions.find(
+        (decision) => decision.behavior === 'allow',
+      )
+      if (allowed) return allowed
+      throw new Error('ApplyPatch permission resolution produced no decision')
+    }
     const denied =
       matchingRule('deny') ??
       subcommands
@@ -569,6 +760,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
       permissionMode === 'plan' &&
       (call.name === 'Write' ||
         call.name === 'Edit' ||
+        call.name === 'ApplyPatch' ||
         call.name === 'NotebookEdit')
     ) {
       return annotatePermissionDecision(
@@ -761,7 +953,9 @@ export class ClaudePermissionResolver implements PermissionResolver {
           absolutePath,
         ]),
       ]
-      const write = ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
+      const write = ['Write', 'Edit', 'ApplyPatch', 'NotebookEdit'].includes(
+        call.name,
+      )
       const internalRoots = write
         ? internalEditableRoots
         : internalReadableRoots
@@ -808,6 +1002,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
       permissionMode === 'acceptEdits' &&
       (call.name === 'Write' ||
         call.name === 'Edit' ||
+        call.name === 'ApplyPatch' ||
         call.name === 'NotebookEdit')
     ) {
       return annotatePermissionDecision({ behavior: 'allow' }, 'mode')
@@ -920,7 +1115,12 @@ export class ClaudePermissionResolver implements PermissionResolver {
                       suggestions: filePermissionSuggestions(
                         permissionTarget(call) ?? cwd,
                         cwd,
-                        ['Write', 'Edit', 'NotebookEdit'].includes(call.name)
+                        [
+                          'Write',
+                          'Edit',
+                          'ApplyPatch',
+                          'NotebookEdit',
+                        ].includes(call.name)
                           ? 'write'
                           : 'read',
                         (effectivePermissionMode(context?.permissionUpdates) ??
@@ -939,6 +1139,7 @@ export class ClaudePermissionResolver implements PermissionResolver {
     if (
       call.name === 'Write' ||
       call.name === 'Edit' ||
+      call.name === 'ApplyPatch' ||
       call.name === 'NotebookEdit' ||
       call.name === 'WebFetch' ||
       call.name === 'WebSearch' ||

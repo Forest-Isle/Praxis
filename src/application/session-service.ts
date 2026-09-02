@@ -207,6 +207,7 @@ import type {
 } from './project-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { DeferredToolCatalog } from '../tools/deferred-tool-catalog.js'
+import { parseApplyPatchInput } from '../tools/apply-patch.js'
 import {
   ClaudeCapabilityToolRegistry,
   resolveClaudeToolCapabilities,
@@ -380,6 +381,22 @@ function mainAgentToolNames(
     .filter(
       (name) => (!requested || requested.has(name)) && !disallowed.has(name),
     )
+}
+
+function mutationPaths(call: ModelToolCall): string[] {
+  if (call.name === 'ApplyPatch')
+    return parseApplyPatchInput(call.input).map((edit) => edit.file_path)
+  if (call.name === 'Write' || call.name === 'Edit') {
+    return typeof call.input.file_path === 'string'
+      ? [call.input.file_path]
+      : []
+  }
+  if (call.name === 'NotebookEdit') {
+    return typeof call.input.notebook_path === 'string'
+      ? [call.input.notebook_path]
+      : []
+  }
+  return []
 }
 
 export interface SessionRunResult {
@@ -2010,6 +2027,7 @@ export class ClaudeSessionService {
       'Read',
       'LSP',
       'Edit',
+      'ApplyPatch',
       'Write',
       'NotebookEdit',
       'WebFetch',
@@ -4190,22 +4208,28 @@ export class ClaudeSessionService {
                 prepare: (call, context) =>
                   interactiveMessageTools.prepare(call, context),
                 execute: async (call, context) => {
-                  const path =
-                    call.name === 'Write' || call.name === 'Edit'
-                      ? call.input.file_path
-                      : call.name === 'NotebookEdit'
-                        ? call.input.notebook_path
-                        : undefined
-                  if (typeof path !== 'string') {
+                  const paths = mutationPaths(call)
+                  if (paths.length === 0) {
                     return interactiveMessageTools.execute(call, context)
                   }
-                  if (
-                    (call.name === 'Write' || call.name === 'Edit') &&
-                    (await this.options.interactiveTools?.isPlanFile(
-                      sessionId,
-                      path,
-                    ))
-                  ) {
+                  const historyPaths =
+                    call.name === 'Write' ||
+                    call.name === 'Edit' ||
+                    call.name === 'ApplyPatch'
+                      ? (
+                          await Promise.all(
+                            paths.map(async (path) =>
+                              (await this.options.interactiveTools?.isPlanFile(
+                                sessionId,
+                                path,
+                              ))
+                                ? null
+                                : path,
+                            ),
+                          )
+                        ).filter((path): path is string => path !== null)
+                      : paths
+                  if (historyPaths.length === 0) {
                     return interactiveMessageTools.execute(call, context)
                   }
                   const snapshotMessageId =
@@ -4225,11 +4249,24 @@ export class ClaudeSessionService {
                       'Claude file history could not link tool call',
                     )
                   }
-                  const prepared = await fileHistory.prepareMutation(
-                    projectionSnapshot().entries,
-                    snapshotMessageId,
-                    path,
-                  )
+                  const preparedMutations: Array<
+                    Awaited<ReturnType<ClaudeFileHistory['prepareMutation']>>
+                  > = []
+                  try {
+                    for (const path of [...new Set(historyPaths)])
+                      preparedMutations.push(
+                        await fileHistory.prepareMutation(
+                          projectionSnapshot().entries,
+                          snapshotMessageId,
+                          path,
+                        ),
+                      )
+                  } catch (error) {
+                    await Promise.all(
+                      preparedMutations.map((mutation) => mutation.rollback()),
+                    )
+                    throw error
+                  }
                   let result
                   try {
                     result = await interactiveMessageTools.execute(
@@ -4237,15 +4274,23 @@ export class ClaudeSessionService {
                       context,
                     )
                   } catch (error) {
-                    await prepared.rollback()
+                    await Promise.all(
+                      preparedMutations.map((mutation) => mutation.rollback()),
+                    )
                     throw error
                   }
                   if (result.isError) {
-                    await prepared.rollback()
+                    await Promise.all(
+                      preparedMutations.map((mutation) => mutation.rollback()),
+                    )
                     return result
                   }
-                  const entry = prepared.commit(assistantMessageId)
-                  if (entry) {
+                  const entries = preparedMutations
+                    .map((mutation) => mutation.commit(assistantMessageId))
+                    .filter(
+                      (entry): entry is NativeTranscriptEntry => entry !== null,
+                    )
+                  for (const entry of entries) {
                     await persistence.commit({
                       kind: 'messages',
                       input: {
@@ -4516,7 +4561,11 @@ export class ClaudeSessionService {
               ) {
                 if (call.name === 'Read') {
                   turnMemory.recordRead(path)
-                } else if (call.name === 'Write' || call.name === 'Edit') {
+                } else if (
+                  call.name === 'Write' ||
+                  call.name === 'Edit' ||
+                  call.name === 'ApplyPatch'
+                ) {
                   projectMemoryMaintained = true
                 }
               }
@@ -4533,6 +4582,21 @@ export class ClaudeSessionService {
                     )
                   ) {
                     turnMemory.recordRead(resolvedAccessedPath)
+                  }
+                }
+              } else if (call.name === 'ApplyPatch') {
+                for (const accessedPath of toolResult.accessedPaths ?? []) {
+                  const resolvedAccessedPath = resolve(
+                    this.activeCwd(),
+                    accessedPath,
+                  )
+                  if (
+                    isPathWithin(
+                      this.options.projectMemoryDirectory,
+                      resolvedAccessedPath,
+                    )
+                  ) {
+                    projectMemoryMaintained = true
                   }
                 }
               }

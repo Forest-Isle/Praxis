@@ -172,8 +172,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   deterministic resize-aware URL/form elicitation rendering, and measured
   context budgets; print mode,
   structured JSON/JSONL, context compaction, tool loops, and bounded execution.
-- **Built-in tools** — read, write, edit, glob, search, shell, notebook, PDF,
-  image, web, scheduled prompts, workflows, and worktrees.
+- **Built-in tools** — read, write, edit, `ApplyPatch` for bounded ordered exact
+  multi-file replacements, glob, search, shell, notebook, PDF, image, web,
+  scheduled prompts, workflows, and worktrees.
 - **Shell lifecycle** — foreground Bash allows up to 10 minutes and carries a
   validated final working directory across calls in the same session without
   leaking state across sessions or overriding an explicit `/cd`.

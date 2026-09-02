@@ -63,6 +63,7 @@ describe('ClaudeTaskToolRegistry', () => {
       'Read',
       'Write',
       'Edit',
+      'ApplyPatch',
       'NotebookEdit',
       'Glob',
       'Grep',

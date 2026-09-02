@@ -507,6 +507,7 @@ const BACKGROUND_AGENT_TOOLS = new Set([
   'Glob',
   'Bash',
   'Edit',
+  'ApplyPatch',
   'Write',
   'NotebookEdit',
   'Skill',
