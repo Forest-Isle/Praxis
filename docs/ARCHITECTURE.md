@@ -81,10 +81,16 @@ user settings + CLI/environment + project/local selection as inert data
 
 The Registry creates OpenAI-compatible Chat Completions, the public OpenAI
 Responses adapter, Anthropic Messages, or the private experimental Codex
-subscription adapter. All runtime consumers use this factory, including main
-sessions, fallback models, auto-mode critics, eval judges, scheduled work, and
-background agents. Provider wire payloads do not enter core or transcripts;
-unsupported capabilities fail closed.
+subscription adapter. For each main run or resume, the CLI creates a fresh
+turn-scoped client. One wrapper owns bounded retry, failed-attempt buffering,
+request-aware fallback admission, and the sealed route used by that turn's
+tool continuations. Incompatible fallback routes fail closed, and the next
+main user turn starts from the primary route. Provider wire payloads do not
+enter core or transcripts; unsupported capabilities fail closed.
+
+This turn-scoped seam is currently limited to the main session. Auxiliary
+consumers such as subagents, Workflow, Team, background recovery, memory,
+auto-mode critics, and eval judges remain separate follow-up work.
 
 Anthropic Messages providers are composed as two ordinary `ModelProvider`
 adapters, each with its own connect, byte-idle, and absolute-total deadlines.
@@ -96,6 +102,9 @@ cancellation, HTTP/auth/rate-limit, prompt-too-long, and malformed-response
 errors do not trigger this replay. OpenAI-compatible and Codex providers do not
 install it. `PRAXIS_DISABLE_NONSTREAMING_FALLBACK=true` returns Anthropic to its
 single streaming attempt.
+
+A `prompt_too_long` reactive compaction retry retains the same turn-scoped
+client and its routing state.
 
 The Registry's billing mode composes metering behavior: API mode receives
 pricing, cost, and budget enforcement, while subscription mode retains token

@@ -100,6 +100,13 @@ malformed-response errors are not replayed. Set
 `PRAXIS_DISABLE_NONSTREAMING_FALLBACK=true` to disable this Anthropic-only
 recovery path; detached background agents inherit the setting.
 
+For main-session provider fallback, use the existing `--fallback-model` option
+with an explicit list of model IDs on the selected provider target and
+protocol. Praxis does not infer cross-protocol fallback routes. Failed attempts
+stay buffered; the first successful route, whether primary or fallback, remains
+sealed through that turn's tool continuations, and the next main user turn
+starts from the primary model.
+
 ### Custom providers and profiles
 
 User provider configuration is `PRAXIS_HOME/settings.json` (default

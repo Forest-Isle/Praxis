@@ -191,6 +191,14 @@ error objects, and stream stop fields remain inside adapters. Retry/fallback
 buffers an attempt until its terminal event so a discarded partial attempt
 cannot replay content or usage.
 
+For each main run or resume, the CLI creates a fresh turn-scoped client. One
+wrapper owns bounded retry, failed-attempt buffering, request-aware fallback
+admission, and the sealed route through that turn's tool continuations.
+Incompatible fallback routes fail closed; the next main user turn starts from
+the primary route. A `prompt_too_long` reactive compaction retry retains the
+same turn client. This contract does not yet propagate the seam to auxiliary
+consumers.
+
 A typed `prompt_too_long` failure bypasses ordinary retry and provider fallback.
 The runtime settles any scheduled tool calls but commits no assistant output and
 runs no Stop hook for the rejected attempt. When a context budget is available,
