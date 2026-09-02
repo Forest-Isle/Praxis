@@ -26,6 +26,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.55.1](https://github.com/Forest-Isle/Praxis/compare/v0.55.0...v0.55.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* refresh vulnerable transitive dependencies ([#588](https://github.com/Forest-Isle/Praxis/issues/588)) ([4db2f39](https://github.com/Forest-Isle/Praxis/commit/4db2f39319d8e8f5d6faacabf1d06064e4afdd2f))
+
 ## [0.55.0](https://github.com/Forest-Isle/Praxis/compare/v0.54.0...v0.55.0) (2026-09-02)
 
 
