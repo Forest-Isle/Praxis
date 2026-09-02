@@ -615,6 +615,38 @@
       ]
     },
     {
+      "id": "providers.openai.protocol.portability",
+      "seam": "OpenAI Chat Completions and Responses portability",
+      "contract": "Public Chat Completions and Responses adapters are comparable only for the tested provider-neutral subset; comparison evidence records unsupported developer-instruction, tool-selection, parallel-tool, refusal, reasoning, terminal, usage, and hosted-state semantics as fail-closed for any future cross-protocol fallback.",
+      "status": "qualified",
+      "modules": [
+        "src/providers/openai-compatible.ts",
+        "src/providers/openai-responses.ts",
+        "src/providers/responses-codec.ts"
+      ],
+      "outcomes": [
+        "Versioned hermetic captures preserve plain text and ordered function call/output identity across both public adapters.",
+        "Comparison evidence classifies unsupported developer-instruction, tool-selection, parallel-tool, and refusal controls plus reasoning continuity, protocol-native terminal/incomplete meanings, richer usage, and hosted response state as incompatible and fail-closed.",
+        "The automatic cross-protocol fallback decision remains not_authorized."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/providers/openai-protocol-comparison.test.ts",
+          "testName": "OpenAI protocol comparison > matches the versioned request and continuation artifact"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/providers/openai-protocol-comparison.test.ts",
+          "testName": "OpenAI protocol comparison > matches terminal, usage, and fail-closed capability evidence"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/providers/openai-chat-responses-v1.json"
+        }
+      ]
+    },
+    {
       "id": "providers.fallback.commit.boundary",
       "seam": "FallbackModelProvider",
       "contract": "Provider fallback is allowed only before output and usage cross the commit boundary.",

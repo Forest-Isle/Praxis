@@ -1,0 +1,596 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "kind": "official-openapi",
+    "commit": "18a43ed13461a01fce5b9cc93c86843c550734a3"
+  },
+  "decision": {
+    "automaticCrossProtocolFallback": "not_authorized",
+    "portableSubset": [
+      "terminal-text",
+      "single-tool-continuation",
+      "parallel-tool-continuation",
+      "basic-input-output-usage"
+    ],
+    "failClosed": ["reasoning-tool-continuation", "signed-reasoning-history"],
+    "notComparable": [
+      "developer-instruction-control",
+      "tool-selection-control",
+      "parallel-tool-execution-control",
+      "response-refusal-semantics"
+    ]
+  },
+  "trajectories": {
+    "terminal-text": {
+      "chat": {
+        "request": {
+          "protocol": "chat",
+          "pathname": "/v1/chat/completions",
+          "method": "POST",
+          "headers": ["authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "messages": [
+              { "role": "system", "content": "You are concise." },
+              { "role": "user", "content": "Say hello." }
+            ],
+            "stream": true,
+            "stream_options": { "include_usage": true }
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "request": {
+          "protocol": "responses",
+          "pathname": "/v1/responses",
+          "method": "POST",
+          "headers": ["accept", "authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "instructions": "You are concise.",
+            "input": [
+              {
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Say hello." }]
+              }
+            ],
+            "stream": true,
+            "store": false,
+            "include": ["reasoning.encrypted_content"]
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    },
+    "single-tool-continuation": {
+      "chat": {
+        "request": {
+          "protocol": "chat",
+          "pathname": "/v1/chat/completions",
+          "method": "POST",
+          "headers": ["authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "messages": [
+              { "role": "user", "content": "Look up x." },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup",
+                      "arguments": "{\"q\":\"x\"}"
+                    }
+                  }
+                ]
+              },
+              { "role": "tool", "tool_call_id": "call-1", "content": "value-x" }
+            ],
+            "stream": true,
+            "stream_options": { "include_usage": true }
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "request": {
+          "protocol": "responses",
+          "pathname": "/v1/responses",
+          "method": "POST",
+          "headers": ["accept", "authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "instructions": "",
+            "input": [
+              {
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Look up x." }]
+              },
+              {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "lookup",
+                "arguments": "{\"q\":\"x\"}"
+              },
+              {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "value-x"
+              }
+            ],
+            "stream": true,
+            "store": false,
+            "include": ["reasoning.encrypted_content"]
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    },
+    "parallel-tool-continuation": {
+      "chat": {
+        "request": {
+          "protocol": "chat",
+          "pathname": "/v1/chat/completions",
+          "method": "POST",
+          "headers": ["authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "messages": [
+              { "role": "user", "content": "Look up x and y." },
+              {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup",
+                      "arguments": "{\"q\":\"x\"}"
+                    }
+                  },
+                  {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {
+                      "name": "lookup",
+                      "arguments": "{\"q\":\"y\"}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": "value-x"
+              },
+              { "role": "tool", "tool_call_id": "call-2", "content": "value-y" }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "lookup",
+                  "description": "Look up a value",
+                  "parameters": {
+                    "type": "object",
+                    "properties": { "q": { "type": "string" } }
+                  }
+                }
+              }
+            ],
+            "stream": true,
+            "stream_options": { "include_usage": true }
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "request": {
+          "protocol": "responses",
+          "pathname": "/v1/responses",
+          "method": "POST",
+          "headers": ["accept", "authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "instructions": "",
+            "input": [
+              {
+                "role": "user",
+                "content": [
+                  { "type": "input_text", "text": "Look up x and y." }
+                ]
+              },
+              {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "lookup",
+                "arguments": "{\"q\":\"x\"}"
+              },
+              {
+                "type": "function_call",
+                "call_id": "call-2",
+                "name": "lookup",
+                "arguments": "{\"q\":\"y\"}"
+              },
+              {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "value-x"
+              },
+              {
+                "type": "function_call_output",
+                "call_id": "call-2",
+                "output": "value-y"
+              }
+            ],
+            "stream": true,
+            "tools": [
+              {
+                "type": "function",
+                "name": "lookup",
+                "description": "Look up a value",
+                "parameters": {
+                  "type": "object",
+                  "properties": { "q": { "type": "string" } }
+                },
+                "strict": false
+              }
+            ],
+            "store": false,
+            "include": ["reasoning.encrypted_content"]
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    },
+    "reasoning-tool-continuation": {
+      "chat": {
+        "error": { "kind": "unsupported_capability", "retryable": false }
+      },
+      "responses": {
+        "request": {
+          "protocol": "responses",
+          "pathname": "/v1/responses",
+          "method": "POST",
+          "headers": ["accept", "authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "instructions": "",
+            "input": [
+              {
+                "role": "user",
+                "content": [
+                  { "type": "input_text", "text": "Reason, then look up x." }
+                ]
+              },
+              {
+                "type": "reasoning",
+                "summary": [
+                  { "type": "summary_text", "text": "Need the value." }
+                ],
+                "encrypted_content": "sig-1"
+              },
+              {
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "lookup",
+                "arguments": "{\"q\":\"x\"}"
+              },
+              {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "value-x"
+              }
+            ],
+            "stream": true,
+            "reasoning": { "summary": "auto" },
+            "store": false,
+            "include": ["reasoning.encrypted_content"]
+          }
+        },
+        "events": [
+          {
+            "type": "thinking-start",
+            "block": { "type": "thinking", "thinking": "" }
+          },
+          { "type": "thinking-delta", "delta": "ok" },
+          { "type": "thinking-signature-delta", "delta": "encrypted-1" },
+          {
+            "type": "thinking-stop",
+            "block": {
+              "type": "thinking",
+              "thinking": "ok",
+              "signature": "encrypted-1"
+            }
+          },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 13, "outputTokens": 4 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    },
+    "signed-reasoning-history": {
+      "chat": {
+        "request": {
+          "protocol": "chat",
+          "pathname": "/v1/chat/completions",
+          "method": "POST",
+          "headers": ["authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "messages": [
+              { "role": "user", "content": "Continue." },
+              { "role": "assistant", "content": "I considered the options." }
+            ],
+            "stream": true,
+            "stream_options": { "include_usage": true }
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "request": {
+          "protocol": "responses",
+          "pathname": "/v1/responses",
+          "method": "POST",
+          "headers": ["accept", "authorization", "content-type"],
+          "authorization": "Bearer <redacted>",
+          "body": {
+            "model": "fixture-model",
+            "instructions": "",
+            "input": [
+              {
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "Continue." }]
+              },
+              {
+                "type": "reasoning",
+                "summary": [
+                  { "type": "summary_text", "text": "Private reasoning." }
+                ],
+                "encrypted_content": "sig-2"
+              },
+              {
+                "role": "assistant",
+                "content": [
+                  { "type": "output_text", "text": "I considered the options." }
+                ]
+              }
+            ],
+            "stream": true,
+            "store": false,
+            "include": ["reasoning.encrypted_content"]
+          }
+        },
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    }
+  },
+  "terminalMatrix": {
+    "successful-end-turn": {
+      "chat": {
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      }
+    },
+    "tool-use-terminal": {
+      "chat": {
+        "events": [
+          {
+            "type": "tool-call",
+            "call": { "id": "call-1", "name": "lookup", "input": { "q": "x" } }
+          },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 12, "outputTokens": 3 }
+          },
+          { "type": "terminal", "reason": "tool_use" }
+        ]
+      },
+      "responses": {
+        "events": [
+          {
+            "type": "tool-call",
+            "call": { "id": "call-1", "name": "lookup", "input": { "q": "x" } }
+          },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 12, "outputTokens": 3 }
+          },
+          { "type": "terminal", "reason": "tool_use" }
+        ]
+      }
+    },
+    "max-token-terminal": {
+      "chat": {
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "max_tokens" }
+        ]
+      },
+      "responses": {
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          { "type": "terminal", "reason": "max_tokens" }
+        ]
+      }
+    },
+    "content-filter-and-incomplete": {
+      "chat": {
+        "events": [
+          { "type": "text-delta", "delta": "ok" },
+          {
+            "type": "usage",
+            "usage": { "inputTokens": 10, "outputTokens": 2 }
+          },
+          { "type": "terminal", "reason": "end_turn" }
+        ]
+      },
+      "responses": {
+        "error": { "kind": "invalid_request", "retryable": false }
+      }
+    },
+    "provider-stream-api-failure": {
+      "chat": { "error": { "kind": "api_error", "retryable": true } },
+      "responses": { "error": { "kind": "api_error", "retryable": true } }
+    },
+    "pre-aborted-cancellation": {
+      "chat": { "error": { "kind": "cancelled", "retryable": false } },
+      "responses": { "error": { "kind": "cancelled", "retryable": false } }
+    },
+    "premature-eof": {
+      "chat": {
+        "error": {
+          "kind": "transport_error",
+          "retryable": true,
+          "message": "premature_eof"
+        }
+      },
+      "responses": {
+        "error": {
+          "kind": "transport_error",
+          "retryable": true,
+          "message": "premature_eof"
+        }
+      }
+    }
+  },
+  "usage": {
+    "chat": { "inputTokens": 10, "outputTokens": 2 },
+    "responses": {
+      "inputTokens": 10,
+      "outputTokens": 2,
+      "cacheReadInputTokens": 4
+    },
+    "modelUsage": ["inputTokens", "outputTokens"],
+    "reasoningTokens": "unrepresented",
+    "cacheReadInputTokens": "responses-only-currently"
+  },
+  "capabilities": {
+    "chat": {
+      "streaming": true,
+      "usage": true,
+      "tools": true,
+      "images": true,
+      "thinking": { "modes": ["disabled"], "maxTokens": false },
+      "terminalReasons": true
+    },
+    "responses": {
+      "streaming": true,
+      "usage": true,
+      "tools": true,
+      "images": true,
+      "documents": false,
+      "webSearch": false,
+      "thinking": {
+        "modes": ["disabled", "enabled", "adaptive"],
+        "maxTokens": false
+      },
+      "terminalReasons": true
+    },
+    "comparison": {
+      "sharedEnabled": [
+        "streaming",
+        "usage",
+        "tools",
+        "images",
+        "terminalReasons"
+      ],
+      "sharedThinkingModes": ["disabled"],
+      "chatUndeclared": ["documents", "webSearch"],
+      "responsesExplicitlyDisabled": ["documents", "webSearch"],
+      "responsesAdditionalThinkingModes": ["enabled", "adaptive"]
+    }
+  }
+}
