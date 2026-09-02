@@ -4771,6 +4771,8 @@ describe('ClaudeSessionService', () => {
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     let completions = 0
+    let compactCalls = 0
+    const compactInputs: ModelMessage[][] = []
     const events: RuntimeEvent[] = []
     const requests: ModelRequest[] = []
     const provider: ModelProvider = {
@@ -4780,7 +4782,7 @@ describe('ClaudeSessionService', () => {
         usage: true,
         tools: false,
         terminalReasons: true,
-        contextWindowTokens: 200_000,
+        contextWindowTokens: 2_500,
       },
       async *complete(request) {
         requests.push(request)
@@ -4808,17 +4810,30 @@ describe('ClaudeSessionService', () => {
       },
     }
     const providerForTurn = vi.fn(() => provider)
+    const extensions = new ClaudeExtensionCatalog({
+      agents: [],
+      commands: [],
+      skills: [],
+    })
+    const agentMentionMessages = vi.spyOn(extensions, 'agentMentionMessages')
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
       provider,
       providerForTurn,
+      extensions,
+      contextReserveTokens: 1_500,
       eventSink: (event) => events.push(event),
       compactor: {
-        async compact() {
+        async compact(request) {
+          compactCalls += 1
+          compactInputs.push([...request.messages])
           return {
-            summary: 'REACTIVE_RETRY_SUMMARY',
+            summary:
+              compactCalls === 1
+                ? `REACTIVE_RETRY_SUMMARY_1 ${'first '.repeat(300)}`
+                : 'REACTIVE_RETRY_SUMMARY_2',
             usage: { inputTokens: 0, outputTokens: 0 },
             durationMs: 1,
             model: 'reactive-model',
@@ -4832,6 +4847,22 @@ describe('ClaudeSessionService', () => {
 
     expect(result.text).toBe('recovered answer')
     expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
+    expect(agentMentionMessages).toHaveBeenCalledTimes(2)
+    expect(agentMentionMessages.mock.calls.map(([prompt]) => prompt)).toEqual([
+      'seed old context',
+      'continue',
+    ])
+    expect(compactCalls).toBe(2)
+    expect(JSON.stringify(compactInputs[1])).toContain(
+      'REACTIVE_RETRY_SUMMARY_1',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).toContain(
+      'REACTIVE_RETRY_SUMMARY_1',
+    )
+    expect(JSON.stringify(requests[1]?.messages)).not.toContain('old context')
+    expect(JSON.stringify(requests[2]?.messages)).toContain(
+      'REACTIVE_RETRY_SUMMARY_2',
+    )
     expect(
       (await service.costSnapshot(result.sessionId)).modelUsage[
         'reactive-model'

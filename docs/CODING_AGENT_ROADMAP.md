@@ -226,10 +226,17 @@ evidence.
 cancellation, cleanup, and terminal sealing behind typed outcomes. Sequential
 follow-up turns remain TUI-owned and cross this seam through ordinary `resume()`.
 
-### Task 4.2: ContextPreparation and generation [depends: Task 4.1]
+### Task 4.2: ContextPreparation and generation — implemented by #584 [depends: Task 4.1]
 
-Separate stable, volatile, history, memory, and active-tool projections. Add a
-monotonic generation for compaction, rollback, and replacement.
+`ContextPreparation` owns the turn-scoped projection of canonical stable and
+volatile system context, active Transcript history, Project-memory recall,
+pending input, first-user and agent-mention decoration, and active-tool
+definitions. Each lifecycle starts at generation 1 after branch selection;
+live refreshes remain at that generation, while only successful guarded history
+replacements advance it monotonically. A stale replacement fails before its
+durable callback and all following effects, and generation remains private
+operational state rather than a provider, runtime, Transcript, or persistence
+field.
 
 ### Task 4.3: Persistence and accounting [depends: Task 4.2]
 

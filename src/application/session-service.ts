@@ -118,11 +118,11 @@ import {
   isPromptTooLongError,
 } from '../core/context-budget.js'
 import { ContextEngine } from './context-engine.js'
+import { ContextPreparation } from './context-preparation.js'
 import { TurnMemoryCoordinator } from './turn-memory-coordinator.js'
 import {
   injectFirstUserMessageContext,
   projectContextSnapshot,
-  type ContextProjection,
   type ContextAssembler,
 } from '../core/context.js'
 import { assembleContextSnapshot } from '../core/prompt-composer.js'
@@ -4889,12 +4889,24 @@ export class ClaudeSessionService {
           let agentSystem: string | null = null
           let planModeMessage: string | null | undefined
           let sessionMemoryMessage: string | null = null
-          let contextMessages: ModelMessage[] = []
-          let contextProjection: ContextProjection = {
-            systemMessages: [],
-            stableSystemSectionCount: 0,
-          }
-          let stableSystemMessageCount = 0
+          let agentMentionMessages: readonly string[] = []
+          const contextPreparation = new ContextPreparation({
+            ...(this.options.contextAssembler
+              ? { assembler: this.options.contextAssembler }
+              : {}),
+            sources: {
+              history: activeTurnMessages,
+              memory: () => projectMemoryRecallMessages,
+              activeTools: () =>
+                provider.capabilities.tools
+                  ? (activeTurnTools?.definitions() ?? [])
+                  : [],
+            },
+            agentMentions: () => ({
+              prompt: effectivePrompt,
+              messages: agentMentionMessages,
+            }),
+          })
           refreshRuntimeContext = async () => {
             agentSystem = await this.mainAgentSystemPrompt(agent)
             planModeMessage =
@@ -4903,30 +4915,23 @@ export class ClaudeSessionService {
             sessionMemoryMessage = this.sessionMemoryMessage(
               await turnMemory.sessionSummary(),
             )
-            const assembledContext = await assembleContextSnapshot(
-              this.options.contextAssembler,
-              {
-                cwd: this.activeCwd(),
-                lifecycleId: sessionId,
-                ...(agentSystem
-                  ? { mode: 'agent', baseSystemPrompt: agentSystem }
+            await contextPreparation.refresh({
+              cwd: this.activeCwd(),
+              lifecycleId: sessionId,
+              ...(agentSystem
+                ? { mode: 'agent', baseSystemPrompt: agentSystem }
+                : {}),
+              turn: {
+                ...(planModeMessage ? { planMode: planModeMessage } : {}),
+                ...(sessionMemoryMessage
+                  ? { sessionMemory: sessionMemoryMessage }
                   : {}),
-                turn: {
-                  ...(planModeMessage ? { planMode: planModeMessage } : {}),
-                  ...(sessionMemoryMessage
-                    ? { sessionMemory: sessionMemoryMessage }
-                    : {}),
-                  ...(this.options.brief ? { briefOutput: true } : {}),
-                  ...(this.options.structuredOutputSchema
-                    ? { structuredOutput: true }
-                    : {}),
-                },
+                ...(this.options.brief ? { briefOutput: true } : {}),
+                ...(this.options.structuredOutputSchema
+                  ? { structuredOutput: true }
+                  : {}),
               },
-            )
-            contextProjection = projectContextSnapshot(assembledContext)
-            stableSystemMessageCount =
-              contextProjection.stableSystemSectionCount
-            contextMessages = [...contextProjection.systemMessages]
+            })
           }
           await refreshRuntimeContext()
 
@@ -4965,10 +4970,6 @@ export class ClaudeSessionService {
           let compactionDurationWithoutRetriesMs: number | undefined
           let compactionModelUsage:
             Readonly<Record<string, ModelUsage>> | undefined
-          const currentDefinitions = () =>
-            provider.capabilities.tools
-              ? (activeTurnTools?.definitions() ?? [])
-              : []
           const budget = this.contextBudget(provider)
           const contextEngine = new ContextEngine({
             ...(budget ? { budget } : {}),
@@ -5002,92 +5003,39 @@ export class ClaudeSessionService {
                 : {}),
             }),
           )
-          const agentMentionMessages =
+          agentMentionMessages =
             shellCommand === undefined && !shouldSkipUserPrompt()
               ? (this.options.extensions?.agentMentionMessages(
                   effectivePrompt,
                 ) ?? [])
               : []
-          const injectAgentMentionContext = (
-            messages: readonly ModelMessage[],
-          ): ModelMessage[] => {
-            if (agentMentionMessages.length === 0) return [...messages]
-            let insertionIndex = messages.length
-            let foundPrompt = false
-            for (let index = messages.length - 1; index >= 0; index -= 1) {
-              const message = messages[index]
-              if (
-                message?.role === 'user' &&
-                typeof message.content === 'string' &&
-                message.content.endsWith(effectivePrompt)
-              ) {
-                insertionIndex = index
-                foundPrompt = true
-                break
-              }
-            }
-            if (!foundPrompt) return [...messages]
-            return [
-              ...messages.slice(0, insertionIndex),
-              ...agentMentionMessages.map((content) => ({
-                role: 'user' as const,
-                content,
-              })),
-              ...messages.slice(insertionIndex),
-            ]
-          }
-          const injectDynamicContext = (
-            messages: readonly ModelMessage[],
-          ): ModelMessage[] =>
-            injectFirstUserMessageContext(
-              messages,
-              contextProjection.firstUserMessageContext,
-            )
-          const injectTurnContext = (
-            messages: readonly ModelMessage[],
-          ): ModelMessage[] =>
-            injectAgentMentionContext(injectDynamicContext(messages))
           let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
           const contextTransitionPort = (
-            pendingMessages: readonly {
-              role: 'user'
-              content: string
-            }[] = [],
+            pendingMessages: readonly ModelMessage[] = [],
             preservedUserMessages: readonly string[] = [],
           ) => ({
             current: () => {
-              const historyMessages = [
-                ...activeTurnMessages(),
-                ...projectMemoryRecallMessages,
-              ]
-              return {
-                messages: [
-                  ...contextMessages,
-                  ...injectTurnContext([
-                    ...historyMessages,
-                    ...pendingMessages,
-                  ]),
-                ],
-                tools: currentDefinitions(),
-              }
+              const projection = contextPreparation.project({
+                pendingMessages,
+              })
+              return projection.envelope
             },
-            irreducible: () => ({
-              messages: [
-                ...contextMessages,
-                ...injectTurnContext([
+            irreducible: () =>
+              contextPreparation.project({
+                includeHistory: false,
+                includeMemory: false,
+                pendingMessages: [
                   ...pendingMessages,
                   ...preservedUserMessages.map((content) => ({
                     role: 'user' as const,
                     content,
                   })),
-                ]),
-              ],
-              tools: currentDefinitions(),
-            }),
+                ],
+              }).envelope,
             propose: async () => {
               const activeNativeLease = nativeLease
               if (!budget) throw new Error('Context budget is unavailable')
-              const definitions = currentDefinitions()
+              const definitions = contextPreparation.project().envelope.tools
               const historyMessages = activeTurnMessages()
               if (historyMessages.length === 0)
                 throw new Error('Cannot compact an empty native transcript')
@@ -5095,16 +5043,17 @@ export class ClaudeSessionService {
                 throw new Error(
                   'Cannot compact a native transcript with unresolved tool calls',
                 )
-              const irreducibleMessages = [
-                ...contextMessages,
-                ...injectTurnContext([
+              const irreducibleMessages = contextPreparation.project({
+                includeHistory: false,
+                includeMemory: false,
+                pendingMessages: [
                   ...pendingMessages,
                   ...preservedUserMessages.map((content) => ({
                     role: 'user' as const,
                     content,
                   })),
-                ]),
-              ]
+                ],
+              }).envelope.messages
               let compactableMessages = historyMessages
               let preservedMessages: ModelMessage[] = []
               let compactionLogicalParentId: string | undefined
@@ -5343,14 +5292,15 @@ export class ClaudeSessionService {
               let replayMessages = preservedMessages
               try {
                 const replayReport = budget.evaluate(
-                  [
-                    ...contextMessages,
-                    ...injectTurnContext([
+                  contextPreparation.project({
+                    includeHistory: false,
+                    includeMemory: false,
+                    pendingMessages: [
                       summaryMessage,
                       ...replayMessages,
                       ...pendingMessages,
-                    ]),
-                  ],
+                    ],
+                  }).envelope.messages,
                   definitions,
                 )
                 if (replayReport.shouldCompact)
@@ -5365,39 +5315,35 @@ export class ClaudeSessionService {
                     message.role === 'user' && !Array.isArray(message.content),
                 )
               }
-              const proposedMessages = [
-                ...contextMessages,
-                ...injectTurnContext([
-                  summaryMessage,
-                  ...replayMessages,
-                  ...pendingMessages,
-                ]),
-              ]
+              const replacement = contextPreparation.proposeHistoryReplacement({
+                historyMessages: [summaryMessage, ...replayMessages],
+                pendingMessages,
+              })
               return {
-                envelope: {
-                  messages: proposedMessages,
-                  tools: definitions,
-                },
+                envelope: replacement.envelope,
                 commit: async () => {
                   if (signal?.aborted) throw new AgentRunCancelledError()
-                  const ids = await nativeLease.appendCompaction({
-                    summary: compacted.summary,
-                    trigger: 'auto',
-                    preTokens,
-                    postTokens,
-                    durationMs,
-                    preservedMessages: replayMessages,
-                    ...(compactionLogicalParentId === undefined
-                      ? {}
-                      : { logicalParentId: compactionLogicalParentId }),
-                    ...(memorySelection
-                      ? {
-                          direction: 'from' as const,
-                          messagesSummarized: compactableMessages.length,
-                          preservePrefix: false,
-                        }
-                      : {}),
-                  })
+                  const committed = await replacement.commit(() =>
+                    nativeLease.appendCompaction({
+                      summary: compacted.summary,
+                      trigger: 'auto',
+                      preTokens,
+                      postTokens,
+                      durationMs,
+                      preservedMessages: replayMessages,
+                      ...(compactionLogicalParentId === undefined
+                        ? {}
+                        : { logicalParentId: compactionLogicalParentId }),
+                      ...(memorySelection
+                        ? {
+                            direction: 'from' as const,
+                            messagesSummarized: compactableMessages.length,
+                            preservePrefix: false,
+                          }
+                        : {}),
+                    }),
+                  )
+                  const ids = committed.value
                   await this.runAdvisoryHook(
                     sessionId,
                     'PostCompact',
@@ -5744,30 +5690,30 @@ export class ClaudeSessionService {
             }
           }
           if (shellCommand === undefined && budget) {
-            const definitions = currentDefinitions()
             await contextEngine.prepare(
               contextTransitionPort([], currentTurnUserMessages ?? []),
               signal,
             )
+            const projection = contextPreparation.project({
+              includeMemory: false,
+            })
             budget.assertFits(
               budget.evaluate(
-                [
-                  ...contextMessages,
-                  ...injectTurnContext(activeTurnMessages()),
-                ],
-                definitions,
+                projection.envelope.messages,
+                projection.envelope.tools,
               ),
             )
           }
 
           let stopHookActive = false
+          const initialProjection = contextPreparation.project({
+            includeMemory: false,
+          })
           const runtimeRequest: AgentRunRequest = {
             sessionId,
-            messages: [
-              ...contextMessages,
-              ...injectTurnContext(activeTurnMessages()),
-            ],
-            stableSystemMessageCount,
+            messages: initialProjection.envelope.messages,
+            stableSystemMessageCount:
+              initialProjection.stableSystemMessageCount,
             cwd: this.activeCwd(),
             toolResultDirectory,
             observer,
@@ -5799,14 +5745,10 @@ export class ClaudeSessionService {
                   signal,
                 )
               }
-              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
-              return [
-                ...contextMessages,
-                ...injectTurnContext([
-                  ...activeTurnMessages(),
-                  ...projectMemoryRecallMessages,
-                ]),
-              ]
+              const projection = contextPreparation.project()
+              runtimeRequest.stableSystemMessageCount =
+                projection.stableSystemMessageCount
+              return projection.envelope.messages
             },
             ...(this.options.hooks ||
             subagentExecutor ||
@@ -6000,14 +5942,10 @@ export class ClaudeSessionService {
               }
               // The single reactive retry must use the compacted transcript, not
               // the stale request copy captured before the compact boundary.
-              runtimeRequest.messages = [
-                ...contextMessages,
-                ...injectTurnContext([
-                  ...activeTurnMessages(),
-                  ...projectMemoryRecallMessages,
-                ]),
-              ]
-              runtimeRequest.stableSystemMessageCount = stableSystemMessageCount
+              const projection = contextPreparation.project()
+              runtimeRequest.messages = projection.envelope.messages
+              runtimeRequest.stableSystemMessageCount =
+                projection.stableSystemMessageCount
               runtimeRequest.deferFailureKinds = true
               try {
                 result = await attemptMainTurn()
@@ -6184,11 +6122,11 @@ export class ClaudeSessionService {
             ? projectNativeSessionEntries(nativeLease.activeEvents()).at(-1)
                 ?.uuid
             : undefined
-          const providerVisibleMessages = [
-            ...contextMessages,
-            ...injectTurnContext(memorySnapshot),
-          ]
-          const definitions = currentDefinitions()
+          const providerProjection = contextPreparation.project({
+            includeMemory: false,
+          })
+          const providerVisibleMessages = providerProjection.envelope.messages
+          const definitions = providerProjection.envelope.tools
           const currentContextTokens =
             contextEngine.report({
               messages: providerVisibleMessages,
