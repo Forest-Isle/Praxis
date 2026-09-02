@@ -26,6 +26,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.55.2](https://github.com/Forest-Isle/Praxis/compare/v0.55.1...v0.55.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* align stream-json event envelopes ([#593](https://github.com/Forest-Isle/Praxis/issues/593)) ([59ff738](https://github.com/Forest-Isle/Praxis/commit/59ff7385f4034ff8f25bb57c6812bf208365861c))
+
 ## [0.55.1](https://github.com/Forest-Isle/Praxis/compare/v0.55.0...v0.55.1) (2026-09-02)
 
 
