@@ -219,9 +219,9 @@ writers and their separate Claude black-box envelope land in Stage 84.
 
 ## Sprint 13 — print and machine I/O contract
 
-Status: complete for text-only user input and current runtime events. Provider
-pricing and API-only timing remain an explicit later metering gate; machine
-results report those unknown values as `null` rather than zero.
+Status: complete for text-only user input and current runtime events. Machine
+result projections now expose the pinned Claude Code 2.1.208 provider, API
+failure, and provider-free local-command envelope shapes.
 
 - [x] Claude-style `-p`/`--print`, `-r`/`--resume`, format, verbose, partial,
       replay, agent, and explicit session-ID options
@@ -486,13 +486,20 @@ records are excluded by Stage 49.
 
 ## Stage 46 - machine result envelope contract
 
-Status: implemented for observable SDK fields; provider-neutral unknown pricing
-and failed-request API duration remain explicit `null` rather than fabricated.
+Status: implemented for observable SDK fields, including provider timing and
+the provider-free local-command result shape.
 
 - [x] init UUID, output style, fast-mode state, and loaded plugin name/path list
-- [x] success UUID, stop reason, fast-mode state, and optional structured output
+- [x] success UUID, observed stop reason, completed terminal reason, fast-mode
+      state, optional structured output, numeric cost/duration, and provider
+      timing fields when observed
 - [x] error subtype classification, `errors`, complete zero usage, empty
       `modelUsage`, stop reason, fast-mode state, and UUID
+- [x] typed provider API failures with normalized API-error result text,
+      status/terminal fields, zero metrics, and no `errors` array
+- [x] provider-free `/color` zero-turn/zero-accounting envelopes and `/cost`
+      zero-turn envelopes that preserve accumulated cost/model usage, with
+      provider-only fields omitted
 - [x] exact protocol and CLI redaction tests
 
 ## Stage 47 - MCP elicitation stream control

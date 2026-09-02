@@ -15,7 +15,11 @@ import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ModelProvider, ModelToolCall } from './core/runtime.js'
+import {
+  ModelProviderError,
+  type ModelProvider,
+  type ModelToolCall,
+} from './core/runtime.js'
 import { parseTeamSnapshot } from './core/team-ownership.js'
 import type { AgentColorSelection } from './core/agent-color.js'
 import type { ClaudePermissionMode } from './permissions/claude-permission-resolver.js'
@@ -1278,14 +1282,14 @@ process.stdin.on('data', chunk => {
           outputTokens: 3,
           cacheReadInputTokens: 0,
           cacheCreationInputTokens: 0,
-          costUSD: null,
+          costUSD: 0,
           contextWindow: 200_000,
           maxOutputTokens: 32_000,
         },
         'legacy-model': {
           inputTokens: 1,
           outputTokens: 1,
-          costUSD: null,
+          costUSD: 0,
           contextWindow: 0,
           maxOutputTokens: 0,
         },
@@ -5376,6 +5380,63 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
     }
   })
 
+  it('projects typed provider API failures in stream JSON and exits 1', async () => {
+    const base = dependencies()
+    const failing: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async run() {
+            options.eventSink({
+              type: 'failed',
+              message: 'fixture rejected request',
+              retryable: false,
+            })
+            throw new ModelProviderError('fixture rejected request', {
+              retryable: false,
+              status: 400,
+              kind: 'api_error',
+            })
+          },
+        }
+      },
+    }
+    const capture = captureIO()
+    await expect(
+      run(
+        ['run', '--output-format', 'stream-json', '--verbose', 'hello'],
+        capture.io,
+        failing,
+      ),
+    ).resolves.toBe(1)
+    const records = capture.stdout.map((line) => JSON.parse(line))
+    expect(records.map(({ type }) => type)).toEqual([
+      'system',
+      'assistant',
+      'result',
+    ])
+    expect(records[1]).toMatchObject({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'API Error: 400 fixture rejected request' },
+        ],
+      },
+    })
+    expect(records[2]).toMatchObject({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 400,
+      result: 'API Error: 400 fixture rejected request',
+      stop_reason: 'stop_sequence',
+      terminal_reason: 'api_error',
+      num_turns: 1,
+    })
+    expect(records[2]).not.toHaveProperty('errors')
+  })
+
   it('normalizes startup aborts to cancellation', async () => {
     const capture = captureIO()
     const controller = new AbortController()
@@ -5506,7 +5567,10 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         result: 'answer:hello',
         session_id: expect.any(String),
         num_turns: 1,
-        usage: { input_tokens: 2, output_tokens: 3 },
+        usage: expect.objectContaining({
+          input_tokens: 2,
+          output_tokens: 3,
+        }),
       }),
     ])
 

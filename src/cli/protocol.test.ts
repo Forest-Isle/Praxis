@@ -6,6 +6,7 @@ import {
   isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
+  projectProtocolTimings,
   readStreamJsonMessages,
   readStreamUserMessages,
   StreamJsonOutput,
@@ -262,6 +263,136 @@ describe('CLI protocol', () => {
         3,
       ),
     ).toMatchObject({ subtype: 'error_max_turns', num_turns: 3 })
+  })
+
+  it('projects provider and local success envelopes with stable metrics', () => {
+    expect(
+      createSuccessResult(
+        {
+          sessionId,
+          text: 'answer',
+          usage: {
+            inputTokens: 2,
+            outputTokens: 3,
+            cacheReadInputTokens: 4,
+            cacheCreationInputTokens: 5,
+            webSearchRequests: 1,
+          },
+          costUsd: 0.5,
+          modelUsage: { 'test-model': { inputTokens: 2, outputTokens: 3 } },
+          modelCostUsd: { 'test-model': 0.5 },
+        },
+        runtimeInfo,
+        Date.now(),
+        1,
+        {
+          stopReason: 'end_turn',
+          ttftMs: 4,
+          ttftStreamMs: 6,
+          timeToRequestMs: 2,
+        },
+      ),
+    ).toMatchObject({
+      subtype: 'success',
+      api_error_status: null,
+      duration_api_ms: 0,
+      total_cost_usd: 0.5,
+      stop_reason: 'end_turn',
+      terminal_reason: 'completed',
+      ttft_ms: 4,
+      ttft_stream_ms: 6,
+      time_to_request_ms: 2,
+      usage: {
+        input_tokens: 2,
+        cache_creation_input_tokens: 5,
+        cache_read_input_tokens: 4,
+        output_tokens: 3,
+        server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
+        service_tier: 'standard',
+        cache_creation: {
+          ephemeral_1h_input_tokens: 0,
+          ephemeral_5m_input_tokens: 0,
+        },
+        inference_geo: '',
+        iterations: [],
+        speed: 'standard',
+      },
+      modelUsage: {
+        'test-model': {
+          costUSD: 0.5,
+          webSearchRequests: 0,
+        },
+      },
+    })
+
+    const local = createSuccessResult(
+      {
+        sessionId,
+        text: 'Session color set to: purple',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+      runtimeInfo,
+      Date.now(),
+      7,
+      { localCommand: true },
+    )
+    expect(local).toMatchObject({
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      num_turns: 0,
+      stop_reason: null,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      modelUsage: {},
+    })
+    expect(local).not.toHaveProperty('api_error_status')
+    expect(local).not.toHaveProperty('terminal_reason')
+  })
+
+  it('projects a typed provider API failure once with no error array', () => {
+    expect(
+      createErrorResult(
+        'API Error: 400 fixture rejected request',
+        sessionId,
+        Date.now(),
+        1,
+        { providerApiError: true, apiErrorStatus: 400 },
+      ),
+    ).toMatchObject({
+      subtype: 'success',
+      is_error: true,
+      api_error_status: 400,
+      result: 'API Error: 400 fixture rejected request',
+      stop_reason: 'stop_sequence',
+      terminal_reason: 'api_error',
+      duration_api_ms: 0,
+      total_cost_usd: 0,
+      num_turns: 1,
+      usage: {
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+      },
+    })
+    expect(
+      createErrorResult('fixture rejected request', sessionId, Date.now(), 1, {
+        providerApiError: true,
+        apiErrorStatus: 400,
+      }),
+    ).not.toHaveProperty('errors')
+  })
+
+  it('calculates protocol timings from the headless turn start', () => {
+    expect(projectProtocolTimings(100, 110, 125)).toEqual({
+      timeToRequestMs: 10,
+      ttftMs: 25,
+      ttftStreamMs: 25,
+    })
+    expect(projectProtocolTimings(100, undefined, 125)).toEqual({
+      ttftMs: 25,
+      ttftStreamMs: 25,
+    })
+    expect(projectProtocolTimings(100)).toEqual({})
   })
 
   it('normalizes Claude-style print, resume, format, agent, and session options', () => {
@@ -1354,10 +1485,10 @@ describe('CLI protocol', () => {
       num_turns: 2,
       result: 'done',
       session_id: sessionId,
-      duration_api_ms: null,
-      total_cost_usd: null,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
       modelUsage: {
-        'test-model': { costUSD: null },
+        'test-model': { costUSD: 0 },
       },
       stop_reason: null,
       fast_mode_state: 'off',
@@ -1589,14 +1720,14 @@ describe('CLI protocol', () => {
       'legacy-model': {
         inputTokens: 4,
         outputTokens: 1,
-        costUSD: null,
+        costUSD: 0,
         contextWindow: 0,
         maxOutputTokens: 0,
       },
       'known-model': {
         inputTokens: 6,
         outputTokens: 2,
-        costUSD: null,
+        costUSD: 0,
         contextWindow: 100_000,
         maxOutputTokens: 16_000,
       },
@@ -1626,7 +1757,7 @@ describe('CLI protocol', () => {
         outputTokens: 3,
         cacheReadInputTokens: 0,
         cacheCreationInputTokens: 0,
-        costUSD: null,
+        costUSD: 0,
         contextWindow: 200_000,
         maxOutputTokens: 32_000,
       },
@@ -1925,7 +2056,7 @@ describe('CLI protocol', () => {
     output.init()
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'state', state: 'failed' })
-    output.error('provider failed', Date.now())
+    output.error('fixture rejected request', Date.now())
 
     expect(
       records.map((record) =>
@@ -2309,7 +2440,10 @@ describe('CLI protocol', () => {
       message: 'provider failed',
       retryable: false,
     })
-    output.error('provider failed', Date.now())
+    output.error('fixture rejected request', Date.now(), {
+      providerApiError: true,
+      apiErrorStatus: 400,
+    })
     expect(
       records
         .filter((record) => (record as { type: string }).type !== 'system')
@@ -2322,22 +2456,67 @@ describe('CLI protocol', () => {
     ).toMatchObject({
       type: 'assistant',
       message: {
-        content: [{ type: 'text', text: 'provider failed' }],
+        content: [
+          { type: 'text', text: 'API Error: 400 fixture rejected request' },
+        ],
       },
     })
     expect(records.at(-1)).toMatchObject({
       type: 'result',
-      subtype: 'error_during_execution',
+      subtype: 'success',
       is_error: true,
-      errors: ['provider failed'],
+      api_error_status: 400,
+      result: 'API Error: 400 fixture rejected request',
       session_id: sessionId,
       num_turns: 1,
-      duration_api_ms: null,
-      total_cost_usd: null,
+      duration_api_ms: 0,
+      total_cost_usd: 0,
       modelUsage: {},
-      stop_reason: null,
+      stop_reason: 'stop_sequence',
+      terminal_reason: 'api_error',
       fast_mode_state: 'off',
       uuid: expect.any(String),
+    })
+  })
+
+  it('preserves real partial assistant content on provider failure', () => {
+    const records: unknown[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record),
+      runtimeInfo,
+      sessionId,
+      { includePartialMessages: false },
+    )
+    output.init(100)
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'text-delta', delta: 'partial answer' })
+    output.sink({
+      type: 'failed',
+      message: 'fixture rejected request',
+      retryable: false,
+    })
+    output.error('fixture rejected request', 100, {
+      providerApiError: true,
+      apiErrorStatus: 400,
+    })
+
+    expect(
+      records.filter(
+        (record) => (record as { type: string }).type === 'assistant',
+      ),
+    ).toHaveLength(1)
+    expect(
+      records.find(
+        (record) => (record as { type: string }).type === 'assistant',
+      ),
+    ).toMatchObject({
+      message: { content: [{ type: 'text', text: 'partial answer' }] },
+    })
+    expect(records.at(-1)).toMatchObject({
+      subtype: 'success',
+      is_error: true,
+      result: 'API Error: 400 fixture rejected request',
+      terminal_reason: 'api_error',
     })
   })
 })

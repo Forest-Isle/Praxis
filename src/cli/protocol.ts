@@ -258,40 +258,109 @@ export interface ProtocolResult {
   modelCostUsd?: Readonly<Record<string, number>>
 }
 
+export interface ProtocolSuccessProjectionContext {
+  localCommand?: boolean
+  stopReason?: ModelTerminalReason
+  ttftMs?: number
+  ttftStreamMs?: number
+  timeToRequestMs?: number
+}
+
+export interface ProtocolErrorProjectionContext {
+  providerApiError?: boolean
+  apiErrorStatus?: number | null
+}
+
+export interface ProtocolTimingProjection {
+  ttftMs?: number
+  ttftStreamMs?: number
+  timeToRequestMs?: number
+}
+
+export function projectProtocolTimings(
+  startedAt: number,
+  requestAt?: number,
+  outputAt?: number,
+): ProtocolTimingProjection {
+  return {
+    ...(requestAt === undefined
+      ? {}
+      : { timeToRequestMs: requestAt - startedAt }),
+    ...(outputAt === undefined
+      ? {}
+      : {
+          ttftMs: outputAt - startedAt,
+          ttftStreamMs: outputAt - startedAt,
+        }),
+  }
+}
+
+function protocolUsage(usage: ModelUsage): Record<string, unknown> {
+  return {
+    input_tokens: usage.inputTokens,
+    cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
+    cache_read_input_tokens: usage.cacheReadInputTokens ?? 0,
+    output_tokens: usage.outputTokens,
+    server_tool_use: {
+      web_search_requests: usage.webSearchRequests ?? 0,
+      web_fetch_requests: 0,
+    },
+    service_tier: 'standard',
+    cache_creation: {
+      ephemeral_1h_input_tokens: 0,
+      ephemeral_5m_input_tokens: 0,
+    },
+    inference_geo: '',
+    iterations: [],
+    speed: 'standard',
+  }
+}
+
+function normalizeApiError(message: string, status: number): string {
+  const body = message.replace(/^API Error:\s*\d+\s*/u, '')
+  return `API Error: ${status} ${body}`
+}
+
 export function createSuccessResult(
   result: ProtocolResult,
   info: CliRuntimeInfo,
   startedAt: number,
   modelTurns: number,
+  context: ProtocolSuccessProjectionContext = {},
 ): Record<string, unknown> {
   const duration = Date.now() - startedAt
-  const modelUsage = result.modelUsage ?? { [info.model]: result.usage }
-  const usage = {
-    input_tokens: result.usage.inputTokens,
-    output_tokens: result.usage.outputTokens,
-    ...(result.usage.cacheReadInputTokens === undefined
-      ? {}
-      : { cache_read_input_tokens: result.usage.cacheReadInputTokens }),
-    ...(result.usage.cacheCreationInputTokens === undefined
-      ? {}
-      : {
-          cache_creation_input_tokens: result.usage.cacheCreationInputTokens,
-        }),
-  }
+  const localCommand = context.localCommand === true
+  const modelUsage =
+    result.modelUsage ?? (localCommand ? {} : { [info.model]: result.usage })
+  const usage = protocolUsage(result.usage)
   return {
     type: 'result',
     subtype: 'success',
     is_error: false,
     duration_ms: duration,
-    duration_api_ms:
-      result.durationApiMs === undefined
-        ? null
+    ...(localCommand
+      ? {}
+      : {
+          api_error_status: null,
+          ...(context.ttftMs === undefined ? {} : { ttft_ms: context.ttftMs }),
+          ...(context.ttftStreamMs === undefined
+            ? {}
+            : { ttft_stream_ms: context.ttftStreamMs }),
+          ...(context.timeToRequestMs === undefined
+            ? {}
+            : { time_to_request_ms: context.timeToRequestMs }),
+        }),
+    duration_api_ms: localCommand
+      ? 0
+      : result.durationApiMs === undefined
+        ? 0
         : Math.round(result.durationApiMs),
-    num_turns: modelTurns,
+    num_turns: localCommand ? 0 : modelTurns,
     result: result.text,
-    stop_reason: null,
+    stop_reason: localCommand ? null : (context.stopReason ?? null),
+    ...(localCommand ? {} : { terminal_reason: 'completed' }),
     session_id: result.sessionId,
-    total_cost_usd: result.costUsd ?? null,
+    total_cost_usd: result.costUsd ?? 0,
     usage,
     modelUsage: Object.fromEntries(
       Object.entries(modelUsage).map(([model, modelUsage]) => [
@@ -301,12 +370,10 @@ export function createSuccessResult(
           outputTokens: modelUsage.outputTokens,
           cacheReadInputTokens: modelUsage.cacheReadInputTokens ?? 0,
           cacheCreationInputTokens: modelUsage.cacheCreationInputTokens ?? 0,
+          webSearchRequests: modelUsage.webSearchRequests ?? 0,
           costUSD:
             result.modelCostUsd?.[model] ??
-            (model === info.model ? (result.costUsd ?? null) : null),
-          ...(modelUsage.webSearchRequests === undefined
-            ? {}
-            : { webSearchRequests: modelUsage.webSearchRequests }),
+            (model === info.model ? (result.costUsd ?? 0) : 0),
           contextWindow:
             modelUsage.contextWindow ??
             (model === info.model ? (info.contextWindowTokens ?? 0) : 0),
@@ -340,24 +407,47 @@ export function createErrorResult(
   sessionId: string,
   startedAt: number,
   modelTurns: number,
+  context: ProtocolErrorProjectionContext = {},
 ): Record<string, unknown> {
   const duration = Date.now() - startedAt
+  const providerApiError = context.providerApiError === true
+  const apiErrorStatus = context.apiErrorStatus ?? null
+  const normalizedMessage =
+    providerApiError && typeof context.apiErrorStatus === 'number'
+      ? normalizeApiError(message, context.apiErrorStatus)
+      : message
+  if (providerApiError) {
+    return {
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      api_error_status: apiErrorStatus,
+      duration_ms: duration,
+      duration_api_ms: 0,
+      num_turns: modelTurns,
+      result: normalizedMessage,
+      stop_reason: 'stop_sequence',
+      terminal_reason: 'api_error',
+      session_id: sessionId,
+      total_cost_usd: 0,
+      usage: protocolUsage({ inputTokens: 0, outputTokens: 0 }),
+      modelUsage: {},
+      permission_denials: [],
+      fast_mode_state: 'off',
+      uuid: randomUUID(),
+    }
+  }
   return {
     type: 'result',
     subtype: errorResultSubtype(message),
     is_error: true,
     duration_ms: duration,
-    duration_api_ms: null,
+    duration_api_ms: 0,
     num_turns: modelTurns,
     stop_reason: null,
     session_id: sessionId,
-    total_cost_usd: null,
-    usage: {
-      input_tokens: 0,
-      output_tokens: 0,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    },
+    total_cost_usd: 0,
+    usage: protocolUsage({ inputTokens: 0, outputTokens: 0 }),
     modelUsage: {},
     permission_denials: [],
     errors: [message],
@@ -2206,6 +2296,11 @@ export class StreamJsonOutput {
   private activeThinkingIndex: number | undefined
   private nextContentIndex = 0
   private modelTurns = 0
+  private projectionStartedAt: number | undefined
+  private firstRequestAt: number | undefined
+  private firstOutputAt: number | undefined
+  private turnHasRealContent = false
+  private pendingFailureMessage: string | undefined
   private compacting = false
   private sessionState: 'idle' | 'running' | 'requires_action' | undefined
   private readonly emitSessionStateEvents: boolean
@@ -2238,7 +2333,11 @@ export class StreamJsonOutput {
     })
   }
 
-  init(): void {
+  init(startedAt = Date.now()): void {
+    this.projectionStartedAt = startedAt
+    this.firstRequestAt = undefined
+    this.firstOutputAt = undefined
+    this.pendingFailureMessage = undefined
     this.writeSessionState('running')
     this.write({
       type: 'system',
@@ -2297,10 +2396,30 @@ export class StreamJsonOutput {
 
   readonly sink: RuntimeEventSink = (event) => this.onEvent(event)
 
-  result(result: ProtocolResult, startedAt: number): void {
+  result(
+    result: ProtocolResult,
+    startedAt: number,
+    context: ProtocolSuccessProjectionContext = {},
+  ): void {
     this.finishTurn()
+    const requestAt = this.firstRequestAt
+    const outputAt = this.firstOutputAt
+    const stopReason = context.stopReason ?? this.turnTerminalReason
+    const timing = projectProtocolTimings(
+      this.projectionStartedAt ?? startedAt,
+      requestAt,
+      outputAt,
+    )
     this.write(
-      createSuccessResult(result, this.info, startedAt, this.modelTurns),
+      createSuccessResult(result, this.info, startedAt, this.modelTurns, {
+        ...context,
+        ...(context.localCommand
+          ? {}
+          : {
+              ...(stopReason === undefined ? {} : { stopReason }),
+              ...timing,
+            }),
+      }),
     )
     this.writeTerminalIdle()
     this.modelTurns = 0
@@ -2315,10 +2434,26 @@ export class StreamJsonOutput {
     })
   }
 
-  error(message: string, startedAt: number): void {
+  error(
+    message: string,
+    startedAt: number,
+    context: ProtocolErrorProjectionContext = {},
+  ): void {
+    if (this.pendingFailureMessage !== undefined) {
+      this.turnText =
+        context.providerApiError && typeof context.apiErrorStatus === 'number'
+          ? normalizeApiError(message, context.apiErrorStatus)
+          : message
+    }
     this.finishTurn()
     this.write(
-      createErrorResult(message, this.sessionId, startedAt, this.modelTurns),
+      createErrorResult(
+        message,
+        this.sessionId,
+        startedAt,
+        this.modelTurns,
+        context,
+      ),
     )
     this.writeTerminalIdle()
     this.modelTurns = 0
@@ -2363,7 +2498,11 @@ export class StreamJsonOutput {
         event.state === 'cancelled' ||
         event.state === 'failed'
       ) {
-        this.flushAssistant()
+        if (
+          event.state !== 'failed' ||
+          this.pendingFailureMessage === undefined
+        )
+          this.flushAssistant()
         if (event.state === 'awaiting-permission')
           this.writeSessionState('requires_action')
       }
@@ -2371,12 +2510,14 @@ export class StreamJsonOutput {
     }
     if (event.type === 'text-delta') {
       this.ensureTurn()
+      this.observeOutput()
       this.turnText += event.delta
       this.partialText(event.delta)
       return
     }
     if (event.type === 'thinking-start') {
       this.ensureTurn()
+      this.observeOutput()
       if (this.includePartialMessages) {
         if (this.activeThinkingIndex !== undefined) {
           throw new Error('Thinking content blocks cannot overlap')
@@ -2412,6 +2553,7 @@ export class StreamJsonOutput {
       event.type === 'thinking-signature-delta'
     ) {
       this.ensureTurn()
+      this.observeOutput()
       if (this.includePartialMessages) {
         if (this.activeThinkingIndex === undefined) {
           throw new Error('Thinking delta arrived without an active block')
@@ -2434,6 +2576,7 @@ export class StreamJsonOutput {
     }
     if (event.type === 'thinking-stop') {
       this.ensureTurn()
+      this.observeOutput()
       this.turnThinking.push(event.block)
       if (this.includePartialMessages) {
         if (this.activeThinkingIndex === undefined) {
@@ -2458,6 +2601,7 @@ export class StreamJsonOutput {
     }
     if (event.type === 'tool-call') {
       this.ensureTurn()
+      this.observeOutput()
       this.turnCalls.push(event.call)
       if (this.includePartialMessages) {
         const index = this.nextContentIndex++
@@ -2696,14 +2840,16 @@ export class StreamJsonOutput {
     if (event.type === 'failed') {
       this.ensureTurn()
       if (
+        !this.turnHasRealContent &&
         this.turnText.length === 0 &&
         this.turnThinking.length === 0 &&
         this.turnCalls.length === 0
       ) {
-        this.turnText = event.message
-        this.partialText(event.message)
+        this.pendingFailureMessage = event.message
+        this.assistantFlushed = false
+      } else {
+        this.flushAssistant()
       }
-      this.flushAssistant()
     }
   }
 
@@ -2735,6 +2881,11 @@ export class StreamJsonOutput {
     if (!this.turnActive) this.startTurn()
   }
 
+  private observeOutput(): void {
+    this.turnHasRealContent = true
+    if (this.firstOutputAt === undefined) this.firstOutputAt = Date.now()
+  }
+
   private discardTurn(reason: ProviderErrorKind): void {
     this.write({
       type: 'system',
@@ -2756,6 +2907,8 @@ export class StreamJsonOutput {
     this.nextContentIndex = 0
     this.partialEvents = []
     this.pendingPartialStop = undefined
+    this.turnHasRealContent = false
+    this.pendingFailureMessage = undefined
   }
 
   private startTurn(): void {
@@ -2774,6 +2927,8 @@ export class StreamJsonOutput {
     this.nextContentIndex = 0
     this.partialEvents = []
     this.pendingPartialStop = undefined
+    this.turnHasRealContent = false
+    if (this.firstRequestAt === undefined) this.firstRequestAt = Date.now()
     this.modelTurns += 1
     if (this.includePartialMessages) {
       this.write({
