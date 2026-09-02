@@ -5554,6 +5554,64 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
     ])
   })
 
+  it('gates stream-json session states on the exact compatibility value', async () => {
+    const variable = 'CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS'
+    const previous = process.env[variable]
+
+    try {
+      for (const disabled of [undefined, '', '0', 'false']) {
+        if (disabled === undefined) delete process.env[variable]
+        else process.env[variable] = disabled
+        const capture = captureIO()
+        await expect(
+          run(
+            ['run', '--output-format', 'stream-json', '--verbose', 'hello'],
+            capture.io,
+            dependencies(),
+          ),
+        ).resolves.toBe(0)
+        const records = capture.stdout.map((line) => JSON.parse(line))
+        expect(
+          records.some((record) => record.subtype === 'session_state_changed'),
+        ).toBe(false)
+        expect(records.map((record) => record.type)).toEqual([
+          'system',
+          'assistant',
+          'result',
+        ])
+      }
+
+      process.env[variable] = '1'
+      const enabled = captureIO()
+      await expect(
+        run(
+          ['run', '--output-format', 'stream-json', '--verbose', 'hello'],
+          enabled.io,
+          dependencies(),
+        ),
+      ).resolves.toBe(0)
+      const records = enabled.stdout.map((line) => JSON.parse(line))
+      expect(
+        records.map((record) =>
+          record.subtype === 'session_state_changed'
+            ? `${record.subtype}:${record.state}`
+            : record.type === 'result'
+              ? 'result'
+              : (record.subtype ?? record.type),
+        ),
+      ).toEqual([
+        'session_state_changed:running',
+        'init',
+        'assistant',
+        'result',
+        'session_state_changed:idle',
+      ])
+    } finally {
+      if (previous === undefined) delete process.env[variable]
+      else process.env[variable] = previous
+    }
+  })
+
   it('emits one typed JSON result at the explicit print model turn limit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-cli-turn-limit-'))
     const configRoot = join(root, 'config')

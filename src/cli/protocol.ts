@@ -2208,16 +2208,38 @@ export class StreamJsonOutput {
   private modelTurns = 0
   private compacting = false
   private sessionState: 'idle' | 'running' | 'requires_action' | undefined
+  private readonly emitSessionStateEvents: boolean
+  private partialEvents: Record<string, unknown>[] = []
+  private pendingPartialStop: Record<string, unknown> | undefined
 
   constructor(
-    private readonly write: (value: unknown) => void,
+    private readonly emitRaw: (value: unknown) => void,
     private readonly info: CliRuntimeInfo,
     private readonly sessionId: string,
-    private readonly includePartialMessages: boolean,
-    private readonly includeHookEvents = false,
-  ) {}
+    options: {
+      includePartialMessages: boolean
+      includeHookEvents?: boolean
+      emitSessionStateEvents?: boolean
+    },
+  ) {
+    this.includePartialMessages = options.includePartialMessages
+    this.includeHookEvents = options.includeHookEvents ?? false
+    this.emitSessionStateEvents = options.emitSessionStateEvents ?? false
+  }
+
+  private readonly includePartialMessages: boolean
+  private readonly includeHookEvents: boolean
+
+  private write(value: Record<string, unknown>): void {
+    this.emitRaw({
+      ...value,
+      uuid: value.uuid ?? randomUUID(),
+      session_id: value.session_id ?? this.sessionId,
+    })
+  }
 
   init(): void {
+    this.writeSessionState('running')
     this.write({
       type: 'system',
       subtype: 'init',
@@ -2236,7 +2258,6 @@ export class StreamJsonOutput {
       output_style: 'default',
       plugins: this.info.plugins ?? [],
       fast_mode_state: 'off',
-      uuid: randomUUID(),
     })
   }
 
@@ -2281,6 +2302,7 @@ export class StreamJsonOutput {
     this.write(
       createSuccessResult(result, this.info, startedAt, this.modelTurns),
     )
+    this.writeTerminalIdle()
     this.modelTurns = 0
   }
 
@@ -2298,6 +2320,7 @@ export class StreamJsonOutput {
     this.write(
       createErrorResult(message, this.sessionId, startedAt, this.modelTurns),
     )
+    this.writeTerminalIdle()
     this.modelTurns = 0
   }
 
@@ -2343,13 +2366,6 @@ export class StreamJsonOutput {
         this.flushAssistant()
         if (event.state === 'awaiting-permission')
           this.writeSessionState('requires_action')
-        else if (
-          event.state === 'completed' ||
-          event.state === 'cancelled' ||
-          event.state === 'failed'
-        ) {
-          this.writeSessionState('idle')
-        }
       }
       return
     }
@@ -2367,16 +2383,27 @@ export class StreamJsonOutput {
         }
         this.activeThinkingIndex = this.nextContentIndex
         this.nextContentIndex += 1
-        this.write({
-          type: 'stream_event',
-          event: {
-            type: 'content_block_start',
-            index: this.activeThinkingIndex,
-            content_block: event.block,
+        this.beginPartialBlock(
+          {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_start',
+              index: this.activeThinkingIndex,
+              content_block: event.block,
+            },
+            parent_tool_use_id: null,
+            session_id: this.sessionId,
           },
-          parent_tool_use_id: null,
-          session_id: this.sessionId,
-        })
+          {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_stop',
+              index: this.activeThinkingIndex,
+            },
+            parent_tool_use_id: null,
+            session_id: this.sessionId,
+          },
+        )
       }
       return
     }
@@ -2389,7 +2416,7 @@ export class StreamJsonOutput {
         if (this.activeThinkingIndex === undefined) {
           throw new Error('Thinking delta arrived without an active block')
         }
-        this.write({
+        this.partialEvents.push({
           type: 'stream_event',
           event: {
             type: 'content_block_delta',
@@ -2412,22 +2439,13 @@ export class StreamJsonOutput {
         if (this.activeThinkingIndex === undefined) {
           throw new Error('Thinking block stopped without an active block')
         }
-        this.write({
-          type: 'stream_event',
-          event: {
-            type: 'content_block_stop',
-            index: this.activeThinkingIndex,
-          },
-          parent_tool_use_id: null,
-          session_id: this.sessionId,
-        })
         this.activeThinkingIndex = undefined
       }
       return
     }
     if (event.type === 'user-message') {
       this.write({
-        type: 'user_message',
+        type: 'user',
         message: event.message,
         status: event.status,
         ...(event.attachments?.length
@@ -2441,6 +2459,45 @@ export class StreamJsonOutput {
     if (event.type === 'tool-call') {
       this.ensureTurn()
       this.turnCalls.push(event.call)
+      if (this.includePartialMessages) {
+        const index = this.nextContentIndex++
+        this.beginPartialBlock(
+          {
+            type: 'stream_event',
+            event: {
+              type: 'content_block_start',
+              index,
+              content_block: {
+                type: 'tool_use',
+                id: event.call.id,
+                name: event.call.name,
+                input: {},
+              },
+            },
+            parent_tool_use_id: null,
+            session_id: this.sessionId,
+          },
+          {
+            type: 'stream_event',
+            event: { type: 'content_block_stop', index },
+            parent_tool_use_id: null,
+            session_id: this.sessionId,
+          },
+        )
+        this.partialEvents.push({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: JSON.stringify(event.call.input),
+            },
+          },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
+        })
+      }
       return
     }
     if (event.type === 'usage') {
@@ -2579,13 +2636,7 @@ export class StreamJsonOutput {
       return
     }
     if (event.type === 'session-state-changed') {
-      this.write({
-        type: 'system',
-        subtype: 'session_state_changed',
-        state: event.state,
-        uuid: randomUUID(),
-        session_id: this.sessionId,
-      })
+      this.writeSessionState(event.state)
       return
     }
     if (event.type === 'api-retry') {
@@ -2653,12 +2704,13 @@ export class StreamJsonOutput {
         this.partialText(event.message)
       }
       this.flushAssistant()
-      this.writeSessionState('idle')
     }
   }
 
   private writeSessionState(state: 'idle' | 'running' | 'requires_action') {
+    if (!this.emitSessionStateEvents) return
     if (this.sessionState === state) return
+    if (state === 'idle') return
     this.sessionState = state
     this.write({
       type: 'system',
@@ -2666,6 +2718,16 @@ export class StreamJsonOutput {
       state,
       uuid: randomUUID(),
       session_id: this.sessionId,
+    })
+  }
+
+  private writeTerminalIdle(): void {
+    if (!this.emitSessionStateEvents || this.sessionState === 'idle') return
+    this.sessionState = 'idle'
+    this.write({
+      type: 'system',
+      subtype: 'session_state_changed',
+      state: 'idle',
     })
   }
 
@@ -2692,6 +2754,8 @@ export class StreamJsonOutput {
     this.textContentIndex = undefined
     this.activeThinkingIndex = undefined
     this.nextContentIndex = 0
+    this.partialEvents = []
+    this.pendingPartialStop = undefined
   }
 
   private startTurn(): void {
@@ -2708,27 +2772,37 @@ export class StreamJsonOutput {
     this.textContentIndex = undefined
     this.activeThinkingIndex = undefined
     this.nextContentIndex = 0
+    this.partialEvents = []
+    this.pendingPartialStop = undefined
     this.modelTurns += 1
     if (this.includePartialMessages) {
       this.write({
-        type: 'stream_event',
-        event: {
-          type: 'message_start',
-          message: {
-            id: this.turnId,
-            type: 'message',
-            role: 'assistant',
-            model: this.info.model,
-            content: [],
-            stop_reason: null,
-            stop_sequence: null,
-            usage: { input_tokens: 0, output_tokens: 0 },
-          },
-        },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
+        type: 'system',
+        subtype: 'status',
+        status: 'requesting',
       })
     }
+  }
+
+  private writePartialMessageStart(): void {
+    this.write({
+      type: 'stream_event',
+      event: {
+        type: 'message_start',
+        message: {
+          id: this.turnId,
+          type: 'message',
+          role: 'assistant',
+          model: this.info.model,
+          content: [],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: this.turnUsage.inputTokens, output_tokens: 0 },
+        },
+      },
+      parent_tool_use_id: null,
+      session_id: this.sessionId,
+    })
   }
 
   private partialText(delta: string): void {
@@ -2737,18 +2811,26 @@ export class StreamJsonOutput {
       this.contentStarted = true
       this.textContentIndex = this.nextContentIndex
       this.nextContentIndex += 1
-      this.write({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_start',
-          index: this.textContentIndex,
-          content_block: { type: 'text', text: '' },
+      this.beginPartialBlock(
+        {
+          type: 'stream_event',
+          event: {
+            type: 'content_block_start',
+            index: this.textContentIndex,
+            content_block: { type: 'text', text: '' },
+          },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
         },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
-      })
+        {
+          type: 'stream_event',
+          event: { type: 'content_block_stop', index: this.textContentIndex },
+          parent_tool_use_id: null,
+          session_id: this.sessionId,
+        },
+      )
     }
-    this.write({
+    this.partialEvents.push({
       type: 'stream_event',
       event: {
         type: 'content_block_delta',
@@ -2760,56 +2842,27 @@ export class StreamJsonOutput {
     })
   }
 
+  private beginPartialBlock(
+    start: Record<string, unknown>,
+    stop: Record<string, unknown>,
+  ): void {
+    if (this.pendingPartialStop)
+      this.partialEvents.push(this.pendingPartialStop)
+    this.pendingPartialStop = stop
+    this.partialEvents.push(start)
+  }
+
   private finishPartial(): void {
     if (!this.includePartialMessages) return
-    if (this.contentStarted) {
-      this.write({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_stop',
-          index: this.textContentIndex,
-        },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
-      })
-    }
-    for (const [toolIndex, call] of this.turnCalls.entries()) {
-      const index = this.nextContentIndex + toolIndex
-      this.write({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_start',
-          index,
-          content_block: {
-            type: 'tool_use',
-            id: call.id,
-            name: call.name,
-            input: {},
-          },
-        },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
-      })
-      this.write({
-        type: 'stream_event',
-        event: {
-          type: 'content_block_delta',
-          index,
-          delta: {
-            type: 'input_json_delta',
-            partial_json: JSON.stringify(call.input),
-          },
-        },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
-      })
-      this.write({
-        type: 'stream_event',
-        event: { type: 'content_block_stop', index },
-        parent_tool_use_id: null,
-        session_id: this.sessionId,
-      })
-    }
+    this.writePartialMessageStart()
+    for (const event of this.partialEvents) this.write(event)
+    this.partialEvents = []
+  }
+
+  private finishPartialTail(): void {
+    if (!this.includePartialMessages) return
+    if (this.pendingPartialStop) this.write(this.pendingPartialStop)
+    this.pendingPartialStop = undefined
     this.write({
       type: 'stream_event',
       event: {
@@ -2863,12 +2916,13 @@ export class StreamJsonOutput {
         stop_sequence: null,
         usage: {
           input_tokens: this.turnUsage.inputTokens,
-          output_tokens: this.turnUsage.outputTokens,
+          output_tokens: 0,
         },
       },
       parent_tool_use_id: null,
       session_id: this.sessionId,
     })
+    this.finishPartialTail()
   }
 
   private finishTurn(): void {
