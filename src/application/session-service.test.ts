@@ -189,6 +189,34 @@ async function createService() {
   }
 }
 
+it('allocates a fresh main-turn provider for each outer run and resume', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-turn-provider-factory-'))
+  roots.push(root)
+  const clients: ModelProvider[] = []
+  const providerForTurn = vi.fn((model?: string) => {
+    const client = queuedProvider([`response-${clients.length + 1}`])
+    const turnClient = model === undefined ? client : { ...client, model }
+    clients.push(turnClient)
+    return turnClient
+  })
+  const service = new ClaudeSessionService({
+    configRoot: join(root, 'config'),
+    cwd: join(root, 'project'),
+    claudeVersion: '2.1.208',
+    provider: { ...queuedProvider([]), model: 'stable-model' },
+    providerForTurn,
+  })
+  const first = await service.run('first')
+  const second = await service.resume(first.sessionId, 'second')
+  expect(providerForTurn).toHaveBeenCalledTimes(2)
+  expect(providerForTurn).toHaveBeenNthCalledWith(1, 'stable-model')
+  expect(providerForTurn).toHaveBeenNthCalledWith(2, 'stable-model')
+  expect(clients[0]).not.toBe(clients[1])
+  expect(first.text).toBe('response-1')
+  expect(second.text).toBe('response-2')
+  await service.close()
+})
+
 it('uses the injected Team registry factory for hosted and foreground registries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'praxis-team-registry-factory-'))
   const sessionId = '11111111-1111-4111-8111-111111111111'
@@ -4710,11 +4738,13 @@ describe('ClaudeSessionService', () => {
         yield { type: 'terminal', reason: 'end_turn' }
       },
     }
+    const providerForTurn = vi.fn(() => provider)
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
       provider,
+      providerForTurn,
       eventSink: (event) => events.push(event),
       compactor: {
         async compact() {
@@ -4745,6 +4775,7 @@ describe('ClaudeSessionService', () => {
     ).toHaveLength(1)
     // One reactive compaction retry, then a clean second attempt.
     expect(completions).toBe(3)
+    expect(providerForTurn).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(requests[2])).not.toContain('old context')
     expect(events.filter((event) => event.type === 'failed')).toEqual([])
     const discardedIndex = events.findIndex(

@@ -92,7 +92,9 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 2.3, and 3.1 are implemented; Task 3.2 is next.
+Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 2.3, and 3.1 are implemented; the Task
+3.2 main-session slice is implemented, and auxiliary propagation plus
+comparison evidence is next.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -183,14 +185,22 @@ reasoning/tool/output continuity, and `store:false` without
 `previous_response_id` or provider-native transcript fields. Request capture
 and codec fixtures cover the public API-key path.
 
-### Task 3.2: Turn-scoped provider client [depends: Task 3.1]
+### Task 3.2: Turn-scoped provider client — main-session slice implemented by #574 [depends: Task 3.1]
 
-Own transport, sticky routing, continuation, retry, and fallback state for one
-turn. Never leak provider wire payloads into core or transcripts.
+The #574 main-session slice owns a fresh client for each run/resume turn,
+including transport, sticky routing, continuation, bounded retry, buffering, and
+request-aware fallback admission. The first successful route, whether primary
+or fallback, remains sealed through tool continuations; incompatible routes
+fail closed, and the next main user turn starts from primary. Never leak
+provider wire payloads into core or transcripts. Auxiliary-consumer propagation
+(subagents, Workflow, Team, background recovery, memory, auto-mode critics, and
+eval judges) remains pending, as does comparison evidence across Chat Completions
+and Responses.
 
-Acceptance: baseline/candidate runs compare Chat Completions and Responses with
-the same task, permission, and tool configuration; partial retries cannot repeat
-side effects.
+Acceptance for the implemented slice: partial retries cannot repeat side
+effects, and the sealed route remains stable through main-session tool
+continuations. Baseline/candidate comparison evidence across Chat Completions
+and Responses, plus auxiliary-consumer propagation, remains pending.
 
 ## Phase 4 — Turn-kernel deepening
 

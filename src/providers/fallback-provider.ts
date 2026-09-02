@@ -55,21 +55,26 @@ async function waitForRetry(
 export interface FallbackModelProviderOptions {
   providers: readonly ModelProvider[]
   retryDelayMs?: number
+  routeScope?: 'completion' | 'turn'
 }
 
 /** Routes each complete request through Claude's retry-then-fallback policy. */
 export class FallbackModelProvider implements ModelProvider {
   private active: ModelProvider
   private readonly retryDelayMs: number
-  private readonly fallbackProviders: readonly ModelProvider[]
+  private readonly configuredProviders: readonly ModelProvider[]
+  private readonly routeScope: 'completion' | 'turn'
+  private currentProviderIndex = 0
+  private routeSealed = false
 
   constructor(options: FallbackModelProviderOptions) {
     if (options.providers.length === 0) {
       throw new Error('Fallback provider requires at least one provider')
     }
     this.active = options.providers[0] as ModelProvider
-    this.fallbackProviders = options.providers
+    this.configuredProviders = options.providers
     this.retryDelayMs = options.retryDelayMs ?? 500
+    this.routeScope = options.routeScope ?? 'turn'
   }
 
   /** Capabilities of the currently active provider after any fallback routing. */
@@ -83,9 +88,11 @@ export class FallbackModelProvider implements ModelProvider {
 
   async *complete(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     let lastError: unknown
-    for (const provider of this.providers()) {
+    for (const [providerIndex, provider] of this.providers()) {
+      if (providerIndex > 0) validateCapabilities(provider, request)
       for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt += 1) {
         throwIfAborted(request.signal)
+        this.currentProviderIndex = providerIndex
         this.active = provider
         const attemptStartedAt = performance.now()
         try {
@@ -131,6 +138,9 @@ export class FallbackModelProvider implements ModelProvider {
               { retryable: true },
             )
           }
+          this.currentProviderIndex = providerIndex
+          this.active = provider
+          this.routeSealed = this.routeScope === 'turn'
           yield {
             type: 'api-attempt-duration',
             durationMs:
@@ -166,7 +176,76 @@ export class FallbackModelProvider implements ModelProvider {
       : new Error(String(lastError ?? 'All model providers failed'))
   }
 
-  private providers(): readonly ModelProvider[] {
-    return this.fallbackProviders
+  private providers(): readonly (readonly [number, ModelProvider])[] {
+    if (this.routeSealed) {
+      const provider = this.configuredProviders[this.currentProviderIndex]
+      return provider === undefined
+        ? []
+        : [[this.currentProviderIndex, provider]]
+    }
+    return this.configuredProviders.map(
+      (provider, index) => [index, provider] as const,
+    )
   }
+}
+
+function validateCapabilities(
+  provider: ModelProvider,
+  request: ModelRequest,
+): void {
+  const capabilities = provider.capabilities
+  if (!capabilities.streaming) {
+    throw capabilityError(provider, 'streaming')
+  }
+  if (
+    request.tools !== undefined &&
+    request.tools.length > 0 &&
+    !capabilities.tools
+  ) {
+    throw capabilityError(provider, 'tools')
+  }
+  const hasImages = request.messages.some(
+    (message) =>
+      ('images' in message &&
+        message.images !== undefined &&
+        message.images.length > 0) ||
+      ('contentBlocks' in message &&
+        message.contentBlocks?.some((block) => block.type === 'image') ===
+          true),
+  )
+  if (hasImages && !capabilities.images)
+    throw capabilityError(provider, 'images')
+  const hasDocuments = request.messages.some(
+    (message) =>
+      ('documents' in message &&
+        message.documents !== undefined &&
+        message.documents.length > 0) ||
+      ('contentBlocks' in message &&
+        message.contentBlocks?.some((block) => block.type === 'document') ===
+          true),
+  )
+  if (hasDocuments && !capabilities.documents)
+    throw capabilityError(provider, 'documents')
+  if (request.webSearch !== undefined && !capabilities.webSearch) {
+    throw capabilityError(provider, 'webSearch')
+  }
+  const thinking = request.thinking
+  if (thinking?.maxTokens !== undefined && !capabilities.thinking?.maxTokens) {
+    throw capabilityError(provider, 'thinking maxTokens')
+  }
+  if (thinking !== undefined) {
+    if (!capabilities.thinking?.modes.includes(thinking.mode)) {
+      throw capabilityError(provider, `thinking mode ${thinking.mode}`)
+    }
+  }
+}
+
+function capabilityError(
+  provider: ModelProvider,
+  capability: string,
+): ModelProviderError {
+  return new ModelProviderError(
+    `Provider ${provider.model ?? 'unknown'} does not support ${capability}`,
+    { kind: 'invalid_request', retryable: false },
+  )
 }

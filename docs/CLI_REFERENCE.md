@@ -310,6 +310,13 @@ argv `command`, or `vault`). Plaintext secrets are rejected. Selection
 precedence is explicit CLI > environment > trusted local selection > trusted
 project selection > user settings > native defaults.
 
+For a main-session turn, pass an explicit list of model IDs with
+`--fallback-model` after selecting the provider target. Fallback models use
+that same target and protocol; Praxis does not infer cross-protocol routes.
+Failed attempts remain buffered, and the first successful route, whether
+primary or fallback, stays sealed through the turn's tool continuations. A new
+main user turn starts from the primary model.
+
 `openai-codex` requires `experimental.codexSubscription: true`, a Vault OAuth
 credential, and its private Responses/SSE transport. It is a ChatGPT-backed
 subscription integration, not a stable OpenAI API-compatible endpoint.

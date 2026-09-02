@@ -1935,6 +1935,73 @@ process.stdin.on('data', chunk => {
     }
   })
 
+  it('starts each composition-root main turn from a fresh primary route', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-fallback-turn-'))
+    const configRoot = join(root, 'config')
+    const requestedModels: string[] = []
+    let notifyFetchStarted!: () => void
+    const fetchStarted = new Promise<void>((resolve) => {
+      notifyFetchStarted = resolve
+    })
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as { model: string }
+        requestedModels.push(body.model)
+        notifyFetchStarted()
+        if (body.model === 'primary-model' && requestedModels.length <= 3) {
+          return Response.json(
+            { error: { message: 'temporary failure' } },
+            { status: 503 },
+          )
+        }
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      })
+    let service:
+      Awaited<ReturnType<CliDependencies['createService']>> | undefined
+    try {
+      service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment: {
+          PRAXIS_API_KEY: 'test-key',
+          PRAXIS_MODEL: 'environment-model',
+          PRAXIS_PROVIDER: 'openai',
+        },
+        controls: {
+          ...DEFAULT_CLI_CONTROLS,
+          model: 'primary-model',
+          fallbackModels: ['fallback-model'],
+        },
+      })
+      vi.useFakeTimers()
+      const firstTurn = service.run('fall back for this turn')
+      await fetchStarted
+      await vi.advanceTimersByTimeAsync(10_000)
+      const first = await firstTurn
+
+      await service.resume(first.sessionId, 'start the next turn from primary')
+
+      expect(requestedModels).toEqual([
+        'primary-model',
+        'primary-model',
+        'primary-model',
+        'fallback-model',
+        'primary-model',
+      ])
+    } finally {
+      await service?.close?.()
+      fetchMock.mockRestore()
+      vi.useRealTimers()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('prints help and version without creating runtime dependencies', async () => {
     const capture = captureIO()
     const unavailable: CliDependencies = {

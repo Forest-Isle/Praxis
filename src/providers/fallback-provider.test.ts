@@ -4,6 +4,7 @@ import {
   AgentRuntime,
   ModelProviderError,
   type ModelProvider,
+  type ModelRequest,
   type ModelStreamEvent,
 } from '../core/runtime.js'
 import { FallbackModelProvider } from './fallback-provider.js'
@@ -367,6 +368,305 @@ describe('FallbackModelProvider', () => {
     expect(fallback).toHaveBeenCalledTimes(1)
     expect(routed.model).toBe('fallback')
   })
+
+  it('sticks to a fallback provider after tool-use success', async () => {
+    const primary = vi.fn(async function* (request: ModelRequest) {
+      void request
+      throw new ModelProviderError('overloaded', {
+        kind: 'server_error',
+        retryable: true,
+      })
+      yield text('unreachable')
+    })
+    const fallback = vi.fn(async function* (request: ModelRequest) {
+      const hasToolResult = request.messages.some(
+        (message) => message.role === 'tool',
+      )
+      if (hasToolResult) yield text('fallback final')
+      else {
+        yield {
+          type: 'tool-call' as const,
+          call: { id: 'call-1', name: 'Read', input: { file_path: '/tmp/x' } },
+        }
+      }
+      yield {
+        type: 'terminal' as const,
+        reason: hasToolResult ? 'end_turn' : 'tool_use',
+      } satisfies ModelStreamEvent
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary), provider('fallback', fallback)],
+      retryDelayMs: 0,
+    })
+
+    const execute = vi.fn(async () => ({
+      content: 'tool result',
+      isError: false,
+    }))
+    const runtime = new AgentRuntime(routed, undefined, {
+      tools: {
+        definitions: () => [{ name: 'Read', description: '', inputSchema: {} }],
+        prepare: async (call) => call,
+        execute,
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const result = await runtime.run({ messages: [] })
+
+    expect(primary).toHaveBeenCalledTimes(3)
+    expect(fallback).toHaveBeenCalledTimes(2)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(result.text).toBe('fallback final')
+    expect(primary.mock.calls[0]?.[0].messages).toEqual([])
+  })
+
+  it('does not enter fallback after the primary route is sealed', async () => {
+    let primaryCalls = 0
+    const primary = vi.fn(async function* () {
+      primaryCalls += 1
+      if (primaryCalls === 1) {
+        yield text('primary success')
+        return
+      }
+      throw new ModelProviderError('primary continuation failed', {
+        retryable: true,
+      })
+      yield text('unreachable')
+    })
+    const fallback = vi.fn(async function* () {
+      yield text('must not run')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary), provider('fallback', fallback)],
+      retryDelayMs: 0,
+    })
+
+    for await (const event of routed.complete({ messages: [] })) void event
+    await expect(
+      (async () => {
+        for await (const event of routed.complete({ messages: [] })) void event
+      })(),
+    ).rejects.toThrow('primary continuation failed')
+
+    expect(primary).toHaveBeenCalledTimes(4)
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it('preserves completion-scoped fallback reset for reusable auxiliary clients', async () => {
+    let primaryCalls = 0
+    const primary = vi.fn(async function* () {
+      primaryCalls += 1
+      if (primaryCalls <= 3) {
+        throw new ModelProviderError('primary unavailable', { retryable: true })
+      }
+      yield text('primary recovered')
+    })
+    const fallback = vi.fn(async function* () {
+      yield text('fallback success')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [provider('primary', primary), provider('fallback', fallback)],
+      retryDelayMs: 0,
+      routeScope: 'completion',
+    })
+
+    for await (const event of routed.complete({ messages: [] })) void event
+    for await (const event of routed.complete({ messages: [] })) void event
+
+    expect(primary).toHaveBeenCalledTimes(4)
+    expect(fallback).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not advance beyond a sealed fallback after retry exhaustion', async () => {
+    const primary = vi.fn(async function* () {
+      throw new ModelProviderError('overloaded', { retryable: true })
+      yield text('unreachable')
+    })
+    let fallbackCalls = 0
+    const fallback = vi.fn(async function* () {
+      fallbackCalls += 1
+      if (fallbackCalls === 1) {
+        yield text('recovered')
+        return
+      }
+      throw new ModelProviderError('fallback down', { retryable: true })
+      yield text('unreachable')
+    })
+    const later = vi.fn(async function* () {
+      yield text('must not run')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [
+        provider('primary', primary),
+        provider('fallback', fallback),
+        provider('later', later),
+      ],
+      retryDelayMs: 0,
+    })
+    for await (const event of routed.complete({ messages: [] })) void event
+    await expect(
+      (async () => {
+        for await (const event of routed.complete({ messages: [] })) void event
+      })(),
+    ).rejects.toThrow('fallback down')
+    expect(fallback).toHaveBeenCalledTimes(4)
+    expect(later).not.toHaveBeenCalled()
+  })
+
+  it('rejects an incompatible fallback before invoking it', async () => {
+    const primary = vi.fn(async function* () {
+      throw new ModelProviderError('overloaded', { retryable: true })
+      yield text('unreachable')
+    })
+    const fallback = vi.fn(async function* () {
+      yield text('must not run')
+    })
+    const routed = new FallbackModelProvider({
+      providers: [
+        provider('primary', primary),
+        {
+          ...provider('fallback', fallback),
+          capabilities: { streaming: true, usage: true, tools: false },
+        },
+      ],
+      retryDelayMs: 0,
+    })
+    await expect(
+      (async () => {
+        for await (const event of routed.complete({
+          messages: [],
+          tools: [{ name: 'Read', description: '', inputSchema: {} }],
+        }))
+          void event
+      })(),
+    ).rejects.toMatchObject({ kind: 'invalid_request', retryable: false })
+    expect(fallback).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['non-streaming', { streaming: false }, { messages: [] }],
+    [
+      'tools',
+      { tools: false },
+      {
+        messages: [],
+        tools: [{ name: 'Read', description: '', inputSchema: {} }],
+      },
+    ],
+    [
+      'legacy images',
+      { images: false },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: '',
+            images: [{ type: 'image', mediaType: 'image/png', data: 'x' }],
+          },
+        ],
+      },
+    ],
+    [
+      'content-block images',
+      { images: false },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: '',
+            contentBlocks: [
+              { type: 'image', mediaType: 'image/png', data: 'x' },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      'legacy documents',
+      { documents: false },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: '',
+            documents: [
+              { type: 'document', mediaType: 'text/plain', data: 'x' },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      'content-block documents',
+      { documents: false },
+      {
+        messages: [
+          {
+            role: 'user',
+            content: '',
+            contentBlocks: [
+              { type: 'document', mediaType: 'text/plain', data: 'x' },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      'web search',
+      { webSearch: false },
+      { messages: [], webSearch: { maxUses: 1 } },
+    ],
+    [
+      'enabled thinking mode',
+      { thinking: { modes: ['disabled'], maxTokens: true } },
+      { messages: [], thinking: { mode: 'enabled' } },
+    ],
+    [
+      'adaptive thinking mode',
+      { thinking: { modes: ['enabled'], maxTokens: true } },
+      { messages: [], thinking: { mode: 'adaptive' } },
+    ],
+    [
+      'disabled thinking mode',
+      { thinking: { modes: ['enabled'], maxTokens: true } },
+      { messages: [], thinking: { mode: 'disabled' } },
+    ],
+    [
+      'thinking max tokens',
+      { thinking: { modes: ['enabled'], maxTokens: false } },
+      { messages: [], thinking: { mode: 'enabled', maxTokens: 10 } },
+    ],
+  ] as const)(
+    '%s fallback capability mismatch fails closed',
+    async (_, unsupported, request) => {
+      const primary = vi.fn(async function* () {
+        throw new ModelProviderError('overloaded', { retryable: true })
+        yield text('unreachable')
+      })
+      const fallback = vi.fn(async function* () {
+        yield text('must not run')
+      })
+      const routed = new FallbackModelProvider({
+        providers: [
+          provider('primary', primary),
+          {
+            ...provider('fallback', fallback),
+            capabilities: {
+              ...provider('fallback', fallback).capabilities,
+              ...unsupported,
+            },
+          },
+        ],
+        retryDelayMs: 0,
+      })
+      await expect(
+        (async () => {
+          for await (const event of routed.complete(request)) void event
+        })(),
+      ).rejects.toMatchObject({ kind: 'invalid_request', retryable: false })
+      expect(fallback).not.toHaveBeenCalled()
+    },
+  )
 
   it('exposes the capabilities of the currently active provider', async () => {
     const primaryCapabilities = {

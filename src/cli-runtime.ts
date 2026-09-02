@@ -1655,6 +1655,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let provider: ModelProvider | undefined
   let providerForModel: ((model: string) => ModelProvider) | undefined
   let providerForMainModel: ((model: string) => ModelProvider) | undefined
+  let providerForTurn: ((model?: string) => ModelProvider) | undefined
   let providerBillingMode: 'api' | 'subscription' | undefined
   const context = parseContextEnvironment(runtimeEnvironment)
   const apiKey = runtimeEnvironment.PRAXIS_API_KEY
@@ -1799,7 +1800,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
       providerForModel = (selectedModel: string) =>
         registry.create(selectedModel)
       const createProvider = providerForModel
-      providerForMainModel = (primaryModel: string) => {
+      const createProviderStack = (
+        primaryModel: string,
+        routeScope: 'completion' | 'turn',
+      ) => {
         const models = [primaryModel, ...(cli.fallbackModels ?? [])].filter(
           (candidate, index, all) => all.indexOf(candidate) === index,
         )
@@ -1807,10 +1811,19 @@ const createDefaultService: CliDependencies['createService'] = async ({
         const selected = providers[0]
         if (!selected) throw new Error('A primary model is required')
         return providers.length > 1
-          ? new FallbackModelProvider({ providers })
+          ? new FallbackModelProvider({ providers, routeScope })
           : selected
       }
-      provider = providerForMainModel(model)
+      providerForMainModel = (primaryModel: string) =>
+        createProviderStack(primaryModel, 'completion')
+      const defaultProvider = providerForMainModel(model)
+      provider = defaultProvider
+      providerForTurn = (turnModel?: string) => {
+        const selectedModel = turnModel ?? model
+        return selectedModel === undefined
+          ? defaultProvider
+          : createProviderStack(selectedModel, 'turn')
+      }
     } catch (error) {
       const optionalProviderError =
         error instanceof ProviderAuthenticationError ||
@@ -2676,6 +2689,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
       provider: hostedToolProvider,
       ...(providerForModel ? { providerForModel } : {}),
       ...(providerForMainModel ? { providerForMainModel } : {}),
+      ...(providerForTurn ? { providerForTurn } : {}),
       tools: filteredTools,
       toolCapabilityEnvironment: runtimeEnvironment,
       ...(!experimentalNativeTranscriptWrites ? { mcp: mcpTools } : {}),

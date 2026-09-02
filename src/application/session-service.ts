@@ -289,6 +289,8 @@ export interface ClaudeSessionServiceOptions {
   enableWorkflows?: boolean
   providerForModel?: (model: string) => ModelProvider
   providerForMainModel?: (model: string) => ModelProvider
+  /** Creates one fresh main-turn provider per outer user turn; never used for auxiliary model calls. */
+  providerForTurn?: (model?: string) => ModelProvider
   /** Creates a provider adapter dedicated to Session memory requests so
    *  adapter-local cache and retry state are not shared with the foreground. */
   sessionMemoryProviderFactory?: () => ModelProvider
@@ -1384,7 +1386,18 @@ export class ClaudeSessionService {
       ? (options.extensions?.agent(options.agent) ?? null)
       : null
     if (configuredAgent && options.provider) {
-      this.activeProvider = this.providerForAgent(configuredAgent)
+      const selectedModel =
+        !options.explicitModel &&
+        configuredAgent.model &&
+        configuredAgent.model !== 'inherit'
+          ? configuredAgent.model
+          : undefined
+      const selectProvider =
+        options.providerForMainModel ?? options.providerForModel
+      this.activeProvider =
+        selectedModel !== undefined && selectProvider
+          ? selectProvider(selectedModel)
+          : this.options.provider
     }
   }
 
@@ -7005,6 +7018,13 @@ export class ClaudeSessionService {
     const inherited = this.provider()
     const selectProvider =
       this.options.providerForMainModel ?? this.options.providerForModel
+    const effectiveModel =
+      !this.options.explicitModel && agent?.model && agent.model !== 'inherit'
+        ? agent.model
+        : inherited.model
+    if (this.options.providerForTurn) {
+      return this.options.providerForTurn(effectiveModel)
+    }
     if (
       this.options.explicitModel ||
       !agent?.model ||

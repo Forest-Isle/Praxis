@@ -116,9 +116,14 @@ Adapter selection happens before a request. Unsupported capabilities fail
 closed; request fields are never silently discarded. A request cannot switch
 protocols after output or tool side effects begin.
 
-Every runtime consumer uses one provider factory, including main sessions,
-fallback models, auto-mode critic, eval judges, scheduled work, and background
-agents.
+For each main run or resume, the CLI creates a fresh turn-scoped client. One
+wrapper owns bounded retry, failed-attempt buffering, request-aware fallback
+admission, and the sealed route through that turn's tool continuations.
+Incompatible fallback routes fail closed, and each new main user turn starts
+from the primary route. A `prompt_too_long` reactive compaction retry retains
+the same turn client. Propagation to auxiliary consumers remains a subsequent
+slice; this decision does not expand the small `ModelProvider` contract or
+place provider-native state in core or transcripts.
 
 ### Public OpenAI Responses transport
 
