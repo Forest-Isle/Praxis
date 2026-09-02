@@ -44,15 +44,14 @@ import {
   type ClaudeFileResource,
   type ClaudeFileResourceConfig,
 } from '../native/file-resources.js'
-import { selectClaudeActiveTranscript } from '../native/history.js'
 import { ClaudeFileHistory } from '../native/file-history.js'
 import {
   getClaudeAgentSetting,
   projectClaudeModelMessages,
 } from '../native/projection.js'
 import type { TranscriptDisplayItem } from './transcript-projection.js'
-import { projectNativeSessionEntries } from './native-session-projection.js'
 import { type NativeTranscriptEntry } from '../native/schema.js'
+import { projectNativeSessionEntries } from './native-session-projection.js'
 import type { TranscriptEvent } from '../core/transcript-event.js'
 import { type ClaudeSessionMetadata } from '../native/session-metadata.js'
 import {
@@ -66,7 +65,6 @@ import {
 import {
   createClaudeAgentSettingEntry,
   createClaudeHookAttachmentEntries,
-  createClaudeLastPromptEntry,
   createClaudeRuleAttachmentEntry,
   translateProviderEvents,
 } from '../native/translation.js'
@@ -161,6 +159,7 @@ import {
   type NativeSessionTranscriptStore,
   type NativeSessionTranscriptLease,
 } from './native-session-transcript.js'
+import { TurnPersistence } from './turn-persistence.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { ModelCompactor } from './model-compactor.js'
@@ -203,7 +202,6 @@ import {
 } from './session-memory.js'
 import type {
   ProjectMemoryExtractionRuntime,
-  ProjectMemoryMessage,
   ProjectMemoryRecallRuntime,
 } from './project-memory.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
@@ -1034,26 +1032,6 @@ function validSessionName(value: string): string | null {
   return /^[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+){1,4}$/u.test(name)
     ? name.toLocaleLowerCase()
     : null
-}
-
-function projectMemoryMessages(
-  entries: readonly NativeTranscriptEntry[],
-): ProjectMemoryMessage[] {
-  return selectClaudeActiveTranscript(entries).flatMap((entry) => {
-    if (typeof entry.uuid !== 'string') return []
-    return projectClaudeModelMessages([entry]).flatMap((message) =>
-      (message.role === 'user' || message.role === 'assistant') &&
-      message.content.trim().length > 0
-        ? [
-            {
-              id: entry.uuid as string,
-              role: message.role,
-              content: message.content,
-            },
-          ]
-        : [],
-    )
-  })
 }
 
 function successfulHookOutput(
@@ -3741,33 +3719,32 @@ export class ClaudeSessionService {
         'tool-results',
       )
       const runUnderLease = async (
-        lease: NativeTranscriptLease,
-        nativeLease: NativeSessionTranscriptLease,
+        persistence: TurnPersistence,
       ): Promise<SessionRunResult> => {
-        const loadedSnapshot = await lease.load()
-        let snapshot = {
-          entries: projectNativeSessionEntries(nativeLease.activeEvents()),
-          tail: loadedSnapshot.tail,
+        const projectionSnapshot = () => {
+          const view = persistence.view()
+          return {
+            entries: [...view.projectionEntries],
+            tail: view.projectionTail,
+          }
+        }
+        const commitProjection = async (
+          entries: readonly NativeTranscriptEntry[],
+        ) => {
+          await persistence.commit({ kind: 'projection', entries })
         }
         const activeTurnMessages = (): ModelMessage[] => {
           // Native events remain authoritative; refresh the derived projection
           // after each append so memory/compaction sees the live branch.
-          snapshot = {
-            ...snapshot,
-            entries: projectNativeSessionEntries(nativeLease.activeEvents()),
-          }
-          return nativeLease.activeMessages()
+          const view = persistence.refresh()
+          return [...view.activeMessages]
         }
-        if (
-          nativeLease &&
-          name !== undefined &&
-          this.options.sessionPersistence !== false
-        ) {
+        if (name !== undefined && this.options.sessionPersistence !== false) {
           const marker = `<praxis-session-name>${name}</praxis-session-name>`
           if (
-            !nativeLease
-              .activeEvents()
-              .some(
+            !persistence
+              .view()
+              .activeEvents.some(
                 (event) =>
                   event.kind === 'messages' &&
                   event.messages.some(
@@ -3776,18 +3753,18 @@ export class ClaudeSessionService {
                   ),
               )
           ) {
-            await nativeLease.appendMessages({
-              messages: [{ role: 'user', content: marker }],
+            await persistence.commit({
+              kind: 'messages',
+              input: { messages: [{ role: 'user', content: marker }] },
             })
           }
         }
-        const nativeInterruption = nativeLease?.interruption()
+        const nativeInterruption = persistence.view().interruption
         if (nativeInterruption?.kind === 'indeterminate-tools')
           throw new Error(
             `Native tool execution is indeterminate: ${nativeInterruption.callIds.join(', ')}`,
           )
         const nativeResumeInterrupted =
-          nativeLease !== undefined &&
           this.options.resumeInterruptedTurn === true &&
           (nativeInterruption?.kind === 'interrupted-prompt' ||
             nativeInterruption?.kind === 'interrupted-turn')
@@ -3802,10 +3779,13 @@ export class ClaudeSessionService {
           !shouldSkipUserPrompt() &&
           !(
             this.options.approveRecovery !== undefined &&
-            findUnresolvedClaudeToolCalls(snapshot.entries).length > 0
+            findUnresolvedClaudeToolCalls(projectionSnapshot().entries).length >
+              0
           )
         ) {
-          const interruption = classifyClaudeInterruption(snapshot.entries)
+          const interruption = classifyClaudeInterruption(
+            projectionSnapshot().entries,
+          )
           if (
             (interruption.kind === 'interrupted-prompt' ||
               interruption.kind === 'interrupted-turn') &&
@@ -3813,48 +3793,34 @@ export class ClaudeSessionService {
             interruption.replayEntries !== undefined
           ) {
             automaticReplayPrompt = interruption.prompt
-            snapshot = {
-              entries: interruption.replayEntries,
-              tail: {
-                ...snapshot.tail,
-                branchParentId: interruption.replayParentUuid ?? null,
-              },
-            }
           }
         }
         const initialTransition =
           this.worktreeManager?.consumeTransition('__initial__')
-        if (initialTransition && snapshot.entries.length === 0) {
+        if (initialTransition && projectionSnapshot().entries.length === 0) {
           const stateEntry: NativeTranscriptEntry = {
             type: 'worktree-state',
             worktreeSession: initialTransition.state,
             sessionId,
           }
-          const stateTail = await this.append(lease, snapshot.tail, stateEntry)
-          snapshot = {
-            entries: [...snapshot.entries, stateEntry],
-            tail: stateTail,
-          }
+          await commitProjection([stateEntry])
         }
-        this.restoreWorktree(snapshot.entries)
-        this.options.interactiveTools?.restore(sessionId, snapshot.entries)
+        this.restoreWorktree(projectionSnapshot().entries)
+        this.options.interactiveTools?.restore(
+          sessionId,
+          projectionSnapshot().entries,
+        )
         if (
           requireExisting &&
           name !== undefined &&
-          !this.hasSessionName(snapshot.entries, name)
+          !this.hasSessionName(projectionSnapshot().entries, name)
         ) {
           const entries = this.sessionNameEntries(sessionId, name)
-          const appendResult = await this.appendProjectionMany(
-            snapshot.tail,
-            entries,
-          )
-          snapshot = {
-            entries: [...snapshot.entries, ...entries],
-            tail: appendResult.tail,
-          }
+          await commitProjection(entries)
         }
         const agentName =
-          this.options.agent ?? getClaudeAgentSetting(snapshot.entries)
+          this.options.agent ??
+          getClaudeAgentSetting(projectionSnapshot().entries)
         const agent = this.resolveAgent(agentName)
         const provider = this.providerForAgent(agent)
         this.activeProvider = provider
@@ -3910,11 +3876,10 @@ export class ClaudeSessionService {
                 ...(this.options.fileRewindRoots ?? []),
               ])
             : null
-        const unresolvedToolCalls = nativeLease
-          ? nativeInterruption?.kind === 'recoverable-tools'
+        const unresolvedToolCalls =
+          nativeInterruption?.kind === 'recoverable-tools'
             ? [...nativeInterruption.calls]
             : []
-          : findUnresolvedClaudeToolCalls(snapshot.entries)
         const pendingRecoveryToolCallIds = new Set(
           unresolvedToolCalls.map((call) => call.id),
         )
@@ -3932,29 +3897,27 @@ export class ClaudeSessionService {
         const appendHookOutcome = async (outcome: ClaudeHookOutcome) => {
           for (const entry of createClaudeHookAttachmentEntries(
             outcome,
-            this.translationContext(sessionId, snapshot),
+            this.translationContext(sessionId, projectionSnapshot()),
           )) {
-            const tail = await this.append(lease, snapshot.tail, entry)
-            snapshot = { entries: [...snapshot.entries, entry], tail }
-            if (nativeLease) {
-              const attachment = entry.attachment as
-                Record<string, unknown> | undefined
-              const raw = attachment?.content
-              const content =
-                typeof raw === 'string'
-                  ? raw
-                  : Array.isArray(raw)
-                    ? raw
-                        .filter((value) => typeof value === 'string')
-                        .join('\n')
-                    : raw && typeof raw === 'object' && 'content' in raw
-                      ? String((raw as { content: unknown }).content)
-                      : ''
-              if (content) {
-                await nativeLease.appendMessages({
-                  messages: [{ role: 'user', content }],
-                })
-              }
+            const attachment = entry.attachment as
+              Record<string, unknown> | undefined
+            const raw = attachment?.content
+            const content =
+              typeof raw === 'string'
+                ? raw
+                : Array.isArray(raw)
+                  ? raw.filter((value) => typeof value === 'string').join('\n')
+                  : raw && typeof raw === 'object' && 'content' in raw
+                    ? String((raw as { content: unknown }).content)
+                    : ''
+            if (content) {
+              await persistence.commit({
+                kind: 'messages',
+                input: { messages: [{ role: 'user', content }] },
+                projectionEntries: [entry],
+              })
+            } else {
+              await commitProjection([entry])
             }
           }
         }
@@ -3970,11 +3933,11 @@ export class ClaudeSessionService {
         }
         const flushRecoveryHookOutcomes = async () => {
           const entries: NativeTranscriptEntry[] = []
-          let history = snapshot.entries
-          let parentUuid = this.logicalTailUuid(snapshot.tail)
+          let history = projectionSnapshot().entries
+          let parentUuid = this.logicalTailUuid(projectionSnapshot().tail)
           for (const outcome of pendingRecoveryHookOutcomes) {
             const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
-              ...this.translationContext(sessionId, snapshot),
+              ...this.translationContext(sessionId, projectionSnapshot()),
               parentUuid,
               history,
             })
@@ -3987,11 +3950,7 @@ export class ClaudeSessionService {
             pendingRecoveryHookOutcomes.length = 0
             return
           }
-          const appendResult = await this.appendProjectionMany(
-            snapshot.tail,
-            entries,
-          )
-          snapshot = { entries: history, tail: appendResult.tail }
+          await commitProjection(entries)
           pendingRecoveryHookOutcomes.length = 0
         }
         const capabilities = this.toolCapabilities()
@@ -4168,7 +4127,7 @@ export class ClaudeSessionService {
                   : {}),
                 notificationDelivered: (notification) =>
                   transcriptContainsBackgroundAgentNotification(
-                    snapshot.entries,
+                    projectionSnapshot().entries,
                     notification,
                   ),
                 stopOwnedBackgroundAgent: (ownerSessionId, agentId) =>
@@ -4210,7 +4169,7 @@ export class ClaudeSessionService {
               0,
               (callId) =>
                 currentPromptId ??
-                this.promptIdForToolCall(snapshot.entries, callId),
+                this.promptIdForToolCall(projectionSnapshot().entries, callId),
             )
           : baseTools
         const turnTools =
@@ -4225,7 +4184,10 @@ export class ClaudeSessionService {
                 sessionId,
                 promptIdForCall: (callId) =>
                   currentPromptId ??
-                  this.promptIdForToolCall(snapshot.entries, callId),
+                  this.promptIdForToolCall(
+                    projectionSnapshot().entries,
+                    callId,
+                  ),
                 defaultModel: provider.model ?? 'praxis/provider',
                 tokenBudget: workflowTokenTarget(effectivePrompt),
                 enabled: capabilities.has('Workflow'),
@@ -4294,17 +4256,23 @@ export class ClaudeSessionService {
                   }
                   const snapshotMessageId =
                     currentPromptId ??
-                    this.promptIdForToolCall(snapshot.entries, call.id)
+                    this.promptIdForToolCall(
+                      projectionSnapshot().entries,
+                      call.id,
+                    )
                   const assistantMessageId =
                     lastAssistantUuid ??
-                    this.assistantIdForToolCall(snapshot.entries, call.id)
+                    this.assistantIdForToolCall(
+                      projectionSnapshot().entries,
+                      call.id,
+                    )
                   if (!snapshotMessageId || !assistantMessageId) {
                     throw new Error(
                       'Claude file history could not link tool call',
                     )
                   }
                   const prepared = await fileHistory.prepareMutation(
-                    snapshot.entries,
+                    projectionSnapshot().entries,
                     snapshotMessageId,
                     path,
                   )
@@ -4324,18 +4292,18 @@ export class ClaudeSessionService {
                   }
                   const entry = prepared.commit(assistantMessageId)
                   if (entry) {
-                    const tail = await this.append(lease, snapshot.tail, entry)
-                    snapshot = { entries: [...snapshot.entries, entry], tail }
-                    if (nativeLease) {
-                      await nativeLease.appendMessages({
+                    await persistence.commit({
+                      kind: 'messages',
+                      input: {
                         messages: [
                           {
                             role: 'user',
                             content: `<praxis-file-history>${JSON.stringify(entry)}</praxis-file-history>`,
                           },
                         ],
-                      })
-                    }
+                      },
+                      projectionEntries: [entry],
+                    })
                   }
                   return result
                 },
@@ -4451,14 +4419,13 @@ export class ClaudeSessionService {
         const durableFollowUps = new DurableFollowUpTracker()
         const claimedToolCallIds = new Set<string>()
         const observer = {
-          ...(nativeLease
-            ? {
-                toolExecutionStarted: async (call: ModelToolCall) => {
-                  await nativeLease.beginToolExecution(call.id)
-                  claimedToolCallIds.add(call.id)
-                },
-              }
-            : {}),
+          toolExecutionStarted: async (call: ModelToolCall) => {
+            await persistence.commit({
+              kind: 'tool-execution-started',
+              callId: call.id,
+            })
+            claimedToolCallIds.add(call.id)
+          },
           modelRequestCompleted: async (input: {
             usage: ModelUsage
             messages: readonly ModelMessage[]
@@ -4484,32 +4451,34 @@ export class ClaudeSessionService {
                   model: provider.model ?? 'praxis/provider',
                 },
               ],
-              this.translationContext(sessionId, snapshot),
+              this.translationContext(sessionId, projectionSnapshot()),
             )
             if (!entry)
               throw new Error('Could not translate assistant response')
-            const tail = await this.append(lease, snapshot.tail, entry)
-            snapshot = { entries: [...snapshot.entries, entry], tail }
-
-            lastAssistantUuid = nativeLease
-              ? await nativeLease.appendMessages({
-                  messages: [
-                    {
-                      role: 'assistant',
-                      content: message.content,
-                      ...(message.thinkingBlocks?.length
-                        ? { thinkingBlocks: message.thinkingBlocks }
-                        : {}),
-                      ...(message.toolCalls?.length
-                        ? { toolCalls: message.toolCalls }
-                        : {}),
-                    },
-                  ],
-                  model: provider.model ?? 'praxis/provider',
-                })
-              : typeof entry.uuid === 'string'
-                ? entry.uuid
-                : lastAssistantUuid
+            const nativeReceipt = await persistence.commit({
+              kind: 'messages',
+              input: {
+                messages: [
+                  {
+                    role: 'assistant',
+                    content: message.content,
+                    ...(message.thinkingBlocks?.length
+                      ? { thinkingBlocks: message.thinkingBlocks }
+                      : {}),
+                    ...(message.toolCalls?.length
+                      ? { toolCalls: message.toolCalls }
+                      : {}),
+                  },
+                ],
+                model: provider.model ?? 'praxis/provider',
+              },
+              projectionEntries: [entry],
+            })
+            if (nativeReceipt.kind !== 'messages')
+              throw new Error(
+                'Turn persistence returned an invalid message receipt',
+              )
+            lastAssistantUuid = nativeReceipt.eventId
           },
           toolCompleted: async (
             call: ModelToolCall,
@@ -4525,27 +4494,18 @@ export class ClaudeSessionService {
               nativeMcpMeta?: Record<string, unknown>
             },
           ) => {
-            currentTurnToolCalls += 1
             const transition = this.worktreeManager?.consumeTransition(call.id)
             if (transition) {
-              this.options.contextAssembler?.invalidate?.({
-                lifecycleId: sessionId,
-                reason: 'worktree',
-              })
               const stateEntry: NativeTranscriptEntry = {
                 type: 'worktree-state',
                 worktreeSession: transition.state,
                 sessionId,
               }
-              const stateTail = await this.append(
-                lease,
-                snapshot.tail,
-                stateEntry,
-              )
-              snapshot = {
-                entries: [...snapshot.entries, stateEntry],
-                tail: stateTail,
-              }
+              await commitProjection([stateEntry])
+              this.options.contextAssembler?.invalidate?.({
+                lifecycleId: sessionId,
+                reason: 'worktree',
+              })
             }
             const permissionMode =
               this.options.interactiveTools?.consumeTransition(call.id)
@@ -4555,25 +4515,18 @@ export class ClaudeSessionService {
                 permissionMode,
                 sessionId,
               }
-              const modeTail = await this.append(
-                lease,
-                snapshot.tail,
-                modeEntry,
-              )
-              snapshot = {
-                entries: [...snapshot.entries, modeEntry],
-                tail: modeTail,
-              }
-              if (nativeLease) {
-                await nativeLease.appendMessages({
+              await persistence.commit({
+                kind: 'messages',
+                input: {
                   messages: [
                     {
                       role: 'user',
                       content: `/permission-mode ${permissionMode}`,
                     },
                   ],
-                })
-              }
+                },
+                projectionEntries: [modeEntry],
+              })
               // Interactive mode transitions change the runtime system
               // context for the very next provider request. Refresh here so
               // an EnterPlanMode/ExitPlanMode tool call is immediately
@@ -4581,44 +4534,21 @@ export class ClaudeSessionService {
               if (typeof refreshRuntimeContext === 'function')
                 await refreshRuntimeContext()
             }
-            if (nativeLease) {
-              if (!claimedToolCallIds.has(call.id) && !signal?.aborted) {
-                await nativeLease.beginToolExecution(call.id)
-                claimedToolCallIds.add(call.id)
-              }
-              await nativeLease.appendToolCompletion({
+            if (!claimedToolCallIds.has(call.id) && !signal?.aborted) {
+              await persistence.commit({
+                kind: 'tool-execution-started',
+                callId: call.id,
+              })
+              claimedToolCallIds.add(call.id)
+            }
+            await persistence.commit({
+              kind: 'tool-completion',
+              input: {
                 callId: call.id,
                 result: toolResult,
-              })
-            } else {
-              const [entry] = translateProviderEvents(
-                [
-                  {
-                    type: 'tool-result',
-                    toolCallId: call.id,
-                    content: toolResult.content,
-                    ...(toolResult.contentBlocks
-                      ? { contentBlocks: toolResult.contentBlocks }
-                      : {}),
-                    ...(toolResult.images ? { images: toolResult.images } : {}),
-                    ...(toolResult.documents
-                      ? { documents: toolResult.documents }
-                      : {}),
-                    isError: toolResult.isError,
-                    ...(toolResult.nativeToolUseResult
-                      ? { nativeToolUseResult: toolResult.nativeToolUseResult }
-                      : {}),
-                    ...(toolResult.nativeMcpMeta
-                      ? { nativeMcpMeta: toolResult.nativeMcpMeta }
-                      : {}),
-                  },
-                ],
-                this.translationContext(sessionId, snapshot),
-              )
-              if (!entry) throw new Error('Could not translate tool result')
-              const tail = await this.append(lease, snapshot.tail, entry)
-              snapshot = { entries: [...snapshot.entries, entry], tail }
-            }
+              },
+            })
+            currentTurnToolCalls += 1
 
             if (!toolResult.isError && this.options.projectMemoryDirectory) {
               const pathValue = call.input.file_path
@@ -4662,7 +4592,9 @@ export class ClaudeSessionService {
             ) {
               return
             }
-            const attachedRulePaths = this.attachedRulePaths(snapshot.entries)
+            const attachedRulePaths = this.attachedRulePaths(
+              projectionSnapshot().entries,
+            )
             for (const filePath of toolResult.accessedPaths) {
               const rules = await this.options.conditionalRuleResolver.resolve(
                 filePath,
@@ -4672,24 +4604,19 @@ export class ClaudeSessionService {
                 const attachment = createClaudeRuleAttachmentEntry(
                   rule,
                   this.displayRulePath(rule.path),
-                  this.translationContext(sessionId, snapshot),
+                  this.translationContext(sessionId, projectionSnapshot()),
                 )
-                const attachmentTail = await this.append(
-                  lease,
-                  snapshot.tail,
-                  attachment,
-                )
-                snapshot = {
-                  entries: [...snapshot.entries, attachment],
-                  tail: attachmentTail,
-                }
-                if (nativeLease) {
-                  const ruleContent = rule.content.trim()
-                  if (ruleContent.length > 0) {
-                    await nativeLease.appendMessages({
+                const ruleContent = rule.content.trim()
+                if (ruleContent.length > 0) {
+                  await persistence.commit({
+                    kind: 'messages',
+                    input: {
                       messages: [{ role: 'user', content: ruleContent }],
-                    })
-                  }
+                    },
+                    projectionEntries: [attachment],
+                  })
+                } else {
+                  await commitProjection([attachment])
                 }
                 attachedRulePaths.add(rule.path)
                 await this.instructionLoaded(
@@ -4717,34 +4644,10 @@ export class ClaudeSessionService {
             messages: readonly string[],
           ) => {
             for (const content of messages) {
-              if (nativeLease) {
-                await nativeLease.appendMessages({
-                  messages: [{ role: 'user', content }],
-                })
-                currentTurnUserMessages?.push(content)
-                await Promise.all(
-                  this.sessionSubagentExecutors(sessionId, true).map(
-                    (executor) => executor.acknowledgeNotifications([content]),
-                  ),
-                )
-                continue
-              }
-              const [followUpEntry] = translateProviderEvents(
-                [{ type: 'user-text-block', text: content }],
-                this.translationContext(sessionId, snapshot),
-              )
-              if (!followUpEntry) {
-                throw new Error('Could not translate tool follow-up message')
-              }
-              const followUpTail = await this.append(
-                lease,
-                snapshot.tail,
-                followUpEntry,
-              )
-              snapshot = {
-                entries: [...snapshot.entries, followUpEntry],
-                tail: followUpTail,
-              }
+              await persistence.commit({
+                kind: 'messages',
+                input: { messages: [{ role: 'user', content }] },
+              })
               currentTurnUserMessages?.push(content)
               await Promise.all(
                 this.sessionSubagentExecutors(sessionId, true).map((executor) =>
@@ -4755,28 +4658,10 @@ export class ClaudeSessionService {
             await durableFollowUps.followUpUserMessagesCompleted(messages)
           },
           userInputDelivered: async (item: SteeringItem) => {
-            if (nativeLease) {
-              await nativeLease.appendMessages({
-                messages: [{ role: 'user', content: item.content }],
-              })
-              currentTurnUserMessages?.push(item.content)
-              return
-            }
-            const [steeringEntry] = translateProviderEvents(
-              [{ type: 'user-text-block', text: item.content }],
-              this.translationContext(sessionId, snapshot),
-            )
-            if (!steeringEntry)
-              throw new Error('Could not translate steering message')
-            const steeringTail = await this.append(
-              lease,
-              snapshot.tail,
-              steeringEntry,
-            )
-            snapshot = {
-              entries: [...snapshot.entries, steeringEntry],
-              tail: steeringTail,
-            }
+            await persistence.commit({
+              kind: 'messages',
+              input: { messages: [{ role: 'user', content: item.content }] },
+            })
             currentTurnUserMessages?.push(item.content)
           },
         }
@@ -4859,31 +4744,25 @@ export class ClaudeSessionService {
           if (
             this.options.agent &&
             agent &&
-            getClaudeAgentSetting(snapshot.entries) !== this.options.agent
+            getClaudeAgentSetting(projectionSnapshot().entries) !==
+              this.options.agent
           ) {
             const agentSetting = createClaudeAgentSettingEntry(
               sessionId,
               this.options.agent,
             )
-            const settingTail = await this.append(
-              lease,
-              snapshot.tail,
-              agentSetting,
-            )
-            snapshot = {
-              entries: [...snapshot.entries, agentSetting],
-              tail: settingTail,
-            }
-            if (nativeLease) {
-              await nativeLease.appendMessages({
+            await persistence.commit({
+              kind: 'messages',
+              input: {
                 messages: [
                   {
                     role: 'user',
                     content: `<praxis-agent-setting>${this.options.agent}</praxis-agent-setting>`,
                   },
                 ],
-              })
-            }
+              },
+              projectionEntries: [agentSetting],
+            })
           }
 
           let agentSystem: string | null = null
@@ -5009,7 +4888,9 @@ export class ClaudeSessionService {
                   effectivePrompt,
                 ) ?? [])
               : []
-          let compactionAnchorUuid = this.lastMessageUuid(snapshot.entries)
+          let compactionAnchorUuid = this.lastMessageUuid(
+            projectionSnapshot().entries,
+          )
           const contextTransitionPort = (
             pendingMessages: readonly ModelMessage[] = [],
             preservedUserMessages: readonly string[] = [],
@@ -5033,7 +4914,6 @@ export class ClaudeSessionService {
                 ],
               }).envelope,
             propose: async () => {
-              const activeNativeLease = nativeLease
               if (!budget) throw new Error('Context budget is unavailable')
               const definitions = contextPreparation.project().envelope.tools
               const historyMessages = activeTurnMessages()
@@ -5101,9 +4981,9 @@ export class ClaudeSessionService {
                     ),
                 ]
                 if (earliest === 0 && preservedUserMessages[0] !== undefined) {
-                  compactionLogicalParentId = activeNativeLease
-                    .activeEvents()
-                    .find(
+                  compactionLogicalParentId = persistence
+                    .view()
+                    .activeEvents.find(
                       (event) =>
                         event.kind === 'messages' &&
                         event.messages.some(
@@ -5117,9 +4997,7 @@ export class ClaudeSessionService {
               const memorySelection = sessionMemory
                 ? await this.selectMemoryPreservedCompact(
                     sessionId,
-                    projectNativeSessionEntries(
-                      activeNativeLease.activeEvents(),
-                    ),
+                    persistence.view().projectionEntries,
                   )
                 : null
               if (memorySelection) {
@@ -5147,9 +5025,9 @@ export class ClaudeSessionService {
                 )
                 const anchor = preservedMessages[0]
                 if (anchor !== undefined) {
-                  compactionLogicalParentId = nativeLease
-                    .activeEvents()
-                    .find(
+                  compactionLogicalParentId = persistence
+                    .view()
+                    .activeEvents.find(
                       (event) =>
                         event.kind === 'messages' &&
                         event.messages.some(
@@ -5324,26 +5202,33 @@ export class ClaudeSessionService {
                 commit: async () => {
                   if (signal?.aborted) throw new AgentRunCancelledError()
                   const committed = await replacement.commit(() =>
-                    nativeLease.appendCompaction({
-                      summary: compacted.summary,
-                      trigger: 'auto',
-                      preTokens,
-                      postTokens,
-                      durationMs,
-                      preservedMessages: replayMessages,
-                      ...(compactionLogicalParentId === undefined
-                        ? {}
-                        : { logicalParentId: compactionLogicalParentId }),
-                      ...(memorySelection
-                        ? {
-                            direction: 'from' as const,
-                            messagesSummarized: compactableMessages.length,
-                            preservePrefix: false,
-                          }
-                        : {}),
+                    persistence.commit({
+                      kind: 'compaction',
+                      input: {
+                        summary: compacted.summary,
+                        trigger: 'auto',
+                        preTokens,
+                        postTokens,
+                        durationMs,
+                        preservedMessages: replayMessages,
+                        ...(compactionLogicalParentId === undefined
+                          ? {}
+                          : { logicalParentId: compactionLogicalParentId }),
+                        ...(memorySelection
+                          ? {
+                              direction: 'from' as const,
+                              messagesSummarized: compactableMessages.length,
+                              preservePrefix: false,
+                            }
+                          : {}),
+                      },
                     }),
                   )
                   const ids = committed.value
+                  if (ids.kind !== 'compaction')
+                    throw new Error(
+                      'Turn persistence returned an invalid compaction receipt',
+                    )
                   await this.runAdvisoryHook(
                     sessionId,
                     'PostCompact',
@@ -5423,7 +5308,7 @@ export class ClaudeSessionService {
                   : ({ type: 'user-text-block', text: message.text } as const)
             const [userEntry] = translateProviderEvents(
               [persistenceEvent],
-              this.translationContext(sessionId, snapshot),
+              this.translationContext(sessionId, projectionSnapshot()),
             )
             if (!userEntry) throw new Error('Could not translate user prompt')
             if (
@@ -5433,13 +5318,9 @@ export class ClaudeSessionService {
               currentPromptId = userEntry.uuid
               compactionAnchorUuid ??= userEntry.uuid
             }
-            const userTail = await this.append(lease, snapshot.tail, userEntry)
-            snapshot = {
-              entries: [...snapshot.entries, userEntry],
-              tail: userTail,
-            }
-            if (nativeLease) {
-              const nativePromptId = await nativeLease.appendMessages({
+            const nativePrompt = await persistence.commit({
+              kind: 'messages',
+              input: {
                 messages: [
                   {
                     role: 'user',
@@ -5450,37 +5331,35 @@ export class ClaudeSessionService {
                       : {}),
                   },
                 ],
-              })
-              // File-history snapshots key their metadata to the durable
-              // native event id, not the scratch compatibility projection id.
-              currentPromptId = nativePromptId
-            }
+              },
+              projectionEntries: [userEntry],
+            })
+            // File-history snapshots key their metadata to the durable native
+            // event id, not the compatibility projection id.
+            if (nativePrompt.kind !== 'messages')
+              throw new Error(
+                'Turn persistence returned an invalid message receipt',
+              )
+            currentPromptId = nativePrompt.eventId
           }
 
           if (fileHistory && currentPromptId) {
             const historySnapshot = await fileHistory.snapshot(
-              snapshot.entries,
+              projectionSnapshot().entries,
               currentPromptId,
             )
-            const historyTail = await this.append(
-              lease,
-              snapshot.tail,
-              historySnapshot,
-            )
-            snapshot = {
-              entries: [...snapshot.entries, historySnapshot],
-              tail: historyTail,
-            }
-            if (nativeLease) {
-              await nativeLease.appendMessages({
+            await persistence.commit({
+              kind: 'messages',
+              input: {
                 messages: [
                   {
                     role: 'user',
                     content: `<praxis-file-history>${JSON.stringify(historySnapshot)}</praxis-file-history>`,
                   },
                 ],
-              })
-            }
+              },
+              projectionEntries: [historySnapshot],
+            })
           }
 
           if (this.options.hooks && !shouldSkipUserPrompt()) {
@@ -5568,23 +5447,16 @@ export class ClaudeSessionService {
                 { type: 'bash-output', stdout, stderr },
               ],
               {
-                ...this.translationContext(sessionId, snapshot),
+                ...this.translationContext(sessionId, projectionSnapshot()),
                 createUuid: () => shellUuids.shift() ?? randomUUID(),
               },
             )
             if (!inputEntry || !outputEntry) {
               throw new Error('Could not translate shell command result')
             }
-            const shellAppend = await this.appendProjectionMany(snapshot.tail, [
-              inputEntry,
-              outputEntry,
-            ])
-            snapshot = {
-              entries: [...snapshot.entries, inputEntry, outputEntry],
-              tail: shellAppend.tail,
-            }
-            if (nativeLease) {
-              await nativeLease.appendMessages({
+            await persistence.commit({
+              kind: 'messages',
+              input: {
                 messages: [
                   {
                     role: 'user',
@@ -5595,8 +5467,9 @@ export class ClaudeSessionService {
                     content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
                   },
                 ],
-              })
-            }
+              },
+              projectionEntries: [inputEntry, outputEntry],
+            })
             currentTurnUserMessages.push(
               `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${stderr}</bash-stderr>`,
             )
@@ -5796,9 +5669,7 @@ export class ClaudeSessionService {
                             notification: BackgroundAgentNotificationIdentity,
                           ) =>
                             transcriptContainsBackgroundAgentNotification(
-                              nativeLease
-                                ? nativeLease.activeMessages()
-                                : snapshot.entries,
+                              persistence.view().activeMessages,
                               notification,
                             )
                           return this.hostedSubagents.has(executor)
@@ -5819,15 +5690,12 @@ export class ClaudeSessionService {
                       subagentExecutor ?? undefined,
                     )
                     if (background) {
-                      if (nativeLease) {
-                        for (const message of background.messages) {
-                          await this.appendBackgroundNotification(
-                            sessionId,
-                            message,
-                            nativeLease,
-                          )
-                        }
-                      }
+                      for (const message of background.messages)
+                        await this.appendBackgroundNotification(
+                          sessionId,
+                          message,
+                          persistence,
+                        )
                       messages.push(...background.messages)
                     }
                     const workflow =
@@ -5999,18 +5867,6 @@ export class ClaudeSessionService {
           if (!finalLeafUuid) {
             throw new Error('Could not locate final assistant response')
           }
-          if (!nativeLease && !skipUserPrompt) {
-            const lastPrompt = createClaudeLastPromptEntry({
-              sessionId,
-              lastPrompt: effectivePrompt,
-              leafUuid: finalLeafUuid,
-            })
-            const tail = await this.append(lease, snapshot.tail, lastPrompt)
-            snapshot = {
-              entries: [...snapshot.entries, lastPrompt],
-              tail,
-            }
-          }
           const totalUsage = mergeUsage(
             mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
             result.usage,
@@ -6118,10 +5974,9 @@ export class ClaudeSessionService {
             })
           }
           const memorySnapshot = activeTurnMessages()
-          const nativeMemoryMessageId = nativeLease
-            ? projectNativeSessionEntries(nativeLease.activeEvents()).at(-1)
-                ?.uuid
-            : undefined
+          const nativeMemoryMessageId = persistence
+            .view()
+            .projectionEntries.at(-1)?.uuid
           const providerProjection = contextPreparation.project({
             includeMemory: false,
           })
@@ -6145,20 +6000,18 @@ export class ClaudeSessionService {
             occupancyTokens: currentContextTokens,
             toolCalls: currentTurnToolCalls,
             messages: memorySnapshot,
-            projectMessages: nativeLease
-              ? memorySnapshot.flatMap((message, index) =>
-                  (message.role === 'user' || message.role === 'assistant') &&
-                  message.content.trim().length > 0
-                    ? [
-                        {
-                          id: `${finalLeafUuid ?? sessionId}:${index}`,
-                          role: message.role,
-                          content: message.content,
-                        },
-                      ]
-                    : [],
-                )
-              : projectMemoryMessages(snapshot.entries),
+            projectMessages: memorySnapshot.flatMap((message, index) =>
+              (message.role === 'user' || message.role === 'assistant') &&
+              message.content.trim().length > 0
+                ? [
+                    {
+                      id: `${finalLeafUuid ?? sessionId}:${index}`,
+                      role: message.role,
+                      content: message.content,
+                    },
+                  ]
+                : [],
+            ),
             directMaintenance: projectMemoryMaintained,
           })
           turnCompleted = true
@@ -6213,16 +6066,8 @@ export class ClaudeSessionService {
         result = await nativeTranscript.withLease(
           activationKind,
           async (nativeLease) => {
-            const scratch = new InMemoryTranscriptStore()
-            const scratchResult = await scratch.withLease((scratchLease) =>
-              runUnderLease(scratchLease, nativeLease),
-            )
-            if (scratchResult.status === 'conflict') {
-              throw new Error(
-                `native scratch transcript conflict: ${scratchResult.reason}`,
-              )
-            }
-            return scratchResult.value
+            const persistence = new TurnPersistence({ native: nativeLease })
+            return runUnderLease(persistence)
           },
         )
       }
@@ -6706,8 +6551,18 @@ export class ClaudeSessionService {
   private async appendBackgroundNotification(
     sessionId: string,
     content: string,
-    nativeLease?: NativeSessionTranscriptLease,
+    nativeLease?: NativeSessionTranscriptLease | TurnPersistence,
   ): Promise<boolean> {
+    if (nativeLease instanceof TurnPersistence) {
+      if (nativeLease.view().activeMessages.length === 0) {
+        throw new Error(`Native session not found: ${sessionId}`)
+      }
+      await nativeLease.commit({
+        kind: 'messages',
+        input: { messages: [{ role: 'user', content }] },
+      })
+      return true
+    }
     if (nativeLease) {
       if (nativeLease.activeMessages().length === 0) {
         throw new Error(`Native session not found: ${sessionId}`)
@@ -7180,43 +7035,6 @@ export class ClaudeSessionService {
       )
     }
     return factory(base, operations, sessionId, enabledTools)
-  }
-
-  private async append(
-    lease: NativeTranscriptLease,
-    tail: NativeTranscriptTail,
-    entry: NativeTranscriptEntry,
-  ): Promise<NativeTranscriptTail> {
-    void lease
-    return this.appendProjectionMany(tail, [entry]).then(
-      (result) => result.tail,
-    )
-  }
-
-  /**
-   * Update the in-memory compatibility projection used by the turn pipeline.
-   * Authoritative native persistence is performed by NativeSessionTranscript;
-   * these entries are never written to the native event store.
-   */
-  private async appendProjectionMany(
-    tail: NativeTranscriptTail,
-    entries: readonly NativeTranscriptEntry[],
-  ): Promise<{ status: 'appended'; tail: NativeTranscriptTail }> {
-    if (entries.length === 0)
-      throw new Error('Cannot append an empty projection')
-    const lastUuid = [...entries]
-      .reverse()
-      .find((entry) => typeof entry.uuid === 'string')?.uuid
-    return {
-      status: 'appended',
-      tail: {
-        ...tail,
-        byteLength: tail.byteLength + entries.length,
-        lastLineHash: `projection:${tail.byteLength + entries.length}`,
-        lastEventId: typeof lastUuid === 'string' ? lastUuid : tail.lastEventId,
-        ...(tail.branchParentId === undefined ? {} : { branchParentId: null }),
-      },
-    }
   }
 
   private logicalTailUuid(tail: SessionTail): string | null {

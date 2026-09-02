@@ -356,6 +356,18 @@ by a snapshot of active-tool definitions. Live history, settled memory,
 volatile context, and tool activation are refreshed at projection time without
 advancing the private history generation.
 
+`TurnPersistence` is constructed only after the native Transcript lease has
+selected the active branch. Its `view`, `refresh`, and typed `commit` commands
+are the main Turn's single persistence boundary for authoritative native events
+and the ephemeral Claude-shaped compatibility projection. Commits are
+serialized in invocation order. A combined message/projection commit stages
+the projection, durably appends the native event, and publishes the staged view
+only after that append succeeds. Explicit refresh rebuilds the projection from
+the active native branch without changing its logical tail. Hooks, context
+generation and invalidation, runtime events, memory, and accounting remain
+caller policy and run only after a successful receipt; the projection is never
+a second Transcript.
+
 Native context keeps environment and memory stable for a lifecycle and resolved
 cwd, while recomputing Git status for every assembly from the caller-resolved
 cwd (including isolated subagent worktrees). Default Git status is a volatile
@@ -455,9 +467,11 @@ messages, active transcript projection, current prompt, and tool definitions.
 Provider capability or explicit CLI configuration supplies the window; Praxis
 does not guess model limits. `ModelCompactor` uses the active provider without
 tools, budgets its own request against the full provider window, and enforces a
-bounded, non-empty summary. `ClaudeSessionService` writes
-the native boundary/summary pair as one leased append, then projects only the
-latest summary onward while retaining historical nested-memory attachments.
+bounded, non-empty summary. `TurnPersistence` delegates the native
+boundary/summary pair as one leased append, then explicitly refreshes the
+projection only after the existing PostCompact ordering point. The refreshed
+view projects only the latest summary onward while retaining historical
+nested-memory attachments.
 When compaction happens inside an active turn, current user messages are
 replayed verbatim after the summary before model execution continues.
 Compaction failure, cancellation, or an oversized summary leaves no partial
