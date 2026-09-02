@@ -115,9 +115,9 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 71 behaviors: 63
-are qualified and 8 are explicitly excluded. It contains 129 evidence entries:
-98 Vitest entries, 25 black-box fixture entries, and 6 gate entries.
+are the active qualification source. The manifest declares 74 behaviors: 66
+are qualified and 8 are explicitly excluded. It contains 146 evidence entries:
+105 Vitest entries, 35 black-box fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain

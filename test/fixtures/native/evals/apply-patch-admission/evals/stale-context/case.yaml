@@ -1,0 +1,22 @@
+schema_version: '1.0'
+name: stale-context
+fixture: fixture
+execution:
+  prompt: Attempt the requested stale edit and then finish.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit, ApplyPatch]
+  env:
+    EVAL_SCENARIO: stale-context
+verification:
+  - name: unchanged-check
+    command: node
+    args:
+      - -e
+      - "const fs=require('node:fs');if(fs.readFileSync('first.txt','utf8')!=='first=original\\n'||fs.readFileSync('second.txt','utf8')!=='second=original\\n')process.exit(1)"
+    timeout_seconds: 10
+graders: []
+expect:
+  allowed_changed_paths: []
+  expected_changed_paths: []
+  forbidden_changed_paths: [first.txt, second.txt]

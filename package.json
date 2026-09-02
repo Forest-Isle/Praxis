@@ -62,7 +62,7 @@
     "verify:ci-coverage": "node scripts/verify-ci-coverage.mjs",
     "verify:fixture-contracts": "node scripts/verify-fixture-contracts.mjs",
     "test:fixtures": "node scripts/run-fixture-contracts.mjs",
-    "test:eval:baseline": "vitest run src/evals/coding-baseline.test.ts src/evals/project-eval-comparison.test.ts"
+    "test:eval:baseline": "vitest run src/evals/coding-baseline.test.ts src/evals/project-eval-comparison.test.ts src/evals/apply-patch-admission.test.ts"
   },
   "engines": {
     "node": ">=24"
