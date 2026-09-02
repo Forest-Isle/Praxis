@@ -91,6 +91,7 @@ import {
   type ProviderErrorKind,
   type RuntimeEventSink,
   type ToolRegistry,
+  type ToolExecutionResult,
 } from '../core/runtime.js'
 import { resolveToolSchedulingPolicy } from '../core/tool-scheduling-policy.js'
 import {
@@ -160,6 +161,7 @@ import {
   type NativeSessionTranscriptLease,
 } from './native-session-transcript.js'
 import { TurnPersistence } from './turn-persistence.js'
+import { TurnAccounting } from './turn-accounting.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { ModelCompactor } from './model-compactor.js'
@@ -189,7 +191,6 @@ import type {
 import {
   ClaudeSessionCostTracker,
   type ClaudeSessionCostSnapshot,
-  type ClaudeSessionDurationsInput,
   type ClaudeSessionTurnInput,
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
@@ -712,18 +713,6 @@ function requireCompactionDurations(result: CompactionResult): {
   return { durationMs, durationWithoutRetriesMs }
 }
 
-function addToolDuration(value: number | undefined, total: number): number {
-  if (value === undefined) return total
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new TypeError('durationToolMs must be a finite nonnegative number')
-  }
-  const next = total + value
-  if (!Number.isFinite(next) || next < 0) {
-    throw new TypeError('durationToolMs total overflow')
-  }
-  return next
-}
-
 function addApiDuration(
   value: number | undefined,
   total: number,
@@ -738,51 +727,6 @@ function addApiDuration(
     throw new TypeError(`${field} total overflow`)
   }
   return next
-}
-
-function createLineCountAccumulator(): {
-  readonly linesAdded: number
-  readonly linesRemoved: number
-  add(input: {
-    isError: boolean
-    linesAdded?: number
-    linesRemoved?: number
-  }): void
-} {
-  let linesAdded = 0
-  let linesRemoved = 0
-  const addCounter = (
-    current: number,
-    value: number | undefined,
-    field: 'linesAdded' | 'linesRemoved',
-  ): number => {
-    if (value === undefined) return current
-    if (!Number.isSafeInteger(value) || value < 0) {
-      throw new TypeError(`${field} must be a nonnegative safe integer`)
-    }
-    const next = current + value
-    if (!Number.isSafeInteger(next) || next < 0) {
-      throw new TypeError(`${field} total must be a nonnegative safe integer`)
-    }
-    return next
-  }
-  return {
-    get linesAdded(): number {
-      return linesAdded
-    },
-    get linesRemoved(): number {
-      return linesRemoved
-    },
-    add(input) {
-      if (input.isError) return
-      linesAdded = addCounter(linesAdded, input.linesAdded, 'linesAdded')
-      linesRemoved = addCounter(
-        linesRemoved,
-        input.linesRemoved,
-        'linesRemoved',
-      )
-    },
-  }
 }
 
 export function workflowTokenTarget(prompt: string): number | null {
@@ -3721,6 +3665,16 @@ export class ClaudeSessionService {
       const runUnderLease = async (
         persistence: TurnPersistence,
       ): Promise<SessionRunResult> => {
+        const activeTracker = this.sessionCostTrackers.get(sessionId)
+        if (!activeTracker) {
+          throw new Error(
+            `Session cost tracker is not active for session ${sessionId}`,
+          )
+        }
+        const turnAccounting = new TurnAccounting({
+          tracker: activeTracker,
+          ...(this.options.pricing ? { pricing: this.options.pricing } : {}),
+        })
         const projectionSnapshot = () => {
           const view = persistence.view()
           return {
@@ -4726,21 +4680,6 @@ export class ClaudeSessionService {
             unresolvedToolCalls,
             recoveryRequest,
           )
-          const recoveryUsage = recoveryResults.reduce<ModelUsage>(
-            (usage, result) =>
-              result.usage ? mergeUsage(usage, result.usage) : usage,
-            { inputTokens: 0, outputTokens: 0 },
-          )
-          const recoveryModelUsage = mergeSessionRawModelUsage(
-            ...recoveryResults.map((result) =>
-              result.isError ? undefined : result.modelUsage,
-            ),
-          )
-          const foregroundLineChanges = createLineCountAccumulator()
-          for (const result of recoveryResults) {
-            foregroundLineChanges.add(result)
-          }
-
           if (
             this.options.agent &&
             agent &&
@@ -4841,14 +4780,6 @@ export class ClaudeSessionService {
             type: 'state',
             state: 'assembling-context',
           })
-          let compactionUsage: ModelUsage = {
-            inputTokens: 0,
-            outputTokens: 0,
-          }
-          let compactionDurationMs: number | undefined
-          let compactionDurationWithoutRetriesMs: number | undefined
-          let compactionModelUsage:
-            Readonly<Record<string, ModelUsage>> | undefined
           const budget = this.contextBudget(provider)
           const contextEngine = new ContextEngine({
             ...(budget ? { budget } : {}),
@@ -5086,21 +5017,6 @@ export class ClaudeSessionService {
               const { durationMs, durationWithoutRetriesMs } =
                 requireCompactionDurations(compacted)
               if (signal?.aborted) throw new AgentRunCancelledError()
-              const proposedCompactionDurationMs =
-                (compactionDurationMs ?? 0) + durationMs
-              if (!Number.isFinite(proposedCompactionDurationMs)) {
-                throw new TypeError('compaction durationMs total overflow')
-              }
-              const proposedCompactionDurationWithoutRetriesMs =
-                (compactionDurationWithoutRetriesMs ?? 0) +
-                durationWithoutRetriesMs
-              if (
-                !Number.isFinite(proposedCompactionDurationWithoutRetriesMs)
-              ) {
-                throw new TypeError(
-                  'compaction durationWithoutRetriesMs total overflow',
-                )
-              }
               const postTokens = estimateModelRequestTokens([
                 { role: 'user', content: compacted.summary },
                 ...preservedMessages,
@@ -5109,60 +5025,12 @@ export class ClaudeSessionService {
                 compacted.model !== undefined && compacted.model.trim() !== ''
                   ? compacted.model
                   : provider.model
-              const meaningfulUsage = hasNonZeroUsage(compacted.usage)
-              if (
-                meaningfulUsage &&
-                (compactModel === undefined || compactModel.trim() === '')
-              )
-                throw new Error(
-                  'Auto compact usage requires a nonblank model identity',
-                )
-              const tracker = this.sessionCostTrackers.get(sessionId)
-              if (!tracker)
-                throw new Error(
-                  `Session cost tracker is not active for session ${sessionId}`,
-                )
-              let meteringTurnInput: ClaudeSessionTurnInput | undefined
-              if (
-                meaningfulUsage &&
-                compactModel !== undefined &&
-                compactModel.trim() !== ''
-              ) {
-                const pricing = this.options.pricing?.resolve(compactModel)
-                const costUsd = pricing
-                  ? usageCostUsd(compacted.usage, pricing)
-                  : undefined
-                meteringTurnInput = {
-                  model: compactModel,
-                  usage: compacted.usage,
-                  ...(costUsd === undefined ? {} : { costUsd }),
-                  ...(compacted.usage.webSearchRequests === undefined
-                    ? {}
-                    : {
-                        webSearchRequests: compacted.usage.webSearchRequests,
-                      }),
-                }
-              }
-              let meteringDurationsInput:
-                ClaudeSessionDurationsInput | undefined
-              if (durationMs > 0 || durationWithoutRetriesMs > 0)
-                meteringDurationsInput = {
-                  ...(durationMs === 0 ? {} : { apiDurationMs: durationMs }),
-                  apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
-                }
-              if (
-                meteringTurnInput !== undefined ||
-                meteringDurationsInput !== undefined
-              ) {
-                const preflight = new ClaudeSessionCostTracker({
-                  sessionId,
-                  restored: tracker.snapshot(),
-                })
-                if (meteringTurnInput !== undefined)
-                  preflight.recordTurn(meteringTurnInput)
-                if (meteringDurationsInput !== undefined)
-                  preflight.recordDurations(meteringDurationsInput)
-              }
+              const preparedCompaction = turnAccounting.prepareCompaction({
+                usage: compacted.usage,
+                ...(compactModel === undefined ? {} : { model: compactModel }),
+                durationApiMs: durationMs,
+                durationApiWithoutRetriesMs: durationWithoutRetriesMs,
+              })
               const summaryMessage = {
                 role: 'user' as const,
                 content: compacted.summary,
@@ -5255,26 +5123,7 @@ export class ClaudeSessionService {
                     preTokens,
                     uuid: ids.boundaryId,
                   })
-                  compactionUsage = mergeUsage(compactionUsage, compacted.usage)
-                  compactionDurationMs =
-                    (compactionDurationMs ?? 0) + durationMs
-                  compactionDurationWithoutRetriesMs =
-                    (compactionDurationWithoutRetriesMs ?? 0) +
-                    durationWithoutRetriesMs
-                  if (meteringTurnInput !== undefined) {
-                    tracker.recordTurn(meteringTurnInput)
-                  }
-                  if (
-                    compactModel !== undefined &&
-                    compactModel.trim() !== ''
-                  ) {
-                    compactionModelUsage = mergeSessionRawModelUsage(
-                      compactionModelUsage,
-                      { [compactModel]: compacted.usage },
-                    )
-                  }
-                  if (meteringDurationsInput !== undefined)
-                    tracker.recordDurations(meteringDurationsInput)
+                  preparedCompaction.commit()
                 },
               }
             },
@@ -5380,11 +5229,7 @@ export class ClaudeSessionService {
               )
             }
           }
-          let shellUsage: ModelUsage = { inputTokens: 0, outputTokens: 0 }
-          let shellModelUsage: Readonly<Record<string, ModelUsage>> | undefined
-          let shellDurationApiMs: number | undefined
-          let shellDurationApiWithoutRetriesMs: number | undefined
-          let shellToolDurationMs: number | undefined
+          let shellResult: ToolExecutionResult | undefined
           if (shellCommand !== undefined) {
             const call: ModelToolCall = {
               id: `shell_${randomUUID().replaceAll('-', '')}`,
@@ -5396,7 +5241,6 @@ export class ClaudeSessionService {
               callId: call.id,
               command: shellCommand,
             })
-            let shellResult
             try {
               shellResult = await runtime.executeDirectToolCall(call, {
                 cwd: this.activeCwd(),
@@ -5424,15 +5268,6 @@ export class ClaudeSessionService {
                 callId: call.id,
               })
               throw error
-            }
-            shellUsage = shellResult.usage ?? shellUsage
-            shellDurationApiMs = shellResult.durationApiMs
-            shellDurationApiWithoutRetriesMs =
-              shellResult.durationApiWithoutRetriesMs
-            shellToolDurationMs = shellResult.durationToolMs
-            if (!shellResult.isError) {
-              shellModelUsage = shellResult.modelUsage
-              foregroundLineChanges.add(shellResult)
             }
             const stdout =
               shellResult.processOutput?.stdout ??
@@ -5482,84 +5317,27 @@ export class ClaudeSessionService {
             })
           }
           if (shellCommand !== undefined) {
-            const tracker = this.sessionCostTrackers.get(sessionId)
-            if (!tracker) {
-              throw new Error(
-                `Session cost tracker is not active for session ${sessionId}`,
-              )
-            }
-            const totalUsage = mergeUsage(recoveryUsage, shellUsage)
-            const turnModelUsage = mergeSessionRawModelUsage(
-              recoveryModelUsage,
-              shellModelUsage,
-            )
-            let rawCostUsd: number | undefined
-            if (turnModelUsage) {
-              for (const [model, usage] of Object.entries(turnModelUsage)) {
-                const pricing = this.options.pricing?.resolve(model)
-                const costUsd = pricing
-                  ? usageCostUsd(usage, pricing)
-                  : undefined
-                if (costUsd !== undefined)
-                  rawCostUsd = (rawCostUsd ?? 0) + costUsd
-                tracker.recordTurn({
-                  model,
-                  usage,
-                  ...(costUsd === undefined ? {} : { costUsd }),
-                  ...(usage.webSearchRequests === undefined
-                    ? {}
-                    : { webSearchRequests: usage.webSearchRequests }),
-                })
-              }
-            }
-            let combinedToolDurationMs = 0
-            for (const recoveryResult of recoveryResults) {
-              combinedToolDurationMs = addToolDuration(
-                recoveryResult.durationToolMs,
-                combinedToolDurationMs,
-              )
-            }
-            combinedToolDurationMs = addToolDuration(
-              shellToolDurationMs,
-              combinedToolDurationMs,
-            )
-            tracker.recordDurations({
-              ...(shellDurationApiMs === undefined
-                ? {}
-                : { apiDurationMs: shellDurationApiMs }),
-              ...(shellDurationApiWithoutRetriesMs === undefined
-                ? {}
-                : {
-                    apiDurationWithoutRetriesMs:
-                      shellDurationApiWithoutRetriesMs,
-                  }),
-              ...(combinedToolDurationMs === 0
-                ? {}
-                : { toolDurationMs: combinedToolDurationMs }),
+            if (!shellResult)
+              throw new Error('Shell command produced no result')
+            const accounting = turnAccounting.complete({
+              kind: 'shell',
+              recovery: recoveryResults,
+              result: shellResult,
             })
-            if (
-              foregroundLineChanges.linesAdded !== 0 ||
-              foregroundLineChanges.linesRemoved !== 0
-            ) {
-              tracker.recordLineChanges({
-                ...(foregroundLineChanges.linesAdded === 0
-                  ? {}
-                  : { linesAdded: foregroundLineChanges.linesAdded }),
-                ...(foregroundLineChanges.linesRemoved === 0
-                  ? {}
-                  : { linesRemoved: foregroundLineChanges.linesRemoved }),
-              })
-            }
             turnCompleted = true
             return {
               sessionId,
               text: '',
-              usage: totalUsage,
-              ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
-              ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
-              ...(shellDurationApiMs === undefined
+              usage: accounting.usage,
+              ...(accounting.costUsd === undefined
                 ? {}
-                : { durationApiMs: shellDurationApiMs }),
+                : { costUsd: accounting.costUsd }),
+              ...(accounting.modelUsage === undefined
+                ? {}
+                : { modelUsage: accounting.modelUsage }),
+              ...(accounting.durationApiMs === undefined
+                ? {}
+                : { durationApiMs: accounting.durationApiMs }),
             }
           }
           if (shellCommand === undefined && budget) {
@@ -5867,112 +5645,11 @@ export class ClaudeSessionService {
           if (!finalLeafUuid) {
             throw new Error('Could not locate final assistant response')
           }
-          const totalUsage = mergeUsage(
-            mergeUsage(mergeUsage(recoveryUsage, compactionUsage), shellUsage),
-            result.usage,
-          )
-          const tracker = this.sessionCostTrackers.get(sessionId)
-          if (!tracker) {
-            throw new Error(
-              `Session cost tracker is not active for session ${sessionId}`,
-            )
-          }
-          const turnModelUsage = mergeSessionRawModelUsage(
-            recoveryModelUsage,
-            compactionModelUsage,
-            shellModelUsage,
-            result.modelUsage,
-          )
-          const combinedDurationMs =
-            compactionDurationMs === undefined &&
-            result.durationApiMs === undefined
-              ? undefined
-              : (compactionDurationMs ?? 0) + (result.durationApiMs ?? 0)
-          let rawCostUsd: number | undefined
-          if (turnModelUsage) {
-            for (const [model, usage] of Object.entries(turnModelUsage)) {
-              const pricing = this.options.pricing?.resolve(model)
-              const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
-              if (costUsd !== undefined)
-                rawCostUsd = (rawCostUsd ?? 0) + costUsd
-            }
-          }
-          // Auto-compaction metering was already recorded atomically with each
-          // committed boundary, and externally metered tool-summary metrics were
-          // committed through the summary callback, so the live tracker receives
-          // only the unrecorded subset here. The inclusive public aggregates
-          // above still contain every row and duration.
-          const trackedModelUsage = mergeSessionRawModelUsage(
-            recoveryModelUsage,
-            shellModelUsage,
-            result.unrecordedModelUsage ?? result.modelUsage,
-          )
-          if (trackedModelUsage) {
-            for (const [model, usage] of Object.entries(trackedModelUsage)) {
-              const pricing = this.options.pricing?.resolve(model)
-              const costUsd = pricing ? usageCostUsd(usage, pricing) : undefined
-              tracker.recordTurn({
-                model,
-                usage,
-                ...(costUsd === undefined ? {} : { costUsd }),
-                ...(usage.webSearchRequests === undefined
-                  ? {}
-                  : { webSearchRequests: usage.webSearchRequests }),
-              })
-            }
-          }
-          let combinedToolDurationMs = 0
-          for (const recoveryResult of recoveryResults) {
-            combinedToolDurationMs = addToolDuration(
-              recoveryResult.durationToolMs,
-              combinedToolDurationMs,
-            )
-          }
-          combinedToolDurationMs = addToolDuration(
-            result.durationToolMs,
-            combinedToolDurationMs,
-          )
-          const trackedDurationApiMs =
-            result.unrecordedDurationApiMs ?? result.durationApiMs
-          const trackedDurationApiWithoutRetriesMs =
-            result.unrecordedDurationApiWithoutRetriesMs ??
-            result.durationApiWithoutRetriesMs
-          tracker.recordDurations({
-            ...(trackedDurationApiMs === undefined
-              ? {}
-              : { apiDurationMs: trackedDurationApiMs }),
-            ...(trackedDurationApiWithoutRetriesMs === undefined
-              ? {}
-              : {
-                  apiDurationWithoutRetriesMs:
-                    trackedDurationApiWithoutRetriesMs,
-                }),
-            ...(combinedToolDurationMs === 0
-              ? {}
-              : { toolDurationMs: combinedToolDurationMs }),
+          const accounting = turnAccounting.complete({
+            kind: 'runtime',
+            recovery: recoveryResults,
+            result,
           })
-          foregroundLineChanges.add({
-            isError: false,
-            ...(result.linesAdded === undefined
-              ? {}
-              : { linesAdded: result.linesAdded }),
-            ...(result.linesRemoved === undefined
-              ? {}
-              : { linesRemoved: result.linesRemoved }),
-          })
-          if (
-            foregroundLineChanges.linesAdded !== 0 ||
-            foregroundLineChanges.linesRemoved !== 0
-          ) {
-            tracker.recordLineChanges({
-              ...(foregroundLineChanges.linesAdded === 0
-                ? {}
-                : { linesAdded: foregroundLineChanges.linesAdded }),
-              ...(foregroundLineChanges.linesRemoved === 0
-                ? {}
-                : { linesRemoved: foregroundLineChanges.linesRemoved }),
-            })
-          }
           const memorySnapshot = activeTurnMessages()
           const nativeMemoryMessageId = persistence
             .view()
@@ -6021,12 +5698,16 @@ export class ClaudeSessionService {
               structuredCapture && structuredCapture.calls === 1
                 ? JSON.stringify(structuredCapture.value)
                 : result.text,
-            usage: totalUsage,
-            ...(combinedDurationMs === undefined
+            usage: accounting.usage,
+            ...(accounting.durationApiMs === undefined
               ? {}
-              : { durationApiMs: combinedDurationMs }),
-            ...(rawCostUsd === undefined ? {} : { costUsd: rawCostUsd }),
-            ...(turnModelUsage ? { modelUsage: { ...turnModelUsage } } : {}),
+              : { durationApiMs: accounting.durationApiMs }),
+            ...(accounting.costUsd === undefined
+              ? {}
+              : { costUsd: accounting.costUsd }),
+            ...(accounting.modelUsage === undefined
+              ? {}
+              : { modelUsage: accounting.modelUsage }),
             ...(structuredCapture && structuredCapture.calls === 1
               ? { structuredOutput: structuredCapture.value }
               : {}),

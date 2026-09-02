@@ -92,8 +92,8 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1 through 3.3, 4.1, 4.2, and 4.3a are implemented. TurnAccounting in
-Task 4.3b is the next turn-kernel extraction.
+Tasks 0.1 through 3.3, 4.1, 4.2, 4.3a, and 4.3b are implemented.
+TurnAccounting is the turn-kernel accounting seam.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -249,12 +249,17 @@ receipts gate caller-owned hooks, context effects, runtime events, memory, and
 accounting. Compaction preserves boundary/summary/replay atomicity and does not
 refresh compatibility state before the established PostCompact ordering point.
 
-### Task 4.3b: TurnAccounting [depends: Task 4.3a]
+### Task 4.3b: TurnAccounting — implemented by #590 [depends: Task 4.3a]
 
 Extract usage, cost, API/tool duration, line-change, preflight, and
 no-double-count aggregation behind the accepted persistence receipt boundary.
 Accounting remains outside Transcript/provider/runtime schemas and may not
 weaken cancellation or externally committed auxiliary-metric behavior.
+
+The main turn now delegates compaction, recovery, shell, runtime, cost,
+duration, and foreground line accounting through `TurnAccounting`, with
+clone-based preflight and explicit unrecorded metrics preserving exact-once
+summary behavior.
 
 Acceptance: characterization, native fixture, outcome, package, performance,
 and security gates remain unchanged or improve after every extraction.

@@ -12018,6 +12018,102 @@ return 'done'`,
     )
   })
 
+  it('does not account structured-output failures before completion', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-turn-accounting-structured-failure-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '34343434-3434-4343-8343-343434343434'
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      structuredOutputSchema: {
+        type: 'object',
+        properties: { answer: { type: 'string' } },
+        required: ['answer'],
+        additionalProperties: false,
+      },
+      provider: {
+        model: 'structured-failure-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'not structured output' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 8, outputTokens: 2 },
+          }
+        },
+      },
+    })
+
+    await expect(
+      service.run('return structured output', undefined, sessionId),
+    ).rejects.toThrow('StructuredOutput must be called exactly once')
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.modelUsage).toEqual({})
+    expect(snapshot.apiDurationMs).toBe(0)
+    expect(snapshot.linesAdded).toBe(0)
+    expect(snapshot.linesRemoved).toBe(0)
+    await service.close()
+  })
+
+  it('retains completed accounting when memory observation fails', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-turn-accounting-memory-failure-'),
+    )
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '35353535-3535-4353-8353-353535353535'
+    const events: RuntimeEvent[] = []
+    const observe = vi.fn(() => {
+      throw new Error('memory observation failed')
+    })
+    const extraction = {
+      observe,
+      close: vi.fn(async () => undefined),
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      eventSink: (event) => events.push(event),
+      provider: {
+        model: 'memory-failure-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'completed answer' }
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 9, outputTokens: 3 },
+          }
+        },
+      },
+      projectMemoryExtraction: extraction,
+    })
+
+    await expect(
+      service.run('remember this', undefined, sessionId),
+    ).resolves.toMatchObject({ text: 'completed answer', sessionId })
+    expect(observe).toHaveBeenCalledTimes(1)
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'warning',
+        message: expect.stringContaining('memory observation failed'),
+      }),
+    )
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.modelUsage['memory-failure-model']).toMatchObject({
+      inputTokens: 9,
+      outputTokens: 3,
+    })
+    expect(snapshot.apiDurationMs).toBe(0)
+    await service.close()
+  })
+
   it('keeps imported instructions stable until an explicit resource reload', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-runtime-import-reload-'))
     roots.push(root)

@@ -368,6 +368,14 @@ generation and invalidation, runtime events, memory, and accounting remain
 caller policy and run only after a successful receipt; the projection is never
 a second Transcript.
 
+`TurnAccounting` is constructed alongside `TurnPersistence` with the active
+session cost tracker. Its compaction plan is preflighted against a cloned
+tracker before persistence and committed synchronously only after the durable
+boundary, hook refresh, context invalidation, runtime refresh, and boundary
+event. Runtime and shell completion then apply one atomic tracker plan while
+returning inclusive public usage/cost/duration rows; explicit unrecorded
+metrics prevent summary double counting without changing public result shape.
+
 Native context keeps environment and memory stable for a lifecycle and resolved
 cwd, while recomputing Git status for every assembly from the caller-resolved
 cwd (including isolated subagent worktrees). Default Git status is a volatile
