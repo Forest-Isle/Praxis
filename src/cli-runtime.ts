@@ -7144,8 +7144,12 @@ async function execute(
         (value) => writeJson(io, value),
         info,
         sessionId,
-        includePartialMessages,
-        invocation.includeHookEvents,
+        {
+          includePartialMessages,
+          includeHookEvents: invocation.includeHookEvents,
+          emitSessionStateEvents:
+            process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS === '1',
+        },
       )
       output.init()
       output.sink({ type: 'text-delta', delta: text })
@@ -7361,8 +7365,12 @@ async function execute(
         (value) => writeJson(io, value),
         runtimeInfo,
         activeSessionId,
-        includePartialMessages,
-        invocation.includeHookEvents,
+        {
+          includePartialMessages,
+          includeHookEvents: invocation.includeHookEvents,
+          emitSessionStateEvents:
+            process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS === '1',
+        },
       )
     }
     if (streamInputExhausted) return 0

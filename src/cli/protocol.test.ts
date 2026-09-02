@@ -13,6 +13,8 @@ import {
 } from './protocol.js'
 
 const sessionId = '11111111-1111-4111-8111-111111111111'
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 
 const runtimeInfo: CliRuntimeInfo = {
   cwd: '/workspace',
@@ -1248,7 +1250,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.init()
     output.sink({ type: 'state', state: 'awaiting-model' })
@@ -1297,7 +1299,20 @@ describe('CLI protocol', () => {
       records
         .filter((record) => (record as { type: string }).type === 'system')
         .map((record) => (record as { subtype: string }).subtype),
-    ).toEqual(['init', 'session_state_changed', 'session_state_changed'])
+    ).toEqual(['init'])
+    const envelopes = records as Record<string, unknown>[]
+    expect(envelopes.every((record) => record.session_id === sessionId)).toBe(
+      true,
+    )
+    expect(
+      envelopes.every(
+        (record) =>
+          typeof record.uuid === 'string' && UUID_PATTERN.test(record.uuid),
+      ),
+    ).toBe(true)
+    expect(new Set(envelopes.map((record) => record.uuid)).size).toBe(
+      envelopes.length,
+    )
     expect(records[0]).toMatchObject({
       subtype: 'init',
       output_style: 'default',
@@ -1356,7 +1371,10 @@ describe('CLI protocol', () => {
       (record) => records.push(record),
       runtimeInfo,
       sessionId,
-      true,
+      {
+        includePartialMessages: true,
+        emitSessionStateEvents: true,
+      },
     )
     output.init()
     output.syntheticAssistant('Session color set to: purple')
@@ -1372,13 +1390,27 @@ describe('CLI protocol', () => {
       Date.now(),
     )
 
-    expect(records.map((record) => (record as { type: string }).type)).toEqual([
-      'system',
+    expect(
+      records.map((record) => {
+        const value = record as {
+          type: string
+          subtype?: string
+          state?: string
+        }
+        if (value.type === 'result') return 'result'
+        return value.subtype === 'session_state_changed'
+          ? `${value.subtype}:${value.state}`
+          : (value.subtype ?? value.type)
+      }),
+    ).toEqual([
+      'session_state_changed:running',
+      'init',
       'assistant',
       'result',
+      'session_state_changed:idle',
     ])
-    expect(records[0]).toMatchObject({ type: 'system', subtype: 'init' })
-    expect(records[1]).toEqual({
+    expect(records[1]).toMatchObject({ type: 'system', subtype: 'init' })
+    expect(records[2]).toEqual({
       type: 'assistant',
       message: {
         id: expect.any(String),
@@ -1392,8 +1424,9 @@ describe('CLI protocol', () => {
       },
       parent_tool_use_id: null,
       session_id: sessionId,
+      uuid: expect.stringMatching(UUID_PATTERN),
     })
-    expect(records[2]).toMatchObject({
+    expect(records[3]).toMatchObject({
       type: 'result',
       subtype: 'success',
       num_turns: 0,
@@ -1606,7 +1639,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.sink({
       type: 'user-message',
@@ -1615,12 +1648,68 @@ describe('CLI protocol', () => {
       attachments: ['notes.md'],
     })
     expect(records).toContainEqual({
-      type: 'user_message',
+      type: 'user',
       message: 'checkpoint',
       status: 'proactive',
       attachments: ['notes.md'],
       uuid: expect.any(String),
       session_id: sessionId,
+    })
+  })
+
+  it('envelopes replay, control, warning, tool-result, and supplied identifiers', () => {
+    const records: Record<string, unknown>[] = []
+    const compactUuid = '22222222-2222-4222-8222-222222222222'
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      { includePartialMessages: false },
+    )
+
+    output.replayUser({ role: 'user', content: 'replayed' })
+    output.syntheticAssistant('local answer')
+    output.controlRequest({
+      request_id: 'request-1',
+      request: { subtype: 'interrupt' },
+    })
+    output.sink({ type: 'warning', message: 'warning' })
+    output.sink({
+      type: 'tool-result',
+      callId: 'tool-1',
+      content: 'done',
+      isError: false,
+    })
+    output.sink({
+      type: 'compact-boundary',
+      trigger: 'manual',
+      preTokens: 12,
+      uuid: compactUuid,
+    })
+
+    expect(records.map((record) => record.type)).toEqual([
+      'user',
+      'assistant',
+      'control_request',
+      'system',
+      'user',
+      'system',
+    ])
+    expect(records.every((record) => record.session_id === sessionId)).toBe(
+      true,
+    )
+    expect(
+      records.every(
+        (record) =>
+          typeof record.uuid === 'string' && UUID_PATTERN.test(record.uuid),
+      ),
+    ).toBe(true)
+    expect(new Set(records.map((record) => record.uuid)).size).toBe(
+      records.length,
+    )
+    expect(records.at(-1)).toMatchObject({
+      subtype: 'compact_boundary',
+      uuid: compactUuid,
     })
   })
 
@@ -1630,8 +1719,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
-      true,
+      { includePartialMessages: false, includeHookEvents: true },
     )
     output.sink({
       type: 'hook',
@@ -1686,7 +1774,7 @@ describe('CLI protocol', () => {
       (record) => hidden.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     defaultOutput.sink({
       type: 'hook',
@@ -1706,7 +1794,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      true,
+      { includePartialMessages: true },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'text-delta', delta: 'x' })
@@ -1714,22 +1802,66 @@ describe('CLI protocol', () => {
       type: 'tool-call',
       call: { id: 'tool-1', name: 'Read', input: { file_path: 'a.txt' } },
     })
+    output.sink({
+      type: 'tool-call',
+      call: { id: 'tool-2', name: 'Read', input: { file_path: 'b.txt' } },
+    })
+    output.sink({
+      type: 'usage',
+      usage: { inputTokens: 7, outputTokens: 3 },
+    })
     output.sink({ type: 'state', state: 'executing-tools' })
 
-    const eventTypes = records
-      .filter((record) => record.type === 'stream_event')
-      .map((record) => (record.event as { type: string }).type)
-    expect(eventTypes).toEqual([
+    expect(
+      records.map((record) => {
+        if (record.type === 'system')
+          return `${record.subtype}:${String(record.status)}`
+        if (record.type !== 'stream_event') return record.type
+        const event = record.event as { type: string; index?: number }
+        return `${event.type}${event.index === undefined ? '' : `:${event.index}`}`
+      }),
+    ).toEqual([
+      'status:requesting',
       'message_start',
-      'content_block_start',
-      'content_block_delta',
-      'content_block_stop',
-      'content_block_start',
-      'content_block_delta',
-      'content_block_stop',
+      'content_block_start:0',
+      'content_block_delta:0',
+      'content_block_stop:0',
+      'content_block_start:1',
+      'content_block_delta:1',
+      'content_block_stop:1',
+      'content_block_start:2',
+      'content_block_delta:2',
+      'assistant',
+      'content_block_stop:2',
       'message_delta',
       'message_stop',
     ])
+    const messageStart = records.find(
+      (record) =>
+        record.type === 'stream_event' &&
+        (record.event as { type?: string }).type === 'message_start',
+    )
+    const assistant = records.find((record) => record.type === 'assistant')
+    const messageDelta = records.find(
+      (record) =>
+        record.type === 'stream_event' &&
+        (record.event as { type?: string }).type === 'message_delta',
+    )
+    expect(messageStart).toMatchObject({
+      event: { message: { usage: { input_tokens: 7, output_tokens: 0 } } },
+    })
+    expect(assistant).toMatchObject({
+      message: { usage: { input_tokens: 7, output_tokens: 0 } },
+    })
+    expect(messageDelta).toMatchObject({
+      event: { usage: { output_tokens: 3 } },
+    })
+    const uuids = records.map((record) => record.uuid)
+    expect(records.every((record) => record.session_id === sessionId)).toBe(
+      true,
+    )
+    expect(uuids.every((uuid) => UUID_PATTERN.test(String(uuid)))).toBe(true)
+    expect(new Set(uuids).size).toBe(records.length)
     expect(records).toContainEqual(
       expect.objectContaining({
         type: 'stream_event',
@@ -1742,6 +1874,18 @@ describe('CLI protocol', () => {
         }),
       }),
     )
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'stream_event',
+        event: expect.objectContaining({
+          type: 'content_block_delta',
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"file_path":"b.txt"}',
+          },
+        }),
+      }),
+    )
   })
 
   it('uses the provider terminal reason in partial stream output', () => {
@@ -1750,7 +1894,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      true,
+      { includePartialMessages: true },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'text-delta', delta: 'partial' })
@@ -1773,22 +1917,66 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
+      {
+        includePartialMessages: false,
+        emitSessionStateEvents: true,
+      },
     )
     output.init()
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'state', state: 'failed' })
+    output.error('provider failed', Date.now())
 
     expect(
-      records.filter(
-        (record) =>
-          record.type === 'system' &&
-          record.subtype === 'session_state_changed',
+      records.map((record) =>
+        record.subtype === 'session_state_changed'
+          ? `${record.subtype}:${String(record.state)}`
+          : (record.subtype ?? record.type),
       ),
     ).toEqual([
-      expect.objectContaining({ state: 'running' }),
-      expect.objectContaining({ state: 'idle' }),
+      'session_state_changed:running',
+      'init',
+      'assistant',
+      'error_during_execution',
+      'session_state_changed:idle',
     ])
+  })
+
+  it('gates and deduplicates immediate session states before terminal idle', () => {
+    const records: Record<string, unknown>[] = []
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      {
+        includePartialMessages: false,
+        emitSessionStateEvents: true,
+      },
+    )
+
+    output.init()
+    output.sink({ type: 'state', state: 'awaiting-model' })
+    output.sink({ type: 'state', state: 'awaiting-permission' })
+    output.sink({ type: 'session-state-changed', state: 'requires_action' })
+    output.sink({ type: 'session-state-changed', state: 'idle' })
+    output.result(
+      { sessionId, text: '', usage: { inputTokens: 0, outputTokens: 0 } },
+      Date.now(),
+    )
+
+    const states = records.filter(
+      (record) => record.subtype === 'session_state_changed',
+    )
+    expect(states.map((record) => record.state)).toEqual([
+      'running',
+      'requires_action',
+      'idle',
+    ])
+    expect(records.at(-2)).toMatchObject({ type: 'result' })
+    expect(records.at(-1)).toMatchObject({
+      subtype: 'session_state_changed',
+      state: 'idle',
+    })
   })
 
   it('marks and resets a discarded model attempt before the recovered turn', () => {
@@ -1797,7 +1985,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      true,
+      { includePartialMessages: true },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'text-delta', delta: 'discarded partial' })
@@ -1842,7 +2030,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({
@@ -1884,7 +2072,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      true,
+      { includePartialMessages: true },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({
@@ -1933,6 +2121,28 @@ describe('CLI protocol', () => {
         }),
       }),
     )
+    expect(
+      records.map((record) => {
+        if (record.type === 'system')
+          return `${record.subtype}:${String(record.status)}`
+        if (record.type !== 'stream_event') return record.type
+        const event = record.event as { type: string; index?: number }
+        return `${event.type}${event.index === undefined ? '' : `:${event.index}`}`
+      }),
+    ).toEqual([
+      'status:requesting',
+      'message_start',
+      'content_block_start:0',
+      'content_block_delta:0',
+      'content_block_delta:0',
+      'content_block_stop:0',
+      'content_block_start:1',
+      'content_block_delta:1',
+      'assistant',
+      'content_block_stop:1',
+      'message_delta',
+      'message_stop',
+    ])
   })
 
   it('emits prompt suggestion records after the result', () => {
@@ -1941,7 +2151,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.result(
       { sessionId, text: 'done', usage: { inputTokens: 1, outputTokens: 1 } },
@@ -1960,13 +2170,41 @@ describe('CLI protocol', () => {
     })
   })
 
+  it('preserves the authoritative result session identity', () => {
+    const records: Record<string, unknown>[] = []
+    const resultSessionId = '44444444-4444-4444-8444-444444444444'
+    const output = new StreamJsonOutput(
+      (record) => records.push(record as Record<string, unknown>),
+      runtimeInfo,
+      sessionId,
+      { includePartialMessages: false },
+    )
+
+    output.result(
+      {
+        sessionId: resultSessionId,
+        text: 'done',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      },
+      Date.now(),
+    )
+
+    expect(records).toEqual([
+      expect.objectContaining({
+        type: 'result',
+        session_id: resultSessionId,
+        uuid: expect.stringMatching(UUID_PATTERN),
+      }),
+    ])
+  })
+
   it('maps local SDK control events to exact stream-json records', () => {
     const records: Record<string, unknown>[] = []
     const output = new StreamJsonOutput(
       (record) => records.push(record as Record<string, unknown>),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({ type: 'state', state: 'compacting' })
@@ -2025,7 +2263,6 @@ describe('CLI protocol', () => {
     expect(
       records.filter((r) => r.type === 'system').map((r) => r.subtype),
     ).toEqual([
-      'session_state_changed',
       'status',
       'compact_boundary',
       'status',
@@ -2064,7 +2301,7 @@ describe('CLI protocol', () => {
       (record) => records.push(record),
       runtimeInfo,
       sessionId,
-      false,
+      { includePartialMessages: false },
     )
     output.sink({ type: 'state', state: 'awaiting-model' })
     output.sink({

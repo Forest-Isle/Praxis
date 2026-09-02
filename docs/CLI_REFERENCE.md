@@ -89,6 +89,14 @@ Concrete `--tools` selections load their selected schemas directly. Use
 `--disallowedTools ToolSearch` to disable deferral and restore the complete MCP
 tool list.
 
+## Stream JSON compatibility environment
+
+Stream JSON output omits `session_state_changed` records by default. Set
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` to enable the Claude-compatible state
+records; unset, empty, `0`, `false`, and every other value leave them disabled.
+When enabled, `running` precedes the turn's `system/init` record and terminal
+`idle` follows the `result` record, so `result` is not the final JSON line.
+
 ## Project outcome evaluations
 
 Run strict project cases in isolated workspaces:
