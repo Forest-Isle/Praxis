@@ -92,9 +92,8 @@ Acceptance: a deterministic injected runtime passes with complete artifacts;
 unsafe paths, unauthorized verifiers, forbidden changes, timeout, and nonzero
 verification fail closed.
 
-Tasks 0.1, 0.2, 1.1, 1.2, 2.1, 2.2, 2.3, and 3.1 are implemented. Task 3.2's
-main-session and auxiliary-consumer slices are implemented; comparison evidence
-is next.
+Tasks 0.1 through 3.3, 4.1, 4.2, and 4.3a are implemented. TurnAccounting in
+Task 4.3b is the next turn-kernel extraction.
 
 ### Task 0.2: Baseline suite [depends: Task 0.1]
 
@@ -238,10 +237,24 @@ durable callback and all following effects, and generation remains private
 operational state rather than a provider, runtime, Transcript, or persistence
 field.
 
-### Task 4.3: Persistence and accounting [depends: Task 4.2]
+### Task 4.3a: TurnPersistence — implemented by #586 [depends: Task 4.2]
 
-Extract transcript commit boundaries and usage/cost/duration aggregation while
-preserving append-only event bytes and lifecycle ordering.
+`TurnPersistence` is constructed after active-branch selection and exposes only
+snapshot reads, explicit projection refresh, and a typed command union. It
+serializes projection-only, native message, tool-start, tool-completion, and
+compaction commits. Combined projection/native message commands stage the
+ephemeral Claude-shaped projection, await the authoritative append-only native
+Transcript commit, and publish the staged view only after success. Typed
+receipts gate caller-owned hooks, context effects, runtime events, memory, and
+accounting. Compaction preserves boundary/summary/replay atomicity and does not
+refresh compatibility state before the established PostCompact ordering point.
+
+### Task 4.3b: TurnAccounting [depends: Task 4.3a]
+
+Extract usage, cost, API/tool duration, line-change, preflight, and
+no-double-count aggregation behind the accepted persistence receipt boundary.
+Accounting remains outside Transcript/provider/runtime schemas and may not
+weaken cancellation or externally committed auxiliary-metric behavior.
 
 Acceptance: characterization, native fixture, outcome, package, performance,
 and security gates remain unchanged or improve after every extraction.

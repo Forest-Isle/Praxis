@@ -333,6 +333,36 @@
       ]
     },
     {
+      "id": "application.turn.persistence",
+      "seam": "TurnPersistence",
+      "contract": "The active main turn commits authoritative native transcript state and its ephemeral compatibility projection through one serialized persistence seam.",
+      "status": "qualified",
+      "modules": [
+        "src/application/turn-persistence.ts",
+        "src/application/session-service.ts"
+      ],
+      "outcomes": [
+        "Combined message commits publish compatibility projection only after native persistence succeeds."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-persistence.test.ts",
+          "testName": "TurnPersistence > commits staged projection only after the authoritative message append"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > automatically compacts native history while preserving the complete current-turn suffix and metering"
+        }
+      ]
+    },
+    {
       "id": "core.context.recovery",
       "seam": "ContextEngine recovery",
       "contract": "Automatic context recovery is bounded and never commits a no-progress attempt.",
