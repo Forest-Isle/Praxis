@@ -220,10 +220,11 @@ evidence.
 
 ## Phase 4 — Turn-kernel deepening
 
-### Task 4.1: TurnCoordinator [depends: Phases 1–3]
+### Task 4.1: TurnCoordinator — implemented by #582 [depends: Phases 1–3]
 
-Extract single-active-turn ownership, steering/follow-up mailbox, cancellation,
-and terminal sealing behind typed outcomes.
+`TurnCoordinator` owns single-active-turn registration, the steering mailbox,
+cancellation, cleanup, and terminal sealing behind typed outcomes. Sequential
+follow-up turns remain TUI-owned and cross this seam through ordinary `resume()`.
 
 ### Task 4.2: ContextPreparation and generation [depends: Task 4.1]
 
