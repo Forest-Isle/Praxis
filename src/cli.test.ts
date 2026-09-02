@@ -3974,6 +3974,7 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
       url: string
       authorization: string | null
       model: string
+      prompt: string
     }> = []
     await Promise.all([
       mkdir(configRoot, { recursive: true }),
@@ -4030,12 +4031,16 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
       })
       process.chdir(cwd)
       globalThis.fetch = (async (input, init) => {
-        const body = JSON.parse(String(init?.body)) as { model?: unknown }
+        const body = JSON.parse(String(init?.body)) as {
+          model?: unknown
+          messages?: Array<{ content?: unknown }>
+        }
         const model = String(body.model)
         requests.push({
           url: String(input),
           authorization: new Headers(init?.headers).get('authorization'),
           model,
+          prompt: String(body.messages?.[0]?.content ?? ''),
         })
         const content =
           model === 'judge-model'
@@ -4061,18 +4066,38 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         configRoot,
         statePath: criticStatePath,
       })
-      let critique = ''
-      for await (const event of critic.complete({
-        messages: [{ role: 'user', content: 'review' }],
-      })) {
-        if (event.type === 'text-delta') critique += event.delta
-      }
-      expect(critique).toBe('trusted critique')
-      expect(requests.at(-1)).toEqual({
-        url: 'https://project.example/v1/chat/completions',
-        authorization: 'Bearer trusted-provider-secret',
-        model: 'project-model',
+      const secondCritic = await createCritic({
+        configRoot,
+        statePath: criticStatePath,
       })
+      expect(critic).not.toBe(secondCritic)
+      const completeCritic = async (provider: ModelProvider) => {
+        let text = ''
+        for await (const event of provider.complete({
+          messages: [{ role: 'user', content: 'review' }],
+        })) {
+          if (event.type === 'text-delta') text += event.delta
+        }
+        return text
+      }
+      await expect(completeCritic(critic)).resolves.toBe('trusted critique')
+      await expect(completeCritic(secondCritic)).resolves.toBe(
+        'trusted critique',
+      )
+      expect(requests.slice(0, 2)).toEqual([
+        {
+          url: 'https://project.example/v1/chat/completions',
+          authorization: 'Bearer trusted-provider-secret',
+          model: 'project-model',
+          prompt: 'review',
+        },
+        {
+          url: 'https://project.example/v1/chat/completions',
+          authorization: 'Bearer trusted-provider-secret',
+          model: 'project-model',
+          prompt: 'review',
+        },
+      ])
 
       await resolveInteractiveProviderStartup({
         controls: { ...DEFAULT_CLI_CONTROLS, trustProject: true },
@@ -4083,22 +4108,47 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
       })
       const judge = dependencies.pluginEval?.judge
       if (!judge) throw new Error('plugin eval judge unavailable')
-      await expect(
+      const votes = await Promise.all([
         judge.vote({
           criteria: 'return true',
-          focus: 'fixture',
+          focus: 'fixture one',
           model: 'judge-model',
         }),
-      ).resolves.toEqual({
-        passed: true,
-        explanation: 'trusted route',
-        costUsd: 3,
-      })
-      expect(requests.at(-1)).toEqual({
-        url: 'https://project.example/v1/chat/completions',
-        authorization: 'Bearer trusted-provider-secret',
-        model: 'judge-model',
-      })
+        judge.vote({
+          criteria: 'return true',
+          focus: 'fixture two',
+          model: 'judge-model',
+        }),
+      ])
+      expect(votes).toEqual([
+        {
+          passed: true,
+          explanation: 'trusted route',
+          costUsd: 3,
+        },
+        {
+          passed: true,
+          explanation: 'trusted route',
+          costUsd: 3,
+        },
+      ])
+      expect(requests.slice(-2)).toHaveLength(2)
+      expect(requests.slice(-2)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            url: 'https://project.example/v1/chat/completions',
+            authorization: 'Bearer trusted-provider-secret',
+            model: 'judge-model',
+            prompt: expect.stringContaining('fixture one'),
+          }),
+          expect.objectContaining({
+            url: 'https://project.example/v1/chat/completions',
+            authorization: 'Bearer trusted-provider-secret',
+            model: 'judge-model',
+            prompt: expect.stringContaining('fixture two'),
+          }),
+        ]),
+      )
     } finally {
       process.chdir(previousCwd)
       globalThis.fetch = previousFetch

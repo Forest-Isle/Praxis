@@ -13,7 +13,9 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ModelProviderError, type ModelProvider } from '../core/runtime.js'
 import type { ModelToolCall } from '../core/runtime.js'
+import { FallbackModelProvider } from '../providers/fallback-provider.js'
 import {
   loadProjectMemoryIndex,
   listProjectMemoryCandidates,
@@ -585,6 +587,84 @@ describe('Project memory', () => {
         path.endsWith('.jsonl'),
       ),
     ).toEqual([])
+  })
+
+  it('keeps fallback routing through extraction tools and resets per extraction', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-project-memory-turns-'))
+    roots.push(root)
+    const memoryDirectory = join(root, 'memory')
+    const topicPath = join(memoryDirectory, 'topic.md')
+    const requests: Parameters<ModelProvider['complete']>[0][] = []
+    const factory = vi.fn(() => {
+      const extraction = factory.mock.calls.length
+      let fallbackCalls = 0
+      const primary: ModelProvider = {
+        model: 'memory-primary',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (extraction === 1) {
+            throw new ModelProviderError('primary unavailable', {
+              retryable: true,
+              kind: 'overloaded',
+            })
+          }
+          yield { type: 'text-delta', delta: 'primary complete' }
+        },
+      }
+      const fallback: ModelProvider = {
+        model: 'memory-fallback',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete(request) {
+          requests.push(request)
+          fallbackCalls += 1
+          if (fallbackCalls === 1) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'memory-write',
+                name: 'Write',
+                input: {
+                  file_path: topicPath,
+                  content:
+                    '---\nname: Topic\ndescription: Durable\ntype: project\n---\nFACT',
+                },
+              },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'fallback complete' }
+        },
+      }
+      return new FallbackModelProvider({
+        providers: [primary, fallback],
+        retryDelayMs: 0,
+        routeScope: 'turn',
+      })
+    })
+    const extractor = new ProjectMemoryAgentExtractor({
+      providerFactory: factory,
+    })
+    const input = (sessionId: string, id: string) => ({
+      directory: memoryDirectory,
+      sessionId,
+      messages: [{ id, role: 'user' as const, content: 'remember this' }],
+      constraints: {
+        persistTranscript: false as const,
+        allowSubagents: false as const,
+        allowRemote: false as const,
+        maxModelTurns: 4 as const,
+        tools: ['Read', 'Write', 'Edit'] as const,
+      },
+      signal: new AbortController().signal,
+    })
+
+    await extractor.extract(input('session-1', 'u1'))
+    await extractor.extract(input('session-2', 'u2'))
+
+    expect(await readFile(topicPath, 'utf8')).toContain('FACT')
+    expect(factory).toHaveBeenCalledTimes(2)
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]?.messages)).toContain('remember this')
   })
 
   it('keeps the cursor retryable when an isolated memory mutation fails', async () => {

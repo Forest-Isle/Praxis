@@ -53,6 +53,34 @@ describe('NativeSidechainTranscript', () => {
     await expect(store.metadata()).resolves.toEqual(metadata)
   })
 
+  it('round-trips an optional selected model while accepting legacy metadata', async () => {
+    const { paths } = await setup()
+    const store = new NativeSidechainTranscript(paths)
+    const modelMetadata = { ...metadata, model: 'recovery-model' }
+
+    await store.create('Inspect this.', modelMetadata)
+
+    await expect(store.metadata()).resolves.toEqual(modelMetadata)
+  })
+
+  it.each(['', '   ', 'model\0with-nul'])(
+    'rejects invalid optional models without mutation: %j',
+    async (model) => {
+      const { paths } = await setup()
+      const store = new NativeSidechainTranscript(paths)
+
+      await expect(
+        store.create('Inspect this.', { ...metadata, model }),
+      ).rejects.toThrow(/metadata model is invalid/)
+      await expect(readFile(paths.metadataFile)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+      await expect(readFile(paths.transcriptFile)).rejects.toMatchObject({
+        code: 'ENOENT',
+      })
+    },
+  )
+
   it('rejects mismatched paths and metadata without mutation', async () => {
     const { paths } = await setup()
     expect(

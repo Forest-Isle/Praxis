@@ -121,9 +121,20 @@ wrapper owns bounded retry, failed-attempt buffering, request-aware fallback
 admission, and the sealed route through that turn's tool continuations.
 Incompatible fallback routes fail closed, and each new main user turn starts
 from the primary route. A `prompt_too_long` reactive compaction retry retains
-the same turn client. Propagation to auxiliary consumers remains a subsequent
-slice; this decision does not expand the small `ModelProvider` contract or
-place provider-native state in core or transcripts.
+the same turn client. The same optional turn factory is propagated to
+multi-completion auxiliary consumers: each Agent initial execution, Workflow
+invocation, Team generation, and Project-memory extraction/selection operation
+gets one fresh client that remains sticky through that logical Turn's tool
+continuations; each later background follow-up and recovered execution gets a
+new client and starts from its selected primary route. Session-memory requests
+reuse a service-owned completion-scoped client whose routing restarts from
+primary for every request; auto-mode critics and eval-judge votes remain
+independently constructed one-shot clients. Recovery hydration performs no
+provider work. A recovered Agent reconstructs its fresh client from only an
+optional provider-neutral selected `model` in native sidechain metadata;
+provider/profile, route/fallback seal, protocol, response, credential, and wire
+state are never persisted or restored. This decision does not expand the small
+`ModelProvider` contract or place provider-native state in core or transcripts.
 
 ### Public OpenAI Responses transport
 

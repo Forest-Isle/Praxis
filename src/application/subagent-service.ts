@@ -710,6 +710,7 @@ export interface ClaudeSubagentExecutorOptions {
   maxCalls?: number
   maxOutputBytes?: number
   providerForModel?: (model: string) => ModelProvider
+  providerForTurn?: (model?: string) => ModelProvider
   toolNames?: readonly string[]
   backgroundTaskNotifications?: (waitForRunning: boolean) => Promise<string[]>
   notificationDelivered?: (notification: {
@@ -937,6 +938,16 @@ export class ClaudeSubagentExecutor {
     return this.options.cwdProvider?.() ?? this.options.cwd
   }
 
+  private providerForTurn(model?: string): ModelProvider {
+    if (this.options.providerForTurn) {
+      return this.options.providerForTurn(model)
+    }
+    if (model !== undefined) {
+      return this.options.providerForModel?.(model) ?? this.options.provider
+    }
+    return this.options.provider
+  }
+
   private agentDefinition(
     input: Pick<AgentInput, 'subagentType'>,
   ): ClaudeAgentRuntimeDefinition | null {
@@ -1136,7 +1147,11 @@ export class ClaudeSubagentExecutor {
     ) {
       throw new Error(`Unknown Claude agent ${input.subagentType}`)
     }
-    if (input.model && !this.options.providerForModel) {
+    if (
+      input.model &&
+      !this.options.providerForModel &&
+      !this.options.providerForTurn
+    ) {
       throw new Error('Agent model overrides are unavailable for this provider')
     }
     if (
@@ -1270,6 +1285,7 @@ export class ClaudeSubagentExecutor {
         ...(input.permissionMode
           ? { permissionMode: input.permissionMode }
           : {}),
+        ...(input.model ? { model: input.model } : {}),
         ...(input.isolation ? { isolation: input.isolation } : {}),
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(initialIsolation ? { worktreePath: initialIsolation.cwd } : {}),
@@ -1282,9 +1298,7 @@ export class ClaudeSubagentExecutor {
     } catch (error) {
       return settleInitialSetupFailure(error, initialIsolation)
     }
-    const provider = input.model
-      ? (this.options.providerForModel?.(input.model) ?? this.options.provider)
-      : this.options.provider
+    const provider = this.providerForTurn(input.model)
     const backgroundRun = this.createBackgroundAgentRun({
       input,
       parentCwd,
@@ -1299,12 +1313,15 @@ export class ClaudeSubagentExecutor {
           parentCwd,
         ),
       execute: async (cwd, message, signal, continuation) => {
+        const turnProvider = continuation
+          ? this.providerForTurn(input.model)
+          : provider
         const run = (lease: { nativeLease: NativeSessionTranscriptLease }) =>
           this.runSidechain({
             ...lease,
             sessionId,
             input,
-            provider,
+            provider: turnProvider,
             agentId,
             spawnDepth,
             promptId,
@@ -1874,15 +1891,16 @@ export class ClaudeSubagentExecutor {
     ) {
       throw new Error(`Unknown Claude agent ${options.agentType}`)
     }
-    if (options.model && !this.options.providerForModel) {
+    if (
+      options.model &&
+      !this.options.providerForModel &&
+      !this.options.providerForTurn
+    ) {
       throw new Error(
         'Workflow agent model overrides are unavailable for this provider',
       )
     }
-    const provider = options.model
-      ? (this.options.providerForModel?.(options.model) ??
-        this.options.provider)
-      : this.options.provider
+    const provider = this.providerForTurn(options.model)
     const input: AgentInput = {
       description: options.label ?? 'Workflow agent',
       prompt: options.prompt,
@@ -1932,6 +1950,7 @@ export class ClaudeSubagentExecutor {
         spawnDepth: 1,
         cwd: agentCwd,
         promptId: options.promptId,
+        ...(input.model ? { model: input.model } : {}),
         ...(options.isolation ? { isolation: options.isolation } : {}),
         ...(isolation ? { worktreePath: isolation.cwd } : {}),
       })
@@ -2341,11 +2360,11 @@ export class ClaudeSubagentExecutor {
       prompt,
       subagentType: agentType,
       ...(name ? { name } : {}),
+      ...(metadata?.model ? { model: metadata.model } : {}),
       ...(permissionMode ? { permissionMode } : {}),
       ...(isolation ? { isolation } : {}),
       runInBackground: true,
     }
-    const provider = this.options.provider
     const recoveredPromptId = metadata?.promptId ?? randomUUID()
     const backgroundRun = this.createBackgroundAgentRun({
       input,
@@ -2362,6 +2381,9 @@ export class ClaudeSubagentExecutor {
           parentCwd,
         ),
       execute: async (cwd, message, signal, continuation) => {
+        // Recovery never restores provider-native route state. Each recovered
+        // execution, including every later follow-up, gets a fresh turn.
+        const provider = this.providerForTurn(input.model)
         const run = (lease: { nativeLease: NativeSessionTranscriptLease }) =>
           this.runSidechain({
             ...lease,
@@ -2393,7 +2415,8 @@ export class ClaudeSubagentExecutor {
       prompt,
       toolUseId,
       outputFile: sidechainPaths.transcriptFile,
-      resolvedModel: provider.model ?? 'praxis/provider',
+      resolvedModel:
+        metadata?.model ?? this.options.provider.model ?? 'praxis/provider',
       lifecycle: backgroundRun.lifecycle,
       run: backgroundRun.run,
       markBackground: backgroundRun.markBackground,

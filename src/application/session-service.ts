@@ -1940,6 +1940,9 @@ export class ClaudeSessionService {
             ...(this.options.providerForModel
               ? { providerForModel: this.options.providerForModel }
               : {}),
+            ...(this.options.providerForTurn
+              ? { providerForTurn: this.options.providerForTurn }
+              : {}),
             baseTools: wrappedBase,
             ...(this.options.deferMcpTools === undefined
               ? {}
@@ -4144,6 +4147,9 @@ export class ClaudeSessionService {
                   : {}),
                 ...(this.options.providerForModel
                   ? { providerForModel: this.options.providerForModel }
+                  : {}),
+                ...(this.options.providerForTurn
+                  ? { providerForTurn: this.options.providerForTurn }
                   : {}),
                 baseTools,
                 ...(this.options.deferMcpTools === undefined

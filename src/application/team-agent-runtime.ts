@@ -35,6 +35,7 @@ export interface ClaudeTeamAgentRuntimeOptions {
   readonly hooks?: ClaudeHookRunner
   readonly contextAssembler?: ContextAssembler
   readonly providerForModel?: (model: string) => ModelProvider
+  readonly providerForTurn?: (model?: string) => ModelProvider
   readonly permissionResolverForMode?: (
     mode: AgentPermissionMode,
   ) => PermissionResolver
@@ -150,6 +151,9 @@ export class ClaudeTeamAgentRuntime implements TeamAgentRuntime {
         : {}),
       ...(this.options.providerForModel
         ? { providerForModel: this.options.providerForModel }
+        : {}),
+      ...(this.options.providerForTurn
+        ? { providerForTurn: this.options.providerForTurn }
         : {}),
       ...(this.options.permissionResolverForMode
         ? {

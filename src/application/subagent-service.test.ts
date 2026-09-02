@@ -26,7 +26,7 @@ import type {
   RuntimeEvent,
   ToolRegistry,
 } from '../core/runtime.js'
-import { AgentRunCancelledError } from '../core/runtime.js'
+import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
@@ -37,6 +37,7 @@ import {
   SubagentLifecycleStore,
   type PersistedSubagentRunResult,
 } from '../persistence/subagent-lifecycle-store.js'
+import { FallbackModelProvider } from '../providers/fallback-provider.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { NativeSidechainTranscript } from './native-sidechain-transcript.js'
 import { ClaudeSessionService } from './session-service.js'
@@ -202,6 +203,264 @@ function nativeEnvelope(
 }
 
 describe('foreground Claude Agent execution', () => {
+  it('keeps a turn fallback route through an Agent tool continuation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-turn-fallback-'))
+    roots.push(root)
+    let primaryCalls = 0
+    let fallbackCalls = 0
+    const primary: ModelProvider = {
+      model: 'primary-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        terminalReasons: true,
+      },
+      async *complete() {
+        primaryCalls += 1
+        yield* []
+        throw new ModelProviderError('primary unavailable', {
+          retryable: true,
+          kind: 'overloaded',
+        })
+      },
+    }
+    const fallback: ModelProvider = {
+      model: 'fallback-model',
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        terminalReasons: true,
+      },
+      async *complete() {
+        fallbackCalls += 1
+        if (fallbackCalls === 1) {
+          yield {
+            type: 'tool-call',
+            call: {
+              id: 'read-fallback',
+              name: 'Read',
+              input: { file_path: 'fixture.txt' },
+            },
+          }
+          yield { type: 'terminal', reason: 'tool_use' }
+          return
+        }
+        yield { type: 'text-delta', delta: 'fallback complete' }
+        yield { type: 'terminal', reason: 'end_turn' }
+      },
+    }
+    const providerForTurn = vi.fn(
+      () =>
+        new FallbackModelProvider({
+          providers: [primary, fallback],
+          retryDelayMs: 0,
+          routeScope: 'turn',
+        }),
+    )
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'native',
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: primary,
+      providerForTurn,
+      baseTools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read a fixture',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'fixture', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const cwd = root
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'turn-fallback-agent',
+        name: 'Agent',
+        input: {
+          description: 'Read fixture',
+          prompt: 'Read the fixture',
+          subagent_type: 'general-purpose',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    const result = await registry.execute(call, { cwd })
+
+    expect(result.content).toContain('fallback complete')
+    expect(providerForTurn).toHaveBeenCalledTimes(1)
+    expect(providerForTurn).toHaveBeenCalledWith(undefined)
+    expect(primaryCalls).toBe(3)
+    expect(fallbackCalls).toBe(2)
+  })
+
+  it('allocates a fresh provider for each background Agent follow-up', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-background-turns-'))
+    roots.push(root)
+    const clients: ModelProvider[] = []
+    const providerForTurn = vi.fn(() => {
+      const label = clients.length === 0 ? 'initial' : 'follow-up'
+      const client: ModelProvider = {
+        model: label,
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: label }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      }
+      clients.push(client)
+      return client
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'native',
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      },
+      providerForTurn,
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const launched = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'background-turn-agent',
+          name: 'Agent',
+          input: {
+            description: 'Background turn',
+            prompt: 'Initial task',
+            run_in_background: true,
+          },
+        },
+        { cwd: root },
+      ),
+      { cwd: root },
+    )
+    const agentId = String(launched.nativeToolUseResult?.agentId)
+    const firstOutput = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'background-turn-output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd: root },
+      ),
+      { cwd: root },
+    )
+    expect(firstOutput.content).toContain('initial')
+    const sent = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'background-turn-send',
+          name: 'SendMessage',
+          input: { to: agentId, message: 'Follow up' },
+        },
+        { cwd: root },
+      ),
+      { cwd: root },
+    )
+    expect(sent.content).toContain('resumedAgentId')
+    const secondOutput = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'background-turn-output-2',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd: root },
+      ),
+      { cwd: root },
+    )
+    expect(secondOutput.content).toContain('follow-up')
+    expect(providerForTurn).toHaveBeenCalledTimes(2)
+    expect(clients).toHaveLength(2)
+    expect(clients[0]).not.toBe(clients[1])
+    await executor.close()
+  })
+
+  it('allocates distinct providers for independent Workflow invocations', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-turns-'))
+    roots.push(root)
+    const clients: ModelProvider[] = []
+    const models: (string | undefined)[] = []
+    const providerForTurn = vi.fn((model?: string) => {
+      models.push(model)
+      const client: ModelProvider = {
+        model: model ?? 'inherited-model',
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: model ?? 'inherited' }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      }
+      clients.push(client)
+      return client
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot: join(root, 'config'),
+      dataPlane: 'native',
+      cwd: root,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'unused' }
+        },
+      },
+      providerForTurn,
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const run = (model: string, suffix: string) =>
+      executor.runWorkflowAgent({
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        runId: `workflow-turn-${suffix}`,
+        agentId: `a1234567890abcde${suffix}`,
+        transcriptDirectory: join(root, `workflow-${suffix}`),
+        prompt: `Workflow ${suffix}`,
+        model,
+      })
+
+    await expect(run('workflow-model-a', '1')).resolves.toMatchObject({
+      result: 'workflow-model-a',
+    })
+    await expect(run('workflow-model-b', '2')).resolves.toMatchObject({
+      result: 'workflow-model-b',
+    })
+    expect(providerForTurn).toHaveBeenCalledTimes(2)
+    expect(models).toEqual(['workflow-model-a', 'workflow-model-b'])
+    expect(clients[0]).not.toBe(clients[1])
+    await executor.close()
+  })
+
   it('installs the no-hook stop boundary for durable follow-ups', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-durable-stop-test-'))
     roots.push(root)
@@ -4279,6 +4538,7 @@ describe('foreground Claude Agent execution', () => {
           spawnDepth: 1,
           cwd,
           promptId,
+          model: 'recovery-model',
           name: `${persistedStatus}-reviewer`,
         })}\n`,
       )
@@ -4293,6 +4553,7 @@ describe('foreground Claude Agent execution', () => {
         `${persistedStatus} before restart`,
       )
       let requests = 0
+      const providerModels: (string | undefined)[] = []
       const executor = new ClaudeSubagentExecutor({
         configRoot,
         dataPlane: 'native',
@@ -4307,6 +4568,21 @@ describe('foreground Claude Agent execution', () => {
             yield { type: 'usage', usage: { inputTokens: 2, outputTokens: 1 } }
           },
         },
+        providerForTurn: vi.fn((model?: string): ModelProvider => {
+          providerModels.push(model)
+          return {
+            model: model ?? 'fixture-model',
+            capabilities: { streaming: true, usage: true, tools: true },
+            async *complete() {
+              requests += 1
+              yield { type: 'text-delta', delta: 'TERMINAL_RESUMED' }
+              yield {
+                type: 'usage',
+                usage: { inputTokens: 2, outputTokens: 1 },
+              }
+            },
+          }
+        }),
         baseTools: emptyTools,
         permissions: { resolve: () => ({ behavior: 'allow' }) },
       })
@@ -4325,6 +4601,7 @@ describe('foreground Claude Agent execution', () => {
       )
       expect(before.content).toContain(`<status>${outputStatus}</status>`)
       expect(requests).toBe(0)
+      expect(providerModels).toEqual([])
 
       await registry.execute(
         await registry.prepare(
@@ -4354,6 +4631,34 @@ describe('foreground Claude Agent execution', () => {
       )
       expect(after.content).toContain('TERMINAL_RESUMED')
       expect(requests).toBe(1)
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${persistedStatus}_message_2`,
+            name: 'SendMessage',
+            input: {
+              to: `${persistedStatus}-reviewer`,
+              summary: `resume again ${persistedStatus}`,
+              message: 'EXPLICIT_TERMINAL_CONTINUATION_AGAIN',
+            },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: `call_${persistedStatus}_done_2`,
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: true, timeout: 30_000 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(requests).toBe(2)
+      expect(providerModels).toEqual(['recovery-model', 'recovery-model'])
       await expect(
         new SubagentLifecycleStore(paths.praxisRoot, sessionId, agentId).read(),
       ).resolves.toMatchObject({ status: 'completed' })

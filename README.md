@@ -253,11 +253,16 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   recovery for malformed streamed tool arguments without tool execution or
   lost resumability, one default-on bounded Anthropic non-streaming replay for
   eligible stream/idle failures without exposing failed-attempt output, and
-  token-only/no-API-dollar accounting for subscription runs. For each main user
-  turn, failed provider attempts stay buffered; the first successful route,
-  whether primary or fallback, is sticky and sealed through that turn's tool
-  continuations; incompatible fallback routes fail closed, and each new main
-  user turn starts from primary.
+  token-only/no-API-dollar accounting for subscription runs. Each main user
+  Turn and independent auxiliary Agent, Workflow, Team, recovery, or memory
+  Turn receives its own provider client. Session-memory requests reuse a
+  completion-scoped client but restart routing from primary for each request;
+  auto-mode critic and eval-judge requests remain independently constructed
+  one-shot clients. Failed attempts stay buffered, and the first successful
+  route, whether primary or fallback, stays sticky only through that logical
+  Turn's tool continuations; incompatible routes fail closed, and the next
+  independent Turn starts from primary. Recovery may persist only an optional
+  selected model, never provider route or wire state.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an
   interruption or crash.

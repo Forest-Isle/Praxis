@@ -17,6 +17,8 @@ export interface NativeSidechainMetadata {
   readonly spawnDepth: number
   readonly cwd: string
   readonly promptId: string
+  /** Provider-neutral selected model identifier for recovery. */
+  readonly model?: string
   readonly name?: string
   readonly permissionMode?: NativeSidechainPermissionMode
   readonly isolation?: 'worktree'
@@ -50,6 +52,7 @@ const requiredKeys = [
   'promptId',
 ]
 const optionalKeys = [
+  'model',
   'name',
   'permissionMode',
   'isolation',
@@ -119,6 +122,8 @@ function validateMetadata(value: unknown): NativeSidechainMetadata {
     throw new Error('native sidechain metadata cwd is invalid')
   if (!nonBlank(record.promptId))
     throw new Error('native sidechain metadata promptId is invalid')
+  if (record.model !== undefined && !nonBlank(record.model))
+    throw new Error('native sidechain metadata model is invalid')
   if (record.name !== undefined && !nonBlank(record.name))
     throw new Error('native sidechain metadata name is invalid')
   if (
