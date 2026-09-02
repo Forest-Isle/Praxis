@@ -27,6 +27,18 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.56.0](https://github.com/Forest-Isle/Praxis/compare/v0.55.3...v0.56.0) (2026-09-02)
+
+
+### Features
+
+* add bounded ApplyPatch tool ([#604](https://github.com/Forest-Isle/Praxis/issues/604)) ([3fcaf69](https://github.com/Forest-Isle/Praxis/commit/3fcaf6999e484313debc8ee793d157f9e80a4717))
+
+
+### Bug Fixes
+
+* align print-mode SIGINT shutdown ([#599](https://github.com/Forest-Isle/Praxis/issues/599)) ([800edc7](https://github.com/Forest-Isle/Praxis/commit/800edc708830b8cf7f940ba70c9c208f08133073)), closes [#598](https://github.com/Forest-Isle/Praxis/issues/598) [#159](https://github.com/Forest-Isle/Praxis/issues/159) [#540](https://github.com/Forest-Isle/Praxis/issues/540)
+
 ## [0.55.3](https://github.com/Forest-Isle/Praxis/compare/v0.55.2...v0.55.3) (2026-09-02)
 
 
