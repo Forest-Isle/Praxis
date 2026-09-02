@@ -347,7 +347,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 70-behavior native contract; 62 behaviors
+type-only modules). `npm run test:fixtures` executes the 71-behavior native contract; 63 behaviors
 are qualified and 8 are explicitly excluded. `npm run verify:fixture-contracts`
 performs the structural check and is part of `npm run check`.
 `npm run test:core-completion` is retained as a compatibility alias for

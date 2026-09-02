@@ -44,6 +44,8 @@ authoritative CLI surface.
   fingerprint authorization for workspace-controlled resources.
 - [Provider authentication ADR](adr/0006-native-provider-authentication.md) —
   native provider routing, credential Vault, and experimental Codex OAuth.
+- [OpenAI Chat/Responses portability ADR](adr/0007-openai-chat-responses-portability.md) —
+  evidence-based portability boundaries and fail-closed semantics.
 - [Performance Budgets](PERFORMANCE.md) — release performance limits and gate.
 
 ## Maintainer operations

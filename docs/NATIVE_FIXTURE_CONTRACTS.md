@@ -115,9 +115,17 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 70 behaviors: 62
-are qualified and 8 are explicitly excluded. It contains 126 evidence entries:
-96 Vitest entries, 24 black-box fixture entries, and 6 gate entries.
+are the active qualification source. The manifest declares 71 behaviors: 63
+are qualified and 8 are explicitly excluded. It contains 129 evidence entries:
+98 Vitest entries, 25 black-box fixture entries, and 6 gate entries.
+
+The OpenAI protocol evidence is a versioned, hermetic comparison of the public
+Chat Completions and Responses adapters. It qualifies only the tested plain
+text and ordinary function call/output subset; reasoning continuity,
+protocol-native terminal/refusal/incomplete meanings, richer usage, and hosted
+response state are recorded as incompatible. It makes no claim of live
+provider compatibility and keeps automatic cross-protocol fallback
+`not_authorized`.
 
 `npm run test:fixtures` executes the native contract, while
 `npm run verify:fixture-contracts` performs its structural check and is part of

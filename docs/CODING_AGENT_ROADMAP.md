@@ -199,14 +199,24 @@ primary or fallback, remains sealed through that logical Turn's tool
 continuations; incompatible routes fail closed, and the next independent Turn
 starts from primary. Recovery persists only the provider-neutral selected model
 as optional native sidechain metadata and never provider route or wire state. No
-provider wire payload enters core or transcripts. Comparison evidence across
-Chat Completions and Responses remains pending.
+provider wire payload enters core or transcripts.
 
 Acceptance for the implemented slice: partial retries cannot repeat side
 effects, and the sealed route remains stable through each main or auxiliary
 logical Turn's tool continuations without leaking into independent work.
-Baseline/candidate comparison evidence across Chat Completions and Responses
-remains pending.
+Baseline/candidate comparison evidence across Chat Completions and Responses is
+covered by Task 3.3.
+
+### Task 3.3: OpenAI protocol comparison evidence — implemented by #580 [depends: Task 3.2]
+
+The #580 evidence lane captures fixed provider-neutral text and function
+call/output trajectories through the public Chat Completions and Responses
+adapters, including terminal, usage, capability, failure, and continuation
+boundaries. The checked-in versioned fixture records the narrow structurally
+portable subset and the incompatible reasoning, hosted-state, protocol-native
+terminal, and richer-usage semantics. Automatic cross-protocol fallback
+remains `not_authorized`; no implementation issue is authorized by this
+evidence.
 
 ## Phase 4 — Turn-kernel deepening
 
