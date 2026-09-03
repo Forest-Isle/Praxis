@@ -28,6 +28,18 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.59.0](https://github.com/Forest-Isle/Praxis/compare/v0.58.0...v0.59.0) (2026-09-03)
+
+
+### Features
+
+* collapse background Bash notifications ([#618](https://github.com/Forest-Isle/Praxis/issues/618)) ([0a12770](https://github.com/Forest-Isle/Praxis/commit/0a12770c2c0044591a25830d270015ae4c1ba00b)), closes [#617](https://github.com/Forest-Isle/Praxis/issues/617)
+
+
+### Bug Fixes
+
+* anchor diff to session start ([#615](https://github.com/Forest-Isle/Praxis/issues/615)) ([05acfc0](https://github.com/Forest-Isle/Praxis/commit/05acfc0fcca525f48613ca6e3fc0015481f5d9d2))
+
 ## [0.58.0](https://github.com/Forest-Isle/Praxis/compare/v0.57.0...v0.58.0) (2026-09-03)
 
 
