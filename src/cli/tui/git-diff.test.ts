@@ -242,8 +242,26 @@ describe('TUI git diff snapshot', () => {
     await execFileAsync('git', ['add', 'conflict.txt'], { cwd: root })
     await commit(root, 'current change')
     await expect(
-      execFileAsync('git', ['merge', '--no-edit', 'other'], { cwd: root }),
+      execFileAsync(
+        'git',
+        [
+          '-c',
+          'user.name=Praxis Fixture',
+          '-c',
+          'user.email=fixture@example.com',
+          'merge',
+          '--no-edit',
+          'other',
+        ],
+        { cwd: root },
+      ),
     ).rejects.toBeDefined()
+    const unmerged = await execFileAsync(
+      'git',
+      ['ls-files', '-u', '--', 'conflict.txt'],
+      { cwd: root },
+    )
+    expect(unmerged.stdout.trim()).not.toBe('')
 
     const snapshot = await session.load(root)
     expect(snapshot.files).toContainEqual({
