@@ -114,7 +114,7 @@ praxis doctor
   令牌编辑/重置、删除及在 transcript 代码和 diff 视图中持久化语法切换、减少动画的共享运行时偏好、spinner 提示、进度和回合耗时显示、编辑器模式、回顾、通知、自动更新通道、感知 gitignore 的文件引用、可配置的 AskUserQuestion 超时、无需提供商的 `/terminal-setup` 诊断及对受支持本地终端可重复执行的 Shift+Enter 设置、
   `Ctrl+V` 文本/图像剪贴板粘贴、`Ctrl+Z` shell 挂起和 `fg` 恢复、无需 provider 请求且会为后续普通 prompt 持久化 shell 输入/输出、不创建 assistant 回合的权限控制 `!` shell 回合、可导航的当前/每回合 Git diff 视图、具备完整 screen-reader 操作提示的语义化计划/问题决策面板、所有可选择界面的语义化 screen projection、URL/表单 elicitation 的确定性自适应终端尺寸渲染和可测量上下文预算；以及 print 模式、结构化 JSON/JSONL、上下文压缩、工具循环和有边界的执行。
 
-- **内置工具** — read、write、edit、`ApplyPatch`（有界、有序的多文件精确替换）、glob、search、shell、notebook、PDF、image、web、定时提示、工作流和 worktree。
+- **内置工具** — read、write、edit、`ApplyPatch`（有界、有序的多文件精确替换）、配置式插件 LSP 导航及成功编辑后的最新有界诊断、glob、search、shell、notebook、PDF、image、web、定时提示、工作流和 worktree。
 - **Shell 生命周期** — 前台 Bash 最长可运行 10 分钟，并在同一会话的后续调用中沿用经过校验的最终工作目录；该状态不会跨会话泄漏，也不会覆盖显式 `/cd`。
 - **权限边界** — 本地 allow/ask/deny 规则、安全和 bare 模式、可搜索的作用域规则创建/删除、本地/项目/用户设置的原子写入、针对 Bash/PowerShell/文件/notebook/WebFetch/Skill 的工具专用批准对话框、可编辑且可复用的 shell 和 Skill 规则、感知源根的 Claude 文件规则匹配、原子会话权限更新、由有界 Bash AST 支持的复合 shell 规则建议、按源代码形态进行精确/前缀/通配符匹配、包装器和环境规范化、带控制流变量作用域感知的失败关闭 Bash 语义检查、声明和仅字面量算术分析、精确 `cat` heredoc 处理、基于 argv 的命令/重定向路径校验、完整符号链接链检查、危险删除/敏感文件/可疑 Windows 路径门禁、按源顺序的严格 sed 约束、内部自动记忆/会话/任务路径处理、复合 `cd` + Git 保护、按模式顺序处理 `acceptEdits`、外部目录的实时原始/解析路径授权、
   兼容 Claude 的选择性 Bash sandbox（文件系统和网络隔离）、明确的 ask/deny 优先级、仅 sandbox 自动允许、写入允许列表及允许范围内拒绝执行、每命令覆盖和排除、违规报告及 bare repository 控制文件清理、安全属性 Skill 自动允许、交互式工作区目录添加/删除控制、路径限制、凭据脱敏、经过清理的子进程，以及精确指纹 workspace trust：在用户接受 canonical workspace 配置前，自动发现的 project/local provider/profile/model 选择、hooks 和 MCP 都会被阻止。
