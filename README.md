@@ -237,7 +237,17 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   CLI also exposes `praxis team status`, `logs`, and `attach` in human or JSON
   form; durable-local attach does not require tmux. Native task, notification,
   context, and Team resume/inbox seams are implemented with fail-closed
-  validation for unsupported payloads.
+  validation for unsupported payloads. New write-capable Team generations use
+  repo-local durable worktrees under `.praxis/worktrees/team/<team-id>/<generation-hash>`
+  with exact ownership records, markers, branches, and execution tokens. Read-only
+  Team members continue to use the invocation checkout. Completion, failure,
+  cancellation, orphaning, stop, and persistence uncertainty retain writer
+  evidence and relinquish the active lease; only a durably persisted explicit
+  Lead `accepted` decision may release that exact generation, while rejection
+  retains it. The ownership-verified accepted path may explicitly dispose of
+  reviewed dirty or committed evidence; hook blocks and ownership uncertainty
+  fail closed. Exact historical global Team worktrees remain validation-only
+  compatibility and are never implicitly adopted.
 - **Native resource ecosystem** — shared Praxis instructions with recursive `@`
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`,

@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -24,7 +25,7 @@ import type {
 import type { TeamTask } from '../core/team-ownership.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
-import { sanitizeProjectPath } from '../platform/project-path-key.js'
+import { inspectManagedWorktreeRegistry } from '../persistence/managed-worktree-store.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { TeamMemberToolRegistry } from '../tools/team-member-tools.js'
 import { LocalTeamManager } from './team-manager.js'
@@ -769,7 +770,14 @@ describe('ClaudeTeamAgentRuntime', () => {
         baseTools: tools,
         permissions,
         runtime,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
       })
       const team = await manager.create({
         teamId: 'team-runtime',
@@ -893,15 +901,16 @@ describe('ClaudeTeamAgentRuntime', () => {
         readFile(join(repo, 'writer.txt'), 'utf8'),
       ).rejects.toMatchObject({ code: 'ENOENT' })
       const identity = await resolveProjectIdentity(repo)
+      const repoRoot = await realpath(repo)
       const hash = createHash('sha256')
         .update(`${identity}\0team-writer\0WRITE_TASK\0${1}`)
         .digest('hex')
         .slice(0, 24)
       const worktree = join(
-        nativeRoot,
-        'state',
-        'team-worktrees',
-        sanitizeProjectPath(identity),
+        repoRoot,
+        '.praxis',
+        'worktrees',
+        'team',
         'team-writer',
         hash,
       )
@@ -911,6 +920,26 @@ describe('ClaudeTeamAgentRuntime', () => {
       expect(await git(repo, 'worktree', 'list', '--porcelain')).toContain(
         worktree,
       )
+      const registry = await inspectManagedWorktreeRegistry({
+        stateRoot: nativeRoot,
+        repositoryRoot: identity,
+        limit: 64,
+      })
+      const record = registry.entries.find(
+        (entry) => 'record' in entry && entry.record.worktreePath === worktree,
+      )
+      expect(
+        record && 'record' in record ? record.record : undefined,
+      ).toMatchObject({
+        kind: 'team',
+        policy: 'durable',
+        worktreePath: worktree,
+        branch: `praxis/team/team-writer/${hash}`,
+        ownerId: expect.stringMatching(
+          new RegExp(`^team:team-writer:1:${hash}:[A-Za-z0-9_-]+$`, 'u'),
+        ),
+        state: 'retained',
+      })
       expect(
         await readdir(join(nativeRoot, 'state'), { recursive: true }),
       ).not.toContain('subagent-lifecycle.json')

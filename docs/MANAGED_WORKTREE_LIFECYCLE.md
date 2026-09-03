@@ -6,7 +6,7 @@ Give Workflow, Agent, and Team worktrees one ownership-safe lifecycle without
 changing the existing interactive `EnterWorktree`/`ExitWorktree` contract.
 New managed checkouts are discoverable under the repository's ignored
 `.praxis/worktrees` root, survive crashes when evidence must be retained, and
-are garbage-collected only when Praxis can prove removal is safe.
+are removed only when the applicable lifecycle contract proves removal is safe.
 
 ## Chosen design and rationale
 
@@ -29,7 +29,8 @@ Session, Workflow, Agent, and Team.
 - Add the managed-worktree lifecycle kernel and private registry.
 - Migrate new Workflow and Agent worktrees to repo-local native paths.
 - Register and migrate new Team paths without enabling automatic Team cleanup.
-- Run native `WorktreeCreate` and `WorktreeRemove` command hooks.
+- Run native `WorktreeCreate` and `WorktreeRemove` command hooks for managed Team
+  worktrees when supplied by trusted CLI composition.
 - Reconcile abandoned ephemeral worktrees on a later Praxis run.
 - Add bounded lifecycle diagnostics to doctor/observability surfaces.
 
@@ -37,9 +38,12 @@ Session, Workflow, Agent, and Team.
 
 There is no `.claude` dependency, deletion of user-created worktrees,
 process-global `cwd` change, remote coordination, daemon, telemetry, or new
-transcript field. Dirty, committed, active, ambiguous, Team, failed, orphaned,
-or unregistered worktrees are never auto-deleted. Existing Session names,
-branches, transcript paths, and explicit removal rules do not change.
+transcript field. Automatic cleanup and reconciliation never delete dirty,
+committed, active, ambiguous, failed, orphaned, or unregistered evidence, and
+never clean up Team generations. An explicit, durably persisted Lead `accepted`
+decision may force-remove the exact ownership-proven durable Team generation
+after its disposition is reviewed. Existing Session names, branches, transcript
+paths, and explicit removal rules do not change.
 
 ## Architecture
 
@@ -65,6 +69,15 @@ New managed checkouts use the canonical main repository root:
 
 Interactive session worktrees remain at
 `<repo>/.praxis/worktrees/<session-name>`.
+
+Write-capable Team generations use
+`<repo>/.praxis/worktrees/team/<team-id>/<generation-hash>` and branch
+`praxis/team/<team-id>/<generation-hash>`. Their ownership record, marker,
+Team/generation/hash identity, and exact execution token must agree. Read-only
+Team members continue using the invocation checkout. The historical global
+compatibility path remains strict legacy-only:
+`<nativeRoot>/state/team-worktrees/<project-key>/<team-id>/<generation-hash>`;
+it is never newly created, moved, adopted, or garbage-collected.
 
 All generated path components are validated and bounded. Canonical paths must
 remain inside the expected kind root. Symlinked targets or parents are
@@ -128,6 +141,20 @@ path and warning surfaces. A clean continuation creates the deterministic
 Agent path again under a new owner-token record, while a retained continuation
 restores the existing checkout.
 
+Team writer completion, failure, cancellation, orphaning, stop, and persistence
+uncertainty retain the writer evidence and relinquish the active lease. Resume,
+startup, and age do not delete Team evidence. Only a durably persisted explicit
+Lead `accepted` decision can begin release of the exact completed generation;
+rejection retains it. Accepted release verifies Team, generation, hash,
+execution-token, record, marker, registration, repository, path, branch, and
+lease ownership, may force-remove dirty or committed checkout evidence after
+the Lead's explicit disposition, and deletes the branch only with an
+expected-old-OID compare-and-delete. Hook blocks and warnings fail closed while
+preserving the checkout when removal has not occurred; post-removal warnings
+report and preserve the remaining branch or registry evidence where applicable.
+Accepted release may remove an exact validated legacy checkout/branch, but
+legacy paths are never adopted.
+
 ### Normal release
 
 1. Persist `releasing` while holding the worktree lease.
@@ -188,8 +215,10 @@ uses the existing workspace-trust-filtered runner and never enters transcripts.
 Asynchronous configuration for these events is rejected during validation.
 
 Workflow and both foreground and background Agent executions use this same
-trusted synchronous create/remove lifecycle. Agent hooks match `agent`, and
-private ownership or hook data remains outside JSONL transcripts.
+trusted synchronous create/remove lifecycle. Managed Team worktrees receive
+trusted synchronous hooks passed from existing trusted CLI composition; legacy
+Team paths synthesize no hooks. Agent hooks match `agent`, and private
+ownership or hook data remains outside JSONL transcripts.
 
 ## Errors and invariants
 
@@ -206,6 +235,10 @@ private ownership or hook data remains outside JSONL transcripts.
 - A cleanup race loses safely through the lease and idempotent state machine.
 - Registry corruption, permission errors, unsupported versions, and uncertain
   process ownership fail closed without deleting files.
+- Team generations are never automatically cleaned up or reconciled, and an
+  old global Team path is never implicitly adopted. Observability checks the
+  managed Team path first and then the exact legacy path, with bounded,
+  symlink-safe inspection.
 
 ## Compatibility
 
@@ -228,5 +261,5 @@ Private state remains outside append-only transcripts.
 
 1. #630: lifecycle store, ownership proof, safe rollback, and Workflow migration (complete).
 2. #625: lifecycle hooks; #626: bounded reconciliation and safe garbage collection (complete).
-3. #627: Agent migration and restore compatibility (complete); #628: durable Team migration (future).
+3. #627: Agent migration and restore compatibility (complete); #628: durable Team migration (complete).
 4. #629: doctor/observability surfaces, final gates, and operator documentation (future).

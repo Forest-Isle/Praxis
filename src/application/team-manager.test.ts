@@ -12,6 +12,7 @@ import {
   LocalTeamManager,
   type TeamAgentRuntime,
 } from './team-manager.js'
+import type { TeamWorkspaceInput } from './team-workspace.js'
 import { TeamMailboxService } from './team-mailbox.js'
 
 const member: TeamMember = {
@@ -60,8 +61,344 @@ function mailbox(cwd: string, teamId: string, projectIdentity = cwd) {
     participants: ['lead', 'worker'],
   })
 }
-
 describe('LocalTeamManager', () => {
+  it('passes persisted generation, lead session, owner token and retains completed work', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-manager-'))
+    const cwd = process.cwd()
+    const acquire = vi.fn(async (input: TeamWorkspaceInput) => {
+      void input
+      return {
+        cwd,
+        branch: null,
+        retain: vi.fn(async () => undefined),
+      }
+    })
+    const releaseAccepted = vi.fn(async () => undefined)
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: { acquire, releaseAccepted },
+        runtime: { run: async () => completedResult },
+      })
+      const team = await manager.create({
+        teamId: 'team-exact-identity',
+        name: 'Exact Identity',
+        leadSessionId: 'lead-exact',
+        roster: [member],
+        tasks: [taskInput('exact-task')],
+      })
+      const final = await team.waitForIdle()
+      const input = acquire.mock.calls[0]?.[0]
+      expect(input).toMatchObject({
+        generation: 1,
+        leadSessionId: 'lead-exact',
+        executionToken: final.tasks[0]?.execution?.previousOwnerToken,
+      })
+      const workspace = await acquire.mock.results[0]?.value
+      expect(workspace.retain).toHaveBeenCalledWith(
+        'Team generation completed; pending Lead disposition',
+      )
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('retains failed runtime evidence after an adapter throw', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-manager-'))
+    const cwd = process.cwd()
+    const retain = vi.fn(async () => undefined)
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: {
+          acquire: async () => ({ cwd, branch: null, retain }),
+          releaseAccepted: async () => undefined,
+        },
+        runtime: {
+          run: async () => {
+            throw new Error('runtime throw')
+          },
+        },
+      })
+      const team = await manager.create({
+        teamId: 'team-failed-retain',
+        name: 'Failed Retain',
+        leadSessionId: 'lead-failed',
+        roster: [member],
+        tasks: [taskInput('failed-task')],
+      })
+      const final = await team.waitForIdle()
+      expect(final.tasks[0]?.execution?.state).toBe('failed')
+      expect(retain).toHaveBeenCalledWith(
+        'Team generation failed evidence retained',
+      )
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('retains after running persistence failure and aggregates a retention failure', async () => {
+    const cwd = process.cwd()
+    const persistenceError = new Error('running persistence failed')
+    const createdAt = new Date().toISOString()
+    let current = parseTeamSnapshot({
+      version: 1,
+      revision: 0,
+      teamId: 'team-running-save',
+      name: 'Running Save',
+      projectIdentity: cwd,
+      leadSessionId: 'lead-running-save',
+      roster: [member],
+      tasks: [{ ...taskInput('running-task'), execution: null }],
+      createdAt,
+      updatedAt: createdAt,
+      policy: { lead: 'hybrid', execution: 'sequential', commit: 'lead' },
+      budgets: {
+        maxAgents: 1,
+        maxConcurrent: 1,
+        maxTokens: 100,
+        maxDurationMs: 100_000,
+        shutdownDrainMs: 0,
+      },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+    })
+    const claimRelease = vi.fn(async () => undefined)
+    const claim: NativeTeamClaim = {
+      teamId: current.teamId,
+      token: 'running-save-owner',
+      pid: 1,
+      acquiredAt: createdAt,
+      read: async () => current,
+      save: async (_expectedRevision, next) => {
+        if (next.tasks[0]?.execution?.state === 'running')
+          throw persistenceError
+        current = next
+        return current
+      },
+      release: claimRelease,
+    }
+    const retain = vi.fn(async () => {
+      throw new Error('retain failed')
+    })
+    const team = new LocalTeam(
+      {
+        nativeRoot: cwd,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        runtime: { run: async () => completedResult },
+      },
+      {
+        acquire: async () => ({ cwd, branch: null, retain }),
+        releaseAccepted: async () => undefined,
+      },
+      claim,
+      mailbox(cwd, current.teamId),
+    )
+    let failure: unknown
+    try {
+      await team.initialize(false)
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AggregateError)
+    const errors = (failure as AggregateError).errors
+    expect(errors).toEqual(expect.arrayContaining([persistenceError]))
+    expect(
+      errors.some(
+        (error) => error instanceof Error && error.message === 'retain failed',
+      ),
+    ).toBe(true)
+    expect(retain).toHaveBeenCalledWith(
+      'Team persistence uncertainty after workspace acquire',
+    )
+    expect(claimRelease).toHaveBeenCalledOnce()
+  })
+
+  it('preserves final progress and workspace retention failures together', async () => {
+    const cwd = process.cwd()
+    const progressError = new Error('final progress persistence failed')
+    const retentionError = new Error('terminal retention failed')
+    const createdAt = new Date().toISOString()
+    let current = parseTeamSnapshot({
+      version: 1,
+      revision: 0,
+      teamId: 'team-progress-settlement',
+      name: 'Progress Settlement',
+      projectIdentity: cwd,
+      leadSessionId: 'lead-progress-settlement',
+      roster: [member],
+      tasks: [{ ...taskInput('progress-task'), execution: null }],
+      createdAt,
+      updatedAt: createdAt,
+      policy: { lead: 'hybrid', execution: 'sequential', commit: 'lead' },
+      budgets: {
+        maxAgents: 1,
+        maxConcurrent: 1,
+        maxTokens: 100,
+        maxDurationMs: 100_000,
+        shutdownDrainMs: 0,
+      },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+    })
+    const release = vi.fn(async () => undefined)
+    let saveCalls = 0
+    const claim: NativeTeamClaim = {
+      teamId: current.teamId,
+      token: 'progress-owner-token',
+      pid: 1,
+      acquiredAt: createdAt,
+      read: async () => current,
+      save: async (_expectedRevision, next) => {
+        saveCalls += 1
+        if (saveCalls === 3) throw progressError
+        current = next
+        return current
+      },
+      release,
+    }
+    const retain = vi.fn(async () => {
+      throw retentionError
+    })
+    const runtimeResult = deferred<typeof completedResult>()
+    const team = new LocalTeam(
+      {
+        nativeRoot: cwd,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        runtime: { run: async () => runtimeResult.promise },
+      },
+      {
+        acquire: async () => ({ cwd, branch: null, retain }),
+        releaseAccepted: async () => undefined,
+      },
+      claim,
+      mailbox(cwd, current.teamId),
+    )
+
+    await team.initialize(false)
+    const waiting = team.waitForIdle()
+    runtimeResult.resolve(completedResult)
+    let failure: unknown
+    try {
+      await waiting
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).errors).toEqual([
+      progressError,
+      retentionError,
+    ])
+    expect(retain).toHaveBeenCalledWith(
+      'Team persistence uncertainty; terminal evidence retained',
+    )
+    await team.stop({ drainMs: 0 })
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('persists acceptance before release, retries release, and then pumps dependents', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-manager-'))
+    const cwd = process.cwd()
+    const calls: string[] = []
+    let team!: Awaited<ReturnType<LocalTeamManager['create']>>
+    let attempts = 0
+    const releaseAccepted = vi.fn(async () => {
+      const persisted = await team.snapshot()
+      expect(persisted.tasks[0]?.execution?.acceptance).toBe('accepted')
+      calls.push('release')
+      attempts += 1
+      if (attempts === 1) throw new Error('release unavailable')
+    })
+    let runs = 0
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted,
+        },
+        runtime: {
+          run: async () => {
+            runs += 1
+            return completedResult
+          },
+        },
+      })
+      team = await manager.create({
+        teamId: 'team-accept-retry',
+        name: 'Accept Retry',
+        leadSessionId: 'lead-accept',
+        roster: [member],
+        tasks: [taskInput('first'), taskInput('second', ['first'])],
+      })
+      await team.waitForIdle()
+      await expect(team.accept('first')).rejects.toThrow('release unavailable')
+      expect(runs).toBe(1)
+      await team.accept('first')
+      await team.waitForIdle()
+      expect(releaseAccepted).toHaveBeenCalledTimes(2)
+      expect(runs).toBe(2)
+      expect(calls).toEqual(['release', 'release'])
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects never invokes accepted release', async () => {
+    const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-manager-'))
+    const cwd = process.cwd()
+    const releaseAccepted = vi.fn(async () => undefined)
+    try {
+      const manager = await LocalTeamManager.open({
+        nativeRoot,
+        cwd,
+        maxConcurrent: 1,
+        baseTools,
+        permissions,
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted,
+        },
+        runtime: { run: async () => completedResult },
+      })
+      const team = await manager.create({
+        teamId: 'team-reject-release',
+        name: 'Reject Release',
+        leadSessionId: 'lead-reject',
+        roster: [member],
+        tasks: [taskInput('reject-task')],
+      })
+      await team.waitForIdle()
+      await team.accept('reject-task', undefined, 'rejected')
+      expect(releaseAccepted).not.toHaveBeenCalled()
+    } finally {
+      await rm(nativeRoot, { recursive: true, force: true })
+    }
+  })
   it('passes the assigned scoped mailbox endpoint to every launched runtime', async () => {
     const nativeRoot = await mkdtemp(
       join(tmpdir(), 'praxis-team-mailbox-runtime-'),
@@ -82,7 +419,14 @@ describe('LocalTeamManager', () => {
         baseTools,
         permissions,
         runtime,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
       })
       const team = await manager.create({
         teamId: 'team-mailbox-runtime',
@@ -125,7 +469,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 2,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ task }) => {
             entered.push(task.id)
@@ -172,7 +523,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 2,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ task }) => {
             entered.push(task.id)
@@ -216,7 +574,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 3,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ task }) => {
             entered.push(task.id)
@@ -270,7 +635,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 2,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ task, generation, reportProgress, signal }) => {
             entered.push(task.id)
@@ -329,7 +701,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ generation, reportProgress }) => {
             reportProgress({
@@ -374,7 +753,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ signal }) => {
             await new Promise<void>((resolve) => {
@@ -447,7 +833,14 @@ describe('LocalTeamManager', () => {
           },
         },
       },
-      { acquire: async () => ({ cwd, branch: null }) },
+      {
+        acquire: async () => ({
+          cwd,
+          branch: null,
+          retain: async () => undefined,
+        }),
+        releaseAccepted: async () => undefined,
+      },
       {
         teamId: current.teamId,
         token: 'detach-token',
@@ -513,7 +906,14 @@ describe('LocalTeamManager', () => {
           },
         },
       },
-      { acquire: async () => ({ cwd, branch: null }) },
+      {
+        acquire: async () => ({
+          cwd,
+          branch: null,
+          retain: async () => undefined,
+        }),
+        releaseAccepted: async () => undefined,
+      },
       {
         teamId: current.teamId,
         token: 'detach-token',
@@ -542,7 +942,14 @@ describe('LocalTeamManager', () => {
       maxConcurrent: 2,
       baseTools,
       permissions,
-      workspace: { acquire: async () => ({ cwd, branch: null }) },
+      workspace: {
+        acquire: async () => ({
+          cwd,
+          branch: null,
+          retain: async () => undefined,
+        }),
+        releaseAccepted: async () => undefined,
+      },
       runtime: {
         run: async ({ task }: { task: { id: string } }) => {
           runtimeCalls.push(task.id)
@@ -618,7 +1025,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 1,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async () => ({
+            cwd,
+            branch: null,
+            retain: async () => undefined,
+          }),
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ reportProgress }) => {
             reportProgress({ generation: 1, totalTokens: 0, durationMs: 0 })
@@ -669,6 +1083,7 @@ describe('LocalTeamManager', () => {
   it('cancels drained runtimes and orphans only the still-active sibling', async () => {
     const nativeRoot = await mkdtemp(join(tmpdir(), 'praxis-team-manager-'))
     const cwd = process.cwd()
+    const retained = new Map<string, ReturnType<typeof vi.fn>>()
     try {
       const manager = await LocalTeamManager.open({
         nativeRoot,
@@ -676,7 +1091,14 @@ describe('LocalTeamManager', () => {
         maxConcurrent: 2,
         baseTools,
         permissions,
-        workspace: { acquire: async () => ({ cwd, branch: null }) },
+        workspace: {
+          acquire: async ({ taskId }) => {
+            const retain = vi.fn(async () => undefined)
+            retained.set(taskId, retain)
+            return { cwd, branch: null, retain }
+          },
+          releaseAccepted: async () => undefined,
+        },
         runtime: {
           run: async ({ task, signal }) => {
             if (task.id === 'fast') {
@@ -725,6 +1147,12 @@ describe('LocalTeamManager', () => {
       const final = await team.stop()
       const states = final.tasks.map((task) => task.execution?.state)
       expect(states).toEqual(['cancelled', 'orphaned'])
+      expect(retained.get('fast')).toHaveBeenCalledWith(
+        'Team generation cancelled evidence retained',
+      )
+      expect(retained.get('hung')).toHaveBeenCalledWith(
+        'Team generation orphaned evidence retained',
+      )
       await expect(team.snapshot()).resolves.toBe(final)
       await expect(team.waitForIdle()).resolves.toBe(final)
       await expect(team.stop()).resolves.toBe(final)
@@ -766,6 +1194,7 @@ describe('LocalTeamManager', () => {
     })
     let failedCompletion = false
     const release = vi.fn(async () => undefined)
+    const retain = vi.fn(async () => undefined)
     const claim: NativeTeamClaim = {
       teamId: current.teamId,
       token: 'owner-token',
@@ -802,15 +1231,137 @@ describe('LocalTeamManager', () => {
           },
         },
       },
-      { acquire: async () => ({ cwd, branch: null }) },
+      {
+        acquire: async () => ({
+          cwd,
+          branch: null,
+          retain,
+        }),
+        releaseAccepted: async () => undefined,
+      },
       claim,
       mailbox(cwd, current.teamId),
     )
 
     await team.initialize(false)
     await expect(team.waitForIdle()).rejects.toBe(persistenceError)
+    expect(retain).toHaveBeenCalledWith(
+      'Team persistence uncertainty; terminal evidence retained',
+    )
     const final = await team.stop({ drainMs: 0 })
     expect(final.tasks[0]?.execution?.state).toBe('orphaned')
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('attempts every stop retention and claim release while aggregating failures', async () => {
+    const cwd = process.cwd()
+    const createdAt = new Date().toISOString()
+    let current = parseTeamSnapshot({
+      version: 1,
+      revision: 0,
+      teamId: 'team-stop-settlement',
+      name: 'Stop Settlement',
+      projectIdentity: cwd,
+      leadSessionId: 'lead-stop-settlement',
+      roster: [
+        { name: 'first', agentType: 'test', access: 'write' },
+        { name: 'second', agentType: 'test', access: 'write' },
+      ],
+      tasks: ['first', 'second'].map((id) => ({
+        id,
+        description: id,
+        assignee: id,
+        blockedBy: [],
+        claims: {
+          files: [],
+          publicContracts: [],
+          generatedArtifacts: [],
+          migrations: [],
+          mergeTargets: [],
+        },
+        execution: null,
+      })),
+      createdAt,
+      updatedAt: createdAt,
+      policy: { lead: 'hybrid', execution: 'swarm', commit: 'lead' },
+      budgets: {
+        maxAgents: 2,
+        maxConcurrent: 2,
+        maxTokens: 100,
+        maxDurationMs: 100_000,
+        shutdownDrainMs: 50,
+      },
+      usage: { totalTokens: 0, durationMs: 0, exhausted: null },
+    })
+    let firstRetainCalls = 0
+    const firstRetain = vi.fn(async () => {
+      firstRetainCalls += 1
+      if (firstRetainCalls > 1) throw new Error('first-retain')
+    })
+    const secondRetain = vi.fn(async () => undefined)
+    const claimRelease = vi.fn(async () => {
+      throw new Error('claim-release')
+    })
+    const claim: NativeTeamClaim = {
+      teamId: current.teamId,
+      token: 'stop-owner-token',
+      pid: 1,
+      acquiredAt: createdAt,
+      read: async () => current,
+      save: async (_expectedRevision, next) => {
+        current = next
+        return current
+      },
+      release: claimRelease,
+    }
+    const team = new LocalTeam(
+      {
+        nativeRoot: cwd,
+        cwd,
+        maxConcurrent: 2,
+        baseTools,
+        permissions,
+        runtime: {
+          run: async ({ signal }) => {
+            await new Promise<void>((resolve) => {
+              if (signal.aborted) resolve()
+              else
+                signal.addEventListener('abort', () => resolve(), {
+                  once: true,
+                })
+            })
+            return completedResult
+          },
+        },
+      },
+      {
+        acquire: async ({ taskId }) => ({
+          cwd,
+          branch: null,
+          retain: taskId === 'first' ? firstRetain : secondRetain,
+        }),
+        releaseAccepted: async () => undefined,
+      },
+      claim,
+      mailbox(cwd, current.teamId),
+    )
+    await team.initialize(false)
+    let stopError: unknown
+    try {
+      await team.stop({ drainMs: 20 })
+    } catch (error) {
+      stopError = error
+    }
+    expect(stopError).toBeInstanceOf(AggregateError)
+    const flatten = (entry: unknown): string[] =>
+      entry instanceof AggregateError
+        ? entry.errors.flatMap((nested) => flatten(nested))
+        : [entry instanceof Error ? entry.message : String(entry)]
+    expect(flatten(stopError)).toEqual(
+      expect.arrayContaining(['first-retain', 'claim-release']),
+    )
+    expect(firstRetain).toHaveBeenCalled()
+    expect(secondRetain).toHaveBeenCalled()
+    expect(claimRelease).toHaveBeenCalledOnce()
   })
 })

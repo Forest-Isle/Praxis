@@ -256,7 +256,11 @@ praxis team stop <team-id> --lead-session-id <session-id> [--drain-ms <ms>]
 
 `team accept` also accepts `--decision rejected`; generation selects the task
 execution being reviewed, and decision records the Lead's acceptance or
-rejection. `team stop` uses the Team's durable shutdown-drain budget when
+rejection. Persistence of the decision completes before any release is
+attempted: `accepted` releases the exact completed writer generation, while
+`rejected` retains it for inspection. If accepted release fails, the durable
+acceptance remains recorded and the operation is retryable and fail-closed.
+`team stop` uses the Team's durable shutdown-drain budget when
 `--drain-ms` is omitted. A create manifest contains the roster, tasks, claims,
 and optional immutable policies and budgets:
 
