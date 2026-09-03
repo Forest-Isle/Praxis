@@ -116,6 +116,27 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Install ripgrep
+        run: |
+          if ! command -v rg >/dev/null; then
+            # GitHub-hosted Ubuntu runners point apt at azure.archive.ubuntu.com,
+            # which is sometimes unreachable. Rewrite the mirror selection to the
+            # canonical archive.ubuntu.com when the runner exposes it, and keep the
+            # runner defaults when the mirror metadata or source file is absent.
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+            fi
+            for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+              [ -f "$source" ] || continue
+              sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$source"
+            done
+            timeout 180s sudo apt-get update \
+              -o Acquire::Retries=3 \
+              -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30
+            timeout 180s sudo apt-get install -y ripgrep
+          fi
+          command -v rg >/dev/null
       - name: Install dependencies
         run: npm ci
       - name: Run fixture contracts
