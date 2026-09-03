@@ -1,8 +1,8 @@
 import {
   lstat,
+  opendir,
   mkdtemp,
   readFile,
-  realpath,
   rm,
   utimes,
   writeFile,
@@ -26,13 +26,20 @@ import type {
   ToolExecutionResult,
   ToolRegistry,
 } from '../core/runtime.js'
-import { globFiles } from '../tools/glob.js'
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import {
   BoundedProcessRunner,
   type ProcessResult,
 } from '../platform/bounded-process-runner.js'
+import {
+  RipgrepGlobSearch,
+  type GlobSearch,
+  type GlobSearchRequest,
+  type GlobSearchResult,
+  type RipgrepGlobSearchOptions,
+} from '../tools/glob.js'
+import type { LocalToolRegistryOptions } from '../tools/local-tools.js'
 import type {
   EvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
@@ -47,19 +54,103 @@ const roots: string[] = []
 const keptWorkspaceRoots: string[] = []
 const MAX_RESULTS = 100
 
+interface LegacyGlobMatch {
+  path: string
+  mtimeMs: number
+  order: number
+}
+
+function compareLegacyMatches(
+  left: LegacyGlobMatch,
+  right: LegacyGlobMatch,
+): number {
+  return left.mtimeMs - right.mtimeMs || left.order - right.order
+}
+
+function insertOldestLegacy(
+  matches: LegacyGlobMatch[],
+  candidate: LegacyGlobMatch,
+): void {
+  let low = 0
+  let high = matches.length
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2)
+    const current = matches[middle]
+    if (current && compareLegacyMatches(current, candidate) <= 0)
+      low = middle + 1
+    else high = middle
+  }
+  matches.splice(low, 0, candidate)
+  if (matches.length > MAX_RESULTS) matches.pop()
+}
+
+async function legacyGlobFiles(options: GlobSearchRequest): Promise<string> {
+  const pattern = portable(options.pattern)
+  const absolutePattern = isAbsolute(options.pattern)
+  const matchBase = !absolutePattern && !pattern.includes('/')
+  const matches: LegacyGlobMatch[] = []
+  const directories = ['']
+  let count = 0
+  let order = 0
+  while (directories.length) {
+    if (options.signal?.aborted)
+      throw new DOMException('Tool execution aborted', 'AbortError')
+    const relativeDirectory = directories.pop() ?? ''
+    const directory = await opendir(join(options.root, relativeDirectory))
+    for await (const entry of directory) {
+      if (options.signal?.aborted)
+        throw new DOMException('Tool execution aborted', 'AbortError')
+      const relativePath = join(relativeDirectory, entry.name)
+      if (entry.isDirectory()) {
+        directories.push(relativePath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const rel = portable(relativePath)
+      const absolute = portable(resolve(options.absoluteRoot, rel))
+      if (
+        pattern &&
+        !minimatch(absolutePattern ? absolute : rel, pattern, {
+          dot: true,
+          matchBase,
+          noext: true,
+        })
+      )
+        continue
+      let metadata
+      try {
+        metadata = await lstat(join(options.root, relativePath))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      if (!metadata.isFile()) continue
+      const path = absolutePattern
+        ? absolute
+        : portable(join(options.displayRoot, rel))
+      insertOldestLegacy(matches, { path, mtimeMs: metadata.mtimeMs, order })
+      order += 1
+      count += 1
+    }
+  }
+  if (!count) return 'No files found'
+  const content = matches.map((match) => match.path).join('\n')
+  return count > MAX_RESULTS
+    ? `${content}\n(Showing 100 of ${count} matching files; ${count - 100} more are not listed. Narrow the pattern or path to see the rest.)`
+    : content
+}
+
+class LegacyGlobSearch implements GlobSearch {
+  async search(request: GlobSearchRequest): Promise<GlobSearchResult> {
+    return { content: await legacyGlobFiles(request), isError: false }
+  }
+}
+
 function portable(value: string): string {
   return sep === '/' ? value : value.split(sep).join('/')
 }
 
-interface CandidateRunner {
-  run(options: {
-    command: string
-    args: readonly string[]
-    cwd?: string
-    timeoutMs: number
-    signal?: AbortSignal
-  }): Promise<ProcessResult>
-}
+type CandidateRunner = NonNullable<RipgrepGlobSearchOptions['runner']>
 
 class ControllableCandidateRunner implements CandidateRunner {
   private failNext = false
@@ -86,147 +177,20 @@ class ControllableCandidateRunner implements CandidateRunner {
   }
 }
 
-class RipgrepGlobRegistry implements ToolRegistry {
-  private readonly preparedRoots = new WeakMap<ModelToolCall, string>()
-  private readonly runner: CandidateRunner
-
-  constructor(
-    private readonly base: LocalToolRegistry,
-    private readonly env: Readonly<Record<string, string>> = {},
-    runner?: CandidateRunner,
-  ) {
-    this.runner =
-      runner ??
-      new BoundedProcessRunner({
-        cwd: process.cwd(),
-        maxOutputBytes: 2 * 1024 * 1024,
-      })
-  }
-
-  definitions() {
-    return this.base.definitions()
-  }
-
-  schedulingPolicy(call: ModelToolCall) {
-    return (
-      this.base.schedulingPolicy?.(call) ?? {
-        concurrency: 'exclusive' as const,
-      }
-    )
-  }
-
-  async prepare(
-    call: ModelToolCall,
-    context: ToolExecutionContext,
-  ): Promise<ModelToolCall> {
-    const prepared = await this.base.prepare(call, context)
-    if (prepared.name === 'Glob') {
-      const requested =
-        prepared.input.path === undefined ? '.' : String(prepared.input.path)
-      const root = await realpath(
-        isAbsolute(requested) ? requested : resolve(context.cwd, requested),
-      )
-      this.preparedRoots.set(prepared, root)
-    }
-    return prepared
-  }
-
-  async execute(
-    call: ModelToolCall,
-    context: ToolExecutionContext,
-  ): Promise<ToolExecutionResult> {
-    if (call.name !== 'Glob') return this.base.execute(call, context)
-    const revalidated = await this.base.prepare(call, context)
-    if (JSON.stringify(revalidated.input) !== JSON.stringify(call.input))
-      throw new Error('Tool input changed after permission approval')
-    const requested =
-      call.input.path === undefined ? '.' : String(call.input.path)
-    const root = await realpath(
-      isAbsolute(requested) ? requested : resolve(context.cwd, requested),
-    )
-    const preparedRoot = this.preparedRoots.get(call)
-    if (preparedRoot !== undefined && preparedRoot !== root)
-      throw new Error('Tool input changed after permission approval')
-    return this.runGlob(call, context, root)
-  }
-
-  private async runGlob(
-    call: ModelToolCall,
-    context: ToolExecutionContext,
-    root: string,
-  ): Promise<ToolExecutionResult> {
-    const hidden = this.env.CLAUDE_CODE_GLOB_HIDDEN !== 'false'
-    const noIgnore = this.env.CLAUDE_CODE_GLOB_NO_IGNORE !== 'false'
-    const args = [
-      '--files',
-      '--null',
-      '--sort',
-      'modified',
-      ...(hidden ? ['--hidden'] : []),
-      ...(noIgnore ? ['--no-ignore'] : []),
-    ]
-    const result = await this.runner.run({
-      command: 'rg',
-      args,
-      cwd: root,
+function createProductionGlobRegistry(
+  options: Omit<LocalToolRegistryOptions, 'globSearch'>,
+  environment: Readonly<Record<string, string>> = {},
+  runner?: CandidateRunner,
+): LocalToolRegistry {
+  return new LocalToolRegistry({
+    ...options,
+    globSearch: new RipgrepGlobSearch({
+      cwd: options.cwd,
       timeoutMs: 120_000,
-      ...(context.signal === undefined ? {} : { signal: context.signal }),
-    })
-    if (result.timedOut)
-      return { content: 'Search timed out after 120000ms', isError: true }
-    if (result.truncated)
-      throw new Error('Glob enumeration output was truncated')
-    if (
-      result.code !== 0 &&
-      !(result.code === 1 && result.stdout === '' && result.stderr === '')
-    )
-      throw new Error(
-        `Glob enumeration failed with exit code ${result.code}: ${result.stderr}`,
-      )
-    const pattern = portable(String(call.input.pattern ?? ''))
-    const absolutePattern = isAbsolute(String(call.input.pattern ?? ''))
-    const matchBase = !absolutePattern && !pattern.includes('/')
-    const matches: string[] = []
-    const comparablePattern = pattern
-    let count = 0
-    const requestedPath =
-      call.input.path === undefined ? '.' : String(call.input.path)
-    const lexicalRoot = portable(
-      isAbsolute(requestedPath)
-        ? resolve(requestedPath)
-        : resolve(context.cwd, requestedPath),
-    )
-    for (const raw of result.stdout.split('\0')) {
-      if (!raw) continue
-      const relativePath = portable(raw)
-      const absolutePath = portable(resolve(lexicalRoot, raw))
-      const candidate = absolutePattern ? absolutePath : relativePath
-      if (
-        pattern !== '' &&
-        !minimatch(candidate, comparablePattern, {
-          dot: true,
-          matchBase,
-          noext: true,
-        })
-      )
-        continue
-      const displayRoot = requestedPath
-      const displayPath = absolutePattern
-        ? absolutePath
-        : portable(join(displayRoot, raw))
-      if (matches.length < MAX_RESULTS) matches.push(displayPath)
-      count += 1
-    }
-    if (count === 0) return { content: 'No files found', isError: false }
-    const content = matches.join('\n')
-    return {
-      content:
-        count > MAX_RESULTS
-          ? `${content}\n(Showing ${MAX_RESULTS} of ${count} matching files; ${count - MAX_RESULTS} more are not listed. Narrow the pattern or path to see the rest.)`
-          : content,
-      isError: false,
-    }
-  }
+      environment,
+      ...(runner ? { runner } : {}),
+    }),
+  })
 }
 
 class ScopeProbeRegistry implements ToolRegistry {
@@ -455,16 +419,6 @@ function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
     create: async (options) => {
       const cleanup = await setupDynamic(options)
       const scripted = scriptedProvider(options)
-      const base = new LocalToolRegistry({
-        cwd: options.cwd,
-        dataPlane: 'native',
-        additionalDirectories:
-          options.env.EVAL_SCENARIO === 'scope-safety'
-            ? [join(dirname(options.cwd), 'glob-additional')]
-            : [],
-        homeDirectory: options.home,
-        configRoot: options.configRoot,
-      })
       const globEnv: Record<string, string> = {}
       const hidden = options.env.EVAL_CLAUDE_CODE_GLOB_HIDDEN
       const noIgnore = options.env.EVAL_CLAUDE_CODE_GLOB_NO_IGNORE
@@ -479,10 +433,27 @@ function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
               }),
             )
           : undefined
+      const registryOptions = {
+        cwd: options.cwd,
+        dataPlane: 'native' as const,
+        additionalDirectories:
+          options.env.EVAL_SCENARIO === 'scope-safety'
+            ? [join(dirname(options.cwd), 'glob-additional')]
+            : [],
+        homeDirectory: options.home,
+        configRoot: options.configRoot,
+      }
       const globRegistry: ToolRegistry =
         variant === 'candidate'
-          ? new RipgrepGlobRegistry(base, globEnv, candidateRunner)
-          : base
+          ? createProductionGlobRegistry(
+              registryOptions,
+              globEnv,
+              candidateRunner,
+            )
+          : new LocalToolRegistry({
+              ...registryOptions,
+              globSearch: new LegacyGlobSearch(),
+            })
       const registry: ToolRegistry =
         options.env.EVAL_SCENARIO === 'scope-safety'
           ? new ScopeProbeRegistry(globRegistry, variant, candidateRunner)
@@ -752,14 +723,14 @@ describe('Glob ripgrep admission eval', () => {
       'utf8',
     )
     await symlink(join(sibling, 'symlink-target'), join(root, 'link-dir'))
-    const base = new LocalToolRegistry({
+    const base = createProductionGlobRegistry({
       cwd: root,
       dataPlane: 'native',
       additionalDirectories: [join(root, 'extra'), sibling],
       homeDirectory: join(root, 'home'),
       configRoot: join(root, 'config'),
     })
-    const candidate = new RipgrepGlobRegistry(base, {})
+    const candidate = base
     const context: ToolExecutionContext = { cwd: root }
     const result = await candidate.execute(
       await candidate.prepare(
@@ -774,13 +745,12 @@ describe('Glob ripgrep admission eval', () => {
       join(tmpdir(), 'praxis-glob-ripgrep-empty-'),
     )
     roots.push(emptyRoot)
-    const emptyBase = new LocalToolRegistry({
+    const emptyCandidate = createProductionGlobRegistry({
       cwd: emptyRoot,
       dataPlane: 'native',
       homeDirectory: join(emptyRoot, 'home'),
       configRoot: join(emptyRoot, 'config'),
     })
-    const emptyCandidate = new RipgrepGlobRegistry(emptyBase, {})
     const emptyResult = await emptyCandidate.execute(
       await emptyCandidate.prepare(
         { id: 'empty', name: 'Glob', input: { pattern: '*.ts' } },
@@ -811,7 +781,7 @@ describe('Glob ripgrep admission eval', () => {
     )
     expect(absolute.content).toBe(portable(resolve(root, 'a.ts')))
     expect(
-      await globFiles({
+      await legacyGlobFiles({
         root,
         displayRoot: '.',
         absoluteRoot: root,
@@ -857,8 +827,14 @@ describe('Glob ripgrep admission eval', () => {
       { length: 105 },
       (_, index) => `ordered-${String(index).padStart(3, '0')}.ts`,
     )
-    const capped = new RipgrepGlobRegistry(
-      base,
+    const capped = createProductionGlobRegistry(
+      {
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
+      },
       {},
       {
         run: async () => ({
@@ -886,8 +862,14 @@ describe('Glob ripgrep admission eval', () => {
       '(Showing 100 of 105 matching files; 5 more are not listed. Narrow the pattern or path to see the rest.)',
     )
     const captured: string[][] = []
-    const controls = new RipgrepGlobRegistry(
-      base,
+    const controls = createProductionGlobRegistry(
+      {
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
+      },
       { CLAUDE_CODE_GLOB_HIDDEN: 'false', CLAUDE_CODE_GLOB_NO_IGNORE: 'false' },
       {
         run: async (options) => {
@@ -940,12 +922,16 @@ describe('Glob ripgrep admission eval', () => {
       timedOut: false,
       truncated: false,
     })
-    const failedRegistry = new RipgrepGlobRegistry(
-      base,
-      {},
+    const failedRegistry = createProductionGlobRegistry(
       {
-        run: failedProcessRun,
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
       },
+      {},
+      { run: failedProcessRun },
     )
     await expect(
       failedRegistry.execute(
@@ -956,8 +942,14 @@ describe('Glob ripgrep admission eval', () => {
         context,
       ),
     ).rejects.toThrow('exit code 127')
-    const missing = new RipgrepGlobRegistry(
-      base,
+    const missing = createProductionGlobRegistry(
+      {
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
+      },
       {},
       {
         run: async () => {
@@ -974,8 +966,14 @@ describe('Glob ripgrep admission eval', () => {
         context,
       ),
     ).rejects.toThrow('ENOENT')
-    const truncated = new RipgrepGlobRegistry(
-      base,
+    const truncated = createProductionGlobRegistry(
+      {
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
+      },
       {},
       {
         run: async () => ({
@@ -997,8 +995,14 @@ describe('Glob ripgrep admission eval', () => {
         context,
       ),
     ).rejects.toThrow('truncated')
-    const timedOutRegistry = new RipgrepGlobRegistry(
-      base,
+    const timedOutRegistry = createProductionGlobRegistry(
+      {
+        cwd: root,
+        dataPlane: 'native',
+        additionalDirectories: [join(root, 'extra'), sibling],
+        homeDirectory: join(root, 'home'),
+        configRoot: join(root, 'config'),
+      },
       {},
       {
         run: async () => ({
@@ -1057,15 +1061,20 @@ describe('Glob ripgrep admission eval', () => {
         `${i}\n`,
         'utf8',
       )
+    const legacy = new LegacyGlobSearch()
     const baselineRun = () =>
-      globFiles({ root, displayRoot: '.', absoluteRoot: root, pattern: '*.ts' })
-    const base = new LocalToolRegistry({
+      legacy.search({
+        root,
+        displayRoot: '.',
+        absoluteRoot: root,
+        pattern: '*.ts',
+      })
+    const candidate = createProductionGlobRegistry({
       cwd: root,
       dataPlane: 'native',
       homeDirectory: join(root, 'home'),
       configRoot: join(root, 'config'),
     })
-    const candidate = new RipgrepGlobRegistry(base, {})
     const candidateRun = async () => {
       const prepared = await candidate.prepare(
         { id: 'bench', name: 'Glob', input: { pattern: '*.ts' } },
@@ -1200,5 +1209,5 @@ describe('Glob ripgrep admission eval', () => {
     await expect(
       readFile(join(root, 'candidate', 'comparison-result.json'), 'utf8'),
     ).resolves.toContain('"passed": true')
-  })
+  }, 30_000)
 })

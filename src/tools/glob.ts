@@ -1,110 +1,131 @@
-import { lstat, opendir } from 'node:fs/promises'
 import { isAbsolute, join, resolve, sep } from 'node:path'
-
 import { minimatch } from 'minimatch'
+import {
+  BoundedProcessRunner,
+  joinedProcessOutput,
+  type ProcessResult,
+} from '../platform/bounded-process-runner.js'
 
 const MAX_RESULTS = 100
-
-export interface GlobFilesOptions {
+const MAX_ENUMERATION_BYTES = 2 * 1024 * 1024
+export interface GlobSearchRequest {
   root: string
   displayRoot: string
   absoluteRoot: string
   pattern: string
   signal?: AbortSignal
 }
-
-interface GlobMatch {
-  path: string
-  mtimeMs: number
-  order: number
+export interface GlobSearchResult {
+  content: string
+  isError: boolean
 }
-
+export interface GlobSearch {
+  search(request: GlobSearchRequest): Promise<GlobSearchResult>
+}
+export interface RipgrepGlobSearchOptions {
+  cwd: string
+  timeoutMs: number
+  environment?: Readonly<Record<string, string>>
+  runner?: {
+    run(options: {
+      command: string
+      args: readonly string[]
+      cwd?: string
+      timeoutMs: number
+      signal?: AbortSignal
+      env?: Readonly<Record<string, string>>
+    }): Promise<ProcessResult>
+  }
+}
+function portable(value: string): string {
+  return sep === '/' ? value : value.split(sep).join('/')
+}
 function abortError(): DOMException {
   return new DOMException('Tool execution aborted', 'AbortError')
 }
-
-function portablePath(path: string): string {
-  return sep === '/' ? path : path.split(sep).join('/')
-}
-
-function compareMatches(left: GlobMatch, right: GlobMatch): number {
-  return left.mtimeMs - right.mtimeMs || left.order - right.order
-}
-
-function insertOldest(matches: GlobMatch[], candidate: GlobMatch): void {
-  let low = 0
-  let high = matches.length
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2)
-    const current = matches[middle]
-    if (current && compareMatches(current, candidate) <= 0) low = middle + 1
-    else high = middle
-  }
-  matches.splice(low, 0, candidate)
-  if (matches.length > MAX_RESULTS) matches.pop()
-}
-
-export async function globFiles(options: GlobFilesOptions): Promise<string> {
-  const pattern = portablePath(options.pattern)
-  const absolutePattern = isAbsolute(options.pattern)
-  const matchBase = !absolutePattern && !pattern.includes('/')
-  const matches: GlobMatch[] = []
-  const directories = ['']
-  let matchCount = 0
-  let order = 0
-
-  while (directories.length > 0) {
-    if (options.signal?.aborted) throw abortError()
-    const relativeDirectory = directories.pop() ?? ''
-    const directory = await opendir(join(options.root, relativeDirectory))
-    for await (const entry of directory) {
-      if (options.signal?.aborted) throw abortError()
-      const relativePath = join(relativeDirectory, entry.name)
-      if (entry.isDirectory()) {
-        directories.push(relativePath)
-        continue
-      }
-      if (!entry.isFile()) continue
-
-      const portableRelativePath = portablePath(relativePath)
-      const absolutePath = portablePath(
-        resolve(options.absoluteRoot, relativePath),
-      )
-      if (
-        pattern !== '' &&
-        !minimatch(
-          absolutePattern ? absolutePath : portableRelativePath,
-          pattern,
-          { dot: true, matchBase, noext: true },
-        )
-      ) {
-        continue
-      }
-
-      let metadata
-      try {
-        metadata = await lstat(join(options.root, relativePath))
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
-      }
-      if (!metadata.isFile()) continue
-      const displayPath = absolutePattern
-        ? absolutePath
-        : portablePath(join(options.displayRoot, relativePath))
-      insertOldest(matches, {
-        path: displayPath,
-        mtimeMs: metadata.mtimeMs,
-        order,
+export class RipgrepGlobSearch implements GlobSearch {
+  private readonly runner: NonNullable<RipgrepGlobSearchOptions['runner']>
+  constructor(private readonly options: RipgrepGlobSearchOptions) {
+    this.runner =
+      options.runner ??
+      new BoundedProcessRunner({
+        cwd: options.cwd,
+        maxOutputBytes: MAX_ENUMERATION_BYTES,
       })
-      matchCount += 1
-      order += 1
+  }
+  async search(request: GlobSearchRequest): Promise<GlobSearchResult> {
+    if (request.signal?.aborted) throw abortError()
+    const hidden = this.options.environment?.CLAUDE_CODE_GLOB_HIDDEN !== 'false'
+    const noIgnore =
+      this.options.environment?.CLAUDE_CODE_GLOB_NO_IGNORE !== 'false'
+    let result: ProcessResult
+    try {
+      result = await this.runner.run({
+        command: 'rg',
+        args: [
+          '--files',
+          '--null',
+          '--sort',
+          'modified',
+          ...(hidden ? ['--hidden'] : []),
+          ...(noIgnore ? ['--no-ignore'] : []),
+        ],
+        cwd: request.root,
+        timeoutMs: this.options.timeoutMs,
+        ...(request.signal ? { signal: request.signal } : {}),
+        ...(this.options.environment ? { env: this.options.environment } : {}),
+      })
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`Glob enumeration failed: ${message}`)
+    }
+    if (result.timedOut)
+      return {
+        content: `Search timed out after ${this.options.timeoutMs}ms`,
+        isError: true,
+      }
+    if (result.truncated)
+      throw new Error('Glob enumeration failed: output truncated')
+    if (result.code !== 0) {
+      if (result.code === 1 && !result.stdout && !result.stderr)
+        return { content: 'No files found', isError: false }
+      const output = joinedProcessOutput(result)
+      throw new Error(
+        `Glob enumeration failed with exit code ${result.code}${output ? `: ${output}` : ''}`,
+      )
+    }
+    const pattern = portable(request.pattern)
+    const absolutePattern = isAbsolute(request.pattern)
+    const matchBase = !absolutePattern && !pattern.includes('/')
+    const paths = result.stdout.split('\0').filter(Boolean)
+    const matched = paths.filter((path) => {
+      const relativePath = portable(path)
+      const absolutePath = portable(resolve(request.absoluteRoot, relativePath))
+      return (
+        pattern === '' ||
+        minimatch(absolutePattern ? absolutePath : relativePath, pattern, {
+          dot: true,
+          matchBase,
+          noext: true,
+        })
+      )
+    })
+    if (matched.length === 0)
+      return { content: 'No files found', isError: false }
+    const display = matched.slice(0, MAX_RESULTS).map((path) => {
+      const relativePath = portable(path)
+      if (absolutePattern)
+        return portable(resolve(request.absoluteRoot, relativePath))
+      return portable(join(request.displayRoot, relativePath))
+    })
+    const content = display.join('\n')
+    return {
+      content:
+        matched.length > MAX_RESULTS
+          ? `${content}\n(Showing 100 of ${matched.length} matching files; ${matched.length - 100} more are not listed. Narrow the pattern or path to see the rest.)`
+          : content,
+      isError: false,
     }
   }
-
-  if (matchCount === 0) return 'No files found'
-  const content = matches.map((match) => match.path).join('\n')
-  return matchCount > MAX_RESULTS
-    ? `${content}\n(Showing ${MAX_RESULTS} of ${matchCount} matching files; ${matchCount - MAX_RESULTS} more are not listed. Narrow the pattern or path to see the rest.)`
-    : content
 }

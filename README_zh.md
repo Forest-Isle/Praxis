@@ -23,7 +23,7 @@ Praxis 只使用一个 native 数据平面，不读取或写入 Claude Code 会�
 
 - macOS 或 Linux
 - Node.js 24 或更高版本
-- 用于 Grep 工具的 [`ripgrep`](https://github.com/BurntSushi/ripgrep)（`rg`）
+- 用于 Grep 和 Glob 工具的 [`ripgrep`](https://github.com/BurntSushi/ripgrep)（`rg`）
 - Anthropic、OpenAI 兼容或 OpenAI Responses 提供商的 API 密钥和模型 ID（稳定路径），
   或显式启用的实验性 ChatGPT-backed Codex 订阅集成
 

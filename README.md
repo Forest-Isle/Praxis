@@ -27,7 +27,7 @@ sessions, configuration, or compatibility directories.
 
 - macOS or Linux
 - Node.js 24 or newer
-- [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep tool
+- [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep and Glob tools
 - an API key and model ID for an Anthropic, OpenAI-compatible, or OpenAI
   Responses provider (the stable setup), or the explicitly enabled experimental
   ChatGPT-backed Codex subscription integration

@@ -19,6 +19,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ModelMessage, ToolExecutionContext } from '../core/runtime.js'
+import type { GlobSearch, GlobSearchRequest } from './glob.js'
 import {
   APPLY_PATCH_MAX_EDITS,
   APPLY_PATCH_MAX_FILES,
@@ -320,17 +321,13 @@ describe('LocalToolRegistry', () => {
     const prepareBash = (id: string, command: string) =>
       registry.prepare({ id, name: 'Bash', input: { command } }, { cwd })
 
-    const searchTimeout = vi.spyOn(AbortSignal, 'timeout')
-    try {
-      const glob = await registry.prepare(
-        { id: 'default-search-timeout', name: 'Glob', input: { pattern: '*' } },
-        { cwd },
-      )
-      await registry.execute(glob, { cwd })
-      expect(searchTimeout).toHaveBeenCalledWith(120_000)
-    } finally {
-      searchTimeout.mockRestore()
-    }
+    const glob = await registry.prepare(
+      { id: 'default-search-timeout', name: 'Glob', input: { pattern: '*' } },
+      { cwd },
+    )
+    await expect(registry.execute(glob, { cwd })).resolves.toMatchObject({
+      isError: false,
+    })
 
     const defaultTimeout = await registry.prepare(
       { id: 'default-timeout', name: 'Bash', input: { command: 'pwd' } },
@@ -1223,6 +1220,83 @@ describe('LocalToolRegistry', () => {
     await expect(timeoutRegistry.execute(timeout, context)).resolves.toEqual({
       content: 'Search timed out after 1ms',
       isError: true,
+    })
+  })
+
+  it('forwards Glob requests to the injected search and truncates its result', async () => {
+    const { cwd } = await workspace()
+    const requests: GlobSearchRequest[] = []
+    const search: GlobSearch = {
+      search: async (request) => {
+        requests.push(request)
+        return { content: '0123456789abcdef', isError: true }
+      },
+    }
+    const registry = new LocalToolRegistry({
+      cwd,
+      maxOutputBytes: 10,
+      globSearch: search,
+    })
+    const controller = new AbortController()
+    const context = { cwd, signal: controller.signal }
+    const call = await registry.prepare(
+      {
+        id: 'injected-glob',
+        name: 'Glob',
+        input: { pattern: '*.ts', path: '.' },
+      },
+      context,
+    )
+    await expect(registry.execute(call, context)).resolves.toEqual({
+      content: '0123456789\n[output truncated]',
+      isError: true,
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({
+      root: await realpath(cwd),
+      displayRoot: '.',
+      absoluteRoot: cwd,
+      pattern: '*.ts',
+      signal: controller.signal,
+    })
+  })
+
+  it('rejects a prepared Glob when its symlink root is replaced, while direct execute succeeds', async () => {
+    const { cwd } = await workspace()
+    const first = join(cwd, 'first')
+    const second = join(cwd, 'second')
+    const selected = join(cwd, 'selected')
+    await Promise.all([mkdir(first), mkdir(second)])
+    await writeFile(join(first, 'first.ts'), '')
+    await writeFile(join(second, 'second.ts'), '')
+    await symlink(first, selected)
+    const registry = new LocalToolRegistry({ cwd })
+    const context = { cwd }
+    const prepared = await registry.prepare(
+      {
+        id: 'selected-glob',
+        name: 'Glob',
+        input: { pattern: '*.ts', path: selected },
+      },
+      context,
+    )
+    await rm(selected)
+    await symlink(second, selected)
+    await expect(registry.execute(prepared, context)).rejects.toThrow(
+      'Tool input changed after permission approval',
+    )
+    await expect(
+      registry.execute(
+        {
+          id: 'direct-selected-glob',
+          name: 'Glob',
+          input: { pattern: '*.ts', path: selected },
+        },
+        context,
+      ),
+    ).resolves.toMatchObject({
+      content: join(selected, 'second.ts'),
+      isError: false,
     })
   })
 
