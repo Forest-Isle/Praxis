@@ -28,6 +28,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.57.0](https://github.com/Forest-Isle/Praxis/compare/v0.56.0...v0.57.0) (2026-09-03)
+
+
+### Features
+
+* surface fresh LSP diagnostics after mutations ([#608](https://github.com/Forest-Isle/Praxis/issues/608)) ([a13fe13](https://github.com/Forest-Isle/Praxis/commit/a13fe138fde9a3a3908d45f9e0ba9d6dd9ff2a1d))
+
 ## [0.56.0](https://github.com/Forest-Isle/Praxis/compare/v0.55.3...v0.56.0) (2026-09-02)
 
 
