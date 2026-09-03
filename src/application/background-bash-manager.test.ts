@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RuntimeEvent } from '../core/runtime.js'
 
@@ -103,6 +103,77 @@ describe('BackgroundBashManager', () => {
     expect(
       events.filter((event) => event.type === 'task-input-waiting'),
     ).toHaveLength(1)
+  })
+
+  it('does not warn for an ordinary question', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command: "printf 'Did all tests pass?'; sleep 0.08",
+      description: 'Ordinary question',
+      toolUseId: 'call_question',
+      timeout: 30_000,
+    })
+
+    const messages = await manager.notifications(true)
+    expect(messages).toEqual([
+      expect.stringContaining(`<task-id>${launch.taskId}</task-id>`),
+    ])
+    expect(messages[0]).not.toContain('interactive prompt')
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'task-input-waiting' && event.taskId === launch.taskId,
+      ),
+    ).toBe(false)
+  })
+
+  it('suppresses a pending watchdog after output consumes completion', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 0.08",
+      description: 'Consumed prompt',
+      toolUseId: 'call_consumed_prompt',
+      timeout: 30_000,
+    })
+
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) =>
+            event.type === 'task-input-waiting' &&
+            event.taskId === launch.taskId,
+        ),
+      ).toHaveLength(1)
+    })
+    await expect(
+      manager.output(launch.taskId, { block: true, timeout: 30_000 }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('<status>completed</status>'),
+      }),
+    )
+    await expect(manager.notifications(false)).resolves.toEqual([])
+  })
+
+  it('redacts ambient credentials in watchdog output', async () => {
+    const secret = 'watchdog-secret-value'
+    process.env.PRAXIS_WATCHDOG_SECRET = secret
+    try {
+      const { manager } = await createManager({ stallWatchdogMs: 20 })
+      await manager.launch({
+        command: `printf '${secret} Continue? [y/N] '; sleep 0.08`,
+        description: 'Redacted prompt',
+        toolUseId: 'call_redacted_prompt',
+        timeout: 30_000,
+      })
+
+      const messages = await manager.notifications(true)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).not.toContain(secret)
+      expect(messages[0]).toContain('[REDACTED]')
+    } finally {
+      delete process.env.PRAXIS_WATCHDOG_SECRET
+    }
   })
 
   it('recognizes prompt families but ignores a generic colon', async () => {

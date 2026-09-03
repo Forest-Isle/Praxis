@@ -166,7 +166,7 @@ function isPromptTail(output: string): boolean {
   const line = [...lines].reverse().find((item) => item.trim() !== '')
   if (!line) return false
   const value = line.trim().replace(/[\t ]+$/u, '')
-  if (/\?\s*(?:\[[^\]]{1,20}\]|\([^)]{1,20}\))?$/u.test(value)) return true
+  if (/\?\s*(?:\[[^\]]{1,20}\]|\([^)]{1,20}\))$/u.test(value)) return true
   if (
     /^(?:password|passphrase|username)\s*:\s*$/iu.test(value) ||
     /^(?:enter|input|select|selection|choice|confirm)\b[^\n:]{0,100}:\s*$/iu.test(
@@ -377,8 +377,10 @@ export class BackgroundBashManager {
     const messages: string[] = []
     for (const task of this.tasks.values()) {
       if (task.pendingWatchdogMessage) {
-        messages.push(task.pendingWatchdogMessage)
+        const pendingWatchdogMessage = task.pendingWatchdogMessage
         task.pendingWatchdogMessage = null
+        if (!task.notified && task.status !== 'stopped')
+          messages.push(pendingWatchdogMessage)
       }
       if (
         task.status === 'running' ||
