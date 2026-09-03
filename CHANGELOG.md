@@ -30,6 +30,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.60.0](https://github.com/Forest-Isle/Praxis/compare/v0.59.1...v0.60.0) (2026-09-03)
+
+
+### Features
+
+* warn on stalled background Bash prompts ([#621](https://github.com/Forest-Isle/Praxis/issues/621)) ([c487bb5](https://github.com/Forest-Isle/Praxis/commit/c487bb5c80b4fc969bec0554d98797c3871446b6)), closes [#171](https://github.com/Forest-Isle/Praxis/issues/171)
+
 ## [0.59.1](https://github.com/Forest-Isle/Praxis/compare/v0.59.0...v0.59.1) (2026-09-03)
 
 
