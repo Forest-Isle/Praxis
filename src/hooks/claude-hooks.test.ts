@@ -8,9 +8,11 @@ import { describe, expect, it, vi } from 'vitest'
 import type { JsonResource } from '../core/resources.js'
 import {
   ClaudeHookRunner,
+  HOOK_EVENTS,
   type ClaudeHookCommandExecutor,
   type ClaudeHookInput,
   type ClaudeHookStreamEvent,
+  validateClaudeHooks,
 } from './claude-hooks.js'
 import { ClaudeSessionEnvironment } from './claude-session-environment.js'
 
@@ -43,6 +45,287 @@ async function waitForProcessExit(pid: number): Promise<void> {
 }
 
 describe('ClaudeHookRunner', () => {
+  it('executes synchronous lifecycle hooks by worktree kind without advertising them', async () => {
+    const executeCommand = vi.fn().mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      durationMs: 1,
+    })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  matcher: 'workflow',
+                  hooks: [{ type: 'command', command: 'create-hook' }],
+                },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+
+    await expect(
+      runner.run({
+        ...input,
+        hook_event_name: 'WorktreeCreate',
+        cwd: '/workspace/.praxis/worktrees/workflow/run',
+        worktree_kind: 'workflow',
+      }),
+    ).resolves.toMatchObject({
+      executions: [
+        { command: 'create-hook', hookName: 'WorktreeCreate:workflow' },
+      ],
+    })
+    expect(HOOK_EVENTS).not.toContain('WorktreeCreate')
+    expect(executeCommand).toHaveBeenCalledWith(
+      'create-hook',
+      expect.objectContaining({ worktree_kind: 'workflow' }),
+      600_000,
+      undefined,
+      expect.any(Function),
+      undefined,
+    )
+  })
+
+  it('rejects asynchronous lifecycle hooks during validation', () => {
+    expect(() =>
+      validateClaudeHooks([
+        settings(
+          {
+            hooks: {
+              WorktreeRemove: [
+                {
+                  hooks: [
+                    { type: 'command', command: 'remove-hook', async: true },
+                  ],
+                },
+              ],
+            },
+          },
+          'project',
+        ),
+      ]),
+    ).toThrow('Invalid Claude WorktreeRemove hook async: /project.json')
+  })
+
+  it('keeps advisory lifecycle failures non-blocking and redacts their output', async () => {
+    const secret = 'lifecycle-advisory-secret'
+    const ambientVariable = 'PRAXIS_TEST_API_KEY'
+    const previousAmbientValue = process.env[ambientVariable]
+    process.env[ambientVariable] = secret
+    const events: ClaudeHookStreamEvent[] = []
+    const executeCommand = vi
+      .fn()
+      .mockResolvedValueOnce({
+        stdout: secret,
+        stderr: `warning ${secret}`,
+        exitCode: 1,
+        durationMs: 1,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'second-hook',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        {
+          ...settings(
+            {
+              hooks: {
+                WorktreeCreate: [
+                  {
+                    hooks: [
+                      { type: 'command', command: 'advisory' },
+                      { type: 'command', command: 'second' },
+                    ],
+                  },
+                ],
+              },
+            },
+            'project',
+          ),
+          sensitiveValues: [secret],
+        },
+      ],
+      cwd: '/workspace',
+      onEvent: (event) => events.push(event),
+      executeCommand,
+    })
+
+    try {
+      const outcome = await runner.run({
+        ...input,
+        hook_event_name: 'WorktreeCreate',
+        worktree_kind: 'workflow',
+      })
+
+      expect(executeCommand).toHaveBeenCalledTimes(2)
+      expect(outcome.blockedReason).toBeUndefined()
+      expect(outcome.executions[0]).toMatchObject({
+        exitCode: 1,
+        stdout: '[REDACTED]',
+        stderr: 'warning [REDACTED]',
+      })
+      expect(JSON.stringify(outcome)).not.toContain(secret)
+      expect(JSON.stringify(events)).not.toContain(secret)
+      expect(events).toHaveLength(4)
+    } finally {
+      if (previousAmbientValue === undefined)
+        delete process.env[ambientVariable]
+      else process.env[ambientVariable] = previousAmbientValue
+    }
+  })
+
+  it('blocks later lifecycle hooks on exit two and redacts the blocker', async () => {
+    const secret = 'lifecycle-block-secret'
+    const executeCommand = vi
+      .fn()
+      .mockResolvedValueOnce({
+        stdout: '',
+        stderr: `blocked ${secret}`,
+        exitCode: 2,
+        durationMs: 1,
+      })
+      .mockResolvedValueOnce({
+        stdout: 'must-not-run',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      })
+    const runner = new ClaudeHookRunner({
+      settings: [
+        {
+          ...settings(
+            {
+              hooks: {
+                WorktreeRemove: [
+                  {
+                    hooks: [
+                      { type: 'command', command: 'block' },
+                      { type: 'command', command: 'later' },
+                    ],
+                  },
+                ],
+              },
+            },
+            'project',
+          ),
+          sensitiveValues: [secret],
+        },
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+
+    const outcome = await runner.run({
+      ...input,
+      hook_event_name: 'WorktreeRemove',
+      worktree_kind: 'workflow',
+    })
+
+    expect(executeCommand).toHaveBeenCalledTimes(1)
+    expect(outcome.blockedReason).toBe('blocked [REDACTED]')
+    expect(JSON.stringify(outcome)).not.toContain(secret)
+  })
+
+  it('applies lifecycle hook timeout limits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-lifecycle-timeout-'))
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      'setTimeout(() => undefined, 1000)',
+    )}`
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  hooks: [{ type: 'command', command, timeout: 0.05 }],
+                },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: root,
+    })
+
+    try {
+      await expect(
+        runner.run({
+          ...input,
+          cwd: root,
+          hook_event_name: 'WorktreeCreate',
+          worktree_kind: 'workflow',
+        }),
+      ).rejects.toThrow('Hook timed out after 50ms')
+    } finally {
+      await rm(root, { recursive: true })
+    }
+  })
+
+  it('propagates lifecycle hook cancellation through the caller signal', async () => {
+    const controller = new AbortController()
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    const executeCommand: ClaudeHookCommandExecutor = async (
+      _command,
+      _input,
+      _timeout,
+      signal,
+    ) => {
+      markStarted()
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('cancelled', 'AbortError')),
+          { once: true },
+        )
+      })
+    }
+    const runner = new ClaudeHookRunner({
+      settings: [
+        settings(
+          {
+            hooks: {
+              WorktreeRemove: [
+                { hooks: [{ type: 'command', command: 'cancel' }] },
+              ],
+            },
+          },
+          'project',
+        ),
+      ],
+      cwd: '/workspace',
+      executeCommand,
+    })
+    const pending = runner.run(
+      {
+        ...input,
+        hook_event_name: 'WorktreeRemove',
+        worktree_kind: 'workflow',
+      },
+      undefined,
+      controller.signal,
+    )
+    await started
+    controller.abort()
+    await expect(pending).rejects.toThrow('cancelled')
+  })
+
   it('matches Setup hooks by init and maintenance trigger', async () => {
     const executeCommand = vi.fn().mockResolvedValue({
       stdout: '',

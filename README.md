@@ -215,8 +215,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   tool, memory, first-turn, and resume behavior. Agent execution uses one
   durable lifecycle vocabulary with bounded cancellation and drain,
   continuation, notifications, and single-owner orphan recovery. Isolated
-  Workflow turns use ownership-recorded repo-local temporary worktrees and
-  retain dirty or committed results for inspection. Experimental
+  Workflow turns use ownership-recorded repo-local temporary worktrees, run
+  trust-admitted synchronous lifecycle hooks, safely roll back blocked
+  creation, and retain dirty, committed, unsafe, or removal-blocked results
+  for inspection. Experimental
   local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,
