@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RuntimeEvent } from '../core/runtime.js'
 
@@ -28,7 +28,9 @@ afterEach(async () => {
   )
 })
 
-async function createManager(options: { maxOutputBytes?: number } = {}) {
+async function createManager(
+  options: { maxOutputBytes?: number; stallWatchdogMs?: number } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), 'praxis-background-bash-'))
   roots.push(root)
   const cwd = join(root, 'work')
@@ -48,6 +50,360 @@ async function createManager(options: { maxOutputBytes?: number } = {}) {
 }
 
 describe('BackgroundBashManager', () => {
+  it('rejects invalid watchdog thresholds', async () => {
+    const { cwd, sessionId, stateRoot } = await createManager()
+    for (const stallWatchdogMs of [0, -1, 1.5, Number.NaN, Infinity]) {
+      expect(
+        () =>
+          new BackgroundBashManager({
+            cwd,
+            sessionId,
+            stateRoot,
+            stallWatchdogMs,
+          }),
+      ).toThrow(RangeError)
+    }
+  })
+
+  it('warns once for an interactive prompt and preserves completion delivery', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 30 })
+    const launch = await manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 0.2",
+      description: 'Ask <user>',
+      toolUseId: 'call<&>',
+      timeout: 30_000,
+    })
+    const messages = await manager.notifications(true)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toContain(
+      `<summary>Background command &quot;Ask &lt;user&gt;&quot; appears to be waiting for interactive input</summary>`,
+    )
+    expect(messages[0]).toContain(
+      '<tool-use-id>call&lt;&amp;&gt;</tool-use-id>',
+    )
+    expect(messages[0]).toContain('Last output:\nContinue? [y/N] ')
+    expect(messages[0]).not.toContain('<status>')
+    expect(
+      events.filter((event) => event.type === 'task-input-waiting'),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'task-input-waiting',
+        taskId: launch.taskId,
+        summary:
+          'Background command "Ask <user>" appears to be waiting for interactive input',
+      }),
+    ])
+    expect(
+      (await manager.snapshots()).find((task) => task.taskId === launch.taskId)
+        ?.status,
+    ).toBe('running')
+    await expect(manager.notifications(true)).resolves.toEqual([
+      expect.stringContaining(`<task-id>${launch.taskId}</task-id>`),
+    ])
+    expect(
+      events.filter((event) => event.type === 'task-input-waiting'),
+    ).toHaveLength(1)
+  })
+
+  it('does not warn for an ordinary question', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command: "printf 'Did all tests pass?'; sleep 0.08",
+      description: 'Ordinary question',
+      toolUseId: 'call_question',
+      timeout: 30_000,
+    })
+
+    const messages = await manager.notifications(true)
+    expect(messages).toEqual([
+      expect.stringContaining(`<task-id>${launch.taskId}</task-id>`),
+    ])
+    expect(messages[0]).not.toContain('interactive prompt')
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'task-input-waiting' && event.taskId === launch.taskId,
+      ),
+    ).toBe(false)
+  })
+
+  it('suppresses a pending watchdog after output consumes completion', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 0.08",
+      description: 'Consumed prompt',
+      toolUseId: 'call_consumed_prompt',
+      timeout: 30_000,
+    })
+
+    await vi.waitFor(() => {
+      expect(
+        events.filter(
+          (event) =>
+            event.type === 'task-input-waiting' &&
+            event.taskId === launch.taskId,
+        ),
+      ).toHaveLength(1)
+    })
+    await expect(
+      manager.output(launch.taskId, { block: true, timeout: 30_000 }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('<status>completed</status>'),
+      }),
+    )
+    await expect(manager.notifications(false)).resolves.toEqual([])
+  })
+
+  it('redacts ambient credentials in watchdog output', async () => {
+    const secret = 'watchdog-secret-value'
+    process.env.PRAXIS_WATCHDOG_SECRET = secret
+    try {
+      const { manager } = await createManager({ stallWatchdogMs: 20 })
+      await manager.launch({
+        command: `printf '${secret} Continue? [y/N] '; sleep 0.08`,
+        description: 'Redacted prompt',
+        toolUseId: 'call_redacted_prompt',
+        timeout: 30_000,
+      })
+
+      const messages = await manager.notifications(true)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]).not.toContain(secret)
+      expect(messages[0]).toContain('[REDACTED]')
+    } finally {
+      delete process.env.PRAXIS_WATCHDOG_SECRET
+    }
+  })
+
+  it('recognizes prompt families but ignores a generic colon', async () => {
+    for (const prompt of [
+      'Password:',
+      'Enter selection [1-3]:',
+      'Press Enter to continue…',
+    ]) {
+      const { manager } = await createManager({ stallWatchdogMs: 20 })
+      const launch = await manager.launch({
+        command: `printf '${prompt}'; sleep 0.08`,
+        description: prompt,
+        toolUseId: 'call_prompt',
+        timeout: 30_000,
+      })
+      await expect(manager.notifications(true)).resolves.toHaveLength(1)
+      await manager.stop(launch.taskId)
+    }
+    const { manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command: "printf 'progress:'; sleep 0.08",
+      description: 'ordinary',
+      toolUseId: 'call_ordinary',
+      timeout: 30_000,
+    })
+    const notifications = await manager.notifications(true)
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).not.toContain('interactive prompt')
+    expect(
+      (await manager.snapshots()).find((task) => task.taskId === launch.taskId)
+        ?.taskId,
+    ).toBe(launch.taskId)
+  })
+
+  it('resets the idle window on output activity and cancels on ordinary output', async () => {
+    const { manager } = await createManager({ stallWatchdogMs: 500 })
+    const launch = await manager.launch({
+      command:
+        "printf 'Continue? [y/N]'; sleep 0.2; printf ' Proceed? [y/N]'; sleep 0.4; printf ' ordinary'; sleep 0.05",
+      description: 'reset window',
+      toolUseId: 'call_reset',
+      timeout: 30_000,
+    })
+    const notifications = await manager.notifications(true)
+    expect(notifications).toHaveLength(1)
+    expect(notifications[0]).toContain('completed')
+    expect(notifications[0]).not.toContain('interactive prompt')
+    expect(launch.taskId).toMatch(/^b/u)
+  })
+
+  it('delivers a pending watchdog before waiting for another running task', async () => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const waiting = await manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 1",
+      description: 'Pending prompt',
+      toolUseId: 'call_pending',
+      timeout: 30_000,
+    })
+    const interim = await manager.output(waiting.taskId, {
+      block: true,
+      timeout: 50,
+    })
+    expect(interim.content).toContain('<status>running</status>')
+    expect(interim.content).toContain('Continue? [y/N]')
+    expect(
+      events.filter(
+        (event) =>
+          event.type === 'task-input-waiting' &&
+          event.taskId === waiting.taskId,
+      ),
+    ).toHaveLength(1)
+
+    const silent = await manager.launch({
+      command: 'sleep 1',
+      description: 'Still running',
+      toolUseId: 'call_silent_running',
+      timeout: 30_000,
+    })
+    const messages = await manager.notifications(true)
+    expect(messages).toEqual([
+      expect.stringContaining(`<task-id>${waiting.taskId}</task-id>`),
+    ])
+    expect(
+      (await manager.snapshots()).find((task) => task.taskId === silent.taskId)
+        ?.status,
+    ).toBe('running')
+
+    await manager.stop(waiting.taskId)
+    await manager.stop(silent.taskId)
+  })
+
+  it.each([
+    ['silent output', 'sleep 0.08'],
+    ['ordinary output', "printf 'ordinary progress'; sleep 0.08"],
+  ])('does not warn for %s', async (_description, command) => {
+    const { events, manager } = await createManager({ stallWatchdogMs: 20 })
+    const launch = await manager.launch({
+      command,
+      description: 'Not a prompt',
+      toolUseId: 'call_not_prompt',
+      timeout: 30_000,
+    })
+
+    await expect(manager.notifications(true)).resolves.toEqual([
+      expect.stringContaining(`<task-id>${launch.taskId}</task-id>`),
+    ])
+    expect(
+      events.some(
+        (event) =>
+          event.type === 'task-input-waiting' && event.taskId === launch.taskId,
+      ),
+    ).toBe(false)
+  })
+
+  it('clears armed watchdogs on every terminal and cancellation path', async () => {
+    const observed: RuntimeEvent[][] = []
+
+    const completed = await createManager({ stallWatchdogMs: 100 })
+    observed.push(completed.events)
+    await completed.manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 0.01",
+      description: 'Complete promptly',
+      toolUseId: 'call_prompt_complete',
+      timeout: 30_000,
+    })
+    await completed.manager.notifications(true)
+
+    const nonzero = await createManager({ stallWatchdogMs: 100 })
+    observed.push(nonzero.events)
+    await nonzero.manager.launch({
+      command: "printf 'Continue? [y/N] '; exit 7",
+      description: 'Fail promptly',
+      toolUseId: 'call_prompt_failure',
+      timeout: 30_000,
+    })
+    await nonzero.manager.notifications(true)
+
+    const timedOut = await createManager({ stallWatchdogMs: 100 })
+    observed.push(timedOut.events)
+    const timedOutLaunch = await timedOut.manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 1",
+      description: 'Time out',
+      toolUseId: 'call_prompt_timeout',
+      timeout: 80,
+    })
+    await expect(
+      timedOut.manager.output(timedOutLaunch.taskId, {
+        block: true,
+        timeout: 20,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('Continue?'),
+      }),
+    )
+    await timedOut.manager.notifications(true)
+
+    const stopped = await createManager({ stallWatchdogMs: 100 })
+    observed.push(stopped.events)
+    const stoppedLaunch = await stopped.manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 1",
+      description: 'Stop promptly',
+      toolUseId: 'call_prompt_stop',
+      timeout: 30_000,
+    })
+    await expect(
+      stopped.manager.output(stoppedLaunch.taskId, {
+        block: true,
+        timeout: 20,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('Continue?'),
+      }),
+    )
+    await stopped.manager.stop(stoppedLaunch.taskId)
+
+    const aborted = await createManager({ stallWatchdogMs: 100 })
+    observed.push(aborted.events)
+    const controller = new AbortController()
+    const abortedLaunch = await aborted.manager.launch({
+      command: "printf 'Continue? [y/N] '; sleep 1",
+      description: 'Abort promptly',
+      toolUseId: 'call_prompt_abort',
+      timeout: 30_000,
+      signal: controller.signal,
+    })
+    await expect(
+      aborted.manager.output(abortedLaunch.taskId, {
+        block: true,
+        timeout: 20,
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining('Continue?'),
+      }),
+    )
+    controller.abort()
+    await aborted.manager.output(abortedLaunch.taskId, {
+      block: true,
+      timeout: 30_000,
+    })
+
+    const outputFailure = await createManager({ stallWatchdogMs: 100 })
+    observed.push(outputFailure.events)
+    const outputFailureLaunch = await outputFailure.manager.launch({
+      command: "sleep 0.01; printf 'Continue? [y/N] '",
+      description: 'Fail output write',
+      toolUseId: 'call_prompt_output_failure',
+      timeout: 30_000,
+    })
+    const outputRoot = dirname(outputFailureLaunch.outputFile)
+    await rm(outputRoot, { recursive: true, force: true })
+    await writeFile(outputRoot, 'not a directory')
+    await outputFailure.manager.notifications(true)
+
+    const barrier = await createManager({ stallWatchdogMs: 100 })
+    await barrier.manager.launch({
+      command: 'sleep 0.15',
+      description: 'Observable timer barrier',
+      toolUseId: 'call_timer_barrier',
+      timeout: 30_000,
+    })
+    await barrier.manager.notifications(true)
+
+    expect(
+      observed.flat().filter((event) => event.type === 'task-input-waiting'),
+    ).toEqual([])
+  })
+
   it('returns live output, completes with native metadata, and notifies once', async () => {
     const { events, manager } = await createManager()
     const launch = await manager.launch({

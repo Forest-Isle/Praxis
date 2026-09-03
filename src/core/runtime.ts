@@ -286,6 +286,13 @@ export type RuntimeEvent =
       usage?: { totalTokens: number; toolUses: number; durationMs: number }
     }
   | {
+      type: 'task-input-waiting'
+      taskId: string
+      toolUseId?: string
+      outputFile: string
+      summary: string
+    }
+  | {
       type: 'session-state-changed'
       state: 'idle' | 'running' | 'requires_action'
     }

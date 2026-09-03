@@ -37,6 +37,11 @@ interface BackgroundBashTask {
   durationMs: number | null
   parentSignal?: AbortSignal
   parentAbort?: () => void
+  watchdogTimer: ReturnType<typeof setTimeout> | null
+  watchdogFired: boolean
+  pendingWatchdogMessage: string | null
+  watchdogWake: Promise<void>
+  watchdogWakeResolve: (() => void) | null
 }
 
 interface PersistedBackgroundBashTask {
@@ -73,6 +78,7 @@ export interface BackgroundBashManagerOptions {
   stateRoot: string
   maxOutputBytes?: number
   eventSink?: RuntimeEventSink
+  stallWatchdogMs?: number
 }
 
 export interface BackgroundBashLaunchInput {
@@ -149,13 +155,62 @@ function escapeXml(value: string): string {
     .replaceAll("'", '&apos;')
 }
 
+function isPromptTail(output: string): boolean {
+  const tail = output
+    .slice(-1024)
+    .replace(
+      new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'gu'),
+      '',
+    )
+  const lines = tail.split(/\r?\n/u)
+  const line = [...lines].reverse().find((item) => item.trim() !== '')
+  if (!line) return false
+  const value = line.trim().replace(/[\t ]+$/u, '')
+  if (/\?\s*(?:\[[^\]]{1,20}\]|\([^)]{1,20}\))$/u.test(value)) return true
+  if (
+    /^(?:password|passphrase|username)\s*:\s*$/iu.test(value) ||
+    /^(?:enter|input|select|selection|choice|confirm)\b[^\n:]{0,100}:\s*$/iu.test(
+      value,
+    )
+  )
+    return true
+  return /^(?:press|hit)\s+(?:enter|return|any key)(?:\s+to\b[^\n]*)?[.!?:…]?$/iu.test(
+    value,
+  )
+}
+
+function watchdogNotification(
+  task: BackgroundBashTask,
+  summary: string,
+): string {
+  return `<task-notification>\n<task-id>${escapeXml(task.taskId)}</task-id>\n<tool-use-id>${escapeXml(task.toolUseId)}</tool-use-id>\n<output-file>${escapeXml(task.outputFile)}</output-file>\n<summary>${escapeXml(summary)}</summary>\n</task-notification>\nLast output:\n${task.output}\n\nThe command is likely blocked on an interactive prompt. Stop this task and re-run with piped input (e.g., \`echo y | command\`) or a non-interactive flag if one exists.`
+}
+
+function createWatchdogWake(): { promise: Promise<void>; resolve: () => void } {
+  let resolveWake!: () => void
+  const promise = new Promise<void>((resolve) => {
+    resolveWake = resolve
+  })
+  return { promise, resolve: resolveWake }
+}
+
 export class BackgroundBashManager {
   private readonly tasks = new Map<string, BackgroundBashTask>()
   private readonly runner: BoundedProcessRunner
   private readonly outputRoot: string
   private readonly sessionStateRoot: string
+  private readonly stallWatchdogMs: number
 
   constructor(private readonly options: BackgroundBashManagerOptions) {
+    if (
+      options.stallWatchdogMs !== undefined &&
+      (!Number.isFinite(options.stallWatchdogMs) ||
+        !Number.isInteger(options.stallWatchdogMs) ||
+        options.stallWatchdogMs <= 0)
+    ) {
+      throw new RangeError('stallWatchdogMs must be a positive integer')
+    }
+    this.stallWatchdogMs = options.stallWatchdogMs ?? 50_000
     this.runner = new BoundedProcessRunner({
       cwd: options.cwd,
       maxOutputBytes: options.maxOutputBytes ?? 128 * 1024,
@@ -190,6 +245,7 @@ export class BackgroundBashManager {
     const outputFile = resolve(this.outputRoot, `${id}.output`)
     await writeFile(outputFile, '', { mode: 0o600 })
     const controller = new AbortController()
+    const watchdogWake = createWatchdogWake()
     const task = {
       taskId: id,
       command: input.command,
@@ -210,6 +266,11 @@ export class BackgroundBashManager {
             parentAbort: () => controller.abort(),
           }
         : {}),
+      watchdogTimer: null,
+      watchdogFired: false,
+      pendingWatchdogMessage: null,
+      watchdogWake: watchdogWake.promise,
+      watchdogWakeResolve: watchdogWake.resolve,
     }
     if (task.parentSignal && task.parentAbort) {
       if (task.parentSignal.aborted) task.parentAbort()
@@ -297,14 +358,30 @@ export class BackgroundBashManager {
   async notifications(waitForRunning: boolean): Promise<string[]> {
     await this.hydratePersistedTasks()
     if (waitForRunning) {
-      await Promise.all(
-        [...this.tasks.values()]
-          .filter(({ status }) => status === 'running')
-          .map(({ completion }) => completion),
+      const hasPendingWatchdog = [...this.tasks.values()].some(
+        ({ pendingWatchdogMessage }) => pendingWatchdogMessage !== null,
       )
+      const running = [...this.tasks.values()].filter(
+        ({ status }) => status === 'running',
+      )
+      const completions = Promise.all(
+        running.map(({ completion }) => completion),
+      )
+      const wakes = running
+        .filter((task) => !task.watchdogFired)
+        .map(({ watchdogWake }) => watchdogWake)
+      if (!hasPendingWatchdog && wakes.length > 0)
+        await Promise.race([completions, ...wakes])
+      else if (!hasPendingWatchdog) await completions
     }
     const messages: string[] = []
     for (const task of this.tasks.values()) {
+      if (task.pendingWatchdogMessage) {
+        const pendingWatchdogMessage = task.pendingWatchdogMessage
+        task.pendingWatchdogMessage = null
+        if (!task.notified && task.status !== 'stopped')
+          messages.push(pendingWatchdogMessage)
+      }
       if (
         task.status === 'running' ||
         task.status === 'stopped' ||
@@ -329,6 +406,7 @@ export class BackgroundBashManager {
         signal: task.controller.signal,
         onOutput: async (output) => {
           task.output = output
+          this.rearmWatchdog(task)
           await writeFile(task.outputFile, output, { mode: 0o600 })
         },
       })
@@ -355,11 +433,50 @@ export class BackgroundBashManager {
         }`
       })
     } finally {
+      this.clearWatchdog(task)
       this.emitNotification(task)
       if (task.parentSignal && task.parentAbort) {
         task.parentSignal.removeEventListener('abort', task.parentAbort)
       }
     }
+  }
+
+  private clearWatchdog(task: BackgroundBashTask): void {
+    if (task.watchdogTimer !== null) {
+      clearTimeout(task.watchdogTimer)
+      task.watchdogTimer = null
+    }
+  }
+
+  private rearmWatchdog(task: BackgroundBashTask): void {
+    this.clearWatchdog(task)
+    if (
+      task.status !== 'running' ||
+      task.watchdogFired ||
+      !isPromptTail(task.output)
+    )
+      return
+    task.watchdogTimer = setTimeout(() => {
+      task.watchdogTimer = null
+      if (
+        task.status !== 'running' ||
+        task.watchdogFired ||
+        !isPromptTail(task.output)
+      )
+        return
+      task.watchdogFired = true
+      const summary = `Background command "${task.description}" appears to be waiting for interactive input`
+      task.pendingWatchdogMessage = watchdogNotification(task, summary)
+      this.options.eventSink?.({
+        type: 'task-input-waiting',
+        taskId: task.taskId,
+        toolUseId: task.toolUseId,
+        outputFile: task.outputFile,
+        summary,
+      })
+      task.watchdogWakeResolve?.()
+      task.watchdogWakeResolve = null
+    }, this.stallWatchdogMs)
   }
 
   private emitNotification(task: BackgroundBashTask): void {
@@ -455,6 +572,11 @@ export class BackgroundBashManager {
         completion: Promise.resolve(),
         startedAt: state.startedAt ?? Math.floor(metadata.mtimeMs),
         durationMs: state.durationMs ?? null,
+        watchdogTimer: null,
+        watchdogFired: false,
+        pendingWatchdogMessage: null,
+        watchdogWake: createWatchdogWake().promise,
+        watchdogWakeResolve: null,
       }
       this.tasks.set(taskId, task)
       return task

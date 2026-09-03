@@ -8584,6 +8584,14 @@ describe('InteractiveApp', () => {
       outputFile: '/tmp/agent',
       summary: 'agent task',
     })
+    eventSink?.({
+      type: 'task-input-waiting',
+      taskId: 'baaaaaaae',
+      toolUseId: 'call_waiting',
+      outputFile: '/tmp/waiting',
+      summary:
+        'Background command "needs input" appears to be waiting for interactive input',
+    })
     await flush()
 
     const frame = app.lastFrame() ?? ''
@@ -8593,6 +8601,9 @@ describe('InteractiveApp', () => {
     expect(frame).toContain('Task failed · failed command')
     expect(frame).toContain('Task stopped · stopped command')
     expect(frame).toContain('Task completed · agent task')
+    expect(frame).toContain(
+      'Background command "needs input" appears to be waiting for interactive input',
+    )
 
     resolveRun({
       sessionId: 'notification-collapse-session',

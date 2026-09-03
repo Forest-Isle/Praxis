@@ -2442,6 +2442,13 @@ describe('CLI protocol', () => {
       summary: 'done',
     })
     output.sink({
+      type: 'task-input-waiting',
+      taskId: 'a1',
+      toolUseId: 't1',
+      outputFile: '/tmp/a1',
+      summary: 'waiting for input',
+    })
+    output.sink({
       type: 'api-retry',
       attempt: 1,
       maxRetries: 2,
@@ -2468,6 +2475,7 @@ describe('CLI protocol', () => {
       'task_started',
       'task_progress',
       'task_notification',
+      'task_notification',
       'api_retry',
       'elicitation_complete',
     ])
@@ -2492,6 +2500,20 @@ describe('CLI protocol', () => {
     expect(records.find((r) => r.subtype === 'task_progress')).toMatchObject({
       usage: { total_tokens: 4, tool_uses: 1, duration_ms: 20 },
     })
+    const waiting = records.find(
+      (r) =>
+        r.subtype === 'task_notification' && r.summary === 'waiting for input',
+    )
+    expect(waiting).toMatchObject({
+      task_id: 'a1',
+      tool_use_id: 't1',
+      output_file: '/tmp/a1',
+      summary: 'waiting for input',
+      uuid: expect.any(String),
+      session_id: sessionId,
+    })
+    expect(waiting).not.toHaveProperty('status')
+    expect(waiting).not.toHaveProperty('usage')
   })
 
   it('emits a terminal error result without resetting session identity', () => {

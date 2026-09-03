@@ -3345,6 +3345,9 @@ export function InteractiveApp({
           },
         })
         break
+      case 'task-input-waiting':
+        append({ kind: 'warning', text: event.summary })
+        break
       case 'compact-boundary':
         append({
           kind: 'notice',
