@@ -33,6 +33,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.61.0](https://github.com/Forest-Isle/Praxis/compare/v0.60.1...v0.61.0) (2026-09-03)
+
+
+### Features
+
+* run trusted managed-worktree lifecycle hooks ([#632](https://github.com/Forest-Isle/Praxis/issues/632)) ([fe8a4ac](https://github.com/Forest-Isle/Praxis/commit/fe8a4ac535820d303f2f33d69a587dec6b47b62e)), closes [#625](https://github.com/Forest-Isle/Praxis/issues/625)
+
 ## [0.60.1](https://github.com/Forest-Isle/Praxis/compare/v0.60.0...v0.60.1) (2026-09-03)
 
 
