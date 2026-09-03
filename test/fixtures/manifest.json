@@ -1267,13 +1267,15 @@
         "src/evals/project-eval.ts",
         "src/evals/project-eval-runner.ts",
         "src/evals/project-eval-comparison.ts",
-        "src/evals/lsp-diagnostics-admission.test.ts"
+        "src/evals/lsp-diagnostics-admission.test.ts",
+        "src/evals/glob-ripgrep-admission.test.ts"
       ],
       "outcomes": [
         "Eight bounded coding scenarios exercise bug fixing, feature work, refactoring, navigation, resume, permission denial, malformed input recovery, and active-turn steering without changing source fixtures.",
         "Named complete aggregate artifacts report deterministic pass, safety, efficiency, permission, error, retry, and termination deltas and fail closed when safety evidence is unavailable.",
         "The four-case bounded ApplyPatch admission comparison preserves pass, safety, and error outcomes while measuring a turn reduction.",
-        "The four-case eval-only current-file diagnostics candidate preserves task and safety outcomes while reducing explicit checker turns without changing production LSP behavior."
+        "The four-case eval-only current-file diagnostics candidate preserves task and safety outcomes while reducing explicit checker turns without changing production LSP behavior.",
+        "The four-case eval-only ripgrep candidate preserves bounded Glob semantics and scope/process safety while reducing candidate turns without changing production Glob behavior."
       ],
       "evidence": [
         {
@@ -1305,6 +1307,21 @@
           "kind": "vitest",
           "file": "src/evals/lsp-diagnostics-admission.test.ts",
           "testName": "LSP diagnostics admission eval > compares explicit checker baseline with eval-only diagnostics candidate across four cases"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/glob-ripgrep-admission.test.ts",
+          "testName": "Glob ripgrep admission eval > preserves Glob semantics and fails closed across process and scope boundaries"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/glob-ripgrep-admission.test.ts",
+          "testName": "Glob ripgrep admission eval > records a faster ripgrep median on a deterministic large tree"
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/glob-ripgrep-admission.test.ts",
+          "testName": "Glob ripgrep admission eval > compares the production baseline with the eval-only ripgrep candidate across four cases"
         },
         {
           "kind": "fixture",
@@ -1449,6 +1466,38 @@
         {
           "kind": "fixture",
           "path": "test/fixtures/native/evals/lsp-diagnostics-admission/evals/scope-isolation/fixture/inside.cjs"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/default-semantics/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/default-semantics/fixture/README.md"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/ignore-filter/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/ignore-filter/fixture/README.md"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/hidden-filter/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/hidden-filter/fixture/README.md"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/scope-safety/case.yaml"
+        },
+        {
+          "kind": "fixture",
+          "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/scope-safety/fixture/README.md"
         }
       ]
     },

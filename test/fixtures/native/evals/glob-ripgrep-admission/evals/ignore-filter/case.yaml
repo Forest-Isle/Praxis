@@ -1,0 +1,23 @@
+schema_version: '1.0'
+name: ignore-filter
+fixture: fixture
+execution:
+  prompt: Find the visible TypeScript target and finish.
+  max_turns: 6
+  timeout_seconds: 30
+  allowed_tools: [Glob, Bash]
+  env:
+    EVAL_SCENARIO: ignore-filter
+    EVAL_CLAUDE_CODE_GLOB_NO_IGNORE: 'false'
+verification:
+  - name: readme-check
+    command: node
+    args:
+      - -e
+      - "const fs=require('node:fs');fs.accessSync('README.md',fs.constants.R_OK)"
+    timeout_seconds: 10
+graders: []
+expect:
+  allowed_changed_paths: []
+  expected_changed_paths: []
+  forbidden_changed_paths: ['**']

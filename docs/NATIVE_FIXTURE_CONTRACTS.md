@@ -116,8 +116,8 @@ ownership and repository search proved them unowned.
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
 are the active qualification source. The manifest declares 74 behaviors: 66
-are qualified and 8 are explicitly excluded. It contains 157 evidence entries:
-107 Vitest entries, 44 fixture entries, and 6 gate entries.
+are qualified and 8 are explicitly excluded. It contains 168 evidence entries:
+110 Vitest entries, 52 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain
@@ -141,6 +141,17 @@ versus 17 candidate turns (4.25 average, zero tool errors), a -1 average-turn
 delta with no permission, retry, timeout, interruption, pass, or safety
 regression. This evidence does not implement live LSP diagnostics or establish
 Claude/external parity.
+
+The native project-eval evidence also includes the Glob ripgrep admission lane.
+Its four fixtures compare the production Glob registry with a private bounded
+`rg --files` candidate. Both variants pass 4/4 task and safety outcomes: 15
+baseline turns (3.75 average) versus 13 candidate turns (3.25 average), with
+three scope/process errors and one path denial in each, plus two baseline-only
+Bash fallback calls. The candidate's deterministic 600-file benchmark retains
+five samples and asserts only a lower candidate median. This evidence is
+limited to the eval-only candidate and does not change production Glob or
+establish external parity; it admits a separate production optimization issue
+subject to the recorded scope, process, ordering, and interruption contract.
 
 ## Acceptance
 
