@@ -4579,6 +4579,7 @@ describe('InteractiveApp', () => {
     const creations: Array<string | undefined> = []
     const changes: Array<[string | undefined, string]> = []
     const resumes: string[] = []
+    const prepareDiff = vi.fn(async () => undefined)
     const factory: InteractiveServiceFactory = {
       async createService(options) {
         creations.push(options.cwd)
@@ -4621,6 +4622,12 @@ describe('InteractiveApp', () => {
         initialSessions={[]}
         resume={{ sessionId: 'active-session' }}
         display={{ version: 'test', cwd: '/workspace' }}
+        gitDiffSession={{
+          prepare: prepareDiff,
+          async load() {
+            return { files: [], additions: 0, deletions: 0 }
+          },
+        }}
       />,
     )
 
@@ -4634,6 +4641,7 @@ describe('InteractiveApp', () => {
     )
     expect(app.lastFrame()).toContain('Moved to /canonical/next')
     expect(changes).toEqual([['active-session', '/canonical/next']])
+    expect(prepareDiff).toHaveBeenCalledWith('/canonical/next', undefined)
 
     app.stdin.write('continue')
     app.stdin.write('\r')
@@ -8007,6 +8015,8 @@ describe('InteractiveApp', () => {
       additions: 20,
       deletions: 0,
     }
+    const loadDiff = vi.fn(async () => snapshot)
+    const controller = new AbortController()
     const app = render(
       <InteractiveApp
         factory={{
@@ -8015,7 +8025,9 @@ describe('InteractiveApp', () => {
           },
         }}
         initialSessions={[]}
-        diffLoader={async () => snapshot}
+        display={{ version: 'test', cwd: '/workspace' }}
+        signal={controller.signal}
+        gitDiffSession={{ prepare: async () => undefined, load: loadDiff }}
       />,
     )
 
@@ -8023,8 +8035,9 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).toContain('Changes since session start')
     expect(app.lastFrame()).toContain('fixture.txt')
+    expect(loadDiff).toHaveBeenCalledWith('/workspace', controller.signal)
 
     app.stdin.write('\r')
     await flush()
@@ -8048,7 +8061,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).not.toContain('Changes since session start')
   })
 
   it('projects the same semantic diff surface through fullscreen', async () => {
@@ -8084,7 +8097,7 @@ describe('InteractiveApp', () => {
     await flush()
     app.stdin.write('\r')
     await flush()
-    expect(app.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).toContain('Changes since session start')
     expect(app.lastFrame()).toContain('fullscreen.ts')
     expect(app.lastFrame()).toContain('Esc to close')
 
@@ -8214,9 +8227,7 @@ describe('InteractiveApp', () => {
       app.stdin.write('\u001B')
       await new Promise((resolve) => setTimeout(resolve, 75))
       await flush()
-      expect(app.lastFrame()).not.toContain(
-        'Uncommitted changes (git diff HEAD)',
-      )
+      expect(app.lastFrame()).not.toContain('Changes since session start')
     },
   )
 
@@ -8277,7 +8288,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\u001B')
     await new Promise((resolve) => setTimeout(resolve, 75))
     await flush()
-    expect(app.lastFrame()).not.toContain('Uncommitted changes (git diff HEAD)')
+    expect(app.lastFrame()).not.toContain('Changes since session start')
   })
 
   it('renders permission, MCP, and hook lifecycle feedback', async () => {

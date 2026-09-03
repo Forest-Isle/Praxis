@@ -62,6 +62,7 @@ describe('projectTuiDiffSurface', () => {
       scrollOffset: 0,
     })
 
+    expect(model.title).toBe('Changes since session start')
     expect(model.currentSource).toEqual({
       index: expected,
       label: indexedSources[expected]?.label,

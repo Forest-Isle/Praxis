@@ -140,7 +140,7 @@ export function projectTuiDiffSurface(
   if (!input.viewingFile || files.length === 0) {
     return {
       kind: 'diff',
-      title: 'Uncommitted changes (git diff HEAD)',
+      title: 'Changes since session start',
       sourceTabs,
       currentSource: selectedSource
         ? { index: sourceIndex, label: source.label }
@@ -209,7 +209,7 @@ export function projectTuiDiffSurface(
   }))
   return {
     kind: 'diff',
-    title: 'Uncommitted changes (git diff HEAD)',
+    title: 'Changes since session start',
     sourceTabs,
     currentSource: selectedSource
       ? { index: sourceIndex, label: source.label }

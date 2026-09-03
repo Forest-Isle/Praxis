@@ -422,9 +422,15 @@ also carries live lifecycle/input state.
   Read, Bash, and Update entries. Successful long results keep three lines and
   an exact hidden-line count; failures remain prominent; edits show replacement
   line summaries without adding fields to shared transcripts.
-- `/diff` reads `git diff HEAD` without a model turn. Left/right switches
-  Current and captured file-mutating-turn sources, up/down selects or scrolls,
-  Enter drills into a file, and Esc returns or closes the dashboard.
+- `/diff` captures the canonical worktree and exact Git HEAD object ID when the
+  interactive invocation starts, then refreshes the current index/worktree
+  against that immutable baseline without a model turn. Headed repositories
+  include untracked files; binary and unmerged paths use readable omission
+  notes, transient per-file failures stay localized, and retained patch content
+  is capped at 256 KiB per file. Left/right switches Current and captured
+  file-mutating-turn sources, up/down selects or scrolls, Enter drills into a
+  file, and Esc returns or closes the dashboard. These bounds are a native
+  Praxis contract rather than a claim of exact external parity.
 - `/context` appends a titled Claude-shaped context-usage block with model/token
   summary, 5×5 grid, estimated categories, free space, autocompact reserve,
   memory files, and skills without a model turn. `/status` opens the shared
