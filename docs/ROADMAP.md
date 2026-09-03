@@ -137,6 +137,8 @@ Status: complete for Bash, hooks, Claude version detection, and MCP transports.
       stdio children
 - [x] explicit MCP env/header grants retained with result, warning, error, and
       definition redaction
+- [x] stdio MCP `${NAME}` env grants resolved at admission without mutating
+      resources, with stable reconnect values and reload re-derivation
 - [x] nested MCP error/cause/stack redaction and plain, NDJSON, and interactive
       CLI diagnostic redaction
 - [x] raw hook JSON semantics retained while persisted diagnostics/context are

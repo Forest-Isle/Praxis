@@ -232,8 +232,12 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   imports, memory, skills, commands, agents, hooks, settings, MCP servers,
   plugins, and append-only `praxis.transcript` JSONL sessions under `~/.praxis`,
   with bounded MCP connection, discovery, and tool operations plus safe
-  disconnect recovery that never replays an already-dispatched call. Default
-  tool selection defers `mcp__*` schemas behind a turn-scoped `ToolSearch`;
+  disconnect recovery that never replays an already-dispatched call. Stdio MCP
+  environment grants expand defined `${NAME}` references at launch without
+  exposing unrelated ambient credentials or shell-startup variables; reconnect
+  retains the derived grants, while reload derives them again from the current
+  environment. Default tool selection defers `mcp__*` schemas behind a
+  turn-scoped `ToolSearch`;
   each query activates at most eight deterministic matches for the next model
   request, and published MCP tool descriptions are capped at 2,048 Unicode
   code points. Text-only MCP results above 100,000 UTF-8 bytes are redacted
