@@ -28,6 +28,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.58.0](https://github.com/Forest-Isle/Praxis/compare/v0.57.0...v0.58.0) (2026-09-03)
+
+
+### Features
+
+* adopt bounded ripgrep for Glob ([#613](https://github.com/Forest-Isle/Praxis/issues/613)) ([fcb2c6a](https://github.com/Forest-Isle/Praxis/commit/fcb2c6a311a0f20b8f310d38d35a1bee7f7061d3))
+
 ## [0.57.0](https://github.com/Forest-Isle/Praxis/compare/v0.56.0...v0.57.0) (2026-09-03)
 
 
