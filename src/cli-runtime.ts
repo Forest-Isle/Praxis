@@ -2654,6 +2654,11 @@ const createDefaultService: CliDependencies['createService'] = async ({
           maxConcurrent: teamModules[0].DEFAULT_LOCAL_TEAM_CONCURRENCY,
           baseTools: filteredTools,
           permissions,
+          ...(hooks ? { hooks } : {}),
+          permissionMode: cli.dangerouslySkipPermissions
+            ? 'bypassPermissions'
+            : cli.permissionMode,
+          ...(signal ? { signal } : {}),
           createRuntime: () =>
             new teamModules[1].ClaudeTeamAgentRuntime({
               nativeRoot: resolveDataPlaneRoot({

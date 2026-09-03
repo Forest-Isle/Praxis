@@ -1,5 +1,8 @@
 import type { PermissionResolver, ToolRegistry } from '../core/runtime.js'
 import type { ClaudeTeamAgentRuntime } from './team-agent-runtime.js'
+import type { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import { createManagedWorktreeHooks } from './managed-worktree-hooks.js'
+import { resolveDataPlanePaths } from '../persistence/data-plane.js'
 import { LocalTeamManager } from './team-manager.js'
 
 /** The local Team manager's conservative default parallelism. */
@@ -13,6 +16,9 @@ export interface LocalTeamCapabilityOptions {
   readonly baseTools: ToolRegistry
   readonly permissions: PermissionResolver
   readonly createRuntime: () => ClaudeTeamAgentRuntime
+  readonly hooks?: ClaudeHookRunner
+  readonly permissionMode?: string
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -40,6 +46,25 @@ export class LocalTeamCapability {
         baseTools: this.options.baseTools,
         permissions: this.options.permissions,
         runtime,
+        ...(this.options.hooks
+          ? {
+              hooksFactory: (leadSessionId: string) =>
+                createManagedWorktreeHooks({
+                  runner: this.options.hooks as ClaudeHookRunner,
+                  sessionId: leadSessionId,
+                  transcriptPath: resolveDataPlanePaths({
+                    dataPlane: 'native',
+                    root: this.options.nativeRoot,
+                    cwd,
+                    sessionId: leadSessionId,
+                  }).sessionFile,
+                  permissionMode: this.options.permissionMode ?? 'default',
+                  ...(this.options.signal
+                    ? { signal: this.options.signal }
+                    : {}),
+                }),
+            }
+          : {}),
       })
     })()
     this.openPromise = promise

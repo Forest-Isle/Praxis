@@ -23,6 +23,7 @@ this file from merged Conventional Commit pull requests.
 * add bounded ordered ApplyPatch exact replacements with read-before-write, path/protected-file, permission, and file-history safety integration ([#603](https://github.com/Forest-Isle/Praxis/issues/603))
 * surface fresh, bounded configured-LSP diagnostics after successful Edit and ApplyPatch mutations ([#607](https://github.com/Forest-Isle/Praxis/issues/607))
 * run trusted synchronous lifecycle hooks around managed Workflow worktree creation and removal ([#625](https://github.com/Forest-Isle/Praxis/issues/625))
+* persist Team writer generations in ownership-verified repo-local worktrees and release them only after an explicit durable Lead acceptance ([#628](https://github.com/Forest-Isle/Praxis/issues/628))
 * warn once when prompt-like background Bash output waits for input ([#171](https://github.com/Forest-Isle/Praxis/issues/171))
 
 ### Bug Fixes

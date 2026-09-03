@@ -1,7 +1,7 @@
 import { readFile, lstat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { resolve, join } from 'node:path'
+import { resolve, join, relative, isAbsolute, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
   parseTeamMailboxMessage,
@@ -377,22 +377,25 @@ export async function readTeamWorktreeEvidence(input: {
   snapshot: TeamSnapshot
   maxEntries?: number
 }): Promise<readonly TeamWorktreeEvidence[]> {
-  const root = join(
+  const legacyRoot = join(
     resolve(input.nativeRoot),
     'state',
     'team-worktrees',
     sanitizeProjectPath(input.snapshot.projectIdentity),
     input.snapshot.teamId,
   )
-  try {
-    const rootStat = await lstat(root)
-    if (rootStat.isSymbolicLink())
-      throw new Error(`Unsafe Team worktree symlink: ${root}`)
-    if (!rootStat.isDirectory()) return []
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
+  const managedRoot = join(
+    resolve(input.snapshot.projectIdentity),
+    '.praxis',
+    'worktrees',
+    'team',
+    input.snapshot.teamId,
+  )
+  await assertEvidenceParents(
+    resolve(input.snapshot.projectIdentity),
+    managedRoot,
+  )
+  await assertEvidenceParents(resolve(input.nativeRoot), legacyRoot)
   const result: TeamWorktreeEvidence[] = []
   const limit = input.maxEntries ?? 64
   if (!Number.isSafeInteger(limit) || limit <= 0)
@@ -411,17 +414,21 @@ export async function readTeamWorktreeEvidence(input: {
       )
       .digest('hex')
       .slice(0, 24)
-    const path = join(root, hash)
-    let stat
-    try {
-      stat = await lstat(path)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw error
+    let path: string | undefined
+    for (const candidate of [join(managedRoot, hash), join(legacyRoot, hash)]) {
+      try {
+        const candidateStat = await lstat(candidate)
+        if (candidateStat.isSymbolicLink())
+          throw new Error(`Unsafe Team worktree symlink: ${candidate}`)
+        if (candidateStat.isDirectory()) {
+          path = candidate
+          break
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
     }
-    if (stat.isSymbolicLink())
-      throw new Error(`Unsafe Team worktree symlink: ${path}`)
-    if (!stat.isDirectory()) continue
+    if (!path) continue
     let branch: string | null = null
     try {
       branch =
@@ -438,4 +445,32 @@ export async function readTeamWorktreeEvidence(input: {
     })
   }
   return freeze(result)
+}
+
+async function assertEvidenceParents(
+  root: string,
+  path: string,
+): Promise<void> {
+  let current = resolve(path)
+  const boundary = resolve(root)
+  while (true) {
+    try {
+      const entry = await lstat(current)
+      if (entry.isSymbolicLink())
+        throw new Error(`Unsafe Team worktree symlink: ${current}`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (current === boundary) return
+    const parent = resolve(current, '..')
+    const relation = relative(boundary, parent)
+    if (
+      parent === current ||
+      relation === '..' ||
+      relation.startsWith(`..${sep}`) ||
+      isAbsolute(relation)
+    )
+      return
+    current = parent
+  }
 }

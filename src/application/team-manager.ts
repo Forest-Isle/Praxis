@@ -26,8 +26,11 @@ import {
 } from '../persistence/native-team-store.js'
 import {
   NativeTeamWorkspaceProvider,
+  type TeamWorkspace,
+  type TeamWorkspaceInput,
   type TeamWorkspaceProvider,
 } from './team-workspace.js'
+import type { ManagedWorktreeHooks } from './managed-worktree.js'
 import { TeamMemberToolRegistry } from '../tools/team-member-tools.js'
 import { TeamMailboxService, type TeamMailboxEndpoint } from './team-mailbox.js'
 
@@ -87,6 +90,7 @@ export interface LocalTeamManagerOptions {
   readonly permissions: PermissionResolver
   readonly runtime: TeamAgentRuntime
   readonly workspace?: TeamWorkspaceProvider
+  readonly hooksFactory?: (leadSessionId: string) => ManagedWorktreeHooks
 }
 
 function owner(claim: NativeTeamClaim): LifecycleOwner {
@@ -148,6 +152,7 @@ export class LocalTeamManager {
         nativeRoot: options.nativeRoot,
         cwd: options.cwd,
         projectIdentity: store.projectIdentity,
+        ...(options.hooksFactory ? { hooksFactory: options.hooksFactory } : {}),
       }))
     return new LocalTeamManager(store, options, workspace)
   }
@@ -248,6 +253,8 @@ export class LocalTeamManager {
 
 interface ActiveRuntime {
   generation: number
+  workspace: TeamWorkspace
+  workspaceInput: TeamWorkspaceInput
   controller: AbortController
   promise: Promise<void>
   runtimeSettled: boolean
@@ -310,7 +317,14 @@ export class LocalTeam {
     if (this.detachedSnapshot) return this.detachedSnapshot
     if (this.stopping) return this.stopping
     for (;;) {
-      if (this.pumpFailure) throw this.pumpFailure
+      if (this.pumpFailure) {
+        const settling = [...this.active.values()].filter(
+          (entry) => entry.runtimeSettled && !entry.settled,
+        )
+        if (settling.length > 0)
+          await Promise.allSettled(settling.map((entry) => entry.promise))
+        throw this.pumpFailure
+      }
       await this.mutation
       if (this.stopping) return this.stopping
       if (!this.admissionOpen && this.active.size === 0) {
@@ -356,6 +370,7 @@ export class LocalTeam {
     if (this.detachedSnapshot) throw new Error('Team is detached')
     if (!this.admissionOpen || this.finalSnapshot)
       throw new Error('Team is stopped')
+    let acceptedInput: TeamWorkspaceInput | undefined
     await this.enqueue(async () => {
       const current = await this.claim.read()
       const next = acceptTeamTaskExecution(
@@ -364,8 +379,35 @@ export class LocalTeam {
         generation,
         decision,
       )
-      return this.claim.save(current.revision, next)
+      const saved = await this.claim.save(current.revision, next)
+      if (decision === 'accepted') {
+        const task = saved.tasks.find((candidate) => candidate.id === taskId)
+        const execution = task?.execution
+        const member =
+          task &&
+          saved.roster.find((candidate) => candidate.name === task.assignee)
+        if (
+          !task ||
+          !execution ||
+          execution.state !== 'completed' ||
+          !execution.previousOwnerToken ||
+          !member
+        )
+          throw new Error(
+            'Accepted Team execution is missing exact release identity',
+          )
+        acceptedInput = {
+          teamId: saved.teamId,
+          taskId,
+          generation: execution.generation,
+          access: member.access,
+          leadSessionId: saved.leadSessionId,
+          executionToken: execution.previousOwnerToken,
+        }
+      }
+      return saved
     })
+    if (acceptedInput) await this.workspace.releaseAccepted(acceptedInput)
     await this.pump()
     return this.snapshot()
   }
@@ -457,10 +499,15 @@ export class LocalTeam {
   private async stopInternal(drainMs: number): Promise<TeamSnapshot> {
     this.clearDeadlineTimer()
     this.admissionOpen = false
-    await this.enqueue(() => this.markCancelling())
     const activeAtStop = [...this.active.entries()]
+    const failures: unknown[] = []
+    try {
+      await this.enqueue(() => this.markCancelling())
+    } catch (error) {
+      failures.push(error)
+    }
     for (const entry of this.active.values()) entry.controller.abort()
-    const runtimes = [...this.active.values()].map((entry) => entry.promise)
+    const runtimes = activeAtStop.map(([, entry]) => entry.promise)
     if (runtimes.length > 0) {
       let timer: ReturnType<typeof setTimeout> | undefined
       const timeout = new Promise<void>((resolve) => {
@@ -476,9 +523,36 @@ export class LocalTeam {
       void winner
     }
     this.progressOpen = false
-    await this.mutation
-    const snapshot = await this.enqueue(() => this.finishStopping(activeAtStop))
-    await this.claim.release()
+    let snapshot: TeamSnapshot | undefined
+    try {
+      await this.mutation
+      snapshot = await this.enqueue(() => this.finishStopping(activeAtStop))
+    } catch (error) {
+      failures.push(error)
+    }
+    const stoppedStates = new Map(
+      snapshot?.tasks.map((task) => [task.id, task.execution?.state]) ?? [],
+    )
+    for (const [taskId, active] of activeAtStop) {
+      try {
+        const state = stoppedStates.get(taskId)
+        await active.workspace.retain(
+          state === 'cancelled' || state === 'orphaned'
+            ? `Team generation ${state} evidence retained`
+            : 'Team stop/orphan evidence retained',
+        )
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    try {
+      await this.claim.release()
+    } catch (error) {
+      failures.push(error)
+    }
+    if (failures.length)
+      throw new AggregateError(failures, 'Team stop settlement failed')
+    if (!snapshot) throw new Error('Team stop did not produce a snapshot')
     return snapshot
   }
 
@@ -537,37 +611,47 @@ export class LocalTeam {
         maxConcurrent: this.options.maxConcurrent,
       })
       if (selected.length === 0) return
-      const launches: Array<{
-        task: TeamTask
-        member: TeamMember
-        cwd: string
-        branch: string | null
-      }> = []
+      let launched = 0
       for (const taskId of selected) {
         const task = current.tasks.find((candidate) => candidate.id === taskId)
         if (!task) throw new Error(`Unknown admitted task: ${taskId}`)
+        const generation = task.usage.generation + 1
         const queued = withTeamTaskExecution(
           current,
           task.id,
-          createAgentLifecycle(owner(this.claim), 1),
+          createAgentLifecycle(owner(this.claim), generation),
         )
         current = await this.claim.save(current.revision, queued)
+        const persistedQueued = current.tasks.find(
+          (candidate) => candidate.id === task.id,
+        )
+        const persistedExecution = persistedQueued?.execution
+        if (
+          !persistedExecution ||
+          persistedExecution.generation <= 0 ||
+          !persistedExecution.owner?.token
+        )
+          throw new Error('Persisted Team execution is missing owner evidence')
         const member = current.roster.find(
           (candidate) => candidate.name === task.assignee,
         )
         if (!member) throw new Error(`Unknown Team member: ${task.assignee}`)
-        let workspace
+        let workspace: TeamWorkspace
+        const workspaceInput: TeamWorkspaceInput = {
+          teamId: current.teamId,
+          taskId: task.id,
+          generation: persistedExecution.generation,
+          access: member.access,
+          leadSessionId: current.leadSessionId,
+          executionToken: persistedExecution.owner.token,
+        }
         try {
-          workspace = await this.workspace.acquire({
-            teamId: current.teamId,
-            taskId: task.id,
-            generation: 1,
-            access: member.access,
-          })
+          workspace = await this.workspace.acquire(workspaceInput)
         } catch {
           const failed = transitionLifecycle(
             current.tasks.find((candidate) => candidate.id === task.id)
-              ?.execution ?? createAgentLifecycle(owner(this.claim)),
+              ?.execution ??
+              createAgentLifecycle(owner(this.claim), generation),
             'failed',
             this.claim.token,
           )
@@ -580,42 +664,96 @@ export class LocalTeam {
         const queuedTask = current.tasks.find(
           (candidate) => candidate.id === task.id,
         )
-        if (!queuedTask?.execution)
-          throw new Error('Missing queued Team execution')
+        if (!queuedTask?.execution) {
+          const primary = new Error('Missing queued Team execution')
+          try {
+            await workspace.retain(
+              'Team persistence uncertainty after workspace acquire',
+            )
+          } catch (retentionError) {
+            throw new AggregateError(
+              [primary, retentionError],
+              'Team workspace settlement failed after acquire',
+            )
+          }
+          throw primary
+        }
         const running = transitionLifecycle(
           queuedTask.execution,
           'running',
           this.claim.token,
         )
-        current = await this.claim.save(
-          current.revision,
-          withTeamTaskExecution(current, task.id, running),
-        )
+        try {
+          current = await this.claim.save(
+            current.revision,
+            withTeamTaskExecution(current, task.id, running),
+          )
+        } catch (error) {
+          try {
+            await workspace.retain(
+              'Team persistence uncertainty after workspace acquire',
+            )
+          } catch (retentionError) {
+            throw new AggregateError(
+              [error, retentionError],
+              'Team workspace settlement failed after running persistence failure',
+            )
+          }
+          throw error
+        }
         const persistedTask = current.tasks.find(
           (candidate) => candidate.id === task.id,
         )
-        if (!persistedTask) throw new Error('Missing running Team task')
-        launches.push({
-          task: persistedTask,
-          member,
-          cwd: workspace.cwd,
-          branch: workspace.branch,
-        })
+        try {
+          if (
+            !persistedTask?.execution ||
+            persistedTask.execution.generation !== workspaceInput.generation ||
+            persistedTask.execution.owner?.token !==
+              workspaceInput.executionToken
+          )
+            throw new Error(
+              'Persisted running Team task is missing exact owner evidence',
+            )
+          this.launch(
+            persistedTask,
+            member,
+            workspace,
+            workspaceInput,
+            workspace.cwd,
+            workspace.branch,
+          )
+        } catch (error) {
+          try {
+            await workspace.retain(
+              'Team persistence uncertainty after workspace acquire',
+            )
+          } catch (retentionError) {
+            throw new AggregateError(
+              [error, retentionError],
+              'Team workspace settlement failed after acquire',
+            )
+          }
+          throw error
+        }
+        launched += 1
       }
-      for (const launch of launches)
-        this.launch(launch.task, launch.member, launch.cwd, launch.branch)
-      if (launches.length === selected.length) return
+      if (launched === selected.length) return
     }
   }
 
   private launch(
     task: TeamTask,
     member: TeamMember,
+    workspace: TeamWorkspace,
+    workspaceInput: TeamWorkspaceInput,
     cwd: string,
     branch: string | null,
   ): void {
     const controller = new AbortController()
-    const entry = {} as ActiveRuntime
+    if (!task.execution || task.execution.generation <= 0)
+      throw new Error('Team launch is missing persisted execution generation')
+    const entry = { workspace, workspaceInput } as ActiveRuntime
+    entry.generation = task.execution.generation
     const promise = (async () => {
       let result!: TeamAgentRunResult
       try {
@@ -624,7 +762,7 @@ export class LocalTeam {
             teamId: this.claim.teamId,
             task,
             member,
-            generation: task.execution?.generation ?? 1,
+            generation: entry.generation,
             cwd,
             branch,
             tools: new TeamMemberToolRegistry({
@@ -637,31 +775,39 @@ export class LocalTeam {
             mailbox: this.mailbox.endpoint(member.name),
             reportProgress: (progress) => {
               if (entry.runtimeSettled || entry.settled) return
-              void this.queueProgress(
-                task.id,
-                task.execution?.generation ?? 1,
-                progress,
-              )
+              void this.queueProgress(task.id, entry.generation, progress)
             },
           }),
         )
         entry.runtimeSettled = true
-      } catch {
+      } catch (error) {
         entry.runtimeSettled = true
         try {
           await (this.progressWrites.get(task.id) ?? Promise.resolve())
-        } catch {
+          await this.complete(task.id, entry.generation, {
+            status: 'failed',
+          })
+        } catch (settlementError) {
+          if (settlementError !== error) {
+            try {
+              await entry.workspace.retain(
+                'Team runtime failure evidence retained',
+              )
+            } catch (retentionError) {
+              const aggregate = new AggregateError(
+                [settlementError, retentionError],
+                'Team runtime and workspace settlement failed',
+              )
+              this.pumpFailure = aggregate
+              throw aggregate
+            }
+          }
+          this.pumpFailure ??= settlementError
+        } finally {
           entry.settled = true
           this.active.delete(task.id)
           this.progressWrites.delete(task.id)
-          return
         }
-        await this.complete(task.id, task.execution?.generation ?? 1, {
-          status: 'failed',
-        })
-        entry.settled = true
-        this.active.delete(task.id)
-        this.progressWrites.delete(task.id)
         return
       }
       try {
@@ -674,13 +820,26 @@ export class LocalTeam {
         await this.complete(task.id, entry.generation, {
           status: result.status,
         })
+      } catch (error) {
+        try {
+          await entry.workspace.retain(
+            'Team persistence uncertainty; terminal evidence retained',
+          )
+        } catch (retentionError) {
+          const aggregate = new AggregateError(
+            [error, retentionError],
+            'Team terminal settlement failed',
+          )
+          this.pumpFailure = aggregate
+          throw aggregate
+        }
+        this.pumpFailure ??= error
       } finally {
         entry.settled = true
         this.active.delete(task.id)
         this.progressWrites.delete(task.id)
       }
     })()
-    entry.generation = task.execution?.generation ?? 1
     entry.controller = controller
     entry.promise = promise
     entry.runtimeSettled = false
@@ -695,6 +854,8 @@ export class LocalTeam {
   ): Promise<void> {
     if (!this.progressOpen || this.finalSnapshot || this.detachedSnapshot)
       return
+    let terminalState:
+      'completed' | 'failed' | 'cancelled' | 'orphaned' | undefined
     try {
       await this.enqueue(async () => {
         const current = await this.claim.read()
@@ -706,27 +867,59 @@ export class LocalTeam {
           )
         )
           return
-        const nextExecution =
+        const nextState =
           result.status === 'orphaned'
+            ? 'orphaned'
+            : task.execution.state === 'cancelling'
+              ? 'cancelled'
+              : result.status
+        const nextExecution =
+          nextState === 'orphaned'
             ? markLifecycleOrphaned(task.execution, this.claim.token)
-            : transitionLifecycle(
-                task.execution,
-                task.execution.state === 'cancelling'
-                  ? 'cancelled'
-                  : result.status,
-                this.claim.token,
-              )
+            : transitionLifecycle(task.execution, nextState, this.claim.token)
         await this.claim.save(
           current.revision,
           withTeamTaskExecution(current, taskId, nextExecution),
         )
+        terminalState = nextState
       })
     } catch (error) {
       this.indeterminate.add(taskId)
+      const active = this.active.get(taskId)
+      if (active) {
+        try {
+          await active.workspace.retain(
+            'Team persistence uncertainty; terminal evidence retained',
+          )
+        } catch (retentionError) {
+          const aggregate = new AggregateError(
+            [error, retentionError],
+            'Team terminal settlement failed',
+          )
+          this.pumpFailure ??= aggregate
+          throw aggregate
+        }
+      }
       this.pumpFailure ??= error
-      return
+      throw error
     }
-    if (this.admissionOpen) {
+    const active = this.active.get(taskId)
+    if (active) {
+      try {
+        await active.workspace.retain(
+          terminalState === 'completed'
+            ? 'Team generation completed; pending Lead disposition'
+            : terminalState
+              ? `Team generation ${terminalState} evidence retained`
+              : 'Team lifecycle state uncertain; evidence retained',
+        )
+      } catch (error) {
+        this.indeterminate.add(taskId)
+        this.pumpFailure ??= error
+        throw error
+      }
+    }
+    if (terminalState && this.admissionOpen) {
       try {
         await this.pump()
       } catch (error) {
@@ -875,9 +1068,16 @@ export class LocalTeam {
     const tracked = new Map(activeAtStop)
     for (const task of current.tasks) {
       const execution = task.execution
-      if (execution?.state !== 'cancelling') continue
+      if (
+        !execution ||
+        !['queued', 'running', 'waiting', 'cancelling'].includes(
+          execution.state,
+        )
+      )
+        continue
       const active = tracked.get(task.id)
       const next =
+        execution.state !== 'cancelling' ||
         this.indeterminate.has(task.id) ||
         (active !== undefined && !active.settled)
           ? markLifecycleOrphaned(execution, this.claim.token)
