@@ -17,9 +17,9 @@ import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
 } from '../platform/exclusive-file-lease.js'
-import { isSessionId } from '../core/session.js'
 import { isTerminalLifecycleState } from '../core/agent-orchestration.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
+import { parseAgentWorktreeOwner } from './agent-worktree-owner.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -529,32 +529,11 @@ async function reconciliationRetain(
   }
 }
 
-interface ParsedAgentOwner {
-  sessionId: string
-  agentId: string
-  token: string
-}
-
-function parseAgentOwner(ownerId: string): ParsedAgentOwner | null {
-  const parts = ownerId.split(':')
-  if (parts.length !== 4 || parts[0] !== 'agent') return null
-  const sessionId = parts[1] ?? ''
-  const agentId = parts[2] ?? ''
-  const token = parts[3] ?? ''
-  if (
-    !isSessionId(sessionId) ||
-    !/^a(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}-)?[0-9a-f]{16}$/u.test(agentId) ||
-    token.trim().length === 0
-  )
-    return null
-  return { sessionId, agentId, token }
-}
-
 async function reconcileAgentLifecycle(
   stateRoot: string,
   record: ManagedWorktreeRecord,
 ): Promise<{ safe: true } | { safe: false; reason: string }> {
-  const owner = parseAgentOwner(record.ownerId)
+  const owner = parseAgentWorktreeOwner(record.ownerId)
   if (!owner) return { safe: false, reason: 'Agent owner ID is malformed' }
   try {
     const lifecycleStore = new SubagentLifecycleStore(
@@ -570,8 +549,8 @@ async function reconcileAgentLifecycle(
       return { safe: false, reason: 'Agent lifecycle state is missing' }
     const snapshot = lifecycle.lifecycle
     const matchingToken = isTerminalLifecycleState(snapshot.state)
-      ? snapshot.previousOwnerToken === owner.token
-      : snapshot.owner?.token === owner.token
+      ? snapshot.previousOwnerToken === owner.executionToken
+      : snapshot.owner?.token === owner.executionToken
     if (!matchingToken)
       return {
         safe: false,

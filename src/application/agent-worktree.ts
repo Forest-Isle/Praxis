@@ -14,6 +14,10 @@ import {
   type ManagedWorktreeHookContext,
 } from './managed-worktree-hooks.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
+import {
+  formatAgentWorktreeOwner,
+  formatAgentWorktreeOwnerPrefix,
+} from './agent-worktree-owner.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -39,7 +43,11 @@ export async function createAgentWorktree(options: {
       options.sessionId,
       options.agentId,
     ),
-    ownerId: `agent:${options.sessionId}:${options.agentId}:${options.executionToken}`,
+    ownerId: formatAgentWorktreeOwner({
+      sessionId: options.sessionId,
+      agentId: options.agentId,
+      executionToken: options.executionToken,
+    }),
     label: 'Agent',
     kind: 'agent',
     policy: 'ephemeral',
@@ -124,7 +132,7 @@ export async function restoreAgentWorktree(options: {
         options.sessionId,
         options.agentId,
       ),
-      ownerPrefix: `agent:${options.sessionId}:${options.agentId}:`,
+      ownerPrefix: formatAgentWorktreeOwnerPrefix(options),
       label: 'Agent',
       kind: 'agent',
       policy: 'ephemeral',

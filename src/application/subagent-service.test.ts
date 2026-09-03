@@ -45,6 +45,7 @@ import { FallbackModelProvider } from '../providers/fallback-provider.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { NativeSidechainTranscript } from './native-sidechain-transcript.js'
 import { createAgentWorktree } from './agent-worktree.js'
+import { parseAgentWorktreeOwner } from './agent-worktree-owner.js'
 import { reconcileManagedWorktrees } from './managed-worktree.js'
 import { BackgroundAgentRunError } from './background-agent-manager.js'
 import { ClaudeSessionService } from './session-service.js'
@@ -183,71 +184,6 @@ describe('StructuredOutputRegistry', () => {
         { cwd: '/tmp' },
       ),
     ).toThrow('validation failed')
-  })
-})
-
-describe('ClaudeSubagentExecutor close settlement', () => {
-  function executor(): ClaudeSubagentExecutor {
-    return new ClaudeSubagentExecutor({
-      configRoot: '/tmp/praxis-close-settlement-test',
-      dataPlane: 'native',
-      cwd: '/tmp',
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: false },
-        async *complete() {
-          yield* []
-        },
-      },
-      baseTools: emptyTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-    })
-  }
-
-  function disposersFor(value: ClaudeSubagentExecutor) {
-    return (
-      value as unknown as {
-        agentRunDisposers: Set<() => Promise<void>>
-      }
-    ).agentRunDisposers
-  }
-
-  it('settles concurrent and repeated close calls once per disposer', async () => {
-    const value = executor()
-    const disposer = vi.fn(async () => undefined)
-    disposersFor(value).add(disposer)
-
-    await Promise.all([value.close(), value.close()])
-    await value.close()
-
-    expect(disposer).toHaveBeenCalledOnce()
-  })
-
-  it('aggregates all disposer failures and does not rerun them', async () => {
-    const value = executor()
-    const first = new Error('first disposer failed')
-    const second = new Error('second disposer failed')
-    const firstDisposer = vi.fn(async () => {
-      throw first
-    })
-    const secondDisposer = vi.fn(async () => {
-      throw second
-    })
-    disposersFor(value).add(firstDisposer)
-    disposersFor(value).add(secondDisposer)
-
-    let thrown: unknown
-    try {
-      await value.close()
-    } catch (error) {
-      thrown = error
-    }
-    expect(thrown).toBeInstanceOf(AggregateError)
-    expect(thrown).toMatchObject({ message: 'Agent worktree cleanup failed' })
-    expect((thrown as AggregateError).errors).toEqual([first, second])
-    await expect(value.close()).rejects.toBe(thrown)
-    expect(firstDisposer).toHaveBeenCalledOnce()
-    expect(secondDisposer).toHaveBeenCalledOnce()
   })
 })
 
@@ -2644,13 +2580,54 @@ describe('foreground Claude Agent execution', () => {
     })
   })
 
-  it('settles setup failure before surfacing worktree cleanup failure', async () => {
+  it('retains a real worktree when native sidechain setup fails', async () => {
     const { configRoot, cwd } = await gitRepository(
-      'praxis-agent-setup-cleanup-failure-',
+      'praxis-agent-setup-failure-retention-',
     )
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     let providerCalls = 0
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const hookCalls: Record<string, unknown>[] = []
+    const hooks = new ClaudeHookRunner({
+      settings: [
+        {
+          path: '/project.json',
+          scope: 'project',
+          value: {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  matcher: 'agent',
+                  hooks: [{ type: 'command', command: 'agent-create' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      cwd,
+      executeCommand: async (command, input) => {
+        hookCalls.push({ command, ...input })
+        if (command === 'agent-create') {
+          const owner = parseAgentWorktreeOwner(String(input.owner_id))
+          if (!owner || typeof input.worktree_path !== 'string')
+            throw new Error('invalid Agent hook input')
+          const subagents = join(paths.projectRoot, sessionId, 'subagents')
+          await mkdir(subagents, { recursive: true })
+          await writeFile(
+            join(subagents, `agent-${owner.agentId}.meta.json`),
+            'occupied\n',
+          )
+        }
+        return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
     const executor = new ClaudeSubagentExecutor({
       configRoot,
       dataPlane: 'native',
@@ -2665,97 +2642,72 @@ describe('foreground Claude Agent execution', () => {
       },
       baseTools: emptyTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks,
     })
-    const retain = vi.fn(async () => {
-      throw new Error('worktree cleanup failed')
+    const registry = executor.registry(sessionId, 0, () => promptId)
+    const call = await registry.prepare(
+      {
+        id: 'call_setup_failure',
+        name: 'Agent',
+        input: {
+          description: 'Setup failure',
+          prompt: 'Must not run',
+          subagent_type: 'general-purpose',
+          isolation: 'worktree',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(/EEXIST/u)
+    expect(providerCalls).toBe(0)
+    expect(hookCalls).toHaveLength(1)
+    expect(hookCalls[0]).toMatchObject({
+      worktree_kind: 'agent',
+      hook_event_name: 'WorktreeCreate',
     })
-    const worktreeSpy = vi
-      .spyOn(
-        executor as unknown as {
-          createAgentIsolation: (...args: unknown[]) => Promise<{
-            cwd: string
-            cleanup: () => Promise<{ retained: boolean }>
-            retain: (reason: string) => Promise<{ retained: boolean }>
-          }>
-        },
-        'createAgentIsolation',
-      )
-      .mockResolvedValue({
-        cwd: join(cwd, 'fake-worktree'),
-        cleanup: vi.fn(async () => ({ retained: false })),
-        retain,
-      })
-    const sidechainSpy = vi
-      .spyOn(NativeSidechainTranscript.prototype, 'create')
-      .mockRejectedValue(new Error('sidechain setup failed'))
-    try {
-      const registry = executor.registry(sessionId, 0, () => promptId)
-      const call = await registry.prepare(
-        {
-          id: 'call_setup_cleanup_failure',
-          name: 'Agent',
-          input: {
-            description: 'Setup cleanup failure',
-            prompt: 'Must not run',
-            subagent_type: 'general-purpose',
-            isolation: 'worktree',
-            run_in_background: true,
-          },
-        },
-        { cwd },
-      )
-      let thrown: unknown
-      try {
-        await registry.execute(call, { cwd })
-      } catch (error) {
-        thrown = error
-      }
-      expect(thrown).toBeInstanceOf(AggregateError)
-      const aggregate = thrown as AggregateError
-      expect(aggregate.errors).toHaveLength(2)
-      expect((aggregate.errors[0] as Error).message).toBe(
-        'sidechain setup failed',
-      )
-      expect((aggregate.errors[1] as Error).message).toBe(
-        'worktree cleanup failed',
-      )
-      expect(providerCalls).toBe(0)
-      expect(retain).toHaveBeenCalledTimes(1)
 
-      const paths = resolveDataPlanePaths({
-        dataPlane: 'native',
-        root: configRoot,
-        cwd,
-        sessionId,
-      })
-      const lifecycleDirectory = join(
-        paths.praxisRoot,
-        'subagent-lifecycle',
-        sessionId,
-      )
-      const lifecycleFiles = (await readdir(lifecycleDirectory)).filter(
-        (file) => file.endsWith('.json'),
-      )
-      expect(lifecycleFiles).toHaveLength(1)
-      const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
-      expect(JSON.parse(await readFile(lifecyclePath, 'utf8'))).toMatchObject({
-        version: 2,
-        lifecycle: { state: 'failed', revision: 1 },
-        detail: 'sidechain setup failed',
-        result: {
-          text: 'sidechain setup failed',
-          usage: { inputTokens: 0, outputTokens: 0 },
-          toolUseCount: 0,
-          durationMs: 0,
-        },
-      })
-      await expect(stat(`${lifecyclePath}.owner.lock`)).rejects.toMatchObject({
-        code: 'ENOENT',
-      })
-    } finally {
-      sidechainSpy.mockRestore()
-      worktreeSpy.mockRestore()
-    }
+    const lifecycleDirectory = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    const lifecycleFiles = (await readdir(lifecycleDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(lifecycleFiles).toHaveLength(1)
+    const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
+    const lifecycleRecord = JSON.parse(await readFile(lifecyclePath, 'utf8'))
+    expect(lifecycleRecord).toMatchObject({
+      version: 2,
+      lifecycle: { state: 'failed', revision: 1 },
+      detail: expect.stringContaining('EEXIST'),
+      result: {
+        text: expect.stringContaining('EEXIST'),
+      },
+    })
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const records = (await readdir(registryDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(records).toHaveLength(1)
+    const record = JSON.parse(
+      await readFile(join(registryDirectory, records[0] ?? ''), 'utf8'),
+    ) as { state: string; worktreePath: string }
+    expect(record.state).toBe('retained')
+    await expect(stat(record.worktreePath)).resolves.toBeDefined()
+    const reconciliation = await reconcileManagedWorktrees({
+      cwd,
+      stateRoot: paths.praxisRoot,
+    })
+    expect(reconciliation.entries).toContainEqual(
+      expect.objectContaining({ disposition: 'retained' }),
+    )
+    await executor.close()
   })
 
   it('loads native custom agent memory and preloads declared skills', async () => {
@@ -6576,88 +6528,14 @@ describe('foreground Claude Agent execution', () => {
     )
   })
 
-  it('retains a clean isolated Agent worktree after provider failure', async () => {
+  async function runIsolatedRetentionCase(
+    mode: 'failure' | 'cancellation',
+  ): Promise<{
+    result: NonNullable<BackgroundAgentRunError['result']>
+    lifecycleState: 'failed' | 'cancelled'
+  }> {
     const { configRoot, cwd } = await gitRepository(
-      'praxis-agent-worktree-failure-retention-',
-    )
-    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-    const executor = new ClaudeSubagentExecutor({
-      configRoot,
-      dataPlane: 'native',
-      cwd,
-      claudeVersion: '2.1.208',
-      provider: {
-        capabilities: { streaming: true, usage: true, tools: false },
-        async *complete() {
-          yield* []
-          throw new Error('provider failed')
-        },
-      },
-      baseTools: emptyTools,
-      permissions: { resolve: () => ({ behavior: 'allow' }) },
-    })
-    const registry = executor.registry(
-      sessionId,
-      0,
-      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-    )
-    const call = await registry.prepare(
-      {
-        id: 'call_failure_retention',
-        name: 'Agent',
-        input: {
-          description: 'Failure retention',
-          prompt: 'Fail in isolation',
-          isolation: 'worktree',
-          run_in_background: false,
-        },
-      },
-      { cwd },
-    )
-    let thrown: unknown
-    try {
-      await registry.execute(call, { cwd })
-    } catch (error) {
-      thrown = error
-    }
-    expect(thrown).toBeInstanceOf(BackgroundAgentRunError)
-    const result = (thrown as BackgroundAgentRunError).result
-    expect(result).toMatchObject({
-      isolationRetained: true,
-      isolationWarning: expect.stringContaining(String(result?.isolationPath)),
-    })
-    const worktreePath = result?.isolationPath
-    if (!worktreePath) throw new Error('Expected retained worktree path')
-    await expect(stat(worktreePath)).resolves.toBeDefined()
-    const paths = resolveDataPlanePaths({
-      dataPlane: 'native',
-      root: configRoot,
-      cwd,
-      sessionId,
-    })
-    const lifecycleFiles = (
-      await readdir(join(paths.praxisRoot, 'subagent-lifecycle', sessionId))
-    ).filter((file) => file.endsWith('.json'))
-    expect(lifecycleFiles).toHaveLength(1)
-    expect(
-      JSON.parse(
-        await readFile(
-          join(
-            paths.praxisRoot,
-            'subagent-lifecycle',
-            sessionId,
-            lifecycleFiles[0] ?? '',
-          ),
-          'utf8',
-        ),
-      ),
-    ).toMatchObject({ lifecycle: { state: 'failed' } })
-    await executor.close()
-  })
-
-  it('retains a clean isolated Agent worktree after cancellation', async () => {
-    const { configRoot, cwd } = await gitRepository(
-      'praxis-agent-worktree-cancel-retention-',
+      `praxis-agent-worktree-${mode}-retention-`,
     )
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     let started!: () => void
@@ -6672,6 +6550,10 @@ describe('foreground Claude Agent execution', () => {
       provider: {
         capabilities: { streaming: true, usage: true, tools: false },
         async *complete(request) {
+          if (mode === 'failure') {
+            yield* []
+            throw new Error('provider failed')
+          }
           yield* []
           started()
           await new Promise<void>((resolve) => {
@@ -6692,11 +6574,11 @@ describe('foreground Claude Agent execution', () => {
     )
     const call = await registry.prepare(
       {
-        id: 'call_cancel_retention',
+        id: `call_${mode}_retention`,
         name: 'Agent',
         input: {
-          description: 'Cancellation retention',
-          prompt: 'Cancel in isolation',
+          description: `${mode} retention`,
+          prompt: `${mode} in isolation`,
           isolation: 'worktree',
           run_in_background: false,
         },
@@ -6704,9 +6586,14 @@ describe('foreground Claude Agent execution', () => {
       { cwd },
     )
     const controller = new AbortController()
-    const operation = registry.execute(call, { cwd, signal: controller.signal })
-    await providerStarted
-    controller.abort()
+    const operation = registry.execute(
+      call,
+      mode === 'cancellation' ? { cwd, signal: controller.signal } : { cwd },
+    )
+    if (mode === 'cancellation') {
+      await providerStarted
+      controller.abort()
+    }
     let thrown: unknown
     try {
       await operation
@@ -6715,38 +6602,43 @@ describe('foreground Claude Agent execution', () => {
     }
     expect(thrown).toBeInstanceOf(BackgroundAgentRunError)
     const result = (thrown as BackgroundAgentRunError).result
-    expect(result).toMatchObject({
-      isolationRetained: true,
-      isolationWarning: expect.stringContaining(String(result?.isolationPath)),
-    })
-    const worktreePath = result?.isolationPath
-    if (!worktreePath) throw new Error('Expected retained worktree path')
-    await expect(stat(worktreePath)).resolves.toBeDefined()
+    if (!result) throw new Error('Expected Agent failure result')
     const paths = resolveDataPlanePaths({
       dataPlane: 'native',
       root: configRoot,
       cwd,
       sessionId,
     })
-    const lifecycleFiles = (
-      await readdir(join(paths.praxisRoot, 'subagent-lifecycle', sessionId))
-    ).filter((file) => file.endsWith('.json'))
+    const lifecycleDirectory = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    const lifecycleFiles = (await readdir(lifecycleDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
     expect(lifecycleFiles).toHaveLength(1)
-    expect(
-      JSON.parse(
-        await readFile(
-          join(
-            paths.praxisRoot,
-            'subagent-lifecycle',
-            sessionId,
-            lifecycleFiles[0] ?? '',
-          ),
-          'utf8',
-        ),
-      ),
-    ).toMatchObject({ lifecycle: { state: 'cancelled' } })
+    const lifecycle = JSON.parse(
+      await readFile(join(lifecycleDirectory, lifecycleFiles[0] ?? ''), 'utf8'),
+    ) as { lifecycle: { state: 'failed' | 'cancelled' } }
     await executor.close()
-  })
+    return { result, lifecycleState: lifecycle.lifecycle.state }
+  }
+
+  it.each(['failure', 'cancellation'] as const)(
+    'retains a clean isolated Agent worktree after %s',
+    async (mode) => {
+      const { result, lifecycleState } = await runIsolatedRetentionCase(mode)
+      const worktreePath = result.isolationPath
+      if (!worktreePath) throw new Error('Expected retained worktree path')
+      expect(result).toMatchObject({
+        isolationRetained: true,
+        isolationWarning: expect.stringContaining(worktreePath),
+      })
+      await expect(stat(worktreePath)).resolves.toBeDefined()
+      expect(lifecycleState).toBe(mode === 'failure' ? 'failed' : 'cancelled')
+    },
+  )
 
   it('recreates one deterministic managed path for a clean Agent continuation', async () => {
     const { configRoot, cwd } = await gitRepository(
@@ -7049,6 +6941,7 @@ describe('foreground Claude Agent execution', () => {
     })
     await second.hydratePersistedTasks(sessionId, cwd)
     expect(second.backgroundSnapshots()).toHaveLength(1)
+    await Promise.all([second.close(), second.close()])
     await second.close()
 
     const third = new ClaudeSubagentExecutor({
@@ -7069,6 +6962,136 @@ describe('foreground Claude Agent execution', () => {
     expect(third.backgroundSnapshots()).toHaveLength(1)
     await third.close()
     await first.close()
+  })
+
+  it('attempts every hydrated Agent disposer and caches close failures', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-close-aggregate-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentIds = ['a0123456789abcdef', 'a1123456789abcdef']
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    for (const [index, agentId] of agentIds.entries()) {
+      const transcriptPath = join(
+        paths.projectRoot,
+        sessionId,
+        'subagents',
+        `agent-${agentId}.jsonl`,
+      )
+      const lifecycleStore = new SubagentLifecycleStore(
+        paths.praxisRoot,
+        sessionId,
+        agentId,
+        transcriptPath,
+      )
+      const execution = await lifecycleStore.start()
+      await execution.running()
+      const worktree = await createAgentWorktree({
+        cwd,
+        stateRoot: paths.praxisRoot,
+        sessionId,
+        agentId,
+        executionToken: execution.token,
+      })
+      await seedIncompleteIsolatedSidechain({
+        configRoot,
+        cwd,
+        sessionId,
+        agentId,
+        worktreePath: worktree.cwd,
+        name: `close-aggregate-${index}`,
+      })
+      await execution.finish(
+        'failed',
+        {
+          text: `failed-${index}`,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: 0,
+        },
+        `failed-${index}`,
+        {
+          id: `${index + 1}1111111-1111-4111-8111-111111111111`,
+          status: 'failed',
+          toolUseId: `close-aggregate-${index}`,
+          error: `failed-${index}`,
+        },
+      )
+      await execution.release()
+      await worktree.retain(`initial failure ${index}`)
+    }
+
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'SHOULD_NOT_RUN' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await executor.hydratePersistedTasks(sessionId, cwd)
+    expect(executor.backgroundSnapshots()).toHaveLength(2)
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const recordFiles = (await readdir(registryDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(recordFiles).toHaveLength(2)
+    const records = await Promise.all(
+      recordFiles.map(async (file) => ({
+        file,
+        value: JSON.parse(
+          await readFile(join(registryDirectory, file), 'utf8'),
+        ) as { worktreeId: string; retentionReason?: string },
+      })),
+    )
+    for (const { value } of records) {
+      const managedStore = new ManagedWorktreeStore(
+        paths.praxisRoot,
+        await realpath(cwd),
+        value.worktreeId,
+      )
+      await rm(managedStore.lockPath, { force: true })
+      await mkdir(managedStore.lockPath)
+    }
+
+    let thrown: unknown
+    try {
+      await executor.close()
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toHaveLength(2)
+    const afterFirstClose = await Promise.all(
+      records.map(({ file }) =>
+        readFile(join(registryDirectory, file), 'utf8'),
+      ),
+    )
+    expect(
+      afterFirstClose.every((source) => source.includes('launch was rejected')),
+    ).toBe(true)
+    await expect(executor.close()).rejects.toBe(thrown)
+    const afterRepeatedClose = await Promise.all(
+      records.map(({ file }) =>
+        readFile(join(registryDirectory, file), 'utf8'),
+      ),
+    )
+    expect(afterRepeatedClose).toEqual(afterFirstClose)
   })
 
   it('restores the exact legacy global Agent path without managed adoption', async () => {
