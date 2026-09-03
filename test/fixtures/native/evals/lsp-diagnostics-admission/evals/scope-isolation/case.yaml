@@ -1,0 +1,22 @@
+schema_version: '1.0'
+name: scope-isolation
+fixture: fixture
+execution:
+  prompt: Repair inside.cjs and finish without changing any other path.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit, ApplyPatch, Bash]
+  env:
+    EVAL_SCENARIO: scope-isolation
+verification:
+  - name: inside-check
+    command: node
+    args:
+      - -e
+      - "if(require('./inside.cjs').value!=='ok')process.exit(1)"
+    timeout_seconds: 10
+graders: []
+expect:
+  allowed_changed_paths: [inside.cjs]
+  expected_changed_paths: [inside.cjs]
+  forbidden_changed_paths: []

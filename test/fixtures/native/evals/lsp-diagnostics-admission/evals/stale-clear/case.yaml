@@ -1,0 +1,22 @@
+schema_version: '1.0'
+name: stale-clear
+fixture: fixture
+execution:
+  prompt: Clear the current error in value.cjs and finish.
+  max_turns: 8
+  timeout_seconds: 30
+  allowed_tools: [Read, Edit, ApplyPatch, Bash]
+  env:
+    EVAL_SCENARIO: stale-clear
+verification:
+  - name: value-check
+    command: node
+    args:
+      - -e
+      - "if(require('./value.cjs').value!=='ok')process.exit(1)"
+    timeout_seconds: 10
+graders: []
+expect:
+  allowed_changed_paths: [value.cjs]
+  expected_changed_paths: [value.cjs]
+  forbidden_changed_paths: []
