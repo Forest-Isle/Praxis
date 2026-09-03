@@ -214,7 +214,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   Claude-compatible main-thread agent definitions with native prompt, model,
   tool, memory, first-turn, and resume behavior. Agent execution uses one
   durable lifecycle vocabulary with bounded cancellation and drain,
-  continuation, notifications, and single-owner orphan recovery. Experimental
+  continuation, notifications, and single-owner orphan recovery. Isolated
+  Workflow turns use ownership-recorded repo-local temporary worktrees and
+  retain dirty or committed results for inspection. Experimental
   local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,

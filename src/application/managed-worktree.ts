@@ -1,7 +1,21 @@
 import { execFile } from 'node:child_process'
-import { lstat, mkdir, realpath } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { constants } from 'node:fs'
+import { lstat, mkdir, open, realpath } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { promisify } from 'node:util'
+
+import {
+  ManagedWorktreeStore,
+  type ManagedWorktreeRecord,
+} from '../persistence/managed-worktree-store.js'
+import { resolveProjectIdentity } from '../platform/project-identity.js'
+import { writeFileAtomically } from '../platform/atomic-write.js'
+import {
+  ExclusiveFileLease,
+  type ExclusiveFileLeaseHandle,
+} from '../platform/exclusive-file-lease.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -15,20 +29,658 @@ export interface ManagedWorktree {
   cleanup(): Promise<ManagedWorktreeCleanup>
 }
 
-async function git(cwd: string, args: readonly string[]): Promise<string> {
+export interface OwnedManagedWorktreeOptions {
+  cwd: string
+  stateRoot: string
+  directoryName: string
+  ownerId: string
+  label: 'Agent' | 'Workflow' | 'Team'
+  kind: 'workflow' | 'agent' | 'team'
+  policy: 'ephemeral' | 'durable'
+}
+
+async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
   return (
     await execFileAsync('git', ['-C', cwd, ...args], { encoding: 'utf8' })
-  ).stdout.trim()
+  ).stdout
+}
+
+async function git(cwd: string, args: readonly string[]): Promise<string> {
+  return (await gitRaw(cwd, args)).trim()
+}
+
+async function gitOptional(
+  cwd: string,
+  args: readonly string[],
+): Promise<string | null> {
+  try {
+    return await git(cwd, args)
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 1) return null
+    throw error
+  }
 }
 
 async function registeredWorktrees(root: string): Promise<Set<string>> {
-  const output = await git(root, ['worktree', 'list', '--porcelain'])
+  const output = await gitRaw(root, ['worktree', 'list', '--porcelain', '-z'])
   return new Set(
     output
-      .split('\n')
+      .split('\0')
       .filter((line) => line.startsWith('worktree '))
-      .map((line) => resolve(line.slice('worktree '.length))),
+      .map((line) => resolve(root, line.slice('worktree '.length))),
   )
+}
+
+const COMPONENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$/u
+const MARKER_FIELDS = new Set(['version', 'worktreeId', 'repositoryRoot'])
+const LOCAL_EXCLUDE_PATTERN = '/.praxis/worktrees/'
+
+function managedWorktreeId(
+  repositoryRoot: string,
+  kind: OwnedManagedWorktreeOptions['kind'],
+  ownerId: string,
+): string {
+  return createHash('sha256')
+    .update(`${repositoryRoot}\0${kind}\0${ownerId}`)
+    .digest('hex')
+}
+
+function validOwnerId(ownerId: string): boolean {
+  return (
+    ownerId.length > 0 &&
+    ownerId.length <= 256 &&
+    !Array.from(ownerId).some((character) => {
+      const code = character.codePointAt(0) ?? 0
+      return code <= 0x1f || code === 0x7f
+    })
+  )
+}
+
+function worktreeError(
+  options: OwnedManagedWorktreeOptions,
+  message: string,
+): Error {
+  return new Error(`${options.label} worktree ${message}`)
+}
+
+async function assertRealDirectory(
+  path: string,
+  description: string,
+): Promise<void> {
+  let current = resolve(path)
+  const parts: string[] = []
+  while (true) {
+    parts.unshift(current)
+    const parent = resolve(current, '..')
+    if (parent === current) break
+    current = parent
+  }
+  for (const part of parts) {
+    try {
+      const entry = await lstat(part)
+      if (entry.isSymbolicLink())
+        throw new Error(`${description} must not be a symlink`)
+      if (!entry.isDirectory())
+        throw new Error(`${description} must be a directory`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw error
+    }
+  }
+}
+
+async function acquireLease(
+  lease: ExclusiveFileLease,
+  description: string,
+): Promise<ExclusiveFileLeaseHandle> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const handle = await lease.tryAcquire()
+    if (handle) return handle
+    await sleep(5)
+  }
+  throw new Error(`Timed out acquiring ${description}`)
+}
+
+async function readRegularFile(
+  path: string,
+  description: string,
+): Promise<string> {
+  let handle
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ELOOP') {
+      throw new Error(`${description} must be a regular file`)
+    }
+    throw error
+  }
+  try {
+    if (!(await handle.stat()).isFile()) {
+      throw new Error(`${description} must be a regular file`)
+    }
+    return await handle.readFile({ encoding: 'utf8' })
+  } finally {
+    await handle.close()
+  }
+}
+
+async function ensureManagedRootIgnored(repositoryRoot: string): Promise<void> {
+  const commonValue = await git(repositoryRoot, [
+    'rev-parse',
+    '--git-common-dir',
+  ])
+  const commonDirectory = await realpath(
+    isAbsolute(commonValue)
+      ? commonValue
+      : resolve(repositoryRoot, commonValue),
+  )
+  const infoDirectory = join(commonDirectory, 'info')
+  await assertRealDirectory(commonDirectory, 'Git common directory')
+  await assertRealDirectory(infoDirectory, 'Git info directory')
+  await mkdir(infoDirectory, { recursive: true, mode: 0o700 })
+  await assertRealDirectory(infoDirectory, 'Git info directory')
+  const excludePath = join(infoDirectory, 'exclude')
+  const lease = await acquireLease(
+    new ExclusiveFileLease(`${excludePath}.praxis.lock`),
+    'managed worktree ignore lock',
+  )
+  try {
+    let source = ''
+    try {
+      source = await readRegularFile(excludePath, 'Git info exclude')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    const lines = source.split(/\r?\n/u)
+    if (lines.includes(LOCAL_EXCLUDE_PATTERN)) return
+    const prefix = source.length > 0 && !source.endsWith('\n') ? '\n' : ''
+    const next = `${source}${prefix}${LOCAL_EXCLUDE_PATTERN}\n`
+    const committed = await writeFileAtomically(excludePath, next, {
+      mode: 0o600,
+      beforeCommit: async () => {
+        try {
+          return (
+            (await readRegularFile(excludePath, 'Git info exclude')) === source
+          )
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === 'ENOENT' && !source
+        }
+      },
+    })
+    if (!committed) {
+      throw new Error('Git info exclude changed during managed worktree setup')
+    }
+  } finally {
+    await lease.release()
+  }
+}
+
+async function linkedGitDirectory(worktreePath: string): Promise<string> {
+  const value = await git(worktreePath, ['rev-parse', '--git-dir'])
+  return realpath(isAbsolute(value) ? value : resolve(worktreePath, value))
+}
+
+async function writeMarker(
+  path: string,
+  record: ManagedWorktreeRecord,
+): Promise<void> {
+  const gitDirectory = await linkedGitDirectory(path)
+  const marker = join(gitDirectory, 'PRAXIS_WORKTREE')
+  try {
+    await lstat(marker)
+    throw new Error('Managed worktree marker already exists')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  const committed = await writeFileAtomically(
+    marker,
+    `${JSON.stringify({ version: 1, worktreeId: record.worktreeId, repositoryRoot: record.repositoryRoot })}\n`,
+    {
+      mode: 0o600,
+      beforeCommit: async () => {
+        try {
+          await lstat(marker)
+          return false
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === 'ENOENT'
+        }
+      },
+    },
+  )
+  if (!committed) throw new Error('Managed worktree marker already exists')
+}
+
+async function readMarker(
+  worktreePath: string,
+  record: ManagedWorktreeRecord,
+): Promise<void> {
+  const markerPath = join(
+    await linkedGitDirectory(worktreePath),
+    'PRAXIS_WORKTREE',
+  )
+  let marker: unknown
+  try {
+    marker = JSON.parse(await readRegularFile(markerPath, 'worktree marker'))
+  } catch {
+    throw new Error('worktree marker is invalid')
+  }
+  if (
+    typeof marker !== 'object' ||
+    marker === null ||
+    Array.isArray(marker) ||
+    Object.keys(marker).length !== MARKER_FIELDS.size ||
+    Object.keys(marker).some((key) => !MARKER_FIELDS.has(key)) ||
+    (marker as Record<string, unknown>).version !== 1 ||
+    (marker as Record<string, unknown>).worktreeId !== record.worktreeId ||
+    (marker as Record<string, unknown>).repositoryRoot !== record.repositoryRoot
+  ) {
+    throw new Error('worktree marker does not match ownership record')
+  }
+}
+
+async function inspectOwnedCheckout(
+  record: ManagedWorktreeRecord,
+  registered?: Set<string>,
+): Promise<{ status: string; head: string }> {
+  const registrations =
+    registered ?? (await registeredWorktrees(record.repositoryRoot))
+  const pathEntry = await lstat(record.worktreePath)
+  if (pathEntry.isSymbolicLink() || !pathEntry.isDirectory()) {
+    throw new Error('worktree path is not a real directory')
+  }
+  await assertRealDirectory(record.worktreePath, 'managed worktree path')
+  if ((await realpath(record.worktreePath)) !== resolve(record.worktreePath)) {
+    throw new Error('worktree path is not canonical')
+  }
+  if (!registrations.has(resolve(record.worktreePath))) {
+    throw new Error('worktree is not registered')
+  }
+  const [status, head, topLevel] = await Promise.all([
+    git(record.worktreePath, ['status', '--porcelain']),
+    git(record.worktreePath, ['rev-parse', 'HEAD']),
+    git(record.worktreePath, ['rev-parse', '--show-toplevel']),
+  ])
+  const worktreeRoot = await realpath(resolve(record.worktreePath, topLevel))
+  if (worktreeRoot !== resolve(record.worktreePath)) {
+    throw new Error('registered worktree root does not match')
+  }
+  const root = await resolveProjectIdentity(record.worktreePath)
+  if (root !== record.repositoryRoot) {
+    throw new Error('repository identity does not match')
+  }
+  await readMarker(record.worktreePath, record)
+  const branch = await gitOptional(record.worktreePath, [
+    'symbolic-ref',
+    '--quiet',
+    '--short',
+    'HEAD',
+  ])
+  if (branch) throw new Error('worktree is not detached')
+  return { status, head }
+}
+
+function sameOwnership(
+  left: ManagedWorktreeRecord,
+  right: ManagedWorktreeRecord,
+): boolean {
+  return (
+    left.worktreeId === right.worktreeId &&
+    left.kind === right.kind &&
+    left.policy === right.policy &&
+    left.ownerId === right.ownerId &&
+    left.repositoryRoot === right.repositoryRoot &&
+    left.worktreePath === right.worktreePath &&
+    left.branch === right.branch &&
+    left.baseCommit === right.baseCommit &&
+    left.createdAt === right.createdAt
+  )
+}
+
+function nextRecord(
+  record: ManagedWorktreeRecord,
+  state: ManagedWorktreeRecord['state'],
+  retentionReason?: string,
+): ManagedWorktreeRecord {
+  const base = { ...record }
+  delete base.retentionReason
+  return {
+    ...base,
+    state,
+    updatedAt: new Date().toISOString(),
+    ...(retentionReason === undefined ? {} : { retentionReason }),
+  }
+}
+
+async function retain(
+  store: ManagedWorktreeStore,
+  record: ManagedWorktreeRecord,
+  reason: string,
+): Promise<ManagedWorktreeCleanup> {
+  try {
+    await store.update(nextRecord(record, 'retained', reason))
+    return { retained: true, reason }
+  } catch (error) {
+    return {
+      retained: true,
+      reason: `${reason}; could not persist retention state: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
+export async function createOwnedManagedWorktree(
+  options: OwnedManagedWorktreeOptions,
+): Promise<ManagedWorktree> {
+  if (!COMPONENT_PATTERN.test(options.directoryName)) {
+    throw worktreeError(options, 'name is invalid')
+  }
+  if (!validOwnerId(options.ownerId)) {
+    throw worktreeError(options, 'owner ID is invalid')
+  }
+  if (!['workflow', 'agent', 'team'].includes(options.kind)) {
+    throw worktreeError(options, 'kind is invalid')
+  }
+  let repositoryRoot: string
+  let baseCommit: string
+  try {
+    ;[repositoryRoot, baseCommit] = await Promise.all([
+      resolveProjectIdentity(options.cwd),
+      git(options.cwd, ['rev-parse', 'HEAD']),
+    ])
+  } catch {
+    throw worktreeError(options, 'isolation requires a Git repository')
+  }
+  const kindRoot = join(repositoryRoot, '.praxis', 'worktrees', options.kind)
+  const worktreePath = join(kindRoot, options.directoryName)
+  const rootRelative = relative(kindRoot, worktreePath)
+  if (
+    !rootRelative ||
+    rootRelative === '..' ||
+    rootRelative.startsWith(`..${sep}`) ||
+    isAbsolute(rootRelative)
+  ) {
+    throw worktreeError(options, 'path escapes its kind root')
+  }
+  await assertRealDirectory(
+    join(repositoryRoot, '.praxis'),
+    'managed worktree parent',
+  )
+  await assertRealDirectory(
+    join(repositoryRoot, '.praxis', 'worktrees'),
+    'managed worktree parent',
+  )
+  await assertRealDirectory(kindRoot, 'managed worktree kind root')
+  await ensureManagedRootIgnored(repositoryRoot)
+  const worktreeId = managedWorktreeId(
+    repositoryRoot,
+    options.kind,
+    options.ownerId,
+  )
+  const store = new ManagedWorktreeStore(
+    options.stateRoot,
+    repositoryRoot,
+    worktreeId,
+  )
+  const lease = await store.acquireLease()
+  if (!lease) throw worktreeError(options, `is already owned: ${worktreePath}`)
+  const now = new Date().toISOString()
+  const record: ManagedWorktreeRecord = {
+    version: 1,
+    worktreeId,
+    kind: options.kind,
+    policy: options.policy,
+    ownerId: options.ownerId,
+    repositoryRoot,
+    worktreePath,
+    branch: null,
+    baseCommit,
+    state: 'creating',
+    createdAt: now,
+    updatedAt: now,
+  }
+  let recordCreated = false
+  let gitCreated = false
+  let markerCreated = false
+  let created = false
+  try {
+    await store.create(record)
+    recordCreated = true
+    try {
+      const entry = await lstat(worktreePath)
+      if (entry.isSymbolicLink()) {
+        throw worktreeError(options, 'path must not be a symlink')
+      }
+      throw worktreeError(options, `path already exists: ${worktreePath}`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await mkdir(kindRoot, { recursive: true })
+    await assertRealDirectory(kindRoot, 'managed worktree kind root')
+    await git(repositoryRoot, [
+      'worktree',
+      'add',
+      '--detach',
+      worktreePath,
+      baseCommit,
+    ])
+    gitCreated = true
+    await writeMarker(worktreePath, record)
+    markerCreated = true
+    await store.update(nextRecord(record, 'active'))
+    created = true
+  } catch (error) {
+    let rollbackError: Error | undefined
+    let uncertainArtifact = false
+    if (gitCreated) {
+      try {
+        if (!markerCreated) {
+          throw new Error('ownership marker was not published')
+        }
+        const inspection = await inspectOwnedCheckout(record)
+        if (inspection.status.length > 0) {
+          throw new Error('created worktree is no longer clean')
+        }
+        if (inspection.head !== record.baseCommit) {
+          throw new Error('created worktree HEAD no longer matches its base')
+        }
+        await git(repositoryRoot, ['worktree', 'remove', worktreePath])
+      } catch (removeError) {
+        rollbackError = removeError as Error
+      }
+    } else {
+      try {
+        const registered = await registeredWorktrees(repositoryRoot)
+        const pathExists = await lstat(worktreePath)
+          .then(() => true)
+          .catch((pathError: unknown) => {
+            if ((pathError as NodeJS.ErrnoException).code === 'ENOENT') {
+              return false
+            }
+            throw pathError
+          })
+        uncertainArtifact = pathExists || registered.has(resolve(worktreePath))
+      } catch {
+        uncertainArtifact = true
+      }
+    }
+    if (recordCreated) {
+      try {
+        const retentionReason = rollbackError
+          ? `Could not roll back ${worktreePath}: ${rollbackError.message}`
+          : uncertainArtifact
+            ? `Creation failed with an unverified artifact at ${worktreePath}`
+            : undefined
+        const failed = retentionReason
+          ? nextRecord(record, 'retained', retentionReason)
+          : nextRecord(record, 'released')
+        await store.update(failed)
+      } catch (stateError) {
+        rollbackError ??= stateError as Error
+      }
+    }
+    const primary = error instanceof Error ? error.message : String(error)
+    throw worktreeError(
+      options,
+      `could not be created: ${primary}${rollbackError ? `; cleanup warning: ${rollbackError.message}` : ''}`,
+    )
+  } finally {
+    if (!created) await lease.release()
+  }
+  let executionLease: ExclusiveFileLeaseHandle | undefined = lease
+  let removedResult: ManagedWorktreeCleanup | undefined
+  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
+  return {
+    cwd: worktreePath,
+    cleanup: async () => {
+      if (removedResult) return removedResult
+      if (cleanupInFlight) return cleanupInFlight
+      const heldLease = executionLease
+      executionLease = undefined
+      cleanupInFlight = cleanupOwnedManagedWorktree(
+        store,
+        options,
+        record,
+        heldLease,
+      )
+      try {
+        const result = await cleanupInFlight
+        if (!result.retained) removedResult = result
+        return result
+      } finally {
+        cleanupInFlight = undefined
+      }
+    },
+  }
+}
+
+async function cleanupOwnedManagedWorktree(
+  store: ManagedWorktreeStore,
+  options: OwnedManagedWorktreeOptions,
+  original: ManagedWorktreeRecord,
+  heldLease?: ExclusiveFileLeaseHandle,
+): Promise<ManagedWorktreeCleanup> {
+  const lease = heldLease ?? (await store.acquireLease())
+  if (!lease)
+    return {
+      retained: true,
+      reason: `${options.label} worktree cleanup is already in progress`,
+    }
+  try {
+    let record: ManagedWorktreeRecord
+    try {
+      record = await store.read()
+    } catch (error) {
+      return {
+        retained: true,
+        reason: `Could not inspect ${options.label.toLowerCase()} worktree record: ${(error as Error).message}`,
+      }
+    }
+    if (!sameOwnership(record, original)) {
+      return {
+        retained: true,
+        reason: `${options.label} worktree ownership record does not match`,
+      }
+    }
+    if (record.state === 'released') return { retained: false }
+    if (
+      record.state !== 'active' &&
+      record.state !== 'retained' &&
+      record.state !== 'releasing'
+    ) {
+      return {
+        retained: true,
+        reason: `${options.label} worktree is not releasable`,
+      }
+    }
+    if (record.policy === 'durable') {
+      return retain(
+        store,
+        record,
+        `${options.label} worktree uses durable retention policy`,
+      )
+    }
+    const releasing = nextRecord(record, 'releasing')
+    try {
+      await store.update(releasing)
+    } catch (error) {
+      return {
+        retained: true,
+        reason: `Could not update ${options.label.toLowerCase()} worktree record: ${(error as Error).message}`,
+      }
+    }
+    const registered = await registeredWorktrees(record.repositoryRoot).catch(
+      () => null,
+    )
+    if (!registered) {
+      return retain(
+        store,
+        releasing,
+        `Could not inspect registered ${options.label.toLowerCase()} worktrees`,
+      )
+    }
+    try {
+      await lstat(record.worktreePath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        return retain(
+          store,
+          releasing,
+          `Could not inspect ${options.label.toLowerCase()} worktree path: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      if (registered.has(resolve(record.worktreePath))) {
+        return retain(
+          store,
+          releasing,
+          `${options.label} worktree is missing but remains registered at ${record.worktreePath}`,
+        )
+      }
+      try {
+        await store.update(nextRecord(releasing, 'released'))
+        return { retained: false }
+      } catch (stateError) {
+        return {
+          retained: false,
+          reason: `${options.label} worktree is already absent but release state could not be persisted: ${stateError instanceof Error ? stateError.message : String(stateError)}`,
+        }
+      }
+    }
+    let inspection: { status: string; head: string }
+    try {
+      inspection = await inspectOwnedCheckout(record, registered)
+    } catch (error) {
+      const reason = `Could not verify ${options.label.toLowerCase()} worktree ${record.worktreePath}: ${(error as Error).message}`
+      return retain(store, releasing, reason)
+    }
+    if (inspection.status.length > 0) {
+      const reason = `${options.label} worktree has uncommitted changes and was retained at ${record.worktreePath}`
+      return retain(store, releasing, reason)
+    }
+    if (inspection.head !== record.baseCommit) {
+      const reason = `${options.label} worktree has commits and was retained at ${record.worktreePath}`
+      return retain(store, releasing, reason)
+    }
+    try {
+      await git(record.repositoryRoot, [
+        'worktree',
+        'remove',
+        record.worktreePath,
+      ])
+    } catch (error) {
+      const reason = `Could not remove ${options.label.toLowerCase()} worktree ${record.worktreePath}: ${(error as Error).message}`
+      return retain(store, releasing, reason)
+    }
+    try {
+      await store.update(nextRecord(releasing, 'released'))
+    } catch (error) {
+      return {
+        retained: false,
+        reason: `Could not update ${options.label.toLowerCase()} worktree record after removal: ${(error as Error).message}`,
+      }
+    }
+    return { retained: false }
+  } finally {
+    await lease.release()
+  }
 }
 
 export async function createManagedWorktree(options: {

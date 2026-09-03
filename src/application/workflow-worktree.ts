@@ -1,7 +1,5 @@
-import { join } from 'node:path'
-
 import {
-  createManagedWorktree,
+  createOwnedManagedWorktree,
   type ManagedWorktree,
 } from './managed-worktree.js'
 
@@ -13,10 +11,13 @@ export async function createWorkflowWorktree(options: {
   runId: string
   agentId: string
 }): Promise<WorkflowWorktree> {
-  return createManagedWorktree({
+  return createOwnedManagedWorktree({
     cwd: options.cwd,
-    parentDirectory: join(options.praxisRoot, 'workflow-worktrees'),
+    stateRoot: options.praxisRoot,
     directoryName: `${options.runId}-${options.agentId}`,
+    ownerId: `workflow:${options.runId}:${options.agentId}`,
     label: 'Workflow',
+    kind: 'workflow',
+    policy: 'ephemeral',
   })
 }

@@ -24,6 +24,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* move Workflow isolation into ownership-verified repo-local worktrees ([#630](https://github.com/Forest-Isle/Praxis/issues/630))
 * expand stdio MCP `${VAR}` environment grants at launch without weakening credential isolation ([#145](https://github.com/Forest-Isle/Praxis/issues/145))
 * refresh volatile Git repository context per request with bounded, lock-safe collection ([#152](https://github.com/Forest-Isle/Praxis/issues/152))
 * recover malformed provider tool arguments without executing the tool or losing resumable native turns ([#138](https://github.com/Forest-Isle/Praxis/issues/138))

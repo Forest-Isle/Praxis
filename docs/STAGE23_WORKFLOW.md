@@ -75,8 +75,10 @@ Stop / process exit  -> abort task -> abort every active agent -> persist killed
 - Nested workflow depth is one. Any cancel aborts nested work and all active agents.
 - `schema` exposes only `StructuredOutput`, requires exactly one valid final call, and
   stores its input object as result.
-- `isolation: 'worktree'` creates a temporary git worktree and removes it on terminal
-  completion without deleting user changes; failed cleanup is reported, never hidden.
+- `isolation: 'worktree'` creates an ownership-recorded temporary checkout under
+  `<repo>/.praxis/worktrees/workflow`, removes it on terminal completion only after
+  its registry, Git marker, repository, registration, base, and cleanliness agree,
+  and reports retained user changes or failed cleanup instead of hiding them.
 
 ## Errors
 
