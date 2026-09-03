@@ -365,6 +365,15 @@ notification. The grouping uses TUI-only metadata and does not change runtime
 semantics, protocol, persistence, or model-visible delivery; retained-window
 updates advance the aggregate in place with stable first-source identity.
 
+### Task 5.7: Background Bash stall watchdog — implemented by #171
+
+Prompt-like current Bash output that remains idle for 50,000 ms emits one
+runtime warning and model follow-up. Output growth resets the window; silent or
+non-prompt output stays quiet. The warning is one-shot, leaves the task and
+process running, and does not alter later terminal delivery. Watchdog timers,
+flags, and pending messages are transient and are not persisted. Focused tests
+cover timer cleanup and the multi-task pending-message race.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,

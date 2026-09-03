@@ -394,6 +394,13 @@ machine records. Compaction, tool timing, retry, and task lifecycle records
 must not be synthesized by scanning transcripts. Subscription auth/rate-limit
 events remain outside single-user provider-neutral scope.
 
+Prompt-like background Bash output that remains idle for 50 seconds produces a
+non-terminal input-wait warning; output activity resets the window, and silent
+or non-prompt tails do not warn. Its model notification has no `status`; the
+stream-json `task_notification` record likewise omits `status` and `usage`.
+Watchdog state is transient, and a later terminal notification remains
+authoritative.
+
 ## Acceptance gate
 
 Runtime implementation starts only after versioned path/schema fixtures,

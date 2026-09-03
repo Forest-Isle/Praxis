@@ -126,8 +126,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   composer grammar, compact stable tool rows, responsive density,
   terminal-native background, and a minimal composer/status row. Successful
   background Bash completion bursts collapse in normal reading, while
-  failed/stopped notifications remain detailed. Interactive
-  surfaces share the same presentation across terminals, with English
+  failed/stopped notifications remain detailed.
+  Prompt-like background Bash output that remains unchanged for 50 seconds
+  raises one warning and model follow-up without stopping or reclassifying the
+  running task; silent and ordinary output remain quiet.
+  Interactive surfaces share the same presentation across terminals, with English
   permission/configuration choices and a taught `❯` / Up/Down / Enter / Esc
   interaction grammar. While a regular turn is active, the composer remains
   editable: Enter steers at the next safe continuation boundary, Tab or

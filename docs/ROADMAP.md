@@ -368,6 +368,7 @@ by one Praxis invocation.
 - [x] shared Agent/Bash TaskOutput and TaskStop routing in main and nested runs
 - [x] bounded redacted Claude-path output with Read-only external access
 - [x] live Praxis -> Claude -> Praxis graph and background lifecycle gate
+- [x] prompt-gated one-shot input-wait notifications after 50 seconds of unchanged output, with output reset/suppression and preserved running/terminal semantics
 
 Scheduled prompts land in Stage 22. At this stage, Workflow and native
 worktree/tmux lifecycle remained later work; Claude Code 2.1.208 has no standalone

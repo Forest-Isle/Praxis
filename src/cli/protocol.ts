@@ -2783,6 +2783,21 @@ export class StreamJsonOutput {
       })
       return
     }
+    if (event.type === 'task-input-waiting') {
+      this.write({
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: event.taskId,
+        ...(event.toolUseId === undefined
+          ? {}
+          : { tool_use_id: event.toolUseId }),
+        output_file: event.outputFile,
+        summary: event.summary,
+        uuid: randomUUID(),
+        session_id: this.sessionId,
+      })
+      return
+    }
     if (event.type === 'session-state-changed') {
       this.writeSessionState(event.state)
       return
