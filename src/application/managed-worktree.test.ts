@@ -778,6 +778,318 @@ describe('createOwnedManagedWorktree', () => {
     )
   })
 
+  it('creates nested named worktrees and removes only their owned branch', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture, {
+      parentDirectoryName: 'team-one',
+      directoryName: 'generation-abc123',
+      ownerId: 'team:one:generation-abc123',
+      label: 'Team',
+      kind: 'team',
+      policy: 'ephemeral',
+      branch: 'praxis/team-one/generation-abc123',
+    })
+    const worktree = await createOwnedManagedWorktree(options)
+    const identity = await resolveProjectIdentity(fixture.repositoryRoot)
+
+    expect(worktree.cwd).toBe(
+      join(
+        identity,
+        '.praxis',
+        'worktrees',
+        'team',
+        'team-one',
+        'generation-abc123',
+      ),
+    )
+    const owned = await recordPath(fixture, options.ownerId, 'team')
+    expect(JSON.parse(await readFile(owned.path, 'utf8'))).toMatchObject({
+      worktreePath: worktree.cwd,
+      branch: options.branch,
+    })
+    expect(
+      (
+        await execFileAsync('git', [
+          '-C',
+          worktree.cwd,
+          'symbolic-ref',
+          '--short',
+          'HEAD',
+        ])
+      ).stdout.trim(),
+    ).toBe(options.branch)
+
+    await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
+    await expect(
+      execFileAsync('git', [
+        '-C',
+        fixture.repositoryRoot,
+        'rev-parse',
+        '--verify',
+        `refs/heads/${options.branch}`,
+      ]),
+    ).rejects.toBeDefined()
+  })
+
+  it('preserves a pre-existing named branch collision byte-for-byte', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture, {
+      directoryName: 'branch-collision',
+      ownerId: 'workflow:branch-collision:agent',
+      branch: 'praxis/existing-branch',
+    })
+    const branch = options.branch
+    if (!branch) throw new Error('expected branch fixture')
+    await execFileAsync('git', ['-C', fixture.repositoryRoot, 'branch', branch])
+    const before = (
+      await execFileAsync('git', [
+        '-C',
+        fixture.repositoryRoot,
+        'rev-parse',
+        `refs/heads/${branch}`,
+      ])
+    ).stdout.trim()
+
+    await expect(createOwnedManagedWorktree(options)).rejects.toThrow(
+      /could not be created/u,
+    )
+    const after = (
+      await execFileAsync('git', [
+        '-C',
+        fixture.repositoryRoot,
+        'rev-parse',
+        `refs/heads/${branch}`,
+      ])
+    ).stdout.trim()
+    expect(after).toBe(before)
+    await expect(
+      stat(
+        join(
+          fixture.repositoryRoot,
+          '.praxis',
+          'worktrees',
+          options.kind,
+          options.directoryName,
+        ),
+      ),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects a symlinked nested parent without writing through it', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture, {
+      parentDirectoryName: 'team-one',
+      directoryName: 'generation-symlink',
+      ownerId: 'team:one:generation-symlink',
+      label: 'Team',
+      kind: 'team',
+      policy: 'durable',
+    })
+    const parent = options.parentDirectoryName
+    if (!parent) throw new Error('expected parent fixture')
+    const external = join(fixture.root, 'external-team-parent')
+    const kindRoot = join(
+      fixture.repositoryRoot,
+      '.praxis',
+      'worktrees',
+      options.kind,
+    )
+    await mkdir(kindRoot, { recursive: true })
+    await mkdir(external)
+    await symlink(external, join(kindRoot, parent), 'dir')
+
+    await expect(createOwnedManagedWorktree(options)).rejects.toThrow(
+      /symlink/u,
+    )
+    await expect(
+      stat(join(external, options.directoryName)),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    expect((await lstat(join(kindRoot, parent))).isSymbolicLink()).toBe(true)
+  })
+
+  it.each(['dirty', 'committed'] as const)(
+    'explicitly releases a durable %s named checkout',
+    async (change) => {
+      const fixture = await repository()
+      const options = ownedOptions(fixture, {
+        parentDirectoryName: 'team-one',
+        directoryName: `durable-${change}`,
+        ownerId: `team:one:durable-${change}`,
+        label: 'Team',
+        kind: 'team',
+        policy: 'durable',
+        branch: `praxis/team-one/durable-${change}`,
+      })
+      const worktree = await createOwnedManagedWorktree(options)
+      await expect(worktree.cleanup()).resolves.toMatchObject({
+        retained: true,
+      })
+      if (change === 'dirty') {
+        await writeFile(join(worktree.cwd, 'dirty.txt'), 'dirty\n')
+      } else {
+        await writeFile(join(worktree.cwd, 'committed.txt'), 'committed\n')
+        await execFileAsync('git', ['-C', worktree.cwd, 'add', 'committed.txt'])
+        await execFileAsync('git', [
+          '-C',
+          worktree.cwd,
+          '-c',
+          'user.name=Praxis Test',
+          '-c',
+          'user.email=praxis@example.invalid',
+          'commit',
+          '-m',
+          'durable change',
+        ])
+      }
+      await expect(worktree.release()).resolves.toEqual({ retained: false })
+      await expect(stat(worktree.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(
+        execFileAsync('git', [
+          '-C',
+          fixture.repositoryRoot,
+          'rev-parse',
+          '--verify',
+          `refs/heads/${options.branch}`,
+        ]),
+      ).rejects.toBeDefined()
+    },
+  )
+
+  it('restores a durable named checkout with exact owner and branch expectations', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture, {
+      parentDirectoryName: 'team-one',
+      directoryName: 'fresh-restore',
+      ownerId: 'team:one:fresh-restore',
+      label: 'Team',
+      kind: 'team',
+      policy: 'durable',
+      branch: 'praxis/team-one/fresh-restore',
+    })
+    const original = await createOwnedManagedWorktree(options)
+    await expect(original.cleanup()).resolves.toMatchObject({ retained: true })
+    const restored = await restoreOwnedManagedWorktree({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+      path: original.cwd,
+      ...(options.parentDirectoryName
+        ? { parentDirectoryName: options.parentDirectoryName }
+        : {}),
+      directoryName: options.directoryName,
+      ownerPrefix: options.ownerId,
+      ownerId: options.ownerId,
+      ...(options.branch ? { branch: options.branch } : {}),
+      label: options.label,
+      kind: options.kind,
+      policy: options.policy,
+    })
+    await expect(restored.retain('restore exact owner check')).resolves.toEqual(
+      {
+        retained: true,
+        reason: 'restore exact owner check',
+      },
+    )
+    await expect(
+      restoreOwnedManagedWorktree({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+        path: original.cwd,
+        ...(options.parentDirectoryName
+          ? { parentDirectoryName: options.parentDirectoryName }
+          : {}),
+        directoryName: options.directoryName,
+        ownerPrefix: options.ownerId,
+        ownerId: 'team:one:other-owner',
+        ...(options.branch ? { branch: options.branch } : {}),
+        label: options.label,
+        kind: options.kind,
+        policy: options.policy,
+      }),
+    ).rejects.toThrow(/ownership evidence/u)
+    const fresh = await restoreOwnedManagedWorktree({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+      path: original.cwd,
+      ...(options.parentDirectoryName
+        ? { parentDirectoryName: options.parentDirectoryName }
+        : {}),
+      directoryName: options.directoryName,
+      ownerPrefix: options.ownerId,
+      ownerId: options.ownerId,
+      ...(options.branch ? { branch: options.branch } : {}),
+      label: options.label,
+      kind: options.kind,
+      policy: options.policy,
+    })
+    await expect(fresh.release()).resolves.toEqual({ retained: false })
+    await expect(stat(original.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('rejects restore with a wrong expected branch and preserves checkout evidence', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture, {
+      directoryName: 'restore-branch-mismatch',
+      ownerId: 'workflow:restore-branch-mismatch:agent',
+      branch: 'praxis/restore-branch-mismatch',
+    })
+    const branch = options.branch
+    if (!branch) throw new Error('expected branch fixture')
+    const worktree = await createOwnedManagedWorktree(options)
+    await expect(worktree.retain('restore branch mismatch')).resolves.toEqual({
+      retained: true,
+      reason: 'restore branch mismatch',
+    })
+
+    await expect(
+      restoreOwnedManagedWorktree({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+        path: worktree.cwd,
+        directoryName: options.directoryName,
+        ownerPrefix: options.ownerId,
+        ownerId: options.ownerId,
+        branch: 'praxis/wrong-branch',
+        label: options.label,
+        kind: options.kind,
+        policy: options.policy,
+      }),
+    ).rejects.toThrow(/ownership evidence/u)
+    await expect(stat(worktree.cwd)).resolves.toBeDefined()
+    await expect(
+      execFileAsync('git', [
+        '-C',
+        fixture.repositoryRoot,
+        'rev-parse',
+        `refs/heads/${branch}`,
+      ]),
+    ).resolves.toBeDefined()
+    await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
+  })
+
+  it('retains a durable checkout when explicit release hooks block', async () => {
+    const fixture = await repository()
+    const hooks = {
+      afterCreate: async () => ({}),
+      beforeRemove: async () => ({ blockedReason: 'approval required' }),
+    }
+    const worktree = await createOwnedManagedWorktree(
+      ownedOptions(fixture, {
+        directoryName: 'release-hook-block',
+        ownerId: 'team:one:release-hook-block',
+        label: 'Team',
+        kind: 'team',
+        policy: 'durable',
+        branch: 'praxis/team-one/release-hook-block',
+        hooks,
+      }),
+    )
+    await expect(worktree.release()).resolves.toMatchObject({
+      retained: true,
+      reason: expect.stringContaining('WorktreeRemove hook blocked'),
+    })
+    await expect(stat(worktree.cwd)).resolves.toBeDefined()
+  })
+
   it("uses a linked caller's exact HEAD while storing under the canonical repository", async () => {
     const fixture = await repository()
     const firstHead = (

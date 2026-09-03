@@ -32,6 +32,7 @@ export interface ManagedWorktree {
   cwd: string
   cleanup(): Promise<ManagedWorktreeCleanup>
   retain(reason: string): Promise<ManagedWorktreeCleanup>
+  release(): Promise<ManagedWorktreeCleanup>
 }
 
 export interface ManagedWorktreeHookInput {
@@ -62,7 +63,9 @@ export interface ManagedWorktreeHooks {
 export interface OwnedManagedWorktreeOptions {
   cwd: string
   stateRoot: string
+  parentDirectoryName?: string
   directoryName: string
+  branch?: string
   ownerId: string
   label: 'Agent' | 'Workflow' | 'Team'
   kind: 'workflow' | 'agent' | 'team'
@@ -926,6 +929,12 @@ export async function reconcileManagedWorktrees(options: {
 export async function createOwnedManagedWorktree(
   options: OwnedManagedWorktreeOptions,
 ): Promise<ManagedWorktree> {
+  if (
+    options.parentDirectoryName !== undefined &&
+    !COMPONENT_PATTERN.test(options.parentDirectoryName)
+  ) {
+    throw worktreeError(options, 'parent name is invalid')
+  }
   if (!COMPONENT_PATTERN.test(options.directoryName)) {
     throw worktreeError(options, 'name is invalid')
   }
@@ -945,6 +954,18 @@ export async function createOwnedManagedWorktree(
   } catch {
     throw worktreeError(options, 'isolation requires a Git repository')
   }
+  if (options.branch !== undefined) {
+    try {
+      const checked = await git(repositoryRoot, [
+        'check-ref-format',
+        '--branch',
+        options.branch,
+      ])
+      if (checked !== options.branch) throw new Error('branch was normalized')
+    } catch {
+      throw worktreeError(options, 'branch name is invalid')
+    }
+  }
   const reconciliationKey = repositoryRoot
   let reconciliation = reconciliationCache.get(reconciliationKey)
   if (!reconciliation) {
@@ -957,7 +978,10 @@ export async function createOwnedManagedWorktree(
   }
   await reconciliation
   const kindRoot = join(repositoryRoot, '.praxis', 'worktrees', options.kind)
-  const worktreePath = join(kindRoot, options.directoryName)
+  const worktreeParent = options.parentDirectoryName
+    ? join(kindRoot, options.parentDirectoryName)
+    : kindRoot
+  const worktreePath = join(worktreeParent, options.directoryName)
   const rootRelative = relative(kindRoot, worktreePath)
   if (
     !rootRelative ||
@@ -976,6 +1000,8 @@ export async function createOwnedManagedWorktree(
     'managed worktree parent',
   )
   await assertRealDirectory(kindRoot, 'managed worktree kind root')
+  if (options.parentDirectoryName)
+    await assertRealDirectory(worktreeParent, 'managed worktree parent')
   await ensureManagedRootIgnored(repositoryRoot)
   const worktreeId = managedWorktreeId(
     repositoryRoot,
@@ -998,7 +1024,7 @@ export async function createOwnedManagedWorktree(
     ownerId: options.ownerId,
     repositoryRoot,
     worktreePath,
-    branch: null,
+    branch: options.branch ?? null,
     baseCommit,
     state: 'creating',
     createdAt: now,
@@ -1007,6 +1033,7 @@ export async function createOwnedManagedWorktree(
   let recordCreated = false
   let gitCreated = false
   let markerCreated = false
+  let branchBeforeAttempt: string | null | undefined
   let created = false
   try {
     await store.create(record)
@@ -1020,15 +1047,22 @@ export async function createOwnedManagedWorktree(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
-    await mkdir(kindRoot, { recursive: true })
-    await assertRealDirectory(kindRoot, 'managed worktree kind root')
-    await git(repositoryRoot, [
-      'worktree',
-      'add',
-      '--detach',
-      worktreePath,
-      baseCommit,
-    ])
+    await mkdir(worktreeParent, { recursive: true })
+    await assertRealDirectory(worktreeParent, 'managed worktree parent')
+    if (options.branch !== undefined) {
+      branchBeforeAttempt = await gitOptional(repositoryRoot, [
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        `refs/heads/${options.branch}`,
+      ])
+    }
+    await git(
+      repositoryRoot,
+      options.branch === undefined
+        ? ['worktree', 'add', '--detach', worktreePath, baseCommit]
+        : ['worktree', 'add', '-b', options.branch, worktreePath, baseCommit],
+    )
     gitCreated = true
     await writeMarker(worktreePath, record)
     markerCreated = true
@@ -1070,6 +1104,13 @@ export async function createOwnedManagedWorktree(
           throw new Error('created worktree HEAD no longer matches its base')
         }
         await git(repositoryRoot, ['worktree', 'remove', worktreePath])
+        if (record.branch !== null) {
+          await removeOwnedBranch(
+            repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )
+        }
       } catch (removeError) {
         rollbackError = removeError as Error
       }
@@ -1085,6 +1126,22 @@ export async function createOwnedManagedWorktree(
             throw pathError
           })
         uncertainArtifact = pathExists || registered.has(resolve(worktreePath))
+        if (record.branch !== null) {
+          const branchAfterAttempt = await gitOptional(repositoryRoot, [
+            'rev-parse',
+            '--verify',
+            '--quiet',
+            `refs/heads/${record.branch}`,
+          ])
+          if (
+            branchBeforeAttempt === undefined ||
+            (branchBeforeAttempt === null
+              ? branchAfterAttempt !== null
+              : branchAfterAttempt !== branchBeforeAttempt)
+          ) {
+            uncertainArtifact = true
+          }
+        }
       } catch {
         uncertainArtifact = true
       }
@@ -1115,20 +1172,21 @@ export async function createOwnedManagedWorktree(
   return createManagedWorktreeHandle(store, options, record, lease)
 }
 
-async function cleanupOwnedManagedWorktree(
+async function settleOwnedManagedWorktree(
   store: ManagedWorktreeStore,
   options: Pick<
     OwnedManagedWorktreeOptions,
     'label' | 'kind' | 'policy' | 'hooks'
   >,
   original: ManagedWorktreeRecord,
+  mode: 'cleanup' | 'release',
   heldLease?: ExclusiveFileLeaseHandle,
 ): Promise<ManagedWorktreeCleanup> {
   const lease = heldLease ?? (await store.acquireLease())
   if (!lease)
     return {
       retained: true,
-      reason: `${options.label} worktree cleanup is already in progress`,
+      reason: `${options.label} worktree ${mode === 'release' ? 'release' : 'cleanup'} is already in progress`,
     }
   try {
     let record: ManagedWorktreeRecord
@@ -1157,7 +1215,9 @@ async function cleanupOwnedManagedWorktree(
         reason: `${options.label} worktree is not releasable`,
       }
     }
-    if (record.policy === 'durable') {
+    const explicitDurableRelease =
+      mode === 'release' && record.policy === 'durable'
+    if (mode === 'cleanup' && record.policy === 'durable') {
       return retain(
         store,
         record,
@@ -1200,6 +1260,33 @@ async function cleanupOwnedManagedWorktree(
           `${options.label} worktree is missing but remains registered at ${record.worktreePath}`,
         )
       }
+      if (record.branch !== null) {
+        const ref = await ownedBranchRef(
+          record.repositoryRoot,
+          record.branch,
+          record.baseCommit,
+        )
+        if (ref === 'ambiguous')
+          return retain(
+            store,
+            releasing,
+            `${options.label} worktree owned branch moved or is ambiguous`,
+          )
+        try {
+          if (ref === 'match')
+            await removeOwnedBranch(
+              record.repositoryRoot,
+              record.branch,
+              record.baseCommit,
+            )
+        } catch (error) {
+          return retain(
+            store,
+            releasing,
+            `${options.label} worktree owned branch could not be removed: ${(error as Error).message}`,
+          )
+        }
+      }
       try {
         await store.update(nextRecord(releasing, 'released'))
         return { retained: false }
@@ -1217,11 +1304,11 @@ async function cleanupOwnedManagedWorktree(
       const reason = `Could not verify ${options.label.toLowerCase()} worktree ${record.worktreePath}: ${(error as Error).message}`
       return retain(store, releasing, reason)
     }
-    if (inspection.status.length > 0) {
+    if (!explicitDurableRelease && inspection.status.length > 0) {
       const reason = `${options.label} worktree has uncommitted changes and was retained at ${record.worktreePath}`
       return retain(store, releasing, reason)
     }
-    if (inspection.head !== record.baseCommit) {
+    if (!explicitDurableRelease && inspection.head !== record.baseCommit) {
       const reason = `${options.label} worktree has commits and was retained at ${record.worktreePath}`
       return retain(store, releasing, reason)
     }
@@ -1258,14 +1345,18 @@ async function cleanupOwnedManagedWorktree(
           record,
           postHookRegistered,
         )
-        if (postHookInspection.status.length > 0) {
+        inspection = postHookInspection
+        if (!explicitDurableRelease && postHookInspection.status.length > 0) {
           return retain(
             store,
             releasing,
             `WorktreeRemove hook left uncommitted changes in ${record.worktreePath}; worktree was retained at ${record.worktreePath}`,
           )
         }
-        if (postHookInspection.head !== record.baseCommit) {
+        if (
+          !explicitDurableRelease &&
+          postHookInspection.head !== record.baseCommit
+        ) {
           return retain(
             store,
             releasing,
@@ -1281,14 +1372,49 @@ async function cleanupOwnedManagedWorktree(
       }
     }
     try {
-      await git(record.repositoryRoot, [
-        'worktree',
-        'remove',
-        record.worktreePath,
-      ])
+      if (
+        record.branch !== null &&
+        (await ownedBranchRef(
+          record.repositoryRoot,
+          record.branch,
+          explicitDurableRelease ? inspection.head : record.baseCommit,
+        )) === 'ambiguous'
+      ) {
+        return retain(
+          store,
+          releasing,
+          `${options.label} worktree owned branch moved or is ambiguous`,
+        )
+      }
+      await git(
+        record.repositoryRoot,
+        explicitDurableRelease
+          ? ['worktree', 'remove', '--force', record.worktreePath]
+          : ['worktree', 'remove', record.worktreePath],
+      )
     } catch (error) {
       const reason = `Could not remove ${options.label.toLowerCase()} worktree ${record.worktreePath}: ${(error as Error).message}`
       return retain(store, releasing, reason)
+    }
+    if (record.branch !== null) {
+      try {
+        await removeOwnedBranch(
+          record.repositoryRoot,
+          record.branch,
+          explicitDurableRelease ? inspection.head : record.baseCommit,
+        )
+      } catch (error) {
+        let stateWarning = ''
+        try {
+          await store.update(nextRecord(releasing, 'released'))
+        } catch (stateError) {
+          stateWarning = `; could not finalize release state: ${stateError instanceof Error ? stateError.message : String(stateError)}`
+        }
+        return {
+          retained: false,
+          reason: `checkout removed but owned branch was preserved: ${(error as Error).message}${stateWarning}`,
+        }
+      }
     }
     try {
       await store.update(nextRecord(releasing, 'released'))
@@ -1302,6 +1428,42 @@ async function cleanupOwnedManagedWorktree(
   } finally {
     await lease.release()
   }
+}
+
+async function cleanupOwnedManagedWorktree(
+  store: ManagedWorktreeStore,
+  options: Pick<
+    OwnedManagedWorktreeOptions,
+    'label' | 'kind' | 'policy' | 'hooks'
+  >,
+  original: ManagedWorktreeRecord,
+  heldLease?: ExclusiveFileLeaseHandle,
+): Promise<ManagedWorktreeCleanup> {
+  return settleOwnedManagedWorktree(
+    store,
+    options,
+    original,
+    'cleanup',
+    heldLease,
+  )
+}
+
+async function releaseOwnedManagedWorktree(
+  store: ManagedWorktreeStore,
+  options: Pick<
+    OwnedManagedWorktreeOptions,
+    'label' | 'kind' | 'policy' | 'hooks'
+  >,
+  original: ManagedWorktreeRecord,
+  heldLease?: ExclusiveFileLeaseHandle,
+): Promise<ManagedWorktreeCleanup> {
+  return settleOwnedManagedWorktree(
+    store,
+    options,
+    original,
+    'release',
+    heldLease,
+  )
 }
 
 async function retainOwnedManagedWorktree(
@@ -1397,6 +1559,10 @@ function createManagedWorktreeHandle(
         retainOwnedManagedWorktree(store, options, record, reason, heldLease),
       )
     },
+    release: () =>
+      settle((heldLease) =>
+        releaseOwnedManagedWorktree(store, options, record, heldLease),
+      ),
   }
 }
 
@@ -1404,8 +1570,11 @@ export interface OwnedManagedWorktreeRestoreOptions {
   cwd: string
   stateRoot: string
   path: string
+  parentDirectoryName?: string
   directoryName: string
   ownerPrefix: string
+  ownerId?: string
+  branch?: string
   label: 'Agent' | 'Workflow' | 'Team'
   kind: 'workflow' | 'agent' | 'team'
   policy: 'ephemeral' | 'durable'
@@ -1416,6 +1585,12 @@ export interface OwnedManagedWorktreeRestoreOptions {
 export async function restoreOwnedManagedWorktree(
   options: OwnedManagedWorktreeRestoreOptions,
 ): Promise<ManagedWorktree> {
+  if (
+    options.parentDirectoryName !== undefined &&
+    !COMPONENT_PATTERN.test(options.parentDirectoryName)
+  ) {
+    throw worktreeError(options, 'parent name is invalid')
+  }
   if (!COMPONENT_PATTERN.test(options.directoryName)) {
     throw worktreeError(options, 'name is invalid')
   }
@@ -1429,14 +1604,32 @@ export async function restoreOwnedManagedWorktree(
   if (!options.ownerPrefix || !validOwnerId(options.ownerPrefix)) {
     throw worktreeError(options, 'owner prefix is invalid')
   }
+  if (options.ownerId !== undefined && !validOwnerId(options.ownerId)) {
+    throw worktreeError(options, 'owner ID is invalid')
+  }
   let repositoryRoot: string
   try {
     repositoryRoot = await resolveProjectIdentity(options.cwd)
   } catch {
     throw worktreeError(options, 'restore requires a Git repository')
   }
+  if (options.branch !== undefined) {
+    try {
+      const checked = await git(repositoryRoot, [
+        'check-ref-format',
+        '--branch',
+        options.branch,
+      ])
+      if (checked !== options.branch) throw new Error('branch was normalized')
+    } catch {
+      throw worktreeError(options, 'branch name is invalid')
+    }
+  }
   const kindRoot = join(repositoryRoot, '.praxis', 'worktrees', options.kind)
-  const expectedPath = join(kindRoot, options.directoryName)
+  const expectedParent = options.parentDirectoryName
+    ? join(kindRoot, options.parentDirectoryName)
+    : kindRoot
+  const expectedPath = join(expectedParent, options.directoryName)
   const path = resolve(options.path)
   if (path !== expectedPath) {
     throw worktreeError(options, 'path does not match its managed checkout')
@@ -1476,7 +1669,9 @@ export async function restoreOwnedManagedWorktree(
       record.kind !== options.kind ||
       record.policy !== options.policy ||
       !['active', 'retained', 'releasing'].includes(record.state) ||
-      !record.ownerId.startsWith(options.ownerPrefix)
+      !record.ownerId.startsWith(options.ownerPrefix) ||
+      (options.ownerId !== undefined && record.ownerId !== options.ownerId) ||
+      (options.branch !== undefined && record.branch !== options.branch)
     ) {
       throw worktreeError(options, 'ownership evidence does not match')
     }
@@ -1547,45 +1742,47 @@ export async function createManagedWorktree(options: {
   }
 
   const settle = createManagedWorktreeSettlement()
+  const cleanup = () =>
+    settle(async () => {
+      let status: string
+      let head: string
+      try {
+        ;[status, head] = await Promise.all([
+          git(path, ['status', '--porcelain']),
+          git(path, ['rev-parse', 'HEAD']),
+        ])
+      } catch (error) {
+        return {
+          retained: true,
+          reason: `Could not inspect ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
+        }
+      }
+      if (status.length > 0) {
+        return {
+          retained: true,
+          reason: `${options.label} worktree has uncommitted changes and was retained at ${path}`,
+        }
+      }
+      if (head !== initialHead) {
+        return {
+          retained: true,
+          reason: `${options.label} worktree has commits and was retained at ${path}`,
+        }
+      }
+      try {
+        await git(root, ['worktree', 'remove', path])
+        return { retained: false }
+      } catch (error) {
+        return {
+          retained: true,
+          reason: `Could not remove ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
+        }
+      }
+    })
   return {
     cwd: path,
-    cleanup: () =>
-      settle(async () => {
-        let status: string
-        let head: string
-        try {
-          ;[status, head] = await Promise.all([
-            git(path, ['status', '--porcelain']),
-            git(path, ['rev-parse', 'HEAD']),
-          ])
-        } catch (error) {
-          return {
-            retained: true,
-            reason: `Could not inspect ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
-          }
-        }
-        if (status.length > 0) {
-          return {
-            retained: true,
-            reason: `${options.label} worktree has uncommitted changes and was retained at ${path}`,
-          }
-        }
-        if (head !== initialHead) {
-          return {
-            retained: true,
-            reason: `${options.label} worktree has commits and was retained at ${path}`,
-          }
-        }
-        try {
-          await git(root, ['worktree', 'remove', path])
-          return { retained: false }
-        } catch (error) {
-          return {
-            retained: true,
-            reason: `Could not remove ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
-          }
-        }
-      }),
+    cleanup,
+    release: cleanup,
     retain: async (reason) => {
       assertRetentionReason(reason)
       return settle(async () => ({
@@ -1656,6 +1853,12 @@ export async function restoreManagedWorktree(options: {
   return {
     cwd: path,
     async cleanup() {
+      return {
+        retained: true,
+        reason: `${options.label} worktree was restored and retained at ${path}`,
+      }
+    },
+    async release() {
       return {
         retained: true,
         reason: `${options.label} worktree was restored and retained at ${path}`,
