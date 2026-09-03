@@ -5,7 +5,7 @@ import {
 } from 'node:child_process'
 import { readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { extname, resolve, sep } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -24,13 +24,29 @@ import {
   sensitiveEnvironmentValues,
 } from '../platform/sensitive-data.js'
 import { formatClaudeLspResult } from './claude-lsp-formatters.js'
+import {
+  formatDiagnostics,
+  parsePublishDiagnostics,
+  type LspDiagnosticRecord,
+} from './lsp-diagnostics.js'
 
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 const MAX_RESULT_CHARS = 512 * 1024
 const MAX_FILE_BYTES = 10_000_000
 const REQUEST_TIMEOUT_MS = 15_000
+const DIAGNOSTICS_TIMEOUT_MS = 1_000
 const execFileAsync = promisify(execFile)
 const NO_CALL_HIERARCHY = Symbol('no-call-hierarchy')
+
+interface DiagnosticWaiter {
+  uri: string
+  afterGeneration: number
+  resolve: (diagnostics: readonly LspDiagnosticRecord[]) => void
+  reject: (error: Error) => void
+  timer: ReturnType<typeof setTimeout>
+  signal?: AbortSignal
+  abort?: () => void
+}
 
 function lspSensitiveValues(
   definition: ClaudePluginLspServer,
@@ -284,8 +300,14 @@ class LspConnection {
   private readonly pending = new Map<number, PendingRequest>()
   private readonly documents = new Map<
     string,
-    { text: string; version: number }
+    { text: string; version: number; uri: string }
   >()
+  private readonly diagnosticSnapshots = new Map<
+    string,
+    { generation: number; diagnostics: readonly LspDiagnosticRecord[] }
+  >()
+  private readonly diagnosticWaiters = new Set<DiagnosticWaiter>()
+  private diagnosticGeneration = 0
   private stderr = ''
   private exited = false
   private initialized = false
@@ -324,6 +346,22 @@ class LspConnection {
       this.cleanupPending(id, pending)
       pending.reject(error)
     }
+    for (const waiter of [...this.diagnosticWaiters])
+      this.settleDiagnosticWaiter(waiter, undefined, error)
+    this.diagnosticSnapshots.clear()
+  }
+
+  private settleDiagnosticWaiter(
+    waiter: DiagnosticWaiter,
+    diagnostics?: readonly LspDiagnosticRecord[],
+    error?: Error,
+  ): void {
+    if (!this.diagnosticWaiters.delete(waiter)) return
+    clearTimeout(waiter.timer)
+    if (waiter.signal && waiter.abort)
+      waiter.signal.removeEventListener('abort', waiter.abort)
+    if (error) waiter.reject(error)
+    else waiter.resolve(diagnostics ?? [])
   }
 
   private cleanupPending(id: number, pending: PendingRequest): void {
@@ -385,6 +423,34 @@ class LspConnection {
     if (!message || typeof message !== 'object' || Array.isArray(message))
       return
     const value = message as Record<string, unknown>
+    const publication = parsePublishDiagnostics(message)
+    if (publication) {
+      const document = [...this.documents.values()].find(
+        (candidate) => candidate.uri === publication.uri,
+      )
+      if (!document) return
+      if (
+        publication.version !== undefined &&
+        publication.version !== document.version
+      )
+        return
+      const generation = ++this.diagnosticGeneration
+      this.diagnosticSnapshots.set(publication.uri, {
+        generation,
+        diagnostics: publication.diagnostics,
+      })
+      const snapshot = this.diagnosticSnapshots.get(publication.uri)
+      for (const waiter of [...this.diagnosticWaiters]) {
+        if (
+          waiter.uri !== publication.uri ||
+          !snapshot ||
+          snapshot.generation <= waiter.afterGeneration
+        )
+          continue
+        this.settleDiagnosticWaiter(waiter, snapshot.diagnostics)
+      }
+      return
+    }
     if (value.id !== undefined && typeof value.method === 'string') {
       const result =
         value.method === 'workspace/configuration' &&
@@ -539,7 +605,7 @@ class LspConnection {
             publishDiagnostics: {
               relatedInformation: true,
               tagSupport: { valueSet: [1, 2] },
-              versionSupport: false,
+              versionSupport: true,
               codeDescriptionSupport: true,
               dataSupport: false,
             },
@@ -571,24 +637,91 @@ class LspConnection {
     this.initialized = true
   }
 
-  async openDocument(filePath: string, languageId: string): Promise<void> {
-    const text = await readFile(filePath, 'utf8')
+  private synchronizeDocument(
+    filePath: string,
+    languageId: string,
+    text: string,
+  ): boolean {
     const current = this.documents.get(filePath)
     const uri = pathToFileURL(filePath).href
+    if (current?.text === text) return false
     if (!current) {
-      this.documents.set(filePath, { text, version: 1 })
+      this.documents.set(filePath, { text, version: 1, uri })
       this.notify('textDocument/didOpen', {
         textDocument: { uri, languageId, version: 1, text },
       })
-      return
+    } else {
+      const version = current.version + 1
+      this.documents.set(filePath, { text, version, uri })
+      this.notify('textDocument/didChange', {
+        textDocument: { uri, version },
+        contentChanges: [{ text }],
+      })
     }
-    if (current.text === text) return
-    const version = current.version + 1
-    this.documents.set(filePath, { text, version })
-    this.notify('textDocument/didChange', {
-      textDocument: { uri, version },
-      contentChanges: [{ text }],
-    })
+    return true
+  }
+
+  async openDocument(filePath: string, languageId: string): Promise<void> {
+    const text = await readFile(filePath, 'utf8')
+    this.synchronizeDocument(filePath, languageId, text)
+  }
+
+  async refreshDiagnostics(
+    filePath: string,
+    languageId: string,
+    signal?: AbortSignal,
+  ): Promise<readonly LspDiagnosticRecord[]> {
+    if (signal?.aborted) return []
+    const text = await readFile(filePath, 'utf8')
+    if (signal?.aborted) return []
+    const uri = pathToFileURL(filePath).href
+    const current = this.documents.get(filePath)
+    if (current && current.text === text) return []
+    const afterGeneration = this.diagnosticSnapshots.get(uri)?.generation ?? 0
+    let waiter: DiagnosticWaiter | undefined
+    const result = new Promise<readonly LspDiagnosticRecord[]>(
+      (resolveResult, rejectResult) => {
+        const entry: DiagnosticWaiter = {
+          uri,
+          afterGeneration,
+          resolve: resolveResult,
+          reject: rejectResult,
+          timer: setTimeout(() => {
+            this.settleDiagnosticWaiter(entry)
+          }, 1_000),
+          ...(signal ? { signal } : {}),
+        }
+        waiter = entry
+        if (signal) {
+          entry.abort = () => {
+            this.settleDiagnosticWaiter(
+              entry,
+              undefined,
+              new Error('LSP diagnostics refresh cancelled'),
+            )
+          }
+          if (signal.aborted) {
+            clearTimeout(entry.timer)
+            resolveResult([])
+            return
+          }
+          signal.addEventListener('abort', entry.abort, { once: true })
+        }
+        this.diagnosticWaiters.add(entry)
+      },
+    )
+    if (signal?.aborted) return result
+    try {
+      this.synchronizeDocument(filePath, languageId, text)
+    } catch (error) {
+      if (waiter) {
+        // The method throws the send failure directly. Resolve the detached
+        // waiter while cleaning it so it cannot become an unhandled rejection.
+        this.settleDiagnosticWaiter(waiter)
+      }
+      throw error
+    }
+    return result.catch(() => [])
   }
 
   async execute(input: LspInput, filePath: string, signal?: AbortSignal) {
@@ -654,6 +787,7 @@ class LspConnection {
 
   async close(): Promise<void> {
     if (this.exited) return
+    this.fail(new Error(`LSP server ${this.definition.name} is closing`))
     const exited = new Promise<void>((resolveExit) => {
       this.child.once('close', () => resolveExit())
     })
@@ -701,6 +835,37 @@ export class ClaudeLspToolManager {
 
   registry(base: ToolRegistry): ToolRegistry {
     return new ClaudeLspToolRegistry(base, this)
+  }
+
+  private async discardConnectionsOutside(runtimeCwd?: string): Promise<void> {
+    const prefix = runtimeCwd === undefined ? undefined : `${runtimeCwd}\0`
+    const staleKeys = new Set(
+      [
+        ...this.connections.keys(),
+        ...this.initializing.keys(),
+        ...this.restartCounts.keys(),
+      ].filter((key) => prefix === undefined || !key.startsWith(prefix)),
+    )
+    const staleConnections: LspConnection[] = []
+    for (const key of staleKeys) {
+      const connection = this.connections.get(key)
+      if (connection) staleConnections.push(connection)
+      this.connections.delete(key)
+      this.initializing.delete(key)
+      this.restartCounts.delete(key)
+    }
+    await Promise.allSettled(
+      staleConnections.map((connection) => connection.close()),
+    )
+  }
+
+  private async runtimeCwd(): Promise<string> {
+    try {
+      return await realpath(this.options.cwdProvider())
+    } catch (error) {
+      await this.discardConnectionsOutside()
+      throw error
+    }
   }
 
   private async validatedFile(
@@ -763,18 +928,22 @@ export class ClaudeLspToolManager {
   private async connection(
     definition: ClaudePluginLspServer,
     signal?: AbortSignal,
+    expectedCwd?: string,
   ): Promise<LspConnection> {
-    const runtimeCwd = await realpath(this.options.cwdProvider())
+    const runtimeCwd = await this.runtimeCwd()
+    if (expectedCwd !== undefined && runtimeCwd !== expectedCwd) {
+      await this.discardConnectionsOutside(runtimeCwd)
+      throw new Error('LSP diagnostics cwd changed during collection')
+    }
+    if (signal?.aborted) throw new Error('LSP connection cancelled')
     const serverCwd = await realpath(definition.workspaceFolder ?? runtimeCwd)
     const key = `${runtimeCwd}\0${definition.pluginName}\0${definition.name}`
-    const stale = [...this.connections.entries()].filter(
-      ([candidate]) => !candidate.startsWith(`${runtimeCwd}\0`),
-    )
-    for (const [candidate, connection] of stale) {
-      this.connections.delete(candidate)
-      this.initializing.delete(candidate)
-      this.restartCounts.delete(candidate)
-      await connection.close()
+    await this.discardConnectionsOutside(runtimeCwd)
+    if (signal?.aborted) throw new Error('LSP connection cancelled')
+    const confirmedCwd = await this.runtimeCwd()
+    if (expectedCwd !== undefined && confirmedCwd !== expectedCwd) {
+      await this.discardConnectionsOutside(confirmedCwd)
+      throw new Error('LSP diagnostics cwd changed during collection')
     }
     const initializing = this.initializing.get(key)
     if (initializing) return initializing
@@ -824,7 +993,7 @@ export class ClaudeLspToolManager {
   ): Promise<ToolExecutionResult> {
     try {
       const input = inputFrom(call.input)
-      const cwd = await realpath(this.options.cwdProvider())
+      const cwd = await this.runtimeCwd()
       const { filePath, canonicalPath, size } = await this.validatedFile(
         input.filePath,
       )
@@ -898,6 +1067,110 @@ export class ClaudeLspToolManager {
     }
   }
 
+  async enrichMutationResult(
+    call: ModelToolCall,
+    context: ToolExecutionContext,
+    result: ToolExecutionResult,
+  ): Promise<ToolExecutionResult> {
+    if (result.isError || (call.name !== 'Edit' && call.name !== 'ApplyPatch'))
+      return result
+    if (context.signal?.aborted) return result
+    const deadline = new AbortController()
+    let resolveInterrupted: ((value: ToolExecutionResult) => void) | undefined
+    const interrupted = new Promise<ToolExecutionResult>((resolveResult) => {
+      resolveInterrupted = resolveResult
+    })
+    const abort = () => {
+      deadline.abort()
+      resolveInterrupted?.(result)
+    }
+    context.signal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(() => abort(), DIAGNOSTICS_TIMEOUT_MS)
+    const attempt = (async (): Promise<ToolExecutionResult> => {
+      const cwd = await this.runtimeCwd()
+      await this.discardConnectionsOutside(cwd)
+      const sameCwd = async (): Promise<boolean> => {
+        try {
+          const runtimeCwd = await this.runtimeCwd()
+          if (runtimeCwd === cwd) return true
+          await this.discardConnectionsOutside(runtimeCwd)
+        } catch {
+          // runtimeCwd() already discarded connection-local state.
+        }
+        return false
+      }
+      if (deadline.signal.aborted || !(await sameCwd())) return result
+      const requested =
+        call.name === 'Edit'
+          ? [call.input.file_path]
+          : Array.isArray(call.input.edits)
+            ? call.input.edits.map((edit) => edit?.file_path)
+            : []
+      const targets = new Set<string>()
+      for (const value of requested) {
+        if (typeof value !== 'string' || deadline.signal.aborted) continue
+        try {
+          const canonical = await realpath(resolve(cwd, value))
+          if (deadline.signal.aborted || !(await sameCwd())) continue
+          const relativePath = relative(cwd, canonical)
+          if (
+            relativePath === '..' ||
+            relativePath.startsWith(`..${sep}`) ||
+            isAbsolute(relativePath) ||
+            !(await stat(canonical)).isFile()
+          )
+            continue
+          targets.add(canonical)
+        } catch {
+          // Successful mutations must remain successful when enrichment cannot inspect a target.
+        }
+      }
+      const records: LspDiagnosticRecord[] = []
+      await Promise.all(
+        [...targets].flatMap((filePath) =>
+          this.candidates(filePath).map(async (definition) => {
+            if (deadline.signal.aborted) return
+            try {
+              const connection = await this.connection(
+                definition,
+                deadline.signal,
+                cwd,
+              )
+              if (deadline.signal.aborted || !(await sameCwd())) return
+              const current = await connection.refreshDiagnostics(
+                filePath,
+                this.languageId(definition, filePath),
+                deadline.signal,
+              )
+              if (deadline.signal.aborted || !(await sameCwd())) return
+              records.push(...current)
+            } catch {
+              // Diagnostics are best effort and never change mutation semantics.
+            }
+          }),
+        ),
+      )
+      if (records.length === 0 || deadline.signal.aborted || !(await sameCwd()))
+        return result
+      const block = formatDiagnostics(
+        records,
+        cwd,
+        this.options.servers.flatMap((definition) =>
+          lspSensitiveValues(definition),
+        ),
+      )
+      return block
+        ? { ...result, content: `${result.content}\n${block}` }
+        : result
+    })().catch(() => result)
+    try {
+      return await Promise.race([attempt, interrupted])
+    } finally {
+      clearTimeout(timer)
+      context.signal?.removeEventListener('abort', abort)
+    }
+  }
+
   async close(): Promise<void> {
     const connections = [...this.connections.values()]
     this.connections.clear()
@@ -939,12 +1212,12 @@ class ClaudeLspToolRegistry implements ToolRegistry {
       : this.base.prepare(call, context)
   }
 
-  execute(
+  async execute(
     call: ModelToolCall,
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult> {
-    return call.name === 'LSP'
-      ? this.manager.execute(call, context)
-      : this.base.execute(call, context)
+    if (call.name === 'LSP') return this.manager.execute(call, context)
+    const result = await this.base.execute(call, context)
+    return this.manager.enrichMutationResult(call, context, result)
   }
 }

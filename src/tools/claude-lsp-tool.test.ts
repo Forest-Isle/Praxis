@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,10 +14,16 @@ import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ModelToolCall, ToolRegistry } from '../core/runtime.js'
+import type {
+  ModelMessage,
+  ModelToolCall,
+  ToolExecutionContext,
+  ToolRegistry,
+} from '../core/runtime.js'
 import type { ClaudePluginLspServer } from '../plugins/claude-plugin-runtime.js'
 import { formatClaudeLspResult } from './claude-lsp-formatters.js'
 import { ClaudeLspToolManager } from './claude-lsp-tool.js'
+import { LocalToolRegistry } from './local-tools.js'
 
 const roots: string[] = []
 const execFileAsync = promisify(execFile)
@@ -27,12 +40,70 @@ let buffer = Buffer.alloc(0)
 const notifications = []
 let initialized = false
 if (process.env.LSP_PID_FILE) fs.writeFileSync(process.env.LSP_PID_FILE, String(process.pid))
-function send(value) {
+function frame(value) {
   const body = Buffer.from(JSON.stringify(value))
-  process.stdout.write(Buffer.concat([Buffer.from('Content-Length: ' + body.length + '\r\n\r\n'), body]))
+  return Buffer.concat([Buffer.from('Content-Length: ' + body.length + '\r\n\r\n'), body])
+}
+function send(value) {
+  process.stdout.write(frame(value))
+}
+function sendCoalesced(values) {
+  process.stdout.write(Buffer.concat(values.map(frame)))
+}
+function sendFragmented(value) {
+  const framed = frame(value)
+  process.stdout.write(framed.subarray(0, Math.max(1, Math.floor(framed.length / 2))))
+  setImmediate(() => process.stdout.write(framed.subarray(Math.floor(framed.length / 2))))
 }
 function receive(message) {
   if (message.method === 'exit') process.exit(0)
+  if ((message.method === 'textDocument/didOpen' || message.method === 'textDocument/didChange') && process.env.LSP_PUBLISH_DIAGNOSTICS) {
+    const uri = message.params.textDocument.uri
+    const mode = process.env.LSP_PUBLISH_DIAGNOSTICS
+    if (mode === 'none') return
+    if (process.env.LSP_DIAGNOSTIC_CRASH_ONCE_FILE && !fs.existsSync(process.env.LSP_DIAGNOSTIC_CRASH_ONCE_FILE)) {
+      fs.writeFileSync(process.env.LSP_DIAGNOSTIC_CRASH_ONCE_FILE, 'crashed')
+      process.exit(24)
+    }
+    const text = message.method === 'textDocument/didOpen'
+      ? message.params.textDocument.text
+      : message.params.contentChanges[0].text
+    const fileCode = uri.includes('alpha.fixture')
+      ? 'E-ALPHA'
+      : uri.includes('beta.fixture')
+        ? 'E-BETA'
+        : text.includes('changed')
+          ? 'E-NEW'
+          : 'E-OLD'
+    const diagnosticMessage = process.env.LSP_DIAGNOSTIC_SECRET
+      ? 'fixture diagnostic ' + (process.env.LSP_API_TOKEN || '')
+      : 'fixture diagnostic'
+    const diagnostics = text.includes('clean')
+      ? []
+      : [{range:{start:{line:0,character:0},end:{line:0,character:1}},severity:1,code:fileCode,message:diagnosticMessage}]
+    const version = mode === 'wrong-version' ? message.params.textDocument.version + 100 : message.params.textDocument.version
+    const publication = {jsonrpc:'2.0',method:'textDocument/publishDiagnostics',params:{uri,version,diagnostics}}
+    const invalid = {jsonrpc:'2.0',method:'textDocument/publishDiagnostics',params:{uri,diagnostics:[{message:1}]}}
+    const unrelated = process.env.LSP_UNRELATED_URI
+      ? {jsonrpc:'2.0',method:'textDocument/publishDiagnostics',params:{uri:process.env.LSP_UNRELATED_URI,version,diagnostics:[{range:{start:{line:0,character:0},end:{line:0,character:1}},severity:1,code:'E-UNRELATED',message:'unrelated diagnostic'}]}}
+      : null
+    const publish = () => {
+      if (mode === 'fragmented') sendFragmented(publication)
+      else if (mode === 'invalid-then-valid') sendCoalesced([invalid, publication])
+      else {
+        if (unrelated) send(unrelated)
+        send(publication)
+      }
+    }
+    if (mode === 'wait-release') {
+      const timer = setInterval(() => {
+        if (!process.env.LSP_RELEASE_FILE || !fs.existsSync(process.env.LSP_RELEASE_FILE)) return
+        clearInterval(timer)
+        publish()
+      }, 5)
+    } else publish()
+    return
+  }
   if (message.id === undefined) {
     notifications.push(message)
     return
@@ -118,6 +189,58 @@ const base: ToolRegistry = {
   schedulingPolicy: () => ({ concurrency: 'concurrent' }),
   prepare: async (call) => call,
   execute: async () => ({ content: 'base', isError: false }),
+}
+
+const mutationBase: ToolRegistry = {
+  definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'exclusive' }),
+  prepare: async (call) => call,
+  execute: async () => ({ content: 'mutation succeeded', isError: false }),
+}
+
+const errorMutationBase: ToolRegistry = {
+  definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'exclusive' }),
+  prepare: async (call) => call,
+  execute: async () => ({ content: 'mutation failed exactly', isError: true }),
+}
+
+const throwingMutationBase: ToolRegistry = {
+  definitions: () => [],
+  schedulingPolicy: () => ({ concurrency: 'exclusive' }),
+  prepare: async (call) => call,
+  execute: async () => {
+    throw new Error('mutation threw exactly')
+  },
+}
+
+async function contextAfterReads(
+  registry: LocalToolRegistry,
+  context: ToolExecutionContext,
+  filePaths: readonly string[],
+): Promise<ToolExecutionContext> {
+  const messages: ModelMessage[] = [...(context.messages ?? [])]
+  for (const [index, filePath] of filePaths.entries()) {
+    const read = await registry.prepare(
+      {
+        id: `read-${index}-${filePath}`,
+        name: 'Read',
+        input: { file_path: filePath },
+      },
+      context,
+    )
+    const result = await registry.execute(read, context)
+    messages.push(
+      { role: 'assistant', content: '', toolCalls: [read] },
+      {
+        role: 'tool',
+        toolCallId: read.id,
+        content: result.content,
+        isError: false,
+      },
+    )
+  }
+  return { ...context, messages }
 }
 
 function call(
@@ -398,6 +521,411 @@ describe('Claude LSP tool', () => {
       'Found 1 symbol in workspace:\n\n/fixture/main.fixture:\n  main (Function) - Line 1',
     )
     await manager.close()
+  })
+
+  it('enriches a real Edit after didChange, redacts secrets, and clears stale diagnostics', async () => {
+    const { root, file, definition } = await fixture()
+    const local = new LocalToolRegistry({ cwd: root })
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: {
+            ...definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'dynamic',
+            LSP_DIAGNOSTIC_SECRET: '1',
+          },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    const registry = manager.registry(local)
+    await registry.execute(call('open', 'hover', file), { cwd: root })
+
+    let context = await contextAfterReads(local, { cwd: root }, [file])
+    const edit = await registry.prepare(
+      {
+        id: 'edit',
+        name: 'Edit',
+        input: {
+          file_path: file,
+          old_string: 'first',
+          new_string: 'changed',
+        },
+      },
+      context,
+    )
+    const result = await registry.execute(edit, context)
+    expect(await readFile(file, 'utf8')).toBe('changed\nsecond\n')
+    expect(result.content).toContain(
+      'main.fixture:1:1 error E-NEW fixture diagnostic [REDACTED]',
+    )
+    expect(result.content).not.toContain('E-OLD')
+    expect(result.content).not.toContain('explicit-secret')
+
+    context = await contextAfterReads(local, context, [file])
+    const clear = await registry.prepare(
+      {
+        id: 'clear',
+        name: 'Edit',
+        input: {
+          file_path: file,
+          old_string: 'changed',
+          new_string: 'clean',
+        },
+      },
+      context,
+    )
+    const cleared = await registry.execute(clear, context)
+    expect(await readFile(file, 'utf8')).toBe('clean\nsecond\n')
+    expect(cleared.content).not.toContain('<diagnostics>')
+    expect(cleared.content).not.toContain('E-NEW')
+    await manager.close()
+  })
+
+  it('handles fragmented diagnostics without disturbing later request responses', async () => {
+    const { root, file, definition } = await fixture()
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: { ...definition.env, LSP_PUBLISH_DIAGNOSTICS: 'fragmented' },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    const registry = manager.registry(mutationBase)
+    await expect(
+      registry.execute(
+        { id: 'edit', name: 'Edit', input: { file_path: file } },
+        { cwd: root },
+      ),
+    ).resolves.toMatchObject({
+      content: expect.stringContaining('fixture diagnostic'),
+    })
+    await expect(
+      registry.execute(call('hover', 'hover', file), { cwd: root }),
+    ).resolves.toMatchObject({
+      content: expect.stringContaining('Hover info at 2:3'),
+    })
+    await manager.close()
+  })
+
+  it('ignores an invalid coalesced publication before accepting the valid one', async () => {
+    const { root, file, definition } = await fixture()
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: {
+            ...definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'invalid-then-valid',
+          },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    const result = await manager
+      .registry(mutationBase)
+      .execute(
+        { id: 'edit', name: 'Edit', input: { file_path: file } },
+        { cwd: root },
+      )
+    expect(result.content).toContain('fixture diagnostic')
+    await manager.close()
+  })
+
+  it('ignores a diagnostic publication carrying the wrong document version', async () => {
+    const { root, file, definition } = await fixture()
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: { ...definition.env, LSP_PUBLISH_DIAGNOSTICS: 'wrong-version' },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    const result = await manager
+      .registry(mutationBase)
+      .execute(
+        { id: 'edit', name: 'Edit', input: { file_path: file } },
+        { cwd: root },
+      )
+    expect(result).toEqual({ content: 'mutation succeeded', isError: false })
+    await manager.close()
+  })
+
+  it('enriches ApplyPatch for only its exact canonical targets in stable order', async () => {
+    const { root, definition } = await fixture()
+    const alpha = join(root, 'alpha.fixture')
+    const beta = join(root, 'beta.fixture')
+    const unrelated = join(root, 'unrelated.fixture')
+    await writeFile(alpha, 'alpha\n')
+    await writeFile(beta, 'beta\n')
+    await writeFile(unrelated, 'unrelated\n')
+    const local = new LocalToolRegistry({ cwd: root })
+    const context = await contextAfterReads(local, { cwd: root }, [alpha, beta])
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: {
+            ...definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'dynamic',
+            LSP_UNRELATED_URI: pathToFileURL(unrelated).href,
+          },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    const registry = manager.registry(local)
+    const patch = await registry.prepare(
+      {
+        id: 'patch',
+        name: 'ApplyPatch',
+        input: {
+          edits: [
+            {
+              file_path: beta,
+              old_string: 'beta',
+              new_string: 'changed beta',
+            },
+            {
+              file_path: alpha,
+              old_string: 'alpha',
+              new_string: 'changed alpha',
+            },
+          ],
+        },
+      },
+      context,
+    )
+    const result = await registry.execute(patch, context)
+    expect(result.accessedPaths).toEqual([beta, alpha])
+    expect(result.content).toContain('alpha.fixture:1:1 error E-ALPHA')
+    expect(result.content).toContain('beta.fixture:1:1 error E-BETA')
+    expect(result.content).not.toContain('E-UNRELATED')
+    expect(result.content.indexOf('alpha.fixture')).toBeLessThan(
+      result.content.indexOf('beta.fixture'),
+    )
+    await manager.close()
+  })
+
+  it('excludes additional-root and symlink-escape mutation targets before startup', async () => {
+    const { root, pidFile, definition } = await fixture()
+    const outsideRoot = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-lsp-diagnostics-outside-')),
+    )
+    roots.push(outsideRoot)
+    const outside = join(outsideRoot, 'outside.fixture')
+    const link = join(root, 'link.fixture')
+    await writeFile(outside, 'outside\n')
+    await symlink(outside, link)
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: { ...definition.env, LSP_PUBLISH_DIAGNOSTICS: 'dynamic' },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root, outsideRoot],
+    })
+    const registry = manager.registry(mutationBase)
+    for (const filePath of [outside, link]) {
+      await expect(
+        registry.execute(
+          { id: filePath, name: 'Edit', input: { file_path: filePath } },
+          { cwd: root },
+        ),
+      ).resolves.toEqual({ content: 'mutation succeeded', isError: false })
+    }
+    await expect(readFile(pidFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await manager.close()
+  })
+
+  it('preserves failed, thrown, and pre-aborted mutation semantics without startup', async () => {
+    const { root, file, pidFile, definition } = await fixture()
+    const manager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...definition,
+          env: { ...definition.env, LSP_PUBLISH_DIAGNOSTICS: 'dynamic' },
+        },
+      ],
+      cwdProvider: () => root,
+      roots: () => [root],
+    })
+    await expect(
+      manager
+        .registry(errorMutationBase)
+        .execute(
+          { id: 'failed', name: 'Edit', input: { file_path: file } },
+          { cwd: root },
+        ),
+    ).resolves.toEqual({
+      content: 'mutation failed exactly',
+      isError: true,
+    })
+    await expect(
+      manager
+        .registry(throwingMutationBase)
+        .execute(
+          { id: 'thrown', name: 'Edit', input: { file_path: file } },
+          { cwd: root },
+        ),
+    ).rejects.toThrow('mutation threw exactly')
+    const controller = new AbortController()
+    controller.abort()
+    await expect(
+      manager
+        .registry(mutationBase)
+        .execute(
+          { id: 'aborted', name: 'Edit', input: { file_path: file } },
+          { cwd: root, signal: controller.signal },
+        ),
+    ).resolves.toEqual({ content: 'mutation succeeded', isError: false })
+    await expect(readFile(pidFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    await manager.close()
+  })
+
+  it('bounds startup and preserves success when interrupted after LSP starts', async () => {
+    const timed = await fixture()
+    const timeoutManager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...timed.definition,
+          env: {
+            ...timed.definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'dynamic',
+            LSP_INITIALIZE_DELAY: '2000',
+          },
+        },
+      ],
+      cwdProvider: () => timed.root,
+      roots: () => [timed.root],
+    })
+    const startedAt = Date.now()
+    await expect(
+      timeoutManager
+        .registry(mutationBase)
+        .execute(
+          { id: 'timeout', name: 'Edit', input: { file_path: timed.file } },
+          { cwd: timed.root },
+        ),
+    ).resolves.toEqual({ content: 'mutation succeeded', isError: false })
+    expect(Date.now() - startedAt).toBeLessThan(1_900)
+    await timeoutManager.close()
+
+    const interrupted = await fixture()
+    const interruptManager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...interrupted.definition,
+          env: {
+            ...interrupted.definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'none',
+          },
+        },
+      ],
+      cwdProvider: () => interrupted.root,
+      roots: () => [interrupted.root],
+    })
+    const controller = new AbortController()
+    const pending = interruptManager.registry(mutationBase).execute(
+      {
+        id: 'interrupted',
+        name: 'Edit',
+        input: { file_path: interrupted.file },
+      },
+      { cwd: interrupted.root, signal: controller.signal },
+    )
+    await eventuallyReadJson(interrupted.pidFile)
+    controller.abort()
+    await expect(pending).resolves.toEqual({
+      content: 'mutation succeeded',
+      isError: false,
+    })
+    await interruptManager.close()
+  })
+
+  it('drops crashed-connection state and does not surface diagnostics after cwd replacement', async () => {
+    const crashed = await fixture()
+    const crashFile = join(crashed.root, 'diagnostics-crashed')
+    const crashManager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...crashed.definition,
+          env: {
+            ...crashed.definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'dynamic',
+            LSP_DIAGNOSTIC_CRASH_ONCE_FILE: crashFile,
+          },
+        },
+      ],
+      cwdProvider: () => crashed.root,
+      roots: () => [crashed.root],
+    })
+    const crashRegistry = crashManager.registry(mutationBase)
+    await expect(
+      crashRegistry.execute(
+        { id: 'crash', name: 'Edit', input: { file_path: crashed.file } },
+        { cwd: crashed.root },
+      ),
+    ).resolves.toEqual({ content: 'mutation succeeded', isError: false })
+    await expect(
+      crashRegistry.execute(
+        { id: 'restart', name: 'Edit', input: { file_path: crashed.file } },
+        { cwd: crashed.root },
+      ),
+    ).resolves.toMatchObject({
+      content: expect.stringContaining('fixture diagnostic'),
+    })
+    await crashManager.close()
+
+    const first = await fixture()
+    const second = await fixture()
+    const releaseFile = join(first.root, 'release-diagnostics')
+    let cwd = first.root
+    const cwdManager = new ClaudeLspToolManager({
+      servers: [
+        {
+          ...first.definition,
+          env: {
+            ...first.definition.env,
+            LSP_PUBLISH_DIAGNOSTICS: 'wait-release',
+            LSP_RELEASE_FILE: releaseFile,
+          },
+        },
+      ],
+      cwdProvider: () => cwd,
+      roots: () => [first.root, second.root],
+    })
+    const pending = cwdManager
+      .registry(mutationBase)
+      .execute(
+        { id: 'cwd', name: 'Edit', input: { file_path: first.file } },
+        { cwd: first.root },
+      )
+    const firstPid = Number(await eventuallyReadJson(first.pidFile))
+    cwd = second.root
+    await writeFile(releaseFile, 'release')
+    await expect(pending).resolves.toEqual({
+      content: 'mutation succeeded',
+      isError: false,
+    })
+    await expect(eventuallyStopped(firstPid)).resolves.toBe(true)
+    await cwdManager.close()
   })
 
   it('opens and refreshes documents and resolves call hierarchy operations', async () => {
@@ -768,11 +1296,21 @@ describe('Claude LSP tool', () => {
     await registry.execute(call('1', 'hover', first.file), { cwd })
     const firstPid = Number(await readFile(first.pidFile, 'utf8'))
     cwd = second.root
+    await expect(
+      registry.execute(
+        {
+          id: 'missing-mutation',
+          name: 'Edit',
+          input: { file_path: join(second.root, 'missing.fixture') },
+        },
+        { cwd },
+      ),
+    ).resolves.toEqual({ content: 'base', isError: false })
+    await expect(eventuallyStopped(firstPid)).resolves.toBe(true)
     await registry.execute(call('2', 'hover', second.file), { cwd })
     const secondPid = Number(await readFile(first.pidFile, 'utf8'))
 
     expect(secondPid).not.toBe(firstPid)
-    await expect(eventuallyStopped(firstPid)).resolves.toBe(true)
     await manager.close()
     await expect(eventuallyStopped(secondPid)).resolves.toBe(true)
   })
