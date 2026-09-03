@@ -42,7 +42,7 @@ import {
   joinedProcessOutput,
   type ProcessResult,
 } from '../platform/bounded-process-runner.js'
-import { globFiles } from './glob.js'
+import { RipgrepGlobSearch, type GlobSearch } from './glob.js'
 import { countLineChanges } from './line-changes.js'
 import { editNotebook, formatNotebookForRead } from './notebook.js'
 import { openPdf } from './pdf.js'
@@ -81,6 +81,7 @@ export interface LocalToolRegistryOptions {
   sandbox?: BashSandboxRuntime
   homeDirectory?: string
   configRoot?: string
+  globSearch?: GlobSearch
 }
 
 export interface BashSandboxRuntime {
@@ -704,6 +705,7 @@ export class LocalToolRegistry implements ToolRegistry {
   private readonly maxShellTimeoutMs: number
   private readonly maxSearchTimeoutMs: number
   private readonly processRunner: BoundedProcessRunner
+  private readonly globSearch: GlobSearch
   private readonly enableReportFindings: boolean
   private readonly environment: Readonly<Record<string, string>> | undefined
   private readonly sessionEnvironment:
@@ -722,6 +724,7 @@ export class LocalToolRegistry implements ToolRegistry {
     absolutePath: string,
   ) => string | undefined
   private readonly mutationTargetExisted = new WeakMap<ModelToolCall, boolean>()
+  private readonly preparedGlobRoots = new WeakMap<ModelToolCall, string>()
 
   constructor(options: LocalToolRegistryOptions) {
     this.cwd = resolve(options.cwd)
@@ -758,6 +761,13 @@ export class LocalToolRegistry implements ToolRegistry {
       cwd: this.cwd,
       maxOutputBytes: this.maxOutputBytes,
     })
+    this.globSearch =
+      options.globSearch ??
+      new RipgrepGlobSearch({
+        cwd: this.cwd,
+        timeoutMs: this.maxSearchTimeoutMs,
+        ...(this.environment ? { environment: this.environment } : {}),
+      })
   }
 
   private assertProtectedWritePath(filePath: string): void {
@@ -1074,14 +1084,16 @@ export class LocalToolRegistry implements ToolRegistry {
         const pathInput = call.input.path
         const requestedPath =
           pathInput === undefined ? '.' : stringInput(call.input, 'path')
-        await this.globRoot(requestedPath, context)
-        return {
+        const root = await this.globRoot(requestedPath, context)
+        const prepared = {
           ...call,
           input: {
             pattern: stringInput(call.input, 'pattern', true),
             ...(pathInput === undefined ? {} : { path: requestedPath }),
           },
         }
+        this.preparedGlobRoots.set(prepared, root)
+        return prepared
       }
       case 'Grep': {
         const glob = optionalString(call.input, 'glob')
@@ -1136,6 +1148,13 @@ export class LocalToolRegistry implements ToolRegistry {
     const approvedTargetExisted = this.mutationTargetExisted.get(call)
     const prepared = await this.prepare(call, context)
     if (JSON.stringify(prepared.input) !== JSON.stringify(call.input)) {
+      throw new Error('Tool input changed after permission approval')
+    }
+    const approvedGlobRoot = this.preparedGlobRoots.get(call)
+    if (
+      approvedGlobRoot !== undefined &&
+      this.preparedGlobRoots.get(prepared) !== approvedGlobRoot
+    ) {
       throw new Error('Tool input changed after permission approval')
     }
     const executionTargetExisted = this.mutationTargetExisted.get(prepared)
@@ -1875,34 +1894,21 @@ export class LocalToolRegistry implements ToolRegistry {
   ): Promise<ToolExecutionResult> {
     const requestedPath =
       call.input.path === undefined ? '.' : stringInput(call.input, 'path')
-    const root = await this.globRoot(requestedPath, context)
-    const timeoutSignal = AbortSignal.timeout(this.maxSearchTimeoutMs)
-    const searchSignal = context.signal
-      ? AbortSignal.any([context.signal, timeoutSignal])
-      : timeoutSignal
-    try {
-      const content = await globFiles({
-        root,
-        displayRoot: call.input.path === undefined ? '.' : requestedPath,
-        absoluteRoot: isAbsolute(requestedPath)
-          ? resolve(requestedPath)
-          : resolve(this.currentCwd(context), requestedPath),
-        pattern: stringInput(call.input, 'pattern', true),
-        signal: searchSignal,
-      })
-      return {
-        content: truncateOutput(content, this.maxOutputBytes),
-        isError: false,
-      }
-    } catch (error) {
-      if (context.signal?.aborted) throw abortError()
-      if (timeoutSignal.aborted) {
-        return {
-          content: `Search timed out after ${this.maxSearchTimeoutMs}ms`,
-          isError: true,
-        }
-      }
-      throw error
+    const root =
+      this.preparedGlobRoots.get(call) ??
+      (await this.globRoot(requestedPath, context))
+    const result = await this.globSearch.search({
+      root,
+      displayRoot: call.input.path === undefined ? '.' : requestedPath,
+      absoluteRoot: isAbsolute(requestedPath)
+        ? resolve(requestedPath)
+        : resolve(this.currentCwd(context), requestedPath),
+      pattern: stringInput(call.input, 'pattern', true),
+      ...(context.signal ? { signal: context.signal } : {}),
+    })
+    return {
+      content: truncateOutput(result.content, this.maxOutputBytes),
+      isError: result.isError,
     }
   }
 

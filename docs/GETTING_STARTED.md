@@ -6,7 +6,7 @@ Praxis supports macOS and Linux and requires:
 
 - Node.js 24 or newer;
 - npm (included with supported Node.js releases);
-- `ripgrep` (`rg`) for the Grep tool;
+- `ripgrep` (`rg`) for the Grep and Glob tools;
 - an API key and model ID for a stable Anthropic or OpenAI-compatible provider,
   or (experimentally) the Codex OAuth path with its explicit switch and model.
 
@@ -14,7 +14,10 @@ Praxis does not authenticate with a Claude subscription. Claude Code is used
 only as a clean-room behavioral reference; Praxis owns and stores all runtime
 data in its native local data plane.
 
-Install `ripgrep` with your system package manager if `rg --version` fails.
+Grep and Glob require the same local `ripgrep` executable. Install `ripgrep`
+with your system package manager if `rg --version` fails. Production Glob
+fails closed when ripgrep is missing or fails; it does not fall back to a
+JavaScript directory walker.
 
 ## Install
 
@@ -359,9 +362,11 @@ skipped. Check provider/profile/model selection and protocol. `openai-codex`
 must have the experimental switch, a Vault OAuth record, and no API key or
 base-URL override.
 
-### Grep is unavailable
+### Grep or Glob is unavailable
 
-Install `ripgrep` and confirm `rg --version` succeeds in the same shell.
+Install `ripgrep` and confirm `rg --version` succeeds in the same shell. Grep
+and Glob share this local prerequisite; Glob fails closed rather than using a
+JavaScript directory walker when `rg` cannot enumerate files.
 
 ### Session writes are refused
 

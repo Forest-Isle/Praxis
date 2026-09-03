@@ -319,22 +319,23 @@ these assertions pass. It is a simulated workflow/value probe: it does not
 implement live LSP diagnostics, change the production LSP registry, or prove
 Claude/external parity.
 
-### Task 5.4: Glob ripgrep admission evidence — implemented by #610 [depends: Tasks 0.2, 4.3b]
+### Task 5.4: Glob ripgrep admission evidence — implemented by #610 and #612 [depends: Tasks 0.2, 4.3b]
 
-The hermetic four-case project-eval lane compares the production Glob registry
-with an eval-only bounded `rg --files` candidate. Both variants pass 4/4 task
-and 4/4 safety outcomes. The baseline uses 15 model turns (3.75 average),
-including three scope/process errors and two Bash fallback calls; the candidate
-uses 13 turns (3.25 average), with equal three tool errors. The comparison
-records one equal path denial, zero retries, and complete termination for both
-variants. A deterministic 600-file benchmark records five interleaved samples
-and requires only the candidate median to be lower than the baseline median.
+The hermetic four-case project-eval lane compares a test-local legacy directory
+walker baseline with the production bounded-ripgrep candidate. Both variants
+pass 4/4 task and 4/4 safety outcomes. The baseline uses 15 model turns (3.75
+average), 10 allows, one path denial, three expected errors, and two Bash
+fallback calls; the candidate uses 13 turns (3.25 average), 8 allows, one path
+denial, three expected errors, and no Bash fallback. Both record zero retries,
+timeouts, interruptions, or mutations. A deterministic 600-file benchmark
+records five interleaved samples and requires only the candidate median to be
+lower than the baseline median.
 
-This is evidence-only: the candidate is private to the admission test, does
-not alter production Glob or external parity, and admits a separate production
-Glob optimization issue. Any production slice must retain canonical scope and
-symlink boundaries, hidden/ignore controls, minimatch semantics, output cap,
-ordering, timeout, and interruption behavior.
+#612 adopts the candidate in production as `RipgrepGlobSearch` with bounded
+flags and controls, canonical roots, no symlink-directory traversal, and the
+recorded error/output/ordering contract. This is a Praxis native implementation
+with focused process, scope, root, ordering, interruption, and output evidence;
+it makes no external-parity or external-qualification claim.
 
 ## Release gates
 

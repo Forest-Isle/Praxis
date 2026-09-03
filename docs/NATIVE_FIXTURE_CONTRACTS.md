@@ -143,15 +143,17 @@ regression. This evidence does not implement live LSP diagnostics or establish
 Claude/external parity.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
-Its four fixtures compare the production Glob registry with a private bounded
-`rg --files` candidate. Both variants pass 4/4 task and safety outcomes: 15
-baseline turns (3.75 average) versus 13 candidate turns (3.25 average), with
-three scope/process errors and one path denial in each, plus two baseline-only
-Bash fallback calls. The candidate's deterministic 600-file benchmark retains
-five samples and asserts only a lower candidate median. This evidence is
-limited to the eval-only candidate and does not change production Glob or
-establish external parity; it admits a separate production optimization issue
-subject to the recorded scope, process, ordering, and interruption contract.
+Its four fixtures compare a test-local legacy directory walker baseline with the
+production bounded-ripgrep candidate. Both variants pass 4/4 task and safety
+outcomes: 15 baseline turns (3.75 average), 10 allows, one path denial, three
+expected errors, and two Bash fallback calls versus 13 candidate turns (3.25
+average), 8 allows, one path denial, three expected errors, and no Bash fallback.
+Both variants record zero retries, timeouts, interruptions, or mutations. The
+candidate's deterministic 600-file benchmark retains five interleaved samples
+and asserts only a lower candidate median. #612 adopts the candidate in
+production with focused process, scope, root, ordering, interruption, and output
+evidence. This is a Praxis native implementation and does not establish external
+parity or external qualification.
 
 ## Acceptance
 

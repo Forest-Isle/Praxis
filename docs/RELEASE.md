@@ -5,8 +5,10 @@ executable. Publishing is a separate, explicit operation; release validation
 never contacts a registry for publication. GitHub Actions is the authoritative
 release path; local publication is an emergency-only fallback.
 
-Runtime prerequisites are Node.js 24 or newer, `ripgrep` (`rg`) for the Grep
-tool, and the native command shell: `/bin/zsh` on macOS or `/bin/bash` on Linux.
+Runtime prerequisites are Node.js 24 or newer, `ripgrep` (`rg`) for the Grep and
+Glob tools, and the native command shell: `/bin/zsh` on macOS or `/bin/bash` on
+Linux. Missing or failed `rg` makes Grep and Glob fail closed; production Glob
+has no JavaScript directory-walker fallback.
 Praxis invokes those shells without user startup files and removes
 credential-named ambient variables from child environments.
 

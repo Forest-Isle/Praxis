@@ -89,6 +89,21 @@ Concrete `--tools` selections load their selected schemas directly. Use
 `--disallowedTools ToolSearch` to disable deferral and restore the complete MCP
 tool list.
 
+## Glob environment
+
+Glob uses the local `ripgrep` (`rg`) executable shared with Grep. It includes
+hidden files and ignores ignore rules by default; if `rg` is missing, fails, or
+enumeration is truncated, Glob fails closed and has no JavaScript directory
+walker fallback.
+
+| Variable                     | Default behavior                      | Exact-`false` behavior                                       |
+| ---------------------------- | ------------------------------------- | ------------------------------------------------------------ |
+| `CLAUDE_CODE_GLOB_HIDDEN`    | Include hidden files (`--hidden`)     | Omit `--hidden`                                              |
+| `CLAUDE_CODE_GLOB_NO_IGNORE` | Include ignored files (`--no-ignore`) | Omit `--no-ignore` and apply normal ripgrep ignore filtering |
+
+Only the exact lowercase string `false` changes either behavior. Unset, empty,
+`0`, uppercase `FALSE`, and every other value retain the defaults.
+
 ## Stream JSON compatibility environment
 
 Stream JSON output omits `session_state_changed` records by default. Set
