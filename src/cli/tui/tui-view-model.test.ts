@@ -22,6 +22,11 @@ const assistant = (text: string): TranscriptItem => ({
   text,
 })
 const notice = (text: string): TranscriptItem => ({ kind: 'notice', text })
+const completedBackground = (taskId: string): TranscriptItem => ({
+  kind: 'notice',
+  text: `Task completed · ${taskId}`,
+  taskNotification: { taskId, status: 'completed' },
+})
 const tool = (id: string, name = 'Glob'): TranscriptItem => ({
   kind: 'tool',
   call: { id, name, input: name === 'Read' ? { file_path: `/${id}` } : {} },
@@ -670,6 +675,11 @@ describe('projectTuiView', () => {
         shellResult('duplicate'),
       ],
       [toolResult('orphan'), shellResult('orphan')],
+      [
+        completedBackground('baaaaaaaa'),
+        completedBackground('baaaaaaab'),
+        completedBackground('baaaaaaac'),
+      ],
     ]
 
     for (const scenario of scenarios) {

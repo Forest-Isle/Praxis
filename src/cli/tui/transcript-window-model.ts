@@ -1,4 +1,6 @@
 import {
+  completedBackgroundBashSummary,
+  isCompletedBackgroundBashNotification,
   projectTranscriptPresentation,
   transcriptPresentationEntryKey,
   transcriptReadSummaryKey,
@@ -589,6 +591,13 @@ interface TailReadRun {
   readonly summarized: boolean
 }
 
+interface TailCompletedBackgroundBashRun {
+  readonly startSourceIndex: number
+  readonly startPresentationIndex: number
+  readonly nextSourceIndex: number
+  readonly count: number
+}
+
 export interface TranscriptWindowState {
   readonly history: readonly TranscriptItem[]
   readonly mode: TranscriptPresentationMode
@@ -597,6 +606,7 @@ export interface TranscriptWindowState {
   readonly pendingTools?: PendingNode
   readonly pendingShells?: PendingNode
   readonly tailReadRun?: TailReadRun
+  readonly tailCompletedBackgroundBashRun?: TailCompletedBackgroundBashRun
   readonly revision: number
 }
 
@@ -779,6 +789,31 @@ function coldTailReadRun(
   }
 }
 
+function coldTailCompletedBackgroundBashRun(
+  history: readonly TranscriptItem[],
+  entries: readonly TranscriptPresentationEntry[],
+): TailCompletedBackgroundBashRun | undefined {
+  let start = history.length
+  while (start > 0) {
+    const candidate = history[start - 1]
+    if (!candidate || !isCompletedBackgroundBashNotification(candidate)) break
+    start -= 1
+  }
+  if (start >= history.length) return undefined
+  const first = history[start]
+  if (!first) return undefined
+  const startPresentationIndex = entries.findIndex(
+    (entry) => entry.key === transcriptPresentationEntryKey(first, start),
+  )
+  if (startPresentationIndex < 0) return undefined
+  return {
+    startSourceIndex: start,
+    startPresentationIndex,
+    nextSourceIndex: history.length,
+    count: history.length - start,
+  }
+}
+
 function canReuseEntry(
   previous: TranscriptPresentationEntry,
   next: TranscriptPresentationEntry,
@@ -843,6 +878,10 @@ function coldState(
     input.mode === 'normal'
       ? coldTailReadRun(input.history, pairing)
       : undefined
+  const tailCompletedBackgroundBashRun =
+    input.mode === 'normal'
+      ? coldTailCompletedBackgroundBashRun(input.history, entries)
+      : undefined
   return {
     history: input.history,
     mode: input.mode,
@@ -851,6 +890,9 @@ function coldState(
     ...(pairing.pendingTools ? { pendingTools: pairing.pendingTools } : {}),
     ...(pairing.pendingShells ? { pendingShells: pairing.pendingShells } : {}),
     ...(tailReadRun ? { tailReadRun } : {}),
+    ...(tailCompletedBackgroundBashRun
+      ? { tailCompletedBackgroundBashRun }
+      : {}),
     revision: input.revision,
   }
 }
@@ -936,6 +978,7 @@ function appendState(
   let pendingTools = previous.pendingTools
   let pendingShells = previous.pendingShells
   let tailReadRun = previous.tailReadRun
+  let tailCompletedBackgroundBashRun = previous.tailCompletedBackgroundBashRun
 
   for (let offset = 0; offset < suffix.length; offset += 1) {
     const sourceIndex = previousLength + offset
@@ -957,6 +1000,55 @@ function appendState(
             (call) => call.sourceIndex === pendingTool.sourceIndex,
           )))
     if (!continuesReadRun) tailReadRun = undefined
+
+    const notification =
+      input.mode === 'normal'
+        ? isCompletedBackgroundBashNotification(item)
+        : undefined
+    if (notification) {
+      const continuesRun =
+        tailCompletedBackgroundBashRun?.nextSourceIndex === sourceIndex
+      if (continuesRun && tailCompletedBackgroundBashRun) {
+        const count = tailCompletedBackgroundBashRun.count + 1
+        const firstItem =
+          input.history[tailCompletedBackgroundBashRun.startSourceIndex] ?? item
+        tree = updateEntry(
+          tree,
+          tailCompletedBackgroundBashRun.startPresentationIndex,
+          {
+            kind: 'item',
+            key: transcriptPresentationEntryKey(
+              firstItem,
+              tailCompletedBackgroundBashRun.startSourceIndex,
+            ),
+            item: completedBackgroundBashSummary(count),
+          },
+          input.width,
+          input.mode,
+        )
+        tailCompletedBackgroundBashRun = {
+          ...tailCompletedBackgroundBashRun,
+          nextSourceIndex: sourceIndex + 1,
+          count,
+        }
+      } else {
+        const presentationIndex = tree.entryCount
+        tree = appendEntry(
+          tree,
+          entryForItem(item, sourceIndex),
+          input.width,
+          input.mode,
+        )
+        tailCompletedBackgroundBashRun = {
+          startSourceIndex: sourceIndex,
+          startPresentationIndex: presentationIndex,
+          nextSourceIndex: sourceIndex + 1,
+          count: 1,
+        }
+      }
+      continue
+    }
+    tailCompletedBackgroundBashRun = undefined
 
     if (item.kind === 'tool') {
       if (item.call.name === 'Read' && input.mode === 'normal') {
@@ -1122,6 +1214,9 @@ function appendState(
     ...(pendingTools ? { pendingTools } : {}),
     ...(pendingShells ? { pendingShells } : {}),
     ...(tailReadRun ? { tailReadRun } : {}),
+    ...(tailCompletedBackgroundBashRun
+      ? { tailCompletedBackgroundBashRun }
+      : {}),
     revision: input.revision,
   }
 }

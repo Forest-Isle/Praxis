@@ -354,6 +354,17 @@ untracked/deleted/Unicode paths, binary and merge-conflict states, multibyte
 truncation, unborn-to-first-commit behavior, transient failure, and abort. This
 is a Praxis-native review-correctness contract, not an external-parity claim.
 
+### Task 5.6: Background Bash notification presentation — implemented by #617
+
+In normal TUI reading, each maximal contiguous run of two or more canonical
+background Bash notifications with `status: completed` renders as one
+`N background commands completed` notice. Singletons, failed or stopped
+notifications, Agent/Workflow notifications, and ordinary entries remain
+detailed and split runs. Audit and screen-reader modes retain every original
+notification. The grouping uses TUI-only metadata and does not change runtime
+semantics, protocol, persistence, or model-visible delivery; retained-window
+updates advance the aggregate in place with stable first-source identity.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,
