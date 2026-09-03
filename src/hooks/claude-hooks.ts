@@ -175,7 +175,15 @@ export const HOOK_EVENTS: readonly ClaudeHookEventName[] = [
   'SessionEnd',
 ]
 
-const EXECUTABLE_HOOK_EVENTS = new Set<string>(HOOK_EVENTS)
+const LIFECYCLE_HOOK_EVENTS: readonly ClaudeHookEventName[] = [
+  'WorktreeCreate',
+  'WorktreeRemove',
+]
+
+const EXECUTABLE_HOOK_EVENTS = new Set<string>([
+  ...HOOK_EVENTS,
+  ...LIFECYCLE_HOOK_EVENTS,
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -256,6 +264,11 @@ function eventSettings(
             `Invalid Claude ${event} hook async: ${resource.path}`,
           )
         }
+        if (LIFECYCLE_HOOK_EVENTS.includes(event) && hook.async === true) {
+          throw new Error(
+            `Invalid Claude ${event} hook async: ${resource.path}`,
+          )
+        }
         return [
           {
             command,
@@ -317,7 +330,9 @@ export function validateClaudeHooks(
   ) {
     throw new Error('Hook max timeout must be a positive integer')
   }
-  for (const event of HOOK_EVENTS) eventSettings(settings, event, maxTimeoutMs)
+  for (const event of [...HOOK_EVENTS, ...LIFECYCLE_HOOK_EVENTS]) {
+    eventSettings(settings, event, maxTimeoutMs)
+  }
 }
 
 function outputRecord(stdout: string): Record<string, unknown> | null {
@@ -381,6 +396,9 @@ function hookMatcherValue(input: ClaudeHookInput): string {
       return basename(optionalString(input.file_path) ?? '')
     case 'SessionEnd':
       return optionalString(input.reason) ?? ''
+    case 'WorktreeCreate':
+    case 'WorktreeRemove':
+      return optionalString(input.worktree_kind) ?? ''
     default:
       return ''
   }

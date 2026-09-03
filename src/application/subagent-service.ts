@@ -1936,6 +1936,17 @@ export class ClaudeSubagentExecutor {
           praxisRoot: sessionPaths.praxisRoot,
           runId: options.runId,
           agentId: options.agentId,
+          ...(this.options.hooks
+            ? {
+                hookContext: {
+                  runner: this.options.hooks,
+                  sessionId: options.sessionId,
+                  transcriptPath: paths.transcriptFile,
+                  permissionMode: 'default',
+                  ...(options.signal ? { signal: options.signal } : {}),
+                },
+              }
+            : {}),
         })
       : null
     const agentCwd = isolation?.cwd ?? this.cwd()

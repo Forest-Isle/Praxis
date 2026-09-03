@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   symlink,
@@ -101,6 +102,169 @@ async function gitDirectory(worktreePath: string) {
 }
 
 describe('createOwnedManagedWorktree', () => {
+  it('runs lifecycle hooks around activation and removal with ownership identity', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture)
+    const owned = await recordPath(fixture, options.ownerId)
+    const events: string[] = []
+    const hookIdentity: Record<string, unknown> = {}
+    const hooks = {
+      afterCreate: async (input: {
+        worktreePath: string
+        worktreeKind: string
+        worktreeId: string
+        ownerId: string
+        baseCommit: string
+      }) => {
+        events.push('create')
+        Object.assign(hookIdentity, input)
+        expect(
+          (JSON.parse(await readFile(owned.path, 'utf8')) as { state: string })
+            .state,
+        ).toBe('creating')
+        return {}
+      },
+      beforeRemove: async (input: {
+        worktreePath: string
+        worktreeKind: string
+        worktreeId: string
+        ownerId: string
+        baseCommit: string
+        reason: string
+      }) => {
+        events.push('remove')
+        expect(input).toMatchObject({
+          ...hookIdentity,
+          reason: 'normal',
+        })
+        expect(
+          (JSON.parse(await readFile(owned.path, 'utf8')) as { state: string })
+            .state,
+        ).toBe('releasing')
+        return {}
+      },
+    }
+    const worktree = await createOwnedManagedWorktree({ ...options, hooks })
+
+    expect(events).toEqual(['create'])
+    expect(await worktree.cleanup()).toEqual({ retained: false })
+    expect(events).toEqual(['create', 'remove'])
+  })
+
+  it('safely rolls back a blocked create hook and retains hook mutations', async () => {
+    const fixture = await repository()
+    const options = ownedOptions(fixture)
+    const expectedPath = join(
+      await realpath(fixture.repositoryRoot),
+      '.praxis',
+      'worktrees',
+      options.kind,
+      options.directoryName,
+    )
+    await expect(
+      createOwnedManagedWorktree({
+        ...options,
+        hooks: {
+          afterCreate: async () => ({ blockedReason: 'denied by policy' }),
+          beforeRemove: async () => ({}),
+        },
+      }),
+    ).rejects.toThrow('WorktreeCreate hook blocked: denied by policy')
+    await expect(stat(expectedPath)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(
+      (
+        await execFileAsync('git', [
+          '-C',
+          fixture.repositoryRoot,
+          'worktree',
+          'list',
+          '--porcelain',
+        ])
+      ).stdout,
+    ).not.toContain(expectedPath)
+    const owned = await recordPath(fixture, options.ownerId)
+    expect((await JSON.parse(await readFile(owned.path, 'utf8'))).state).toBe(
+      'released',
+    )
+
+    const dirtyOptions = ownedOptions(fixture, {
+      directoryName: 'run-dirty-hook',
+      ownerId: 'workflow:run-dirty-hook:agent',
+      hooks: {
+        afterCreate: async (input) => {
+          await writeFile(join(input.worktreePath, 'hook.txt'), 'hook\n')
+          throw new Error('hook failed after mutation')
+        },
+        beforeRemove: async () => ({}),
+      },
+    })
+    await expect(createOwnedManagedWorktree(dirtyOptions)).rejects.toThrow(
+      'WorktreeCreate hook failed: hook failed after mutation',
+    )
+    const dirtyOwned = await recordPath(fixture, dirtyOptions.ownerId)
+    expect(
+      (await JSON.parse(await readFile(dirtyOwned.path, 'utf8'))).state,
+    ).toBe('retained')
+    const dirtyPath = join(
+      await realpath(fixture.repositoryRoot),
+      '.praxis',
+      'worktrees',
+      dirtyOptions.kind,
+      dirtyOptions.directoryName,
+    )
+    await expect(stat(dirtyPath)).resolves.toBeDefined()
+    expect(await readFile(join(dirtyPath, 'hook.txt'), 'utf8')).toBe('hook\n')
+  })
+
+  it('retains a checkout when removal hooks block, fail, or mutate it', async () => {
+    for (const mode of ['block', 'throw', 'dirty', 'commit'] as const) {
+      const fixture = await repository()
+      const options = ownedOptions(fixture, {
+        directoryName: `run-remove-${mode}`,
+        ownerId: `workflow:run-remove-${mode}:agent`,
+      })
+      const worktree = await createOwnedManagedWorktree({
+        ...options,
+        hooks: {
+          afterCreate: async () => ({}),
+          beforeRemove: async (input) => {
+            if (mode === 'block') return { blockedReason: 'no' }
+            if (mode === 'throw') throw new Error('failed')
+            if (mode === 'dirty') {
+              await writeFile(join(input.worktreePath, 'hook.txt'), 'dirty\n')
+            } else {
+              await writeFile(join(input.worktreePath, 'hook.txt'), 'commit\n')
+              await execFileAsync('git', [
+                '-C',
+                input.worktreePath,
+                'add',
+                'hook.txt',
+              ])
+              await execFileAsync('git', [
+                '-C',
+                input.worktreePath,
+                '-c',
+                'user.name=Praxis Test',
+                '-c',
+                'user.email=praxis@example.invalid',
+                'commit',
+                '-m',
+                'hook change',
+              ])
+            }
+            return {}
+          },
+        },
+      })
+      const result = await worktree.cleanup()
+      expect(result).toMatchObject({
+        retained: true,
+        reason: expect.stringContaining('WorktreeRemove hook'),
+      })
+      await expect(stat(worktree.cwd)).resolves.toBeDefined()
+    }
+  })
+
   it('publishes matching ownership, marker, and local ignore before returning', async () => {
     const fixture = await repository()
     const options = ownedOptions(fixture)

@@ -30,6 +30,7 @@ import type {
 import { AgentRunCancelledError, ModelProviderError } from '../core/runtime.js'
 import { ClaudeExtensionCatalog } from '../extensions/claude-extensions.js'
 import { ClaudeHookRunner } from '../hooks/claude-hooks.js'
+import type { ClaudeHookCommandExecutor } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
@@ -535,6 +536,138 @@ describe('foreground Claude Agent execution', () => {
       await expect(
         readFile(join(cwd, 'workflow-change.txt'), 'utf8'),
       ).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await executor.close()
+    }
+  })
+
+  it('wires trusted lifecycle hooks through Workflow isolation without transcript writes', async () => {
+    const { configRoot, cwd, fixtureRoot } = await gitRepository(
+      'praxis-workflow-hooks-',
+    )
+    const hookCalls: {
+      command: string
+      input: Record<string, unknown>
+      signal: AbortSignal | undefined
+    }[] = []
+    const hookExecutor: ClaudeHookCommandExecutor = async (
+      command,
+      input,
+      _timeout,
+      signal,
+    ) => {
+      hookCalls.push({ command, input, signal })
+      return {
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            additionalContext: `HOOK_CONTEXT_${input.hook_event_name}`,
+          },
+        }),
+        stderr: '',
+        exitCode: 0,
+        durationMs: 1,
+      }
+    }
+    const hooks = new ClaudeHookRunner({
+      settings: [
+        {
+          path: '/project.json',
+          scope: 'project',
+          value: {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  matcher: 'workflow',
+                  hooks: [{ type: 'command', command: 'workflow-create' }],
+                },
+              ],
+              WorktreeRemove: [
+                {
+                  matcher: 'workflow',
+                  hooks: [{ type: 'command', command: 'workflow-remove' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      cwd,
+      executeCommand: hookExecutor,
+    })
+    const controller = new AbortController()
+    const agentId = 'a1234567890abcdef'
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const transcriptPath = join(
+      fixtureRoot,
+      'workflow',
+      `agent-${agentId}.jsonl`,
+    )
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'WORKFLOW_HOOKED' }
+          yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks,
+    })
+
+    try {
+      const result = await executor.runWorkflowAgent({
+        sessionId,
+        promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        runId: 'workflow-hooks-run',
+        agentId,
+        transcriptDirectory: join(fixtureRoot, 'workflow'),
+        prompt: 'Run with lifecycle hooks',
+        isolation: 'worktree',
+        signal: controller.signal,
+      })
+
+      expect(result).toMatchObject({
+        result: 'WORKFLOW_HOOKED',
+        isolationRetained: false,
+      })
+      expect(hookCalls).toHaveLength(2)
+      expect(hookCalls.map(({ command }) => command)).toEqual([
+        'workflow-create',
+        'workflow-remove',
+      ])
+      const createInput = hookCalls[0]?.input
+      const removeInput = hookCalls[1]?.input
+      expect(createInput).toMatchObject({
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        permission_mode: 'default',
+        hook_event_name: 'WorktreeCreate',
+        worktree_kind: 'workflow',
+        owner_id: `workflow:workflow-hooks-run:${agentId}`,
+        cwd: expect.any(String),
+        worktree_path: expect.any(String),
+        worktree_id: expect.any(String),
+        base_commit: expect.any(String),
+      })
+      expect(removeInput).toEqual({
+        ...createInput,
+        hook_event_name: 'WorktreeRemove',
+        reason: 'normal',
+      })
+      expect(createInput?.cwd).toBe(createInput?.worktree_path)
+      expect(removeInput?.cwd).toBe(removeInput?.worktree_path)
+      expect(
+        hookCalls.every(({ signal }) => signal === controller.signal),
+      ).toBe(true)
+      const transcript = await readFile(transcriptPath, 'utf8')
+      expect(transcript).not.toContain('workflow-create')
+      expect(transcript).not.toContain('workflow-remove')
+      expect(transcript).not.toContain('HOOK_CONTEXT_')
     } finally {
       await executor.close()
     }

@@ -29,6 +29,31 @@ export interface ManagedWorktree {
   cleanup(): Promise<ManagedWorktreeCleanup>
 }
 
+export interface ManagedWorktreeHookInput {
+  readonly worktreePath: string
+  readonly worktreeKind: 'workflow' | 'agent' | 'team'
+  readonly worktreeId: string
+  readonly ownerId: string
+  readonly baseCommit: string
+}
+
+export interface ManagedWorktreeRemoveHookInput extends ManagedWorktreeHookInput {
+  readonly reason: 'normal' | 'reconcile'
+}
+
+export interface ManagedWorktreeHookOutcome {
+  blockedReason?: string
+}
+
+export interface ManagedWorktreeHooks {
+  afterCreate(
+    input: ManagedWorktreeHookInput,
+  ): Promise<ManagedWorktreeHookOutcome>
+  beforeRemove(
+    input: ManagedWorktreeRemoveHookInput,
+  ): Promise<ManagedWorktreeHookOutcome>
+}
+
 export interface OwnedManagedWorktreeOptions {
   cwd: string
   stateRoot: string
@@ -37,6 +62,7 @@ export interface OwnedManagedWorktreeOptions {
   label: 'Agent' | 'Workflow' | 'Team'
   kind: 'workflow' | 'agent' | 'team'
   policy: 'ephemeral' | 'durable'
+  hooks?: ManagedWorktreeHooks
 }
 
 async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
@@ -465,6 +491,26 @@ export async function createOwnedManagedWorktree(
     gitCreated = true
     await writeMarker(worktreePath, record)
     markerCreated = true
+    if (options.hooks) {
+      let outcome: ManagedWorktreeHookOutcome
+      try {
+        outcome = await options.hooks.afterCreate({
+          worktreePath,
+          worktreeKind: record.kind,
+          worktreeId: record.worktreeId,
+          ownerId: record.ownerId,
+          baseCommit: record.baseCommit,
+        })
+      } catch (error) {
+        throw new Error(
+          `WorktreeCreate hook failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        )
+      }
+      if (outcome.blockedReason) {
+        throw new Error(`WorktreeCreate hook blocked: ${outcome.blockedReason}`)
+      }
+    }
     await store.update(nextRecord(record, 'active'))
     created = true
   } catch (error) {
@@ -658,6 +704,61 @@ async function cleanupOwnedManagedWorktree(
     if (inspection.head !== record.baseCommit) {
       const reason = `${options.label} worktree has commits and was retained at ${record.worktreePath}`
       return retain(store, releasing, reason)
+    }
+    if (options.hooks) {
+      let outcome: ManagedWorktreeHookOutcome
+      try {
+        outcome = await options.hooks.beforeRemove({
+          worktreePath: record.worktreePath,
+          worktreeKind: record.kind,
+          worktreeId: record.worktreeId,
+          ownerId: record.ownerId,
+          baseCommit: record.baseCommit,
+          reason: 'normal',
+        })
+      } catch (error) {
+        return retain(
+          store,
+          releasing,
+          `WorktreeRemove hook failed for ${record.worktreePath}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+      if (outcome.blockedReason) {
+        return retain(
+          store,
+          releasing,
+          `WorktreeRemove hook blocked for ${record.worktreePath}: ${outcome.blockedReason}`,
+        )
+      }
+      try {
+        const postHookRegistered = await registeredWorktrees(
+          record.repositoryRoot,
+        )
+        const postHookInspection = await inspectOwnedCheckout(
+          record,
+          postHookRegistered,
+        )
+        if (postHookInspection.status.length > 0) {
+          return retain(
+            store,
+            releasing,
+            `WorktreeRemove hook left uncommitted changes in ${record.worktreePath}; worktree was retained at ${record.worktreePath}`,
+          )
+        }
+        if (postHookInspection.head !== record.baseCommit) {
+          return retain(
+            store,
+            releasing,
+            `WorktreeRemove hook created commits in ${record.worktreePath}; worktree was retained at ${record.worktreePath}`,
+          )
+        }
+      } catch (error) {
+        return retain(
+          store,
+          releasing,
+          `WorktreeRemove hook left worktree unsafe at ${record.worktreePath}: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
     }
     try {
       await git(record.repositoryRoot, [
