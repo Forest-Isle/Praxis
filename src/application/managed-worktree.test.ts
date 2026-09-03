@@ -27,6 +27,7 @@ import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   createOwnedManagedWorktree,
   reconcileManagedWorktrees,
+  restoreOwnedManagedWorktree,
   type ManagedWorktreeHookOutcome,
   type ManagedWorktreeHooks,
   type ManagedWorktreeRemoveHookInput,
@@ -771,6 +772,139 @@ describe('createOwnedManagedWorktree', () => {
       ).stdout.trim(),
     ).toBe(firstHead)
     await worktree.cleanup()
+  })
+})
+
+describe('restoreOwnedManagedWorktree', () => {
+  const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const agentId = 'a0123456789abcdef'
+
+  async function restoredFixture() {
+    const fixture = await repository()
+    const ownerId = `agent:${sessionId}:${agentId}:old-owner`
+    const directoryName = `${sessionId}-${agentId}`
+    const identity = await resolveProjectIdentity(fixture.repositoryRoot)
+    const worktreePath = join(
+      identity,
+      '.praxis',
+      'worktrees',
+      'agent',
+      directoryName,
+    )
+    const abandoned = await abandonedRecord(
+      fixture,
+      {
+        ownerId,
+        kind: 'agent',
+        worktreePath,
+      },
+      'detached',
+    )
+    return { fixture, abandoned, directoryName, worktreePath }
+  }
+
+  it.each(['dirty', 'committed'] as const)(
+    'restores an active Agent checkout and retains %s changes on cleanup',
+    async (change) => {
+      const { fixture, abandoned, directoryName, worktreePath } =
+        await restoredFixture()
+      if (change === 'dirty') {
+        await writeFile(join(worktreePath, 'dirty.txt'), 'dirty\n')
+      } else {
+        await writeFile(join(worktreePath, 'committed.txt'), 'committed\n')
+        await execFileAsync('git', ['-C', worktreePath, 'add', 'committed.txt'])
+        await execFileAsync('git', [
+          '-C',
+          worktreePath,
+          '-c',
+          'user.name=Praxis Test',
+          '-c',
+          'user.email=praxis@example.invalid',
+          'commit',
+          '-m',
+          'retained fixture',
+        ])
+      }
+      const restored = await restoreOwnedManagedWorktree({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+        path: worktreePath,
+        directoryName,
+        ownerPrefix: `agent:${sessionId}:${agentId}:`,
+        label: 'Agent',
+        kind: 'agent',
+        policy: 'ephemeral',
+      })
+      const lease = await abandoned.store.acquireLease()
+      expect(lease).toBeNull()
+      const result = await restored.cleanup()
+      expect(result).toMatchObject({ retained: true })
+      expect(result.reason).toMatch(
+        change === 'dirty' ? /uncommitted/u : /commits/u,
+      )
+      expect(await readFile(join(worktreePath, `${change}.txt`), 'utf8')).toBe(
+        `${change}\n`,
+      )
+    },
+  )
+
+  it('rejects mismatched ownership evidence without adopting or deleting checkout', async () => {
+    const { fixture, abandoned, directoryName, worktreePath } =
+      await restoredFixture()
+    const baseOptions = {
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+      path: worktreePath,
+      directoryName,
+      ownerPrefix: `agent:${sessionId}:${agentId}:`,
+      label: 'Agent' as const,
+      kind: 'agent' as const,
+      policy: 'ephemeral' as const,
+    }
+    await expect(
+      restoreOwnedManagedWorktree({
+        ...baseOptions,
+        path: join(fixture.repositoryRoot, '.praxis', 'wrong'),
+      }),
+    ).rejects.toThrow(/path does not match/u)
+    await expect(
+      restoreOwnedManagedWorktree({
+        ...baseOptions,
+        ownerPrefix: 'agent:wrong:',
+      }),
+    ).rejects.toThrow(/ownership evidence/u)
+    await writeFile(
+      join(await gitDirectory(worktreePath), 'PRAXIS_WORKTREE'),
+      `${JSON.stringify({ version: 1, worktreeId: abandoned.worktreeId, repositoryRoot: '/wrong' })}\n`,
+    )
+    await expect(restoreOwnedManagedWorktree(baseOptions)).rejects.toThrow(
+      /marker/u,
+    )
+    await expect(stat(worktreePath)).resolves.toBeDefined()
+  })
+
+  it('restores clean checkout, rejects concurrent restore, and releases once', async () => {
+    const { fixture, abandoned, directoryName, worktreePath } =
+      await restoredFixture()
+    const options = {
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+      path: worktreePath,
+      directoryName,
+      ownerPrefix: `agent:${sessionId}:${agentId}:`,
+      label: 'Agent' as const,
+      kind: 'agent' as const,
+      policy: 'ephemeral' as const,
+    }
+    const restored = await restoreOwnedManagedWorktree(options)
+    expect(await abandoned.store.acquireLease()).toBeNull()
+    await expect(restoreOwnedManagedWorktree(options)).rejects.toThrow(
+      /already owned/u,
+    )
+    await expect(restored.cleanup()).resolves.toEqual({ retained: false })
+    await expect(restored.cleanup()).resolves.toEqual({ retained: false })
+    expect((await abandoned.store.read()).state).toBe('released')
+    await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
 

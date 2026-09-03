@@ -196,7 +196,7 @@ function validOwnerId(ownerId: string): boolean {
 }
 
 function worktreeError(
-  options: OwnedManagedWorktreeOptions,
+  options: { label: 'Agent' | 'Workflow' | 'Team' },
   message: string,
 ): Error {
   return new Error(`${options.label} worktree ${message}`)
@@ -353,6 +353,18 @@ async function readMarker(
   worktreePath: string,
   record: ManagedWorktreeRecord,
 ): Promise<void> {
+  const marker = await readMarkerIdentity(worktreePath)
+  if (
+    marker.worktreeId !== record.worktreeId ||
+    marker.repositoryRoot !== record.repositoryRoot
+  ) {
+    throw new Error('worktree marker does not match ownership record')
+  }
+}
+
+async function readMarkerIdentity(
+  worktreePath: string,
+): Promise<{ worktreeId: string; repositoryRoot: string }> {
   const markerPath = join(
     await linkedGitDirectory(worktreePath),
     'PRAXIS_WORKTREE',
@@ -370,10 +382,22 @@ async function readMarker(
     Object.keys(marker).length !== MARKER_FIELDS.size ||
     Object.keys(marker).some((key) => !MARKER_FIELDS.has(key)) ||
     (marker as Record<string, unknown>).version !== 1 ||
-    (marker as Record<string, unknown>).worktreeId !== record.worktreeId ||
-    (marker as Record<string, unknown>).repositoryRoot !== record.repositoryRoot
+    typeof (marker as Record<string, unknown>).worktreeId !== 'string' ||
+    typeof (marker as Record<string, unknown>).repositoryRoot !== 'string'
   ) {
-    throw new Error('worktree marker does not match ownership record')
+    throw new Error('worktree marker is invalid')
+  }
+  const fields = marker as Record<string, unknown>
+  if (
+    !/^[a-f0-9]{32,64}$/u.test(String(fields.worktreeId)) ||
+    !isAbsolute(String(fields.repositoryRoot)) ||
+    resolve(String(fields.repositoryRoot)) !== String(fields.repositoryRoot)
+  ) {
+    throw new Error('worktree marker is invalid')
+  }
+  return {
+    worktreeId: fields.worktreeId as string,
+    repositoryRoot: fields.repositoryRoot as string,
   }
 }
 
@@ -997,36 +1021,15 @@ export async function createOwnedManagedWorktree(
   } finally {
     if (!created) await lease.release()
   }
-  let executionLease: ExclusiveFileLeaseHandle | undefined = lease
-  let removedResult: ManagedWorktreeCleanup | undefined
-  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
-  return {
-    cwd: worktreePath,
-    cleanup: async () => {
-      if (removedResult) return removedResult
-      if (cleanupInFlight) return cleanupInFlight
-      const heldLease = executionLease
-      executionLease = undefined
-      cleanupInFlight = cleanupOwnedManagedWorktree(
-        store,
-        options,
-        record,
-        heldLease,
-      )
-      try {
-        const result = await cleanupInFlight
-        if (!result.retained) removedResult = result
-        return result
-      } finally {
-        cleanupInFlight = undefined
-      }
-    },
-  }
+  return createManagedWorktreeHandle(store, options, record, lease)
 }
 
 async function cleanupOwnedManagedWorktree(
   store: ManagedWorktreeStore,
-  options: OwnedManagedWorktreeOptions,
+  options: Pick<
+    OwnedManagedWorktreeOptions,
+    'label' | 'kind' | 'policy' | 'hooks'
+  >,
   original: ManagedWorktreeRecord,
   heldLease?: ExclusiveFileLeaseHandle,
 ): Promise<ManagedWorktreeCleanup> {
@@ -1207,6 +1210,130 @@ async function cleanupOwnedManagedWorktree(
     return { retained: false }
   } finally {
     await lease.release()
+  }
+}
+
+function createManagedWorktreeHandle(
+  store: ManagedWorktreeStore,
+  options: Pick<
+    OwnedManagedWorktreeOptions,
+    'label' | 'kind' | 'policy' | 'hooks'
+  >,
+  record: ManagedWorktreeRecord,
+  lease: ExclusiveFileLeaseHandle,
+): ManagedWorktree {
+  let executionLease: ExclusiveFileLeaseHandle | undefined = lease
+  let removedResult: ManagedWorktreeCleanup | undefined
+  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
+  return {
+    cwd: record.worktreePath,
+    cleanup: async () => {
+      if (removedResult) return removedResult
+      if (cleanupInFlight) return cleanupInFlight
+      const heldLease = executionLease
+      executionLease = undefined
+      cleanupInFlight = cleanupOwnedManagedWorktree(
+        store,
+        options,
+        record,
+        heldLease,
+      )
+      try {
+        const result = await cleanupInFlight
+        if (!result.retained) removedResult = result
+        return result
+      } finally {
+        cleanupInFlight = undefined
+      }
+    },
+  }
+}
+
+export interface OwnedManagedWorktreeRestoreOptions {
+  cwd: string
+  stateRoot: string
+  path: string
+  directoryName: string
+  ownerPrefix: string
+  label: 'Agent' | 'Workflow' | 'Team'
+  kind: 'workflow' | 'agent' | 'team'
+  policy: 'ephemeral' | 'durable'
+  hooks?: ManagedWorktreeHooks
+}
+
+/** Restore a checkout only when its complete managed ownership proof matches. */
+export async function restoreOwnedManagedWorktree(
+  options: OwnedManagedWorktreeRestoreOptions,
+): Promise<ManagedWorktree> {
+  if (!COMPONENT_PATTERN.test(options.directoryName)) {
+    throw worktreeError(options, 'name is invalid')
+  }
+  if (
+    !options.path ||
+    !isAbsolute(options.path) ||
+    options.path.includes('\0')
+  ) {
+    throw worktreeError(options, 'path is invalid')
+  }
+  if (!options.ownerPrefix || !validOwnerId(options.ownerPrefix)) {
+    throw worktreeError(options, 'owner prefix is invalid')
+  }
+  let repositoryRoot: string
+  try {
+    repositoryRoot = await resolveProjectIdentity(options.cwd)
+  } catch {
+    throw worktreeError(options, 'restore requires a Git repository')
+  }
+  const kindRoot = join(repositoryRoot, '.praxis', 'worktrees', options.kind)
+  const expectedPath = join(kindRoot, options.directoryName)
+  const path = resolve(options.path)
+  if (path !== expectedPath) {
+    throw worktreeError(options, 'path does not match its managed checkout')
+  }
+  try {
+    const entry = await lstat(path)
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      throw new Error('worktree path is not a real directory')
+    }
+    if ((await realpath(path)) !== path) {
+      throw new Error('worktree path is not canonical')
+    }
+  } catch (error) {
+    throw worktreeError(
+      options,
+      `could not inspect checkout: ${(error as Error).message}`,
+    )
+  }
+  const marker = await readMarkerIdentity(path)
+  if (marker.repositoryRoot !== repositoryRoot) {
+    throw worktreeError(options, 'marker repository identity does not match')
+  }
+  const store = new ManagedWorktreeStore(
+    options.stateRoot,
+    repositoryRoot,
+    marker.worktreeId,
+  )
+  const lease = await store.acquireLease()
+  if (!lease) throw worktreeError(options, 'restore is already owned')
+  let accepted = false
+  try {
+    const record = await store.read()
+    if (
+      record.repositoryRoot !== repositoryRoot ||
+      record.worktreeId !== marker.worktreeId ||
+      record.worktreePath !== expectedPath ||
+      record.kind !== options.kind ||
+      record.policy !== options.policy ||
+      !['active', 'retained', 'releasing'].includes(record.state) ||
+      !record.ownerId.startsWith(options.ownerPrefix)
+    ) {
+      throw worktreeError(options, 'ownership evidence does not match')
+    }
+    await inspectOwnedCheckout(record)
+    accepted = true
+    return createManagedWorktreeHandle(store, options, record, lease)
+  } finally {
+    if (!accepted) await lease.release()
   }
 }
 
