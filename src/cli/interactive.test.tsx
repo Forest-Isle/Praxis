@@ -8516,6 +8516,92 @@ describe('InteractiveApp', () => {
     expect(app.lastFrame()).not.toContain('provider aborted')
   })
 
+  it('collapses background Bash notifications while keeping other tasks detailed', async () => {
+    let resolveRun!: (result: SessionRunResult) => void
+    let eventSink: RuntimeEventSink | undefined
+    const app = render(
+      <InteractiveApp
+        factory={{
+          async createService(options) {
+            eventSink = options.eventSink
+            return {
+              async run() {
+                return new Promise<SessionRunResult>((resolve) => {
+                  resolveRun = resolve
+                })
+              },
+              async resume() {
+                throw new Error('unused')
+              },
+              async fork() {
+                throw new Error('unused')
+              },
+              async sessions() {
+                return []
+              },
+            }
+          },
+        }}
+        initialSessions={[]}
+      />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await waitFor(() => (eventSink ? true : undefined))
+    eventSink?.({
+      type: 'task-notification',
+      taskId: 'baaaaaaaa',
+      status: 'completed',
+      outputFile: '/tmp/one',
+      summary: 'first',
+    })
+    eventSink?.({
+      type: 'task-notification',
+      taskId: 'baaaaaaab',
+      status: 'completed',
+      outputFile: '/tmp/two',
+      summary: 'second',
+    })
+    eventSink?.({
+      type: 'task-notification',
+      taskId: 'baaaaaaac',
+      status: 'failed',
+      outputFile: '/tmp/failed',
+      summary: 'failed command',
+    })
+    eventSink?.({
+      type: 'task-notification',
+      taskId: 'baaaaaaad',
+      status: 'stopped',
+      outputFile: '/tmp/stopped',
+      summary: 'stopped command',
+    })
+    eventSink?.({
+      type: 'task-notification',
+      taskId: 'agent1234',
+      status: 'completed',
+      outputFile: '/tmp/agent',
+      summary: 'agent task',
+    })
+    await flush()
+
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('2 background commands completed')
+    expect(frame).not.toContain('Task completed · first')
+    expect(frame).not.toContain('Task completed · second')
+    expect(frame).toContain('Task failed · failed command')
+    expect(frame).toContain('Task stopped · stopped command')
+    expect(frame).toContain('Task completed · agent task')
+
+    resolveRun({
+      sessionId: 'notification-collapse-session',
+      text: 'done',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    })
+    await flush()
+  })
+
   it('steers a busy turn and reconciles delivered pending input', async () => {
     let resolveRun!: (result: SessionRunResult) => void
     let eventSink: RuntimeEventSink | undefined

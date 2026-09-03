@@ -1,7 +1,21 @@
 import type { ModelToolCall } from '../../core/runtime.js'
+import { isBackgroundBashTaskId } from '../../application/background-task-id.js'
+
+export type TaskNotificationMetadata = {
+  readonly taskId: string
+  readonly status: 'completed' | 'failed' | 'stopped'
+}
 
 export type TranscriptItem =
-  | { kind: 'user' | 'assistant' | 'notice' | 'warning'; text: string }
+  | {
+      kind: 'user' | 'assistant'
+      text: string
+    }
+  | {
+      kind: 'notice' | 'warning'
+      text: string
+      taskNotification?: TaskNotificationMetadata
+    }
   | { kind: 'local-result'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'compact'; summary: string }
@@ -93,6 +107,31 @@ export function transcriptPresentationEntryKey(
 /** Stable renderer key for a Normal-mode contiguous Read summary. */
 export function transcriptReadSummaryKey(sourceIndex: number): string {
   return `read-summary-${sourceIndex}`
+}
+
+export function isCompletedBackgroundBashNotification(
+  item: TranscriptItem,
+): Extract<TranscriptItem, { kind: 'notice' | 'warning' }> | undefined {
+  if (item.kind !== 'notice' && item.kind !== 'warning') return undefined
+  const metadata = item.taskNotification
+  if (
+    !metadata ||
+    metadata.status !== 'completed' ||
+    !isBackgroundBashTaskId(metadata.taskId)
+  )
+    return undefined
+  return item
+}
+
+export function completedBackgroundBashSummary(
+  count: number,
+): Extract<TranscriptItem, { kind: 'notice' | 'warning' }> {
+  if (!Number.isInteger(count) || count <= 0)
+    throw new RangeError('count must be a positive integer')
+  return {
+    kind: 'notice',
+    text: `${count} background commands completed`,
+  }
 }
 
 function pairResults(items: readonly TranscriptItem[]): Pairing {
@@ -215,6 +254,32 @@ export function projectTranscriptPresentation(
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (!item) continue
+
+    if (mode === 'normal') {
+      const notification = isCompletedBackgroundBashNotification(item)
+      if (notification) {
+        const notifications = [notification]
+        let end = index + 1
+        while (end < items.length) {
+          const next = items[end]
+          const nextNotification = next
+            ? isCompletedBackgroundBashNotification(next)
+            : undefined
+          if (!nextNotification) break
+          notifications.push(nextNotification)
+          end += 1
+        }
+        if (notifications.length >= 2) {
+          entries.push({
+            kind: 'item',
+            key: transcriptPresentationEntryKey(item, index),
+            item: completedBackgroundBashSummary(notifications.length),
+          })
+          index = end - 1
+          continue
+        }
+      }
+    }
 
     if (
       mode === 'normal' &&

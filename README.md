@@ -124,7 +124,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
-  terminal-native background, and a minimal composer/status row. Interactive
+  terminal-native background, and a minimal composer/status row. Successful
+  background Bash completion bursts collapse in normal reading, while
+  failed/stopped notifications remain detailed. Interactive
   surfaces share the same presentation across terminals, with English
   permission/configuration choices and a taught `❯` / Up/Down / Enter / Esc
   interaction grammar. While a regular turn is active, the composer remains

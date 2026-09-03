@@ -3339,6 +3339,10 @@ export function InteractiveApp({
         append({
           kind: event.status === 'failed' ? 'warning' : 'notice',
           text: `Task ${event.status} · ${event.summary}`,
+          taskNotification: {
+            taskId: event.taskId,
+            status: event.status,
+          },
         })
         break
       case 'compact-boundary':

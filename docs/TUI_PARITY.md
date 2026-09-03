@@ -159,8 +159,11 @@ also carries live lifecycle/input state.
   lifecycle presentation, with grouped results, compact long output, inline
   edit replacements, and global detailed expansion. `projectTuiView` first
   projects raw history into renderer-ready presentation entries, pairing tool
-  and shell results and grouping successful Reads before the fullscreen
-  tail/window viewport selects visible entries. Stable source-derived keys
+  and shell results, grouping successful Reads, and collapsing contiguous
+  completed background Bash notifications as `N background commands completed`
+  before the fullscreen tail/window viewport selects visible entries. Failed
+  or stopped notifications remain expanded; audit and screen-reader modes retain
+  every original notification. Stable source-derived keys
   survive append, resize, and scroll movement; oversized visible entries are
   cloned and bounded without mutating authoritative history. `Transcript`
   consumes only those projected entries and never repeats presentation or
@@ -508,8 +511,10 @@ also carries live lifecycle/input state.
   and captured 2.1.208 JSONL records; `/background` empty/success/failure Ink
   coverage plus a live Claude/Praxis PTY handoff, blocked-state, lazy-fork,
   unchanged-source, provider-context, and cross-resume gate;
-- full `npm run check`, package regression, and performance budgets, including
-  long-transcript presentation plus visible-region syntax rendering;
+- focused notification projection, retained append, error-expansion, audit, and
+  screen-reader coverage, plus full `npm run check`, package regression, and
+  performance budgets, including long-transcript presentation plus visible-region
+  syntax rendering;
 - parity matrix must not say full interactive parity is complete until every
   state above has executable evidence.
 
