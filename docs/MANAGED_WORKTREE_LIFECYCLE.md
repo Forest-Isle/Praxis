@@ -157,7 +157,12 @@ directories as ownership evidence.
 
 - A live lease or active owner state is skipped.
 - Durable, failed, owner-lost, orphaned, and unknown-owner records are retained.
-- An interrupted or terminal ephemeral owner is eligible for Git inspection.
+- An interrupted Workflow owner is eligible for Git inspection. Agent records
+  are first matched to their persisted execution lifecycle and exact owner
+  token; live, missing, corrupt, unavailable, mismatched, failed, cancelled,
+  and orphaned Agent lifecycles are retained without hooks or deletion.
+- A matching completed Agent lifecycle is eligible for the same Git inspection
+  and clean release gates as Workflow.
 - Dirty, committed, mismatched, malformed, or hook-blocked candidates are
   retained with a precise reason.
 - A clean, matching ephemeral candidate runs `WorktreeRemove` with reason

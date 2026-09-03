@@ -17,6 +17,9 @@ import {
   ExclusiveFileLease,
   type ExclusiveFileLeaseHandle,
 } from '../platform/exclusive-file-lease.js'
+import { isSessionId } from '../core/session.js'
+import { isTerminalLifecycleState } from '../core/agent-orchestration.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -28,6 +31,7 @@ export interface ManagedWorktreeCleanup {
 export interface ManagedWorktree {
   cwd: string
   cleanup(): Promise<ManagedWorktreeCleanup>
+  retain(reason: string): Promise<ManagedWorktreeCleanup>
 }
 
 export interface ManagedWorktreeHookInput {
@@ -193,6 +197,23 @@ function validOwnerId(ownerId: string): boolean {
       return code <= 0x1f || code === 0x7f
     })
   )
+}
+
+function validRetentionReason(reason: string): boolean {
+  return (
+    typeof reason === 'string' &&
+    reason.trim().length > 0 &&
+    reason.length <= 1024 &&
+    !Array.from(reason).some((character) => {
+      const code = character.codePointAt(0) ?? 0
+      return code <= 0x1f || code === 0x7f
+    })
+  )
+}
+
+function assertRetentionReason(reason: string): void {
+  if (!validRetentionReason(reason))
+    throw new Error('Managed worktree retention reason is invalid')
 }
 
 function worktreeError(
@@ -508,6 +529,80 @@ async function reconciliationRetain(
   }
 }
 
+interface ParsedAgentOwner {
+  sessionId: string
+  agentId: string
+  token: string
+}
+
+function parseAgentOwner(ownerId: string): ParsedAgentOwner | null {
+  const parts = ownerId.split(':')
+  if (parts.length !== 4 || parts[0] !== 'agent') return null
+  const sessionId = parts[1] ?? ''
+  const agentId = parts[2] ?? ''
+  const token = parts[3] ?? ''
+  if (
+    !isSessionId(sessionId) ||
+    !/^a(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}-)?[0-9a-f]{16}$/u.test(agentId) ||
+    token.trim().length === 0
+  )
+    return null
+  return { sessionId, agentId, token }
+}
+
+async function reconcileAgentLifecycle(
+  stateRoot: string,
+  record: ManagedWorktreeRecord,
+): Promise<{ safe: true } | { safe: false; reason: string }> {
+  const owner = parseAgentOwner(record.ownerId)
+  if (!owner) return { safe: false, reason: 'Agent owner ID is malformed' }
+  try {
+    const lifecycleStore = new SubagentLifecycleStore(
+      stateRoot,
+      owner.sessionId,
+      owner.agentId,
+    )
+    const ownership = await lifecycleStore.reconcileOwnerLoss()
+    if (ownership.owned)
+      return { safe: false, reason: 'Agent lifecycle owner is live' }
+    const lifecycle = await lifecycleStore.read()
+    if (!lifecycle)
+      return { safe: false, reason: 'Agent lifecycle state is missing' }
+    const snapshot = lifecycle.lifecycle
+    const matchingToken = isTerminalLifecycleState(snapshot.state)
+      ? snapshot.previousOwnerToken === owner.token
+      : snapshot.owner?.token === owner.token
+    if (!matchingToken)
+      return {
+        safe: false,
+        reason: 'Agent lifecycle owner token does not match worktree owner',
+      }
+    if (snapshot.state === 'failed' || snapshot.state === 'cancelled')
+      return {
+        safe: false,
+        reason: `Agent lifecycle is ${snapshot.state}; evidence was retained`,
+      }
+    if (snapshot.state === 'orphaned')
+      return {
+        safe: false,
+        reason: 'Agent lifecycle is orphaned; evidence was retained',
+      }
+    if (!isTerminalLifecycleState(snapshot.state))
+      return {
+        safe: false,
+        reason: `Agent lifecycle remains ${snapshot.state}; owner state is unavailable`,
+      }
+    if (snapshot.state !== 'completed')
+      return { safe: false, reason: `Agent lifecycle is ${snapshot.state}` }
+    return { safe: true }
+  } catch (error) {
+    return {
+      safe: false,
+      reason: `Agent lifecycle state is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+}
+
 export async function reconcileManagedWorktrees(options: {
   cwd: string
   stateRoot: string
@@ -608,6 +703,23 @@ export async function reconcileManagedWorktrees(options: {
           ),
         )
         continue
+      }
+      if (record.kind === 'agent') {
+        const lifecycle = await reconcileAgentLifecycle(
+          options.stateRoot,
+          record,
+        )
+        if (!lifecycle.safe) {
+          entries.push(
+            await reconciliationRetain(
+              store,
+              record,
+              baseEntry,
+              lifecycle.reason,
+            ),
+          )
+          continue
+        }
       }
       const releasing =
         record.state === 'creating' ? record : nextRecord(record, 'releasing')
@@ -1213,6 +1325,50 @@ async function cleanupOwnedManagedWorktree(
   }
 }
 
+async function retainOwnedManagedWorktree(
+  store: ManagedWorktreeStore,
+  options: Pick<OwnedManagedWorktreeOptions, 'label'>,
+  original: ManagedWorktreeRecord,
+  reason: string,
+  heldLease?: ExclusiveFileLeaseHandle,
+): Promise<ManagedWorktreeCleanup> {
+  assertRetentionReason(reason)
+  const lease = heldLease ?? (await store.acquireLease())
+  if (!lease)
+    return {
+      retained: true,
+      reason: `${options.label} worktree retention is already in progress`,
+    }
+  try {
+    let record: ManagedWorktreeRecord
+    try {
+      record = await store.read()
+    } catch (error) {
+      return {
+        retained: true,
+        reason: `Could not inspect ${options.label.toLowerCase()} worktree record: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+    if (!sameOwnership(record, original))
+      return {
+        retained: true,
+        reason: `${options.label} worktree ownership record does not match`,
+      }
+    if (record.state === 'released') return { retained: false }
+    try {
+      await store.update(nextRecord(record, 'retained', reason))
+    } catch (error) {
+      return {
+        retained: true,
+        reason: `${reason}; could not persist retention state: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+    return { retained: true, reason }
+  } finally {
+    await lease.release()
+  }
+}
+
 function createManagedWorktreeHandle(
   store: ManagedWorktreeStore,
   options: Pick<
@@ -1224,27 +1380,37 @@ function createManagedWorktreeHandle(
 ): ManagedWorktree {
   let executionLease: ExclusiveFileLeaseHandle | undefined = lease
   let removedResult: ManagedWorktreeCleanup | undefined
-  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
-  return {
-    cwd: record.worktreePath,
-    cleanup: async () => {
-      if (removedResult) return removedResult
-      if (cleanupInFlight) return cleanupInFlight
-      const heldLease = executionLease
-      executionLease = undefined
-      cleanupInFlight = cleanupOwnedManagedWorktree(
-        store,
-        options,
-        record,
-        heldLease,
-      )
-      try {
-        const result = await cleanupInFlight
+  let operationInFlight: Promise<ManagedWorktreeCleanup> | undefined
+  const settle = (
+    operation: (
+      heldLease: ExclusiveFileLeaseHandle | undefined,
+    ) => Promise<ManagedWorktreeCleanup>,
+  ): Promise<ManagedWorktreeCleanup> => {
+    if (removedResult) return Promise.resolve(removedResult)
+    if (operationInFlight) return operationInFlight
+    const heldLease = executionLease
+    executionLease = undefined
+    operationInFlight = operation(heldLease)
+    return operationInFlight
+      .then((result) => {
         if (!result.retained) removedResult = result
         return result
-      } finally {
-        cleanupInFlight = undefined
-      }
+      })
+      .finally(() => {
+        operationInFlight = undefined
+      })
+  }
+  return {
+    cwd: record.worktreePath,
+    cleanup: () =>
+      settle((heldLease) =>
+        cleanupOwnedManagedWorktree(store, options, record, heldLease),
+      ),
+    retain: async (reason) => {
+      assertRetentionReason(reason)
+      return settle((heldLease) =>
+        retainOwnedManagedWorktree(store, options, record, reason, heldLease),
+      )
     },
   }
 }
@@ -1396,13 +1562,26 @@ export async function createManagedWorktree(options: {
   }
 
   let removedResult: ManagedWorktreeCleanup | undefined
-  let cleanupInFlight: Promise<ManagedWorktreeCleanup> | undefined
+  let operationInFlight: Promise<ManagedWorktreeCleanup> | undefined
+  const settle = (
+    operation: () => Promise<ManagedWorktreeCleanup>,
+  ): Promise<ManagedWorktreeCleanup> => {
+    if (removedResult) return Promise.resolve(removedResult)
+    if (operationInFlight) return operationInFlight
+    operationInFlight = operation()
+    return operationInFlight
+      .then((result) => {
+        if (!result.retained) removedResult = result
+        return result
+      })
+      .finally(() => {
+        operationInFlight = undefined
+      })
+  }
   return {
     cwd: path,
-    cleanup: async () => {
-      if (removedResult) return removedResult
-      if (cleanupInFlight) return cleanupInFlight
-      cleanupInFlight = (async () => {
+    cleanup: () =>
+      settle(async () => {
         let status: string
         let head: string
         try {
@@ -1437,14 +1616,13 @@ export async function createManagedWorktree(options: {
             reason: `Could not remove ${options.label.toLowerCase()} worktree ${path}: ${(error as Error).message}`,
           }
         }
-      })()
-      try {
-        const result = await cleanupInFlight
-        if (!result.retained) removedResult = result
-        return result
-      } finally {
-        cleanupInFlight = undefined
-      }
+      }),
+    retain: async (reason) => {
+      assertRetentionReason(reason)
+      return settle(async () => ({
+        retained: true,
+        reason,
+      }))
     },
   }
 }
@@ -1513,6 +1691,10 @@ export async function restoreManagedWorktree(options: {
         retained: true,
         reason: `${options.label} worktree was restored and retained at ${path}`,
       }
+    },
+    async retain(reason) {
+      assertRetentionReason(reason)
+      return { retained: true, reason }
     },
   }
 }

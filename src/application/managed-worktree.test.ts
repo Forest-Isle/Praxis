@@ -22,6 +22,7 @@ import {
   ManagedWorktreeStore,
   type ManagedWorktreeRecord,
 } from '../persistence/managed-worktree-store.js'
+import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
@@ -215,6 +216,35 @@ async function abandonedRecord(
 }
 
 describe('createOwnedManagedWorktree', () => {
+  it('explicitly retains a clean checkout and permits a later cleanup retry', async () => {
+    const fixture = await repository()
+    const worktree = await createOwnedManagedWorktree(ownedOptions(fixture))
+    const owned = await recordPath(fixture, 'workflow:run-1:agent-1')
+
+    await expect(worktree.retain('provider failed at turn 1')).resolves.toEqual(
+      {
+        retained: true,
+        reason: 'provider failed at turn 1',
+      },
+    )
+    expect((await JSON.parse(await readFile(owned.path, 'utf8'))).state).toBe(
+      'retained',
+    )
+    await expect(stat(worktree.cwd)).resolves.toBeDefined()
+    await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
+    expect((await JSON.parse(await readFile(owned.path, 'utf8'))).state).toBe(
+      'released',
+    )
+  })
+
+  it('rejects blank retention reasons without releasing the held lease', async () => {
+    const fixture = await repository()
+    const worktree = await createOwnedManagedWorktree(ownedOptions(fixture))
+
+    await expect(worktree.retain('  ')).rejects.toThrow(/reason is invalid/u)
+    await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
+  })
+
   it('runs lifecycle hooks around activation and removal with ownership identity', async () => {
     const fixture = await repository()
     const options = ownedOptions(fixture)
@@ -909,6 +939,119 @@ describe('restoreOwnedManagedWorktree', () => {
 })
 
 describe('reconcileManagedWorktrees', () => {
+  it.each(['missing', 'failed', 'cancelled', 'orphaned', 'completed'] as const)(
+    'uses matching Agent lifecycle state before reconciliation: %s',
+    async (state) => {
+      const fixture = await repository()
+      const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      const agentId = 'a0123456789abcdef'
+      const lifecycleStore = new SubagentLifecycleStore(
+        fixture.stateRoot,
+        sessionId,
+        agentId,
+      )
+      let execution:
+        Awaited<ReturnType<SubagentLifecycleStore['start']>> | undefined
+      let ownerId = `agent:${sessionId}:${agentId}:missing-token`
+      if (state !== 'missing') {
+        execution = await lifecycleStore.start()
+        ownerId = `agent:${sessionId}:${agentId}:${execution.token}`
+        await execution.running()
+        if (state === 'cancelled') await execution.beginCancellation()
+        if (state === 'orphaned') await execution.release()
+        else {
+          await execution.finish(state === 'completed' ? 'completed' : state, {
+            text: state,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            toolUseCount: 0,
+            durationMs: 0,
+          })
+          await execution.release()
+        }
+      }
+      const abandoned = await abandonedRecord(fixture, {
+        ownerId,
+        kind: 'agent',
+      })
+
+      const result = await reconcileManagedWorktrees({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+      })
+      const entry = result.entries.find(
+        (item) => item.worktreeId === abandoned.worktreeId,
+      )
+      if (state === 'completed') {
+        expect(entry?.disposition).toBe('released')
+        await expect(stat(abandoned.worktreePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        })
+      } else {
+        expect(entry?.disposition).toBe('retained')
+        await expect(stat(abandoned.worktreePath)).resolves.toBeDefined()
+        expect((await abandoned.store.read()).state).toBe('retained')
+      }
+    },
+  )
+
+  it('retains an Agent checkout while its lifecycle owner lease is live', async () => {
+    const fixture = await repository()
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const lifecycleStore = new SubagentLifecycleStore(
+      fixture.stateRoot,
+      sessionId,
+      agentId,
+    )
+    const execution = await lifecycleStore.start()
+    const abandoned = await abandonedRecord(fixture, {
+      ownerId: `agent:${sessionId}:${agentId}:${execution.token}`,
+      kind: 'agent',
+    })
+    try {
+      const result = await reconcileManagedWorktrees({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+      })
+      expect(
+        result.entries.find((item) => item.worktreeId === abandoned.worktreeId),
+      ).toMatchObject({ disposition: 'retained' })
+      await expect(stat(abandoned.worktreePath)).resolves.toBeDefined()
+      expect((await abandoned.store.read()).state).toBe('retained')
+    } finally {
+      await execution.release()
+    }
+  })
+
+  it('retains an Agent checkout when its lifecycle token does not match', async () => {
+    const fixture = await repository()
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const lifecycleStore = new SubagentLifecycleStore(
+      fixture.stateRoot,
+      sessionId,
+      agentId,
+    )
+    const execution = await lifecycleStore.start()
+    await execution.running()
+    await execution.finish('completed')
+    await execution.release()
+    const abandoned = await abandonedRecord(fixture, {
+      ownerId: `agent:${sessionId}:${agentId}:different-token`,
+      kind: 'agent',
+    })
+
+    const result = await reconcileManagedWorktrees({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+    })
+    expect(
+      result.entries.find((item) => item.worktreeId === abandoned.worktreeId),
+    ).toMatchObject({ disposition: 'retained' })
+    await expect(stat(abandoned.worktreePath)).resolves.toBeDefined()
+    expect((await abandoned.store.read()).state).toBe('retained')
+  })
+
   it('removes clean active crash residue and persists released', async () => {
     const fixture = await repository()
     const abandoned = await abandonedRecord(fixture)

@@ -17,12 +17,11 @@ import { resolveProjectIdentity } from '../platform/project-identity.js'
 
 const execFileAsync = promisify(execFile)
 
-function agentName(sessionId: string, agentId: string): string {
+function agentWorktreeDirectoryName(
+  sessionId: string,
+  agentId: string,
+): string {
   return `${sessionId}-${agentId}`
-}
-
-function hooks(context?: ManagedWorktreeHookContext) {
-  return context ? createManagedWorktreeHooks(context) : undefined
 }
 
 export async function createAgentWorktree(options: {
@@ -33,16 +32,20 @@ export async function createAgentWorktree(options: {
   executionToken: string
   hookContext?: ManagedWorktreeHookContext
 }): Promise<ManagedWorktree> {
-  const lifecycleHooks = hooks(options.hookContext)
   return createOwnedManagedWorktree({
     cwd: options.cwd,
     stateRoot: options.stateRoot,
-    directoryName: agentName(options.sessionId, options.agentId),
+    directoryName: agentWorktreeDirectoryName(
+      options.sessionId,
+      options.agentId,
+    ),
     ownerId: `agent:${options.sessionId}:${options.agentId}:${options.executionToken}`,
     label: 'Agent',
     kind: 'agent',
     policy: 'ephemeral',
-    ...(lifecycleHooks ? { hooks: lifecycleHooks } : {}),
+    ...(options.hookContext
+      ? { hooks: createManagedWorktreeHooks(options.hookContext) }
+      : {}),
   })
 }
 
@@ -109,27 +112,31 @@ export async function restoreAgentWorktree(options: {
     '.praxis',
     'worktrees',
     'agent',
-    agentName(options.sessionId, options.agentId),
+    agentWorktreeDirectoryName(options.sessionId, options.agentId),
   )
   const path = resolve(options.path)
   if (path === managedPath) {
-    const lifecycleHooks = hooks(options.hookContext)
     return restoreOwnedManagedWorktree({
       cwd: options.cwd,
       stateRoot: options.stateRoot,
       path,
-      directoryName: agentName(options.sessionId, options.agentId),
+      directoryName: agentWorktreeDirectoryName(
+        options.sessionId,
+        options.agentId,
+      ),
       ownerPrefix: `agent:${options.sessionId}:${options.agentId}:`,
       label: 'Agent',
       kind: 'agent',
       policy: 'ephemeral',
-      ...(lifecycleHooks ? { hooks: lifecycleHooks } : {}),
+      ...(options.hookContext
+        ? { hooks: createManagedWorktreeHooks(options.hookContext) }
+        : {}),
     })
   }
   const legacyPath = join(
     resolve(options.stateRoot),
     'agent-worktrees',
-    agentName(options.sessionId, options.agentId),
+    agentWorktreeDirectoryName(options.sessionId, options.agentId),
   )
   if (path !== legacyPath) {
     throw new Error('retained Agent worktree path is not an accepted path')

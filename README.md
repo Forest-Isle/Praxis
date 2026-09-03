@@ -215,19 +215,12 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   tool, memory, first-turn, and resume behavior. Agent execution uses one
   durable lifecycle vocabulary with bounded cancellation and drain,
   continuation, notifications, and single-owner orphan recovery. Isolated
-  Workflow and Agent turns use ownership-recorded repo-local ephemeral
-  worktrees, run trust-admitted synchronous lifecycle hooks, safely roll back
-  blocked creation, clean up unchanged worktrees, and retain dirty or
-  committed, unsafe, or removal-blocked results (with their paths and warnings)
-  for inspection. Managed
-  restore requires a matching ownership record, marker, Git registration,
-  repository identity, path/kind/policy, owner prefix, and lease; only the
-  exact former Agent legacy path is accepted through strict legacy validation,
-  and arbitrary registered worktrees fall back to the parent cwd. On the first
-  later managed-worktree use per process and
-  project, reconciliation inspects at most 64 records, skips live leases,
-  deletes only clean ownership-proven abandoned ephemeral checkouts, and
-  retains ambiguous or unsafe work. Experimental
+  Workflow and Agent turns use isolated repo-local worktrees with trusted
+  synchronous lifecycle hooks. Blocked creation rolls back safely; unchanged
+  worktrees are cleaned up, while failed, dirty, committed, or otherwise
+  unsafe worktrees retain evidence for inspection. Restore accepts only an
+  owned current or exact historical Agent path; invalid or unavailable
+  evidence safely falls back to the parent cwd. Experimental
   local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,

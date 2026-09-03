@@ -1257,7 +1257,10 @@ export class ClaudeSubagentExecutor {
         secondary.push(error)
       }
       try {
-        await isolation?.cleanup()
+        if (isolation)
+          await isolation.retain(
+            `Background agent setup failed; worktree retained at ${isolation.cwd}`,
+          )
       } catch (error) {
         secondary.push(error)
       }
@@ -1270,16 +1273,19 @@ export class ClaudeSubagentExecutor {
     }
     try {
       initialIsolation = input.isolation
-        ? await this.createAgentWorktree(
-            paths.praxisRoot,
+        ? await this.createAgentIsolation({
+            praxisRoot: paths.praxisRoot,
             sessionId,
             agentId,
-            initialExecution?.token ?? initialMemoryOwnerToken ?? randomUUID(),
-            parentCwd,
-            context.signal,
-            input.permissionMode,
-            sidechainPaths.transcriptFile,
-          )
+            executionToken:
+              initialExecution?.token ??
+              initialMemoryOwnerToken ??
+              randomUUID(),
+            cwd: parentCwd,
+            signal: context.signal,
+            permissionMode: input.permissionMode,
+            transcriptPath: sidechainPaths.transcriptFile,
+          })
         : undefined
     } catch (error) {
       return settleInitialSetupFailure(error, initialIsolation)
@@ -1327,16 +1333,16 @@ export class ClaudeSubagentExecutor {
       ...(initialExecution ? { initialExecution } : {}),
       ...(initialIsolation ? { initialIsolation } : {}),
       createIsolation: (execution, signal) =>
-        this.createAgentWorktree(
-          paths.praxisRoot,
+        this.createAgentIsolation({
+          praxisRoot: paths.praxisRoot,
           sessionId,
           agentId,
-          execution?.token ?? randomUUID(),
-          parentCwd,
+          executionToken: execution?.token ?? randomUUID(),
+          cwd: parentCwd,
           signal,
-          input.permissionMode,
-          sidechainPaths.transcriptFile,
-        ),
+          permissionMode: input.permissionMode,
+          transcriptPath: sidechainPaths.transcriptFile,
+        }),
       execute: async (cwd, message, signal, continuation) => {
         const turnProvider = continuation
           ? this.providerForTurn(input.model)
@@ -1528,30 +1534,30 @@ export class ClaudeSubagentExecutor {
     })
   }
 
-  private createAgentWorktree(
-    praxisRoot: string,
-    sessionId: string,
-    agentId: string,
-    executionToken: string,
-    cwd = this.cwd(),
-    signal?: AbortSignal,
-    permissionMode?: AgentPermissionMode,
-    transcriptPath?: string,
-  ): Promise<ManagedWorktree> {
+  private createAgentIsolation(options: {
+    praxisRoot: string
+    sessionId: string
+    agentId: string
+    executionToken: string
+    cwd: string
+    signal: AbortSignal | undefined
+    permissionMode: AgentPermissionMode | undefined
+    transcriptPath: string | undefined
+  }): Promise<ManagedWorktree> {
     return createAgentWorktree({
-      cwd,
-      stateRoot: praxisRoot,
-      sessionId,
-      agentId,
-      executionToken,
-      ...(this.options.hooks && transcriptPath
+      cwd: options.cwd,
+      stateRoot: options.praxisRoot,
+      sessionId: options.sessionId,
+      agentId: options.agentId,
+      executionToken: options.executionToken,
+      ...(this.options.hooks && options.transcriptPath
         ? {
             hookContext: {
               runner: this.options.hooks,
-              sessionId,
-              transcriptPath,
-              permissionMode: permissionMode ?? 'default',
-              ...(signal ? { signal } : {}),
+              sessionId: options.sessionId,
+              transcriptPath: options.transcriptPath,
+              permissionMode: options.permissionMode ?? 'default',
+              ...(options.signal ? { signal: options.signal } : {}),
             },
           }
         : {}),
@@ -1644,7 +1650,16 @@ export class ClaudeSubagentExecutor {
       }
       if (isolation) {
         try {
-          await isolation.cleanup()
+          const retainIsolation =
+            execution !== undefined ||
+            lifecycleState === 'failed' ||
+            lifecycleState === 'cancelled' ||
+            lifecycleState === 'orphaned'
+          if (retainIsolation)
+            await isolation.retain(
+              `Background agent launch was rejected; worktree retained at ${isolation.cwd}`,
+            )
+          else await isolation.cleanup()
         } catch (error) {
           errors.push(error)
         }
@@ -1751,9 +1766,19 @@ export class ClaudeSubagentExecutor {
           )
         } catch (error) {
           failure = error
-        } finally {
+        }
+        if (isolation) {
           try {
-            cleanup = await isolation?.cleanup()
+            cleanup =
+              failure !== undefined || signal.aborted
+                ? await isolation.retain(
+                    `${
+                      signal.aborted
+                        ? 'Background agent was aborted'
+                        : 'Background agent failed'
+                    }; worktree retained at ${isolation.cwd}`,
+                  )
+                : await isolation.cleanup()
           } catch (error) {
             failure ??= error
           }
@@ -2442,16 +2467,16 @@ export class ClaudeSubagentExecutor {
       initialLifecycleState: lifecycle.lifecycle.state,
       ...(restoredIsolation ? { initialIsolation: restoredIsolation } : {}),
       createIsolation: (execution, signal) =>
-        this.createAgentWorktree(
-          paths.praxisRoot,
+        this.createAgentIsolation({
+          praxisRoot: paths.praxisRoot,
           sessionId,
           agentId,
-          execution?.token ?? randomUUID(),
-          parentCwd,
+          executionToken: execution?.token ?? randomUUID(),
+          cwd: parentCwd,
           signal,
           permissionMode,
-          sidechainPaths.transcriptFile,
-        ),
+          transcriptPath: sidechainPaths.transcriptFile,
+        }),
       execute: async (cwd, message, signal, continuation) => {
         // Recovery never restores provider-native route state. Each recovered
         // execution, including every later follow-up, gets a fresh turn.

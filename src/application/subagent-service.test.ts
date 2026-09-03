@@ -34,6 +34,7 @@ import type { ClaudeHookCommandExecutor } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
+import { ManagedWorktreeStore } from '../persistence/managed-worktree-store.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   SubagentExecution,
@@ -43,6 +44,9 @@ import {
 import { FallbackModelProvider } from '../providers/fallback-provider.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { NativeSidechainTranscript } from './native-sidechain-transcript.js'
+import { createAgentWorktree } from './agent-worktree.js'
+import { reconcileManagedWorktrees } from './managed-worktree.js'
+import { BackgroundAgentRunError } from './background-agent-manager.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
   type AgentPermissionMode,
@@ -2417,9 +2421,7 @@ describe('foreground Claude Agent execution', () => {
       await readFile(join(subagentDirectory, metadataFile ?? ''), 'utf8'),
     ) as { worktreePath?: string }
     expect(metadata.worktreePath).toEqual(expect.any(String))
-    await expect(stat(metadata.worktreePath ?? '')).rejects.toMatchObject({
-      code: 'ENOENT',
-    })
+    await expect(stat(metadata.worktreePath ?? '')).resolves.toBeDefined()
     await expect(
       readFile(
         join(
@@ -2599,20 +2601,25 @@ describe('foreground Claude Agent execution', () => {
       baseTools: emptyTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
     })
-    const cleanup = vi.fn(async () => {
+    const retain = vi.fn(async () => {
       throw new Error('worktree cleanup failed')
     })
     const worktreeSpy = vi
       .spyOn(
         executor as unknown as {
-          createAgentWorktree: (...args: unknown[]) => Promise<{
+          createAgentIsolation: (...args: unknown[]) => Promise<{
             cwd: string
             cleanup: () => Promise<{ retained: boolean }>
+            retain: (reason: string) => Promise<{ retained: boolean }>
           }>
         },
-        'createAgentWorktree',
+        'createAgentIsolation',
       )
-      .mockResolvedValue({ cwd: join(cwd, 'fake-worktree'), cleanup })
+      .mockResolvedValue({
+        cwd: join(cwd, 'fake-worktree'),
+        cleanup: vi.fn(async () => ({ retained: false })),
+        retain,
+      })
     const sidechainSpy = vi
       .spyOn(NativeSidechainTranscript.prototype, 'create')
       .mockRejectedValue(new Error('sidechain setup failed'))
@@ -2648,7 +2655,7 @@ describe('foreground Claude Agent execution', () => {
         'worktree cleanup failed',
       )
       expect(providerCalls).toBe(0)
-      expect(cleanup).toHaveBeenCalledTimes(1)
+      expect(retain).toHaveBeenCalledTimes(1)
 
       const paths = resolveDataPlanePaths({
         dataPlane: 'native',
@@ -4006,6 +4013,7 @@ describe('foreground Claude Agent execution', () => {
       provider: {
         capabilities: { streaming: true, usage: true, tools: false },
         async *complete(request) {
+          yield* []
           started()
           request.signal?.addEventListener('abort', observedAbort, {
             once: true,
@@ -4063,6 +4071,162 @@ describe('foreground Claude Agent execution', () => {
       process.off('unhandledRejection', onUnhandled)
       beginCancellation.mockRestore()
       await executor.close()
+    }
+  })
+
+  it('retains and restores a real orphaned managed Agent checkout before continuation', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-managed-crash-restore-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const transcriptPath = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+      `agent-${agentId}.jsonl`,
+    )
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+      transcriptPath,
+    )
+    const execution = await lifecycleStore.start()
+    await execution.running()
+    const worktree = await createAgentWorktree({
+      cwd,
+      stateRoot: paths.praxisRoot,
+      sessionId,
+      agentId,
+      executionToken: execution.token,
+    })
+    await seedIncompleteIsolatedSidechain({
+      configRoot,
+      cwd,
+      sessionId,
+      agentId,
+      worktreePath: worktree.cwd,
+      name: 'managed-crash-agent',
+    })
+    await execution.release()
+
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const recordFile = (await readdir(registryDirectory)).find((file) =>
+      file.endsWith('.json'),
+    )
+    if (!recordFile) throw new Error('Managed Agent record is missing')
+    const record = JSON.parse(
+      await readFile(join(registryDirectory, recordFile), 'utf8'),
+    ) as { worktreeId: string }
+    const managedStore = new ManagedWorktreeStore(
+      paths.praxisRoot,
+      await realpath(cwd),
+      record.worktreeId,
+    )
+    await rm(managedStore.lockPath, { force: true })
+
+    const reconciliation = await reconcileManagedWorktrees({
+      cwd,
+      stateRoot: paths.praxisRoot,
+    })
+    expect(reconciliation.entries).toContainEqual(
+      expect.objectContaining({
+        worktreeId: record.worktreeId,
+        disposition: 'retained',
+      }),
+    )
+    await expect(stat(worktree.cwd)).resolves.toBeDefined()
+    expect(
+      (
+        await JSON.parse(
+          await readFile(join(registryDirectory, recordFile), 'utf8'),
+        )
+      ).state,
+    ).toBe('retained')
+
+    const registeredBeforeContinuation = (
+      await execFileAsync('git', ['-C', cwd, 'worktree', 'list', '--porcelain'])
+    ).stdout
+    expect(
+      registeredBeforeContinuation
+        .split('\n')
+        .filter((line) => line === `worktree ${worktree.cwd}`),
+    ).toHaveLength(1)
+
+    const observedCwds: string[] = []
+    const resumed = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'MANAGED_CRASH_RESTORED' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble(options) {
+          observedCwds.push(options?.cwd ?? '')
+          return contextSnapshot()
+        },
+      },
+    })
+    try {
+      await resumed.hydratePersistedTasks(sessionId, cwd)
+      const registry = resumed.registry(
+        sessionId,
+        0,
+        () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      )
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_managed_crash_send',
+            name: 'SendMessage',
+            input: { to: agentId, message: 'Continue managed crash recovery' },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      const output = await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_managed_crash_output',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: true, timeout: 30_000 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(output.content).toContain('MANAGED_CRASH_RESTORED')
+      expect(observedCwds).toEqual([worktree.cwd])
+      await expect(stat(worktree.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(
+        (
+          await JSON.parse(
+            await readFile(join(registryDirectory, recordFile), 'utf8'),
+          )
+        ).state,
+      ).toBe('released')
+    } finally {
+      await resumed.close()
+      await worktree.cleanup()
     }
   })
 
@@ -6345,6 +6509,178 @@ describe('foreground Claude Agent execution', () => {
     expect(await readFile(join(worktreePath, 'agent-change.txt'), 'utf8')).toBe(
       'changed\n',
     )
+  })
+
+  it('retains a clean isolated Agent worktree after provider failure', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-failure-retention-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield* []
+          throw new Error('provider failed')
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_failure_retention',
+        name: 'Agent',
+        input: {
+          description: 'Failure retention',
+          prompt: 'Fail in isolation',
+          isolation: 'worktree',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    let thrown: unknown
+    try {
+      await registry.execute(call, { cwd })
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(BackgroundAgentRunError)
+    const result = (thrown as BackgroundAgentRunError).result
+    expect(result).toMatchObject({
+      isolationRetained: true,
+      isolationWarning: expect.stringContaining(String(result?.isolationPath)),
+    })
+    const worktreePath = result?.isolationPath
+    if (!worktreePath) throw new Error('Expected retained worktree path')
+    await expect(stat(worktreePath)).resolves.toBeDefined()
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const lifecycleFiles = (
+      await readdir(join(paths.praxisRoot, 'subagent-lifecycle', sessionId))
+    ).filter((file) => file.endsWith('.json'))
+    expect(lifecycleFiles).toHaveLength(1)
+    expect(
+      JSON.parse(
+        await readFile(
+          join(
+            paths.praxisRoot,
+            'subagent-lifecycle',
+            sessionId,
+            lifecycleFiles[0] ?? '',
+          ),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ lifecycle: { state: 'failed' } })
+    await executor.close()
+  })
+
+  it('retains a clean isolated Agent worktree after cancellation', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-cancel-retention-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let started!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          yield* []
+          started()
+          await new Promise<void>((resolve) => {
+            request.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            })
+          })
+          throw new DOMException('Aborted', 'AbortError')
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: 'call_cancel_retention',
+        name: 'Agent',
+        input: {
+          description: 'Cancellation retention',
+          prompt: 'Cancel in isolation',
+          isolation: 'worktree',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    const controller = new AbortController()
+    const operation = registry.execute(call, { cwd, signal: controller.signal })
+    await providerStarted
+    controller.abort()
+    let thrown: unknown
+    try {
+      await operation
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(BackgroundAgentRunError)
+    const result = (thrown as BackgroundAgentRunError).result
+    expect(result).toMatchObject({
+      isolationRetained: true,
+      isolationWarning: expect.stringContaining(String(result?.isolationPath)),
+    })
+    const worktreePath = result?.isolationPath
+    if (!worktreePath) throw new Error('Expected retained worktree path')
+    await expect(stat(worktreePath)).resolves.toBeDefined()
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const lifecycleFiles = (
+      await readdir(join(paths.praxisRoot, 'subagent-lifecycle', sessionId))
+    ).filter((file) => file.endsWith('.json'))
+    expect(lifecycleFiles).toHaveLength(1)
+    expect(
+      JSON.parse(
+        await readFile(
+          join(
+            paths.praxisRoot,
+            'subagent-lifecycle',
+            sessionId,
+            lifecycleFiles[0] ?? '',
+          ),
+          'utf8',
+        ),
+      ),
+    ).toMatchObject({ lifecycle: { state: 'cancelled' } })
+    await executor.close()
   })
 
   it('recreates one deterministic managed path for a clean Agent continuation', async () => {
