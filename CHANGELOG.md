@@ -36,6 +36,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.0](https://github.com/Forest-Isle/Praxis/compare/v0.61.0...v0.62.0) (2026-09-03)
+
+
+### Features
+
+* expose managed-worktree lifecycle diagnostics ([#638](https://github.com/Forest-Isle/Praxis/issues/638)) ([c90586b](https://github.com/Forest-Isle/Praxis/commit/c90586b6d9ded9f39b9b22296cad2b06fa03e1b6))
+* reconcile abandoned managed worktrees ([#634](https://github.com/Forest-Isle/Praxis/issues/634)) ([c7d2b65](https://github.com/Forest-Isle/Praxis/commit/c7d2b65111ff832d69283248b6248acbe9d45389)), closes [#626](https://github.com/Forest-Isle/Praxis/issues/626)
+
 ## [0.61.0](https://github.com/Forest-Isle/Praxis/compare/v0.60.1...v0.61.0) (2026-09-03)
 
 
