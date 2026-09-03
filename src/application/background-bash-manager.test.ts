@@ -212,7 +212,7 @@ describe('BackgroundBashManager', () => {
     const { manager } = await createManager({ stallWatchdogMs: 500 })
     const launch = await manager.launch({
       command:
-        "printf 'Continue?'; sleep 0.2; printf ' Continue?'; sleep 0.4; printf ' ordinary'; sleep 0.05",
+        "printf 'Continue? [y/N]'; sleep 0.2; printf ' Proceed? [y/N]'; sleep 0.4; printf ' ordinary'; sleep 0.05",
       description: 'reset window',
       toolUseId: 'call_reset',
       timeout: 30_000,
