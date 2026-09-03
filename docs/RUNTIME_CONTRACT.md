@@ -82,9 +82,13 @@ Rules:
     Decline leaves the append-only transcript unchanged.
 14. Child processes do not inherit credential-named ambient variables or shell
     startup injection. Explicit MCP env/header values are per-server grants;
-    matching definitions, results, warnings, and errors are redacted before
-    they enter model, CLI, or transcript paths. Hook JSON is interpreted before
-    redaction so executable input/permission semantics remain unchanged. Plain,
+    stdio env grants resolve only defined `${NAME}` references at server
+    admission without mutating resource definitions. Reconnect retains that
+    derived grant state, while reload derives it again from the current
+    registry environment. Resolved secret values are redacted from matching
+    definitions, results, warnings, and errors before they enter model, CLI, or
+    transcript paths. Hook JSON is interpreted before redaction so executable
+    input/permission semantics remain unchanged. Plain,
     structured, and interactive CLI diagnostics redact ambient credentials, and
     Bash/hook output limits are enforced after redaction.
 15. Image tool results cross core as typed base64 payloads only when the active

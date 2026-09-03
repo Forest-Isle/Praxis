@@ -1640,6 +1640,129 @@ process.stdin.on('data', chunk => {
     }
   })
 
+  it('expands stdio environment references from the injected runtime snapshot', async () => {
+    const root = await realpath(
+      await mkdtemp(join(tmpdir(), 'praxis-mcp-expand-environment-')),
+    )
+    roots.push(root)
+    const serverScript = join(root, 'expand-server.mjs')
+    const environment: NodeJS.ProcessEnv = {
+      KNOWN: 'known-value',
+      NESTED: '${KNOWN}',
+      SECRET_TOKEN: 'resolved-secret-canary',
+      PRAXIS_API_KEY: 'ambient-secret-canary',
+      BASH_ENV: '/tmp/should-not-forward',
+      ENV: '/tmp/should-not-forward',
+    }
+    await writeFile(
+      serverScript,
+      `let buffer = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => {
+  buffer += chunk
+  while (buffer.includes('\\n')) {
+    const newline = buffer.indexOf('\\n')
+    const line = buffer.slice(0, newline)
+    buffer = buffer.slice(newline + 1)
+    if (!line.trim()) continue
+    const request = JSON.parse(line)
+    if (request.id === undefined) continue
+    const result = request.method === 'initialize'
+      ? { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'expand-fixture', version: '1' } }
+      : request.method === 'tools/list'
+        ? { tools: [{ name: 'env', description: process.env.RESOLVED_SECRET, inputSchema: { type: 'object' } }] }
+        : { content: [{ type: 'text', text: JSON.stringify({ value: process.env.RESOLVED, resolvedSecret: process.env.RESOLVED_SECRET ?? 'missing', literal: process.env.LITERAL, double: process.env.DOUBLE, malformed: process.env.MALFORMED, nested: process.env.NESTED, prototype: process.env.PROTOTYPE, args: process.argv.slice(2), sourceSecret: process.env.SECRET_TOKEN ?? 'missing', ambient: process.env.PRAXIS_API_KEY ?? 'missing', bash: process.env.BASH_ENV ?? 'missing', env: process.env.ENV ?? 'missing' }) }] }
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n')
+  }
+})
+`,
+    )
+    const source = {
+      command: process.execPath,
+      args: [serverScript, '${KNOWN}'],
+      env: {
+        RESOLVED: 'prefix-${KNOWN}-${KNOWN}-${UNKNOWN}-${KNOWN}',
+        RESOLVED_SECRET: '${SECRET_TOKEN}',
+        NESTED: '${NESTED}',
+        PROTOTYPE: '${toString}',
+        LITERAL: '$KNOWN',
+        DOUBLE: '$$KNOWN',
+        MALFORMED: '${BAD-NAME}',
+      },
+    }
+    const originalSource = structuredClone(source)
+    let registry: ClaudeMcpToolRegistry | undefined
+    try {
+      registry = await ClaudeMcpToolRegistry.connect({
+        base,
+        cwd: root,
+        environment,
+        resources: [
+          {
+            path: '/settings.json',
+            scope: 'user',
+            value: { mcpServers: { expand: source } },
+          },
+        ],
+      })
+      expect(source.args).toEqual([serverScript, '${KNOWN}'])
+      expect(source.env.RESOLVED).toContain('${KNOWN}')
+      const name = 'mcp__expand__env'
+      await expect(
+        registry.execute({ id: 'expand', name, input: {} }, { cwd: root }),
+      ).resolves.toMatchObject({
+        content: expect.stringContaining(
+          'prefix-known-value-known-value-${UNKNOWN}-known-value',
+        ),
+      })
+      const initial = await registry.execute(
+        { id: 'expand-details', name, input: {} },
+        { cwd: root },
+      )
+      expect(initial.content).toContain('"literal":"$KNOWN"')
+      expect(initial.content).toContain('"double":"$$KNOWN"')
+      expect(initial.content).toContain('"malformed":"${BAD-NAME}"')
+      expect(initial.content).toContain('"nested":"${KNOWN}"')
+      expect(initial.content).toContain('"prototype":"${toString}"')
+      expect(initial.content).toContain('"args":["${KNOWN}"]')
+      expect(initial.content).toContain('"sourceSecret":"missing"')
+      expect(initial.content).toContain('"ambient":"missing"')
+      expect(initial.content).toContain('"bash":"missing"')
+      expect(initial.content).toContain('"env":"missing"')
+      expect(initial.content).toContain('"resolvedSecret":"[REDACTED]"')
+      expect(initial.content).not.toContain('resolved-secret-canary')
+      expect(initial.content).not.toContain('ambient-secret-canary')
+      expect(initial.content).not.toContain('should-not-forward')
+      const definition = registry
+        .definitions()
+        .find((tool) => tool.name === name)
+      expect(JSON.stringify(definition)).toContain('[REDACTED]')
+      expect(JSON.stringify(definition)).not.toContain('resolved-secret-canary')
+
+      environment.KNOWN = 'changed-value'
+      await registry.reconnect('expand')
+      await expect(
+        registry.execute({ id: 'reconnect', name, input: {} }, { cwd: root }),
+      ).resolves.toMatchObject({
+        content: expect.stringContaining(
+          'prefix-known-value-known-value-${UNKNOWN}-known-value',
+        ),
+      })
+      expect(source).toEqual(originalSource)
+      await registry.reload()
+      await expect(
+        registry.execute({ id: 'reload', name, input: {} }, { cwd: root }),
+      ).resolves.toMatchObject({
+        content: expect.stringContaining(
+          'prefix-changed-value-changed-value-${UNKNOWN}-changed-value',
+        ),
+      })
+      expect(source).toEqual(originalSource)
+    } finally {
+      await registry?.close()
+    }
+  })
+
   it('redacts sensitive HTTP headers returned by MCP tools', async () => {
     const root = await realpath(
       await mkdtemp(join(tmpdir(), 'praxis-mcp-http-secret-')),

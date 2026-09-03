@@ -489,12 +489,13 @@ async function transport(
   config: McpServerConfig,
   cwd: string,
   configRoot: string,
+  environment: NodeJS.ProcessEnv = process.env,
 ) {
   if (config.type === 'stdio') {
     return new StdioClientTransport({
       command: config.command,
       args: config.args,
-      env: sanitizeChildEnvironment(config.env),
+      env: sanitizeChildEnvironment(config.env, environment),
       cwd: config.cwd ?? cwd,
       stderr: 'pipe',
     })
@@ -511,6 +512,29 @@ async function transport(
         requestInit,
         ...(authProvider ? { authProvider } : {}),
       })
+}
+
+function deriveMcpServerConfig(
+  config: McpServerConfig,
+  environment: NodeJS.ProcessEnv,
+): McpServerConfig {
+  if (config.type !== 'stdio') return config
+  const env = Object.fromEntries(
+    Object.entries(config.env).map(([name, value]) => [
+      name,
+      value.replace(
+        /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu,
+        (match, variable: string) => {
+          const replacement = environment[variable]
+          return Object.prototype.hasOwnProperty.call(environment, variable) &&
+            typeof replacement === 'string'
+            ? replacement
+            : match
+        },
+      ),
+    ]),
+  )
+  return { ...config, env }
 }
 
 function toolContent(
@@ -1330,14 +1354,6 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         )
         continue
       }
-      this.serverSensitiveValues.set(
-        server.name,
-        configSensitiveValues(
-          config,
-          server.sensitiveValues ?? [],
-          this.options.environment ?? process.env,
-        ),
-      )
       await this.connectServer(server.name, config, server.sensitiveValues)
     }
     this.publishPrompts()
@@ -1600,11 +1616,14 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
   ): Promise<void> {
     this.assertOpenGeneration(expectedGeneration)
     this.statuses.set(serverName, { name: serverName, status: 'failed' })
+    const environment = this.options.environment ?? process.env
+    const launchConfig = deriveMcpServerConfig(config, environment)
     const sensitiveValues = configSensitiveValues(
-      config,
+      launchConfig,
       additionalSensitiveValues,
-      this.options.environment ?? process.env,
+      environment,
     )
+    this.serverSensitiveValues.set(serverName, sensitiveValues)
     const session = new McpServerSession({
       serverName,
       connectionTimeoutMs: this.timeouts.connectionTimeoutMs,
@@ -1614,9 +1633,10 @@ export class ClaudeMcpToolRegistry implements ToolRegistry, ClaudeMcpRuntime {
         const configRoot = this.options.configRoot ?? join(homedir(), '.praxis')
         return (await transport(
           serverName,
-          config,
+          launchConfig,
           this.options.cwd,
           configRoot,
+          environment,
         )) as unknown as Transport
       },
       configureClient: (client) => {
