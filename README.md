@@ -102,6 +102,7 @@ Common non-interactive operations:
 
 ```sh
 praxis -p "Inspect this project"
+printf 'Inspect this project\n' | praxis -p
 praxis -p --output-format json "Summarize the test failures"
 praxis --resume
 praxis sessions --json

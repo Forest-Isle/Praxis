@@ -1435,8 +1435,8 @@ process.stdin.on('data', chunk => {
     })
     const capture = captureIO()
     await expect(run(['-p', '/cost'], capture.io, costDeps)).resolves.toBe(1)
-    expect(capture.stdout).toEqual([])
-    expect(capture.stderr.join('')).toContain('regression')
+    expect(capture.stdout).toEqual(['Execution error'])
+    expect(capture.stderr).toEqual([])
     expect(costSnapshotCalls).toHaveLength(2)
   })
 
@@ -1518,7 +1518,7 @@ process.stdin.on('data', chunk => {
       run(['--init', '-p', 'continue'], capture.io, lifecycleDependencies),
     ).resolves.toBe(0)
     expect(calls).toEqual(['init'])
-    expect(capture.stdout).toEqual(['answer:continue', '\n'])
+    expect(capture.stdout).toEqual(['answer:continue\n'])
   })
 
   it('rewinds files as a provider-free standalone resume operation', async () => {
@@ -2990,6 +2990,245 @@ expect:
     expect(capture.stdout.join('')).toBe('answer:hello world\n')
   })
 
+  it('accepts split piped text and composes argv input in print mode', async () => {
+    const stdin = captureIO()
+    stdin.io.stdinIsTTY = false
+    stdin.io.readStdinLines = () =>
+      (async function* () {
+        yield 'hé'
+        yield new Uint8Array([0xf0, 0x9f])
+        yield new Uint8Array([0x8c, 0x8d, 0x0a])
+      })()
+    const prompts: string[] = []
+    const base = dependencies()
+    const deps: CliDependencies = {
+      async createService(options) {
+        const service = await base.createService(options)
+        return {
+          ...service,
+          async run(prompt, signal, sessionId) {
+            prompts.push(prompt)
+            return service.run(prompt, signal, sessionId)
+          },
+        }
+      },
+    }
+    const stdinStatus = await run(['-p'], stdin.io, deps)
+    expect(stdinStatus).toBe(0)
+    expect(prompts).toEqual(['hé🌍\n'])
+    expect(stdin.stdout).toEqual(['answer:hé🌍\n\n'])
+
+    const composed = captureStreamIO('line\n')
+    composed.io.stdinIsTTY = false
+    const argvPrompts: string[] = []
+    await expect(
+      run(['-p', 'argv', 'prompt'], composed.io, {
+        async createService(options) {
+          const service = await base.createService(options)
+          return {
+            ...service,
+            async run(prompt, signal, sessionId) {
+              argvPrompts.push(prompt)
+              return service.run(prompt, signal, sessionId)
+            },
+          }
+        },
+      }),
+    ).resolves.toBe(0)
+    expect(argvPrompts).toEqual(['argv prompt\nline\n'])
+  })
+
+  it('does not read known-TTY stdin and rejects missing print input before service creation', async () => {
+    const tty = captureIO()
+    tty.io.stdinIsTTY = true
+    tty.io.readStdinLines = () => {
+      throw new Error('must not read TTY stdin')
+    }
+    await expect(
+      run(['-p', 'tty prompt'], tty.io, dependencies()),
+    ).resolves.toBe(0)
+
+    const missing = captureIO()
+    missing.io.stdinIsTTY = false
+    missing.io.readStdinLines = () =>
+      (async function* () {
+        yield ''
+      })()
+    let created = false
+    await expect(
+      run(['-p'], missing.io, {
+        async createService() {
+          created = true
+          throw new Error('must not create service')
+        },
+      }),
+    ).resolves.toBe(1)
+    expect(created).toBe(false)
+    expect(missing.stdout).toEqual([])
+    expect(missing.stderr).toEqual([
+      'Error: Input must be provided either through stdin or as a prompt argument when using --print\n',
+    ])
+
+    const unsupported = captureIO()
+    unsupported.io.stdinIsTTY = false
+    created = false
+    await expect(
+      run(['-p', 'argv'], unsupported.io, {
+        async createService() {
+          created = true
+          throw new Error('must not create service')
+        },
+      }),
+    ).resolves.toBe(1)
+    expect(created).toBe(false)
+    expect(unsupported.stdout).toEqual([])
+    expect(unsupported.stderr).toEqual([
+      'print text input requires stdin support\n',
+    ])
+  })
+
+  it('prints only the returned final result once in print mode', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    await expect(
+      run(['-p', 'final'], capture.io, {
+        async createService(options) {
+          const service = await base.createService(options)
+          return {
+            ...service,
+            async run(prompt, signal, sessionId) {
+              options.eventSink({ type: 'text-delta', delta: 'intermediate' })
+              options.eventSink({ type: 'terminal', reason: 'tool_use' })
+              return {
+                ...(await service.run(prompt, signal, sessionId)),
+                text: 'final result',
+              }
+            },
+          }
+        },
+      }),
+    ).resolves.toBe(0)
+    expect(capture.stdout).toEqual(['final result\n'])
+  })
+
+  it('projects print text failures once on stdout without partial output', async () => {
+    const secret = 'praxis-print-secret-value'
+    const previous = process.env.PRAXIS_API_KEY
+    process.env.PRAXIS_API_KEY = secret
+    const cases: Array<{ error: Error; expected: string }> = [
+      {
+        error: new Error('Maximum model turns of 2 exceeded'),
+        expected: 'Error: Reached max turns (2)',
+      },
+      {
+        error: new Error('Maximum budget of $0.000001 exceeded'),
+        expected: 'Error: Exceeded USD budget (0.000001)',
+      },
+      {
+        error: new Error(
+          'StructuredOutput must be called exactly once (received 0)',
+        ),
+        expected:
+          'Error: Failed to provide valid structured output after maximum retries',
+      },
+      {
+        error: new ModelProviderError('probe failure', {
+          retryable: false,
+          status: 400,
+          kind: 'api_error',
+        }),
+        expected: 'API Error: 400 probe failure\n',
+      },
+      {
+        error: new Error(`generic ${secret}`),
+        expected: 'Execution error',
+      },
+    ]
+    const base = dependencies()
+
+    try {
+      for (const fixture of cases) {
+        const capture = captureIO()
+        await expect(
+          run(['-p', 'fail'], capture.io, {
+            async createService(options) {
+              const service = await base.createService(options)
+              return {
+                ...service,
+                async run() {
+                  options.eventSink({
+                    type: 'text-delta',
+                    delta: `partial ${secret}`,
+                  })
+                  options.eventSink({
+                    type: 'failed',
+                    message: fixture.error.message,
+                    retryable: false,
+                  })
+                  throw fixture.error
+                },
+              }
+            },
+          }),
+        ).resolves.toBe(1)
+        expect(capture.stdout).toEqual([fixture.expected])
+        expect(capture.stderr).toEqual([])
+        expect(capture.stdout.join('')).not.toContain(secret)
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PRAXIS_API_KEY
+      else process.env.PRAXIS_API_KEY = previous
+    }
+  })
+
+  it('keeps legacy JSON print errors on the existing event protocol', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    await expect(
+      run(['-p', '--json', 'fail'], capture.io, {
+        async createService(options) {
+          const service = await base.createService(options)
+          return {
+            ...service,
+            async run() {
+              options.eventSink({
+                type: 'failed',
+                message: 'legacy failure',
+                retryable: false,
+              })
+              throw new Error('legacy failure')
+            },
+          }
+        },
+      }),
+    ).resolves.toBe(1)
+    expect(capture.stdout.map((line) => JSON.parse(line))).toEqual([
+      { type: 'failed', message: 'legacy failure', retryable: false },
+      { type: 'error', message: 'legacy failure' },
+    ])
+    expect(capture.stderr).toEqual([])
+  })
+
+  it('projects print text cost-baseline failures through the turn error boundary', async () => {
+    const capture = captureIO()
+    const base = dependencies()
+    await expect(
+      run(['-p', 'fail before provider'], capture.io, {
+        async createService(options) {
+          const service = await base.createService(options)
+          return {
+            ...service,
+            async costSnapshot() {
+              throw new Error('cost baseline unavailable')
+            },
+          }
+        },
+      }),
+    ).resolves.toBe(1)
+    expect(capture.stdout).toEqual(['Execution error'])
+    expect(capture.stderr).toEqual([])
+  })
+
   it('prints only the recovered attempt in append-only text output', async () => {
     const capture = captureIO()
     const base = dependencies()
@@ -3026,6 +3265,10 @@ expect:
       0,
     )
     expect(capture.stdout.join('')).toBe('recovered answer\n')
+
+    const printed = captureIO()
+    await expect(run(['-p', 'recover'], printed.io, recovered)).resolves.toBe(0)
+    expect(printed.stdout).toEqual(['recovered answer\n'])
   })
 
   it('accepts prefill without changing prompt or runtime output', async () => {
