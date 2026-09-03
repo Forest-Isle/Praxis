@@ -241,6 +241,23 @@ transaction.
 Direct `npm install --global praxis-agent@latest` remains a manual alternative,
 but bypasses Praxis's locking, verification, staging, and recovery safeguards.
 
+## Health and maintenance diagnostics
+
+`praxis doctor` reports local installation, provider, configuration, MCP,
+permissions, hooks, resources, plugins, and managed-worktree health. The
+`worktrees` check is project-scoped and reads only the native registry at
+`$PRAXIS_HOME/state/managed-worktrees/<project-key>/`; it inspects at most 64
+entries and sets `truncated` when more records exist. It reports fixed counts
+for `active`, `retained`, `safely-releasable`, `released`, and `unsafe`, plus
+the repository root and bounded, credential-redacted entries. Reasons are
+limited to 256 Unicode code points.
+
+The check fails when any entry is `unsafe`, warns for retained or
+safely-releasable evidence or truncation, and passes for active/released-only
+evidence or no records. Headless text and JSON expose the same projection; the
+interactive TUI shows a read-only warning group. Doctor only inspects and
+reports; it never performs bulk cleanup or release.
+
 ## Experimental local Teams
 
 Local Teams are experimental and require explicit activation for every command:
@@ -312,6 +329,18 @@ lifecycle/board, decision/message/monitor, and Team tools only; repository
 mutation, Workflow, Skill, scheduled, worktree, wrapper, dynamic, and MCP paths
 are denied. Custom Team agents receive their selected prompt but no MCP server
 or tool capability. Teams remain local-first, single-user, and non-remote.
+
+Team `status`, `logs`, and `attach` expose the same read-only lifecycle
+evidence. JSON worktree entries contain `status` and `reason`, logs contain
+bounded worktree events, and text output includes nonzero counts for the five
+statuses. Unsafe evidence lowers otherwise healthy/idle Team health, while
+`blocked` and `stopping` take precedence; retained or safely releasable
+evidence alone does not lower health. Observability checks the exact repo-local
+managed Team path first, then the legacy compatibility path under
+`$PRAXIS_HOME/state/team-worktrees/<project-key>/<team-id>/...`. Legacy-only
+evidence is retained with reason `legacy Team worktree is outside the managed
+lifecycle`; it is never adopted or cleaned, and managed plus legacy evidence
+for one generation is unsafe.
 
 ## Provider authentication
 

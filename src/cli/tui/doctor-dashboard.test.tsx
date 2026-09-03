@@ -213,6 +213,69 @@ describe('DoctorDashboard', () => {
     expect(frame).not.toContain('Hooks, settings, and runtime warnings')
   })
 
+  it('projects the managed worktree lifecycle warning group without cleanup actions', () => {
+    const worktreeReport = report({
+      checks: [
+        ...report().checks.filter((check) => check.status === 'pass'),
+        {
+          id: 'worktrees',
+          status: 'warn',
+          summary: 'Managed worktree lifecycle: 0 active, 1 retained',
+          details: { counts: { retained: 1 }, entries: [] },
+        },
+      ],
+      summary: { passed: 3, warnings: 1, failed: 0 },
+    })
+    expect(projectDoctorWarningGroups(worktreeReport)).toEqual([
+      expect.objectContaining({
+        heading: 'Managed worktree lifecycle',
+        checks: [expect.objectContaining({ id: 'worktrees', status: 'warn' })],
+      }),
+    ])
+    const frame = render(
+      <DoctorDashboard
+        surface={projectTuiDoctorSurface({
+          loading: false,
+          report: worktreeReport,
+          error: null,
+        })}
+        width={100}
+        screenReader={false}
+      />,
+    ).lastFrame()
+    expect(frame).toContain('Managed worktree lifecycle')
+    expect(frame).not.toMatch(/cleanup|release action|remove worktree/iu)
+
+    const failing = report({
+      checks: [
+        {
+          id: 'worktrees',
+          status: 'fail',
+          summary: 'Managed worktree lifecycle: 1 unsafe',
+        },
+      ],
+      summary: { passed: 0, warnings: 0, failed: 1 },
+      ok: false,
+    })
+    expect(projectDoctorWarningGroups(failing)).toEqual([
+      expect.objectContaining({
+        heading: 'Managed worktree lifecycle',
+        checks: [expect.objectContaining({ id: 'worktrees', status: 'fail' })],
+      }),
+    ])
+    const passing = report({
+      checks: [
+        {
+          id: 'worktrees',
+          status: 'pass',
+          summary: 'No managed worktree records found',
+        },
+      ],
+      summary: { passed: 1, warnings: 0, failed: 0 },
+    })
+    expect(projectDoctorWarningGroups(passing)).toEqual([])
+  })
+
   it('omits all conditional groups when every check passes', () => {
     const clean = report({
       ok: true,

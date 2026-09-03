@@ -9,6 +9,10 @@ import {
 } from '../core/team-mailbox.js'
 import type { TeamSnapshot, TeamTask } from '../core/team-ownership.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
+import {
+  inspectManagedWorktreeHealth,
+  type ManagedWorktreeHealthStatus,
+} from './managed-worktree.js'
 
 export interface TeamDashboard {
   readonly team: {
@@ -49,6 +53,8 @@ export interface TeamDashboard {
     branch: string | null
     access: string
     present: boolean
+    status: ManagedWorktreeHealthStatus
+    reason: string
   }[]
   readonly mailbox: {
     totalRecords: number
@@ -94,6 +100,8 @@ export interface TeamWorktreeEvidence {
   readonly branch: string | null
   readonly access: string
   readonly present: boolean
+  readonly status: ManagedWorktreeHealthStatus
+  readonly reason: string
 }
 
 function freeze<T>(value: T): T {
@@ -156,6 +164,14 @@ export function projectTeamDashboard(
       : active
         ? 'healthy'
         : 'idle'
+  const worktrees = (options.worktrees ?? []).map((entry) => ({ ...entry }))
+  const unsafeWorktrees = worktrees.filter((entry) => entry.status === 'unsafe')
+  const effectiveStatus =
+    status === 'stopping' || status === 'blocked'
+      ? status
+      : unsafeWorktrees.length
+        ? 'degraded'
+        : status
   const mailboxEvents = (options.mailbox?.records ?? []).map((record) => ({
     kind: 'mailbox',
     at: record.createdAt,
@@ -176,6 +192,12 @@ export function projectTeamDashboard(
             summary: detail,
           })),
           ...mailboxEvents,
+          ...worktrees.map((entry) => ({
+            kind: 'worktree',
+            at: snapshot.updatedAt,
+            summary: `${entry.taskId}: ${entry.status}`,
+            detail: entry.reason,
+          })),
         ].slice(0, options.maxEvents ?? 32)
   return freeze({
     team: {
@@ -192,7 +214,7 @@ export function projectTeamDashboard(
     },
     agents: freeze(agents),
     tasks: freeze(tasks),
-    worktrees: freeze((options.worktrees ?? []).map((entry) => ({ ...entry }))),
+    worktrees: freeze(worktrees),
     mailbox: options.mailbox
       ? {
           totalRecords: options.mailbox.totalRecords,
@@ -219,7 +241,11 @@ export function projectTeamDashboard(
       },
       exhaustedReason: snapshot.usage.exhausted?.reason ?? null,
     },
-    health: { status, blockers: freeze(blockers), activeCount: active },
+    health: {
+      status: effectiveStatus,
+      blockers: freeze(blockers),
+      activeCount: active,
+    },
     events: freeze(events),
   })
 }
@@ -227,9 +253,21 @@ export function projectTeamDashboard(
 export function renderTeamSummary(dashboard: TeamDashboard): string {
   const h = dashboard.health
   const base = `${dashboard.team.name} (${dashboard.team.id}): ${h.status}, ${h.activeCount} active, ${dashboard.tasks.length} tasks`
-  return h.blockers.length
-    ? `${base} — ${h.blockers.slice(0, 3).join('; ')}`
-    : base
+  const counts = (
+    ['active', 'retained', 'safely-releasable', 'released', 'unsafe'] as const
+  )
+    .map((status) => {
+      const count = dashboard.worktrees.filter(
+        (entry) => entry.status === status,
+      ).length
+      return count === 0 ? null : `${status} ${count}`
+    })
+    .filter((value): value is string => value !== null)
+  const suffix = [
+    ...(h.blockers.length ? h.blockers.slice(0, 3) : []),
+    ...counts,
+  ]
+  return suffix.length ? `${base} — ${suffix.join('; ')}` : base
 }
 export function renderTeamAudit(dashboard: TeamDashboard): string {
   return dashboard.events
@@ -403,6 +441,25 @@ export async function readTeamWorktreeEvidence(input: {
   const members = new Map(
     input.snapshot.roster.map((member) => [member.name, member]),
   )
+  let health: Awaited<ReturnType<typeof inspectManagedWorktreeHealth>> | null =
+    null
+  let healthChecked = false
+  const inspectHealth = async () => {
+    if (healthChecked) return health
+    healthChecked = true
+    try {
+      await lstat(join(resolve(input.nativeRoot), 'state', 'managed-worktrees'))
+      health = await inspectManagedWorktreeHealth({
+        cwd: input.snapshot.projectIdentity,
+        stateRoot: resolve(input.nativeRoot, 'state'),
+        limit: 64,
+      })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    return health
+  }
+  const initialHealth = await inspectHealth()
   for (const task of input.snapshot.tasks) {
     if (result.length >= limit) break
     if (task.usage.generation <= 0) continue
@@ -414,34 +471,96 @@ export async function readTeamWorktreeEvidence(input: {
       )
       .digest('hex')
       .slice(0, 24)
-    let path: string | undefined
-    for (const candidate of [join(managedRoot, hash), join(legacyRoot, hash)]) {
+    const managedPath = join(managedRoot, hash)
+    const legacyPath = join(legacyRoot, hash)
+    const present = async (
+      candidate: string,
+    ): Promise<{ present: boolean; unsafeReason: string | null }> => {
       try {
         const candidateStat = await lstat(candidate)
         if (candidateStat.isSymbolicLink())
           throw new Error(`Unsafe Team worktree symlink: ${candidate}`)
-        if (candidateStat.isDirectory()) {
-          path = candidate
-          break
-        }
+        return candidateStat.isDirectory()
+          ? { present: true, unsafeReason: null }
+          : {
+              present: false,
+              unsafeReason: `Unsafe Team worktree path is not a directory: ${candidate}`,
+            }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          return { present: false, unsafeReason: null }
+        throw error
       }
     }
-    if (!path) continue
+    const managedEvidence = await present(managedPath)
+    const legacyEvidence = await present(legacyPath)
+    const managedPresent = managedEvidence.present
+    const legacyPresent = legacyEvidence.present
+    const healthReport = managedPresent ? await inspectHealth() : initialHealth
+    const managed = healthReport?.entries.find(
+      (entry) => entry.worktreePath === managedPath,
+    )
+    const unsafePath =
+      managedEvidence.unsafeReason ?? legacyEvidence.unsafeReason
+    if (unsafePath) {
+      result.push({
+        taskId: task.id,
+        path: managedEvidence.unsafeReason ? managedPath : legacyPath,
+        branch: `praxis/team/${input.snapshot.teamId}/${hash}`,
+        access: 'write',
+        present: true,
+        status: 'unsafe',
+        reason: unsafePath,
+      })
+      continue
+    }
+    if (managedPresent && legacyPresent) {
+      result.push({
+        taskId: task.id,
+        path: managedPath,
+        branch:
+          managed?.branch ?? `praxis/team/${input.snapshot.teamId}/${hash}`,
+        access: 'write',
+        present: true,
+        status: 'unsafe',
+        reason: 'managed and legacy Team worktree paths are both present',
+      })
+      continue
+    }
+    if (!managedPresent && !legacyPresent && !managed) continue
+    if (managedPresent || managed) {
+      result.push({
+        taskId: task.id,
+        path: managedPath,
+        branch:
+          managed?.branch ?? `praxis/team/${input.snapshot.teamId}/${hash}`,
+        access: 'write',
+        present: managed?.present ?? managedPresent,
+        status: managed?.status ?? 'unsafe',
+        reason:
+          managed?.reason ??
+          (healthReport?.truncated
+            ? 'managed checkout ownership evidence may be outside bounded registry'
+            : 'managed checkout has no managed registry ownership evidence'),
+      })
+      continue
+    }
     let branch: string | null = null
     try {
       branch =
-        (await readFile(join(path, '.praxis-branch'), 'utf8')).trim() || null
+        (await readFile(join(legacyPath, '.praxis-branch'), 'utf8')).trim() ||
+        null
     } catch {
       /* optional metadata */
     }
     result.push({
       taskId: task.id,
-      path,
+      path: legacyPath,
       branch: branch ?? `praxis/team/${input.snapshot.teamId}/${hash}`,
       access: 'write',
       present: true,
+      status: 'retained',
+      reason: 'legacy Team worktree is outside the managed lifecycle',
     })
   }
   return freeze(result)

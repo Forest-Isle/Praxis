@@ -181,6 +181,13 @@ routing.
 | Workflow                           | Complete | Runtime, sandbox, task lifecycle, native files/options, exact chained `v2` keys, semantic sidecar and ordered fallbacks, plus live zero-child replay in both directions                                                                                                                                                                                                                                        |
 | MCP resource and media tools       | Complete | Conditional schemas, paginated resources, bounded blob materialization, ordered media, structured metadata, attribution, persistence, and live resume                                                                                                                                                                                                                                                          |
 
+Managed-worktree lifecycle diagnostics are Praxis-native evidence: the shared
+five-state projection supplies fixed counts, a 64-entry bound with explicit
+truncation, and stable bounded reasons to doctor and Team status/logs/attach.
+Doctor recursively credential-redacts nested diagnostic details before
+publishing them. This does not add a Claude parity claim, adopt legacy Team
+paths, or perform cleanup.
+
 ## Management commands
 
 | Capability           | Status   | Evidence / remaining work                                                                                                                                                                                                                                                                                                                                                                                                    |

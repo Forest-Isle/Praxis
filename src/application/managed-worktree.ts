@@ -12,6 +12,7 @@ import {
   type ManagedWorktreeRecord,
 } from '../persistence/managed-worktree-store.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import {
   ExclusiveFileLease,
@@ -20,6 +21,8 @@ import {
 import { isTerminalLifecycleState } from '../core/agent-orchestration.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { parseAgentWorktreeOwner } from './agent-worktree-owner.js'
+import { isWorkflowAgentId, isWorkflowRunId } from '../native/workflow.js'
+import { parseTeamId } from '../core/team-ownership.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -86,6 +89,36 @@ export interface ManagedWorktreeReconciliationResult {
   inspected: number
   truncated: boolean
   entries: readonly ManagedWorktreeReconciliationEntry[]
+}
+
+export type ManagedWorktreeHealthStatus =
+  'active' | 'retained' | 'safely-releasable' | 'released' | 'unsafe'
+
+export interface ManagedWorktreeHealthEntry {
+  recordPath: string
+  worktreeId: string | null
+  kind: ManagedWorktreeRecord['kind'] | null
+  policy: ManagedWorktreeRecord['policy'] | null
+  recordState: ManagedWorktreeRecord['state'] | null
+  worktreePath: string | null
+  branch: string | null
+  present: boolean | null
+  status: ManagedWorktreeHealthStatus
+  reason: string
+}
+
+export interface ManagedWorktreeHealthReport {
+  repositoryRoot: string
+  inspected: number
+  truncated: boolean
+  counts: {
+    active: number
+    retained: number
+    safelyReleasable: number
+    released: number
+    unsafe: number
+  }
+  entries: readonly ManagedWorktreeHealthEntry[]
 }
 
 const reconciliationCache = new Map<
@@ -548,40 +581,579 @@ async function reconcileAgentLifecycle(
     if (ownership.owned)
       return { safe: false, reason: 'Agent lifecycle owner is live' }
     const lifecycle = await lifecycleStore.read()
-    if (!lifecycle)
-      return { safe: false, reason: 'Agent lifecycle state is missing' }
-    const snapshot = lifecycle.lifecycle
-    const matchingToken = isTerminalLifecycleState(snapshot.state)
-      ? snapshot.previousOwnerToken === owner.executionToken
-      : snapshot.owner?.token === owner.executionToken
-    if (!matchingToken)
-      return {
-        safe: false,
-        reason: 'Agent lifecycle owner token does not match worktree owner',
-      }
-    if (snapshot.state === 'failed' || snapshot.state === 'cancelled')
-      return {
-        safe: false,
-        reason: `Agent lifecycle is ${snapshot.state}; evidence was retained`,
-      }
-    if (snapshot.state === 'orphaned')
-      return {
-        safe: false,
-        reason: 'Agent lifecycle is orphaned; evidence was retained',
-      }
-    if (!isTerminalLifecycleState(snapshot.state))
-      return {
-        safe: false,
-        reason: `Agent lifecycle remains ${snapshot.state}; owner state is unavailable`,
-      }
-    if (snapshot.state !== 'completed')
-      return { safe: false, reason: `Agent lifecycle is ${snapshot.state}` }
-    return { safe: true }
+    const classification = classifyAgentLifecycle(lifecycle, owner)
+    return classification.status === 'safely-releasable'
+      ? { safe: true }
+      : { safe: false, reason: classification.reason }
   } catch (error) {
     return {
       safe: false,
       reason: `Agent lifecycle state is unavailable: ${error instanceof Error ? error.message : String(error)}`,
     }
+  }
+}
+
+function classifyAgentLifecycle(
+  lifecycle: Awaited<ReturnType<SubagentLifecycleStore['read']>>,
+  owner: NonNullable<ReturnType<typeof parseAgentWorktreeOwner>>,
+): {
+  status: 'retained' | 'safely-releasable' | 'unsafe'
+  reason: string
+} {
+  if (!lifecycle)
+    return { status: 'unsafe', reason: 'Agent lifecycle state is missing' }
+  const snapshot = lifecycle.lifecycle
+  const matchingToken = isTerminalLifecycleState(snapshot.state)
+    ? snapshot.previousOwnerToken === owner.executionToken
+    : snapshot.owner?.token === owner.executionToken
+  if (!matchingToken)
+    return {
+      status: 'unsafe',
+      reason: 'Agent lifecycle owner token does not match worktree owner',
+    }
+  if (snapshot.state === 'failed' || snapshot.state === 'cancelled')
+    return {
+      status: 'retained',
+      reason: `Agent lifecycle is ${snapshot.state}; evidence was retained`,
+    }
+  if (snapshot.state === 'orphaned')
+    return {
+      status: 'retained',
+      reason: 'Agent lifecycle is orphaned; evidence was retained',
+    }
+  if (!isTerminalLifecycleState(snapshot.state))
+    return {
+      status: 'unsafe',
+      reason: `Agent lifecycle remains ${snapshot.state}; owner state is unavailable`,
+    }
+  if (snapshot.state !== 'completed')
+    return { status: 'unsafe', reason: `Agent lifecycle is ${snapshot.state}` }
+  return {
+    status: 'safely-releasable',
+    reason: 'ownership and Git state are clean',
+  }
+}
+
+async function inspectAgentLifecycle(
+  stateRoot: string,
+  record: ManagedWorktreeRecord,
+): Promise<{
+  status: 'retained' | 'safely-releasable' | 'unsafe'
+  reason: string
+}> {
+  const owner = parseAgentWorktreeOwner(record.ownerId)
+  if (!owner) return { status: 'unsafe', reason: 'Agent owner ID is malformed' }
+  let lifecycle
+  try {
+    lifecycle = await new SubagentLifecycleStore(
+      stateRoot,
+      owner.sessionId,
+      owner.agentId,
+    ).read()
+  } catch {
+    return {
+      status: 'unsafe',
+      reason: 'Agent lifecycle state is unavailable',
+    }
+  }
+  return classifyAgentLifecycle(lifecycle, owner)
+}
+
+function healthEntry(
+  recordPath: string,
+  record: ManagedWorktreeRecord,
+  present: boolean | null,
+  status: ManagedWorktreeHealthStatus,
+  reason: string,
+): ManagedWorktreeHealthEntry {
+  return {
+    recordPath,
+    worktreeId: record.worktreeId,
+    kind: record.kind,
+    policy: record.policy,
+    recordState: record.state,
+    worktreePath: record.worktreePath,
+    branch: record.branch,
+    present,
+    status,
+    reason: boundedHealthReason(reason),
+  }
+}
+
+const HEALTH_STABLE_REASONS = new Set([
+  'managed worktree path must not be a symlink',
+  'managed worktree path must be a directory',
+  'worktree path is not a real directory',
+  'worktree path is not canonical',
+  'worktree is not registered',
+  'registered worktree root does not match',
+  'repository identity does not match',
+  'worktree marker does not match ownership record',
+  'worktree marker is invalid',
+  'worktree is not detached',
+  'worktree branch does not match ownership record',
+])
+
+function boundedHealthReason(reason: string): string {
+  const codePoints = Array.from(reason)
+  return codePoints.length <= 256 ? reason : codePoints.slice(0, 256).join('')
+}
+
+function healthErrorReason(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : ''
+  return HEALTH_STABLE_REASONS.has(message) ? message : fallback
+}
+
+function validHealthOwner(record: ManagedWorktreeRecord): boolean {
+  const parts = record.ownerId.split(':')
+  if (record.kind === 'workflow')
+    return (
+      parts.length === 3 &&
+      parts[0] === 'workflow' &&
+      isWorkflowRunId(parts[1] ?? '') &&
+      isWorkflowAgentId(parts[2] ?? '')
+    )
+  if (record.kind === 'agent')
+    return parseAgentWorktreeOwner(record.ownerId) !== null
+  if (parts.length !== 5 || parts[0] !== 'team') return false
+  try {
+    parseTeamId(parts[1])
+  } catch {
+    return false
+  }
+  return (
+    /^[1-9]\d*$/u.test(parts[2] ?? '') &&
+    Number.isSafeInteger(Number(parts[2])) &&
+    Number(parts[2]) > 0 &&
+    /^[a-f0-9]{24}$/u.test(parts[3] ?? '') &&
+    /^[A-Za-z0-9_-]{1,128}$/u.test(parts[4] ?? '')
+  )
+}
+
+async function preflightHealthPath(
+  record: ManagedWorktreeRecord,
+): Promise<boolean> {
+  let entry
+  try {
+    entry = await lstat(record.worktreePath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    await assertRealDirectory(record.worktreePath, 'managed worktree path')
+    return false
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory())
+    throw new Error('worktree path is not a real directory')
+  await assertRealDirectory(record.worktreePath, 'managed worktree path')
+  if ((await realpath(record.worktreePath)) !== resolve(record.worktreePath))
+    throw new Error('worktree path is not canonical')
+  return true
+}
+
+function classifyCleanHealthRecord(
+  record: ManagedWorktreeRecord,
+  absent: boolean,
+  agentLifecycle: Awaited<ReturnType<typeof inspectAgentLifecycle>> | null,
+): { status: ManagedWorktreeHealthStatus; reason: string } {
+  if (record.state === 'retained')
+    return {
+      status: 'retained',
+      reason: record.retentionReason ?? 'record is retained',
+    }
+  if (record.policy === 'durable' || record.kind === 'team')
+    return {
+      status: 'retained',
+      reason:
+        record.policy === 'durable'
+          ? 'durable retention policy'
+          : 'team worktree is retained',
+    }
+  if (record.kind === 'agent')
+    return (
+      agentLifecycle ?? {
+        status: 'unsafe' as const,
+        reason: 'Agent lifecycle state is missing',
+      }
+    )
+  return {
+    status: 'safely-releasable',
+    reason: absent
+      ? 'checkout is absent and remaining ownership evidence is releasable'
+      : 'ownership and Git state are clean',
+  }
+}
+
+export async function inspectManagedWorktreeHealth(options: {
+  cwd: string
+  stateRoot: string
+  limit?: number
+}): Promise<ManagedWorktreeHealthReport> {
+  const limit = options.limit ?? 64
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64)
+    throw new Error(
+      'Managed worktree health limit must be an integer from 1 to 64',
+    )
+  const repositoryRoot = await resolveProjectIdentity(options.cwd)
+  const registryDirectory = resolve(
+    options.stateRoot,
+    'managed-worktrees',
+    sanitizeProjectPath(repositoryRoot),
+  )
+  const stateRoot = resolve(options.stateRoot)
+  const managedRoot = resolve(stateRoot, 'managed-worktrees')
+  for (const [path, description] of [
+    [stateRoot, 'managed worktree state root'],
+    [managedRoot, 'managed worktree registry root'],
+  ] as const) {
+    try {
+      const info = await lstat(path)
+      if (info.isSymbolicLink())
+        throw new Error(`${description} must not be a symlink`)
+      if (!info.isDirectory())
+        throw new Error(`${description} must be a directory`)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+  }
+  try {
+    const info = await lstat(registryDirectory)
+    if (info.isSymbolicLink() || !info.isDirectory())
+      throw new Error('managed worktree registry must be a real directory')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return {
+      repositoryRoot,
+      inspected: 0,
+      truncated: false,
+      counts: {
+        active: 0,
+        retained: 0,
+        safelyReleasable: 0,
+        released: 0,
+        unsafe: 0,
+      },
+      entries: [],
+    }
+  }
+  const snapshot = await inspectManagedWorktreeRegistry({
+    stateRoot: options.stateRoot,
+    repositoryRoot,
+    limit,
+  })
+  const entries: ManagedWorktreeHealthEntry[] = []
+  for (const item of snapshot.entries) {
+    if ('error' in item) {
+      entries.push({
+        recordPath: item.path,
+        worktreeId: null,
+        kind: null,
+        policy: null,
+        recordState: null,
+        worktreePath: null,
+        branch: null,
+        present: null,
+        status: 'unsafe',
+        reason: 'managed worktree record is invalid',
+      })
+      continue
+    }
+    const original = item.record
+    if (!validHealthOwner(original)) {
+      entries.push(
+        healthEntry(
+          item.path,
+          original,
+          null,
+          'unsafe',
+          `${original.kind[0]?.toUpperCase() ?? ''}${original.kind.slice(1)} owner ID is malformed`,
+        ),
+      )
+      continue
+    }
+    let preflightPresent: boolean
+    try {
+      preflightPresent = await preflightHealthPath(original)
+    } catch (error) {
+      entries.push(
+        healthEntry(
+          item.path,
+          original,
+          true,
+          'unsafe',
+          healthErrorReason(
+            error,
+            'worktree path could not be inspected safely',
+          ),
+        ),
+      )
+      continue
+    }
+    const base = new ManagedWorktreeStore(
+      options.stateRoot,
+      repositoryRoot,
+      original.worktreeId,
+    )
+    const lease = await base.acquireLease()
+    if (!lease) {
+      const unavailableStatus: ManagedWorktreeHealthStatus =
+        original.state === 'released'
+          ? 'unsafe'
+          : ['creating', 'active', 'releasing'].includes(original.state)
+            ? 'active'
+            : 'retained'
+      entries.push(
+        healthEntry(
+          item.path,
+          original,
+          preflightPresent,
+          unavailableStatus,
+          original.state === 'released'
+            ? 'released record has a live or unavailable lease'
+            : unavailableStatus === 'active'
+              ? 'worktree lease is live or unavailable'
+              : (original.retentionReason ?? 'record is retained'),
+        ),
+      )
+      continue
+    }
+    try {
+      let record: ManagedWorktreeRecord
+      try {
+        record = await base.read()
+      } catch {
+        entries.push(
+          healthEntry(
+            item.path,
+            original,
+            null,
+            'unsafe',
+            'managed worktree record could not be reread safely',
+          ),
+        )
+        continue
+      }
+      if (!sameOwnership(record, original)) {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            null,
+            'unsafe',
+            'ownership record changed during inspection',
+          ),
+        )
+        continue
+      }
+      const registered = await registeredWorktrees(record.repositoryRoot).catch(
+        () => null,
+      )
+      if (!registered) {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            null,
+            'unsafe',
+            'could not inspect registered worktrees',
+          ),
+        )
+        continue
+      }
+      let present = false
+      try {
+        const info = await lstat(record.worktreePath)
+        present = true
+        if (info.isSymbolicLink() || !info.isDirectory())
+          throw new Error('worktree path is not a real directory')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          entries.push(
+            healthEntry(
+              item.path,
+              record,
+              true,
+              'unsafe',
+              healthErrorReason(
+                error,
+                'worktree ownership and Git state could not be validated',
+              ),
+            ),
+          )
+          continue
+        }
+      }
+      const registeredPath = registered.has(resolve(record.worktreePath))
+      if (record.state === 'released') {
+        let branchEvidence: 'absent' | 'match' | 'ambiguous' = 'absent'
+        if (record.branch !== null)
+          branchEvidence = await ownedBranchRef(
+            record.repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )
+        if (present || registeredPath || branchEvidence !== 'absent') {
+          entries.push(
+            healthEntry(
+              item.path,
+              record,
+              present,
+              'unsafe',
+              'released record has contradictory checkout or branch evidence',
+            ),
+          )
+        } else {
+          entries.push(
+            healthEntry(
+              item.path,
+              record,
+              false,
+              'released',
+              'record is released',
+            ),
+          )
+        }
+        continue
+      }
+      if (!present) {
+        if (registeredPath) {
+          entries.push(
+            healthEntry(
+              item.path,
+              record,
+              false,
+              'unsafe',
+              'worktree is missing but remains registered',
+            ),
+          )
+          continue
+        }
+        if (record.branch !== null) {
+          const branchEvidence = await ownedBranchRef(
+            record.repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )
+          if (branchEvidence === 'ambiguous') {
+            entries.push(
+              healthEntry(
+                item.path,
+                record,
+                false,
+                'unsafe',
+                'owned branch is missing or moved',
+              ),
+            )
+            continue
+          }
+        }
+        const agentLifecycle =
+          record.kind === 'agent'
+            ? await inspectAgentLifecycle(options.stateRoot, record)
+            : null
+        if (agentLifecycle?.status === 'unsafe') {
+          entries.push(
+            healthEntry(
+              item.path,
+              record,
+              false,
+              'unsafe',
+              agentLifecycle.reason,
+            ),
+          )
+          continue
+        }
+        const clean = classifyCleanHealthRecord(record, true, agentLifecycle)
+        entries.push(
+          healthEntry(item.path, record, false, clean.status, clean.reason),
+        )
+        continue
+      }
+      let inspection: { status: string; head: string }
+      try {
+        inspection = await inspectOwnedCheckout(record, registered)
+      } catch (error) {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            true,
+            'unsafe',
+            healthErrorReason(
+              error,
+              'worktree ownership and Git state could not be validated',
+            ),
+          ),
+        )
+        continue
+      }
+      const agentLifecycle =
+        record.kind === 'agent'
+          ? await inspectAgentLifecycle(options.stateRoot, record)
+          : null
+      if (agentLifecycle?.status === 'unsafe') {
+        entries.push(
+          healthEntry(item.path, record, true, 'unsafe', agentLifecycle.reason),
+        )
+        continue
+      }
+      if (agentLifecycle?.status === 'retained') {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            true,
+            'retained',
+            agentLifecycle.reason,
+          ),
+        )
+        continue
+      }
+      if (inspection.status) {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            true,
+            'retained',
+            'worktree has uncommitted changes',
+          ),
+        )
+        continue
+      }
+      if (inspection.head !== record.baseCommit) {
+        entries.push(
+          healthEntry(
+            item.path,
+            record,
+            true,
+            'retained',
+            'worktree HEAD does not match base commit',
+          ),
+        )
+        continue
+      }
+      const clean = classifyCleanHealthRecord(record, false, agentLifecycle)
+      entries.push(
+        healthEntry(item.path, record, true, clean.status, clean.reason),
+      )
+    } finally {
+      await lease.release()
+    }
+  }
+  const counts = {
+    active: entries.filter((entry) => entry.status === 'active').length,
+    retained: entries.filter((entry) => entry.status === 'retained').length,
+    safelyReleasable: entries.filter(
+      (entry) => entry.status === 'safely-releasable',
+    ).length,
+    released: entries.filter((entry) => entry.status === 'released').length,
+    unsafe: entries.filter((entry) => entry.status === 'unsafe').length,
+  }
+  return {
+    repositoryRoot,
+    inspected: snapshot.entries.length,
+    truncated: snapshot.truncated,
+    counts,
+    entries,
   }
 }
 

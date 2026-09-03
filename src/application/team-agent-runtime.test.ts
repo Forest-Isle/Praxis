@@ -10,7 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -921,7 +921,7 @@ describe('ClaudeTeamAgentRuntime', () => {
         worktree,
       )
       const registry = await inspectManagedWorktreeRegistry({
-        stateRoot: nativeRoot,
+        stateRoot: resolve(nativeRoot, 'state'),
         repositoryRoot: identity,
         limit: 64,
       })

@@ -1336,3 +1336,18 @@ live-model qualification remains externally blocked.
 - [ ] rerun the complete 61-gate live-model qualification after upstream model
       balance is available
 - [ ] validate the official sandbox runtime on a real WSL environment
+
+## Stage 166 - managed-worktree lifecycle diagnostics (#629)
+
+Status: complete.
+
+- [x] project-scoped five-state lifecycle projection with fixed counts,
+      bounded 64-entry inspection, explicit truncation, and stable bounded
+      reasons; doctor recursively credential-redacts nested published details
+- [x] headless and TUI `praxis doctor` projection with severity mapping and
+      read-only behavior
+- [x] Team `status`, `logs`, and `attach` lifecycle evidence projections
+- [x] bounded diagnostics, doctor credential redaction, and Team health
+      precedence
+- [x] legacy Team evidence retained without adoption, migration, or cleanup
+- [x] focused tests, documentation checks, and full repository gates
