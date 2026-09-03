@@ -504,7 +504,7 @@ describe('NativeTeamWorkspaceProvider', () => {
       await workspace.retain('registry retention')
       const paths = teamPaths(identity, nativeRoot, input)
       const registry = await inspectManagedWorktreeRegistry({
-        stateRoot: nativeRoot,
+        stateRoot: resolve(nativeRoot, 'state'),
         repositoryRoot: identity,
         limit: 64,
       })

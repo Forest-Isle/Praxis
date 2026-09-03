@@ -220,8 +220,11 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   worktrees are cleaned up, while failed, dirty, committed, or otherwise
   unsafe worktrees retain evidence for inspection. Restore accepts only an
   owned current or exact historical Agent path; invalid or unavailable
-  evidence safely falls back to the parent cwd. Experimental
-  local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
+  evidence safely falls back to the parent cwd. Managed worktrees expose
+  bounded five-state lifecycle diagnostics through `praxis doctor`, while
+  Team `status`, `logs`, and `attach` surface the same read-only lifecycle
+  evidence. Experimental local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent
+  from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,
   and bounded model-context projection. Teams are explicitly experimental and

@@ -36,6 +36,7 @@ const WARNING_GROUP_DEFINITIONS: readonly {
       'provider',
     ],
   },
+  { heading: 'Managed worktree lifecycle', ids: ['worktrees'] },
 ]
 
 export function projectDoctorWarningGroups(

@@ -54,6 +54,7 @@ import {
   type PraxisDistTagLoader,
 } from './doctor-diagnostic.js'
 import { resolveProjectMemoryPolicy } from '../core/project-memory.js'
+import { inspectManagedWorktreeHealth } from '../application/managed-worktree.js'
 
 export interface DoctorCheck {
   id:
@@ -68,6 +69,7 @@ export interface DoctorCheck {
     | 'resources'
     | 'hooks'
     | 'claude-runtime'
+    | 'worktrees'
   status: 'pass' | 'warn' | 'fail'
   summary: string
   details?: Record<string, unknown>
@@ -222,6 +224,26 @@ function safeBaseUrl(value: string): string {
   return endpoint.toString().replace(/\/$/u, '')
 }
 
+function redactDoctorDiagnosticValue(
+  value: unknown,
+  sensitiveValues: readonly string[],
+): unknown {
+  if (typeof value === 'string')
+    return redactSensitiveText(value, sensitiveValues)
+  if (Array.isArray(value))
+    return value.map((item) =>
+      redactDoctorDiagnosticValue(item, sensitiveValues),
+    )
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        redactDoctorDiagnosticValue(item, sensitiveValues),
+      ]),
+    )
+  return value
+}
+
 async function capture(
   id: DoctorCheck['id'],
   operation: () => Promise<
@@ -353,6 +375,44 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     await capture('claude-runtime', async () => {
       return {
         summary: 'Claude Code runtime is not required in native mode',
+      }
+    }),
+  )
+  checks.push(
+    await capture('worktrees', async () => {
+      let health
+      try {
+        health = await inspectManagedWorktreeHealth({
+          cwd,
+          stateRoot: resolve(configRoot, 'state'),
+          limit: 64,
+        })
+      } catch {
+        throw new Error('Managed worktree health could not be inspected safely')
+      }
+      const { counts } = health
+      const status =
+        health.entries.length === 0
+          ? ('pass' as const)
+          : counts.unsafe > 0
+            ? ('fail' as const)
+            : counts.retained > 0 ||
+                counts.safelyReleasable > 0 ||
+                health.truncated
+              ? ('warn' as const)
+              : ('pass' as const)
+      return {
+        status,
+        summary:
+          health.entries.length === 0
+            ? 'No managed worktree records found'
+            : `Managed worktree lifecycle: ${counts.active} active, ${counts.retained} retained, ${counts.safelyReleasable} safely releasable, ${counts.released} released, ${counts.unsafe} unsafe${health.truncated ? ' (truncated)' : ''}`,
+        details: {
+          repositoryRoot: health.repositoryRoot,
+          counts,
+          truncated: health.truncated,
+          entries: health.entries,
+        },
       }
     }),
   )
@@ -608,6 +668,16 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     if (check.status === 'fail') {
       check.summary = redactSensitiveText(check.summary, sensitiveValues)
     }
+  }
+
+  for (const check of checks) {
+    if (check.id !== 'worktrees') continue
+    check.summary = redactSensitiveText(check.summary, sensitiveValues)
+    if (check.details)
+      check.details = redactDoctorDiagnosticValue(
+        check.details,
+        sensitiveValues,
+      ) as Record<string, unknown>
   }
 
   const summary = {

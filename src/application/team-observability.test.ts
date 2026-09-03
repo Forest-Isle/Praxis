@@ -1,15 +1,38 @@
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
 import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { parseTeamSnapshot } from '../core/team-ownership.js'
+import { resolveProjectIdentity } from '../platform/project-identity.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   projectTeamDashboard,
   readTeamMailboxAudit,
   readTeamWorktreeEvidence,
   renderTeamAudit,
+  renderTeamSummary,
 } from './team-observability.js'
+import { NativeTeamWorkspaceProvider } from './team-workspace.js'
+
+const exec = promisify(execFile)
+
+async function git(cwd: string, ...args: string[]): Promise<void> {
+  await exec('git', ['-C', cwd, ...args])
+}
+
+async function gitRepository(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'praxis-observability-git-'))
+  await git(root, 'init', '-q')
+  await git(root, 'config', 'user.email', 'praxis@example.test')
+  await git(root, 'config', 'user.name', 'Praxis Test')
+  await writeFile(join(root, 'tracked.txt'), 'base\n')
+  await git(root, 'add', 'tracked.txt')
+  await git(root, 'commit', '-qm', 'seed')
+  return root
+}
 
 function snapshot(projectIdentity = '/tmp/project') {
   return parseTeamSnapshot({
@@ -99,6 +122,65 @@ describe('Team observability', () => {
     expect(task?.claims.files).toEqual(['src/a.ts'])
     expect(task?.usage.durationMs).toBe(0)
     expect(dashboard.events).toHaveLength(1)
+  })
+
+  it('projects worktree lifecycle into health, bounded events, and summary', () => {
+    const base = snapshot()
+    const ready = parseTeamSnapshot({
+      ...base,
+      tasks: base.tasks.map((task) => ({ ...task, blockedBy: [] })),
+    })
+    const unsafeWorktree = {
+      taskId: 'unsafe-task',
+      path: '/tmp/unsafe',
+      branch: null,
+      access: 'write' as const,
+      present: true,
+      status: 'unsafe' as const,
+      reason:
+        'managed checkout ownership evidence may be outside bounded registry',
+    }
+    const retainedWorktree = {
+      taskId: 'retained-task',
+      path: '/tmp/retained',
+      branch: null,
+      access: 'write' as const,
+      present: true,
+      status: 'retained' as const,
+      reason: 'legacy Team worktree is outside the managed lifecycle',
+    }
+    const worktrees = [unsafeWorktree, retainedWorktree]
+    const dashboard = projectTeamDashboard(ready, {
+      maxEvents: 2,
+      worktrees,
+    })
+    expect(dashboard.health.status).toBe('degraded')
+    expect(
+      dashboard.events.filter((event) => event.kind === 'worktree'),
+    ).toHaveLength(1)
+    expect(renderTeamSummary(dashboard)).toContain('unsafe 1')
+    expect(renderTeamSummary(dashboard)).toContain('retained 1')
+    expect(
+      projectTeamDashboard(ready, { worktrees: [retainedWorktree] }).health
+        .status,
+    ).toBe('idle')
+    expect(
+      projectTeamDashboard(base, { worktrees: [unsafeWorktree] }).health.status,
+    ).toBe('blocked')
+    const exhausted = parseTeamSnapshot({
+      ...ready,
+      usage: {
+        ...ready.usage,
+        exhausted: {
+          reason: 'tokens',
+          at: '2026-08-01T00:00:01.000Z',
+        },
+      },
+    })
+    expect(
+      projectTeamDashboard(exhausted, { worktrees: [unsafeWorktree] }).health
+        .status,
+    ).toBe('stopping')
   })
 
   it('reads missing mailbox without creating state', async () => {
@@ -226,6 +308,8 @@ describe('Team observability', () => {
         taskId: 'task-1',
         path: managed,
         present: true,
+        status: 'unsafe',
+        reason: 'managed and legacy Team worktree paths are both present',
       }),
     ])
     await stat(legacy)
@@ -237,8 +321,46 @@ describe('Team observability', () => {
         taskId: 'task-1',
         path: legacy,
         present: true,
+        status: 'retained',
+        reason: 'legacy Team worktree is outside the managed lifecycle',
       }),
     ])
+  })
+
+  it('uses the managed health record as authoritative Team evidence', async () => {
+    const project = await gitRepository()
+    const nativeRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-observability-native-'),
+    )
+    const identity = await resolveProjectIdentity(project)
+    const current = evidenceSnapshot(identity)
+    const provider = await NativeTeamWorkspaceProvider.open({
+      nativeRoot,
+      cwd: project,
+      projectIdentity: identity,
+    })
+    const workspace = await provider.acquire({
+      teamId: 'observability',
+      taskId: 'task-1',
+      generation: 1,
+      access: 'write',
+      leadSessionId: 'lead',
+      executionToken: 'token',
+    })
+    await workspace.retain('observability retention')
+    const entries = await readTeamWorktreeEvidence({
+      nativeRoot,
+      snapshot: current,
+    })
+    expect(entries).toEqual([
+      expect.objectContaining({
+        status: 'retained',
+        reason: 'observability retention',
+        present: true,
+      }),
+    ])
+    await rm(project, { recursive: true, force: true })
+    await rm(nativeRoot, { recursive: true, force: true })
   })
 
   it('rejects Team worktree root and task symlinks without creating state', async () => {
@@ -322,5 +444,86 @@ describe('Team observability', () => {
     await expect(stat(join(nativeRoot, 'state'))).rejects.toMatchObject({
       code: 'ENOENT',
     })
+  })
+
+  it('reports a managed task path without bounded ownership as unsafe', async () => {
+    const project = await mkdtemp(
+      join(tmpdir(), 'praxis-observability-project-'),
+    )
+    const nativeRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-observability-native-'),
+    )
+    const current = evidenceSnapshot(project)
+    const hash = createHash('sha256')
+      .update(`${project}\0observability\0task-1\0${1}`)
+      .digest('hex')
+      .slice(0, 24)
+    const managed = join(
+      project,
+      '.praxis',
+      'worktrees',
+      'team',
+      'observability',
+      hash,
+    )
+    await mkdir(resolve(managed, '..'), { recursive: true })
+    await writeFile(managed, 'not a directory\n')
+    await expect(
+      readTeamWorktreeEvidence({ nativeRoot, snapshot: current }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        path: managed,
+        status: 'unsafe',
+        reason: `Unsafe Team worktree path is not a directory: ${managed}`,
+      }),
+    ])
+  })
+
+  it('distinguishes a present managed path outside the bounded registry window', async () => {
+    const project = await mkdtemp(
+      join(tmpdir(), 'praxis-observability-project-'),
+    )
+    const nativeRoot = await mkdtemp(
+      join(tmpdir(), 'praxis-observability-native-'),
+    )
+    const current = evidenceSnapshot(project)
+    const hash = createHash('sha256')
+      .update(`${project}\0observability\0task-1\0${1}`)
+      .digest('hex')
+      .slice(0, 24)
+    const managed = join(
+      project,
+      '.praxis',
+      'worktrees',
+      'team',
+      'observability',
+      hash,
+    )
+    await mkdir(managed, { recursive: true })
+    const registry = join(
+      nativeRoot,
+      'state',
+      'managed-worktrees',
+      sanitizeProjectPath(await resolveProjectIdentity(project)),
+    )
+    await mkdir(registry, { recursive: true })
+    await Promise.all(
+      Array.from({ length: 65 }, (_, index) =>
+        writeFile(
+          join(registry, `${String(index).padStart(2, '0')}.json`),
+          '{invalid',
+        ),
+      ),
+    )
+    await expect(
+      readTeamWorktreeEvidence({ nativeRoot, snapshot: current }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        path: managed,
+        status: 'unsafe',
+        reason:
+          'managed checkout ownership evidence may be outside bounded registry',
+      }),
+    ])
   })
 })

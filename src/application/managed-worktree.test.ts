@@ -27,6 +27,7 @@ import { resolveProjectIdentity } from '../platform/project-identity.js'
 import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   createOwnedManagedWorktree,
+  inspectManagedWorktreeHealth,
   reconcileManagedWorktrees,
   restoreOwnedManagedWorktree,
   type ManagedWorktreeHookOutcome,
@@ -216,6 +217,427 @@ async function abandonedRecord(
 }
 
 describe('createOwnedManagedWorktree', () => {
+  it('projects bounded managed worktree health without mutating evidence', async () => {
+    const fixture = await repository()
+    const abandoned = await abandonedRecord(fixture, {
+      ownerId: 'workflow:wf_health-clean:a0000000000000000',
+    })
+    const beforeRecord = await readFile(abandoned.path)
+    const beforeCheckout = await readFile(
+      join(abandoned.worktreePath, 'tracked.txt'),
+    )
+    const report = await inspectManagedWorktreeHealth({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+    })
+    expect(report.counts).toEqual({
+      active: 0,
+      retained: 0,
+      safelyReleasable: 1,
+      released: 0,
+      unsafe: 0,
+    })
+    expect(report.entries[0]).toMatchObject({
+      worktreeId: abandoned.worktreeId,
+      status: 'safely-releasable',
+      reason: 'ownership and Git state are clean',
+      present: true,
+    })
+    expect(await readFile(abandoned.path)).toEqual(beforeRecord)
+    expect(await readFile(join(abandoned.worktreePath, 'tracked.txt'))).toEqual(
+      beforeCheckout,
+    )
+
+    const lease = await abandoned.store.acquireLease()
+    expect(lease).not.toBeNull()
+    if (!lease) throw new Error('expected health test lease')
+    await expect(
+      inspectManagedWorktreeHealth({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+      }),
+    ).resolves.toMatchObject({ counts: { active: 1 } })
+    await lease.release()
+  })
+
+  it('fails closed for malformed owners and unsafe paths before a live lease', async () => {
+    const malformedFixture = await repository()
+    const malformed = await abandonedRecord(
+      malformedFixture,
+      { ownerId: 'workflow:not-a-product-owner' },
+      'none',
+    )
+    const malformedLease = await malformed.store.acquireLease()
+    expect(malformedLease).not.toBeNull()
+    await expect(
+      inspectManagedWorktreeHealth({
+        cwd: malformedFixture.repositoryRoot,
+        stateRoot: malformedFixture.stateRoot,
+      }),
+    ).resolves.toMatchObject({
+      entries: [
+        expect.objectContaining({
+          status: 'unsafe',
+          reason: 'Workflow owner ID is malformed',
+        }),
+      ],
+    })
+    await malformedLease?.release()
+
+    for (const [kind, ownerId, reason] of [
+      ['agent', 'agent:malformed', 'Agent owner ID is malformed'],
+      ['team', 'team:malformed', 'Team owner ID is malformed'],
+    ] as const) {
+      const fixture = await repository()
+      await abandonedRecord(fixture, { kind, ownerId }, 'none')
+      await expect(
+        inspectManagedWorktreeHealth({
+          cwd: fixture.repositoryRoot,
+          stateRoot: fixture.stateRoot,
+        }),
+      ).resolves.toMatchObject({
+        entries: [expect.objectContaining({ status: 'unsafe', reason })],
+      })
+    }
+
+    const pathFixture = await repository()
+    const unsafe = await abandonedRecord(
+      pathFixture,
+      { ownerId: 'workflow:wf_health-symlink:a0000000000000000' },
+      'none',
+    )
+    const target = join(pathFixture.root, 'outside')
+    await mkdir(target)
+    await mkdir(resolve(unsafe.worktreePath, '..'), { recursive: true })
+    await symlink(target, unsafe.worktreePath, 'dir')
+    const pathLease = await unsafe.store.acquireLease()
+    expect(pathLease).not.toBeNull()
+    await expect(
+      inspectManagedWorktreeHealth({
+        cwd: pathFixture.repositoryRoot,
+        stateRoot: pathFixture.stateRoot,
+      }),
+    ).resolves.toMatchObject({
+      entries: [expect.objectContaining({ status: 'unsafe', present: true })],
+    })
+    await pathLease?.release()
+
+    const fileFixture = await repository()
+    const unsafeFile = await abandonedRecord(
+      fileFixture,
+      { ownerId: 'workflow:wf_health-file:a0000000000000000' },
+      'none',
+    )
+    await mkdir(resolve(unsafeFile.worktreePath, '..'), { recursive: true })
+    await writeFile(unsafeFile.worktreePath, 'not a directory\n')
+    const fileLease = await unsafeFile.store.acquireLease()
+    expect(fileLease).not.toBeNull()
+    await expect(
+      inspectManagedWorktreeHealth({
+        cwd: fileFixture.repositoryRoot,
+        stateRoot: fileFixture.stateRoot,
+      }),
+    ).resolves.toMatchObject({
+      entries: [
+        expect.objectContaining({
+          status: 'unsafe',
+          present: true,
+          reason: 'worktree path is not a real directory',
+        }),
+      ],
+    })
+    await fileLease?.release()
+  })
+
+  it('keeps an empty health inspection read-only and validates bounds', async () => {
+    const fixture = await repository()
+    const report = await inspectManagedWorktreeHealth({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+    })
+    expect(report).toMatchObject({
+      repositoryRoot: await resolveProjectIdentity(fixture.repositoryRoot),
+      inspected: 0,
+      truncated: false,
+      counts: {
+        active: 0,
+        retained: 0,
+        safelyReleasable: 0,
+        released: 0,
+        unsafe: 0,
+      },
+      entries: [],
+    })
+    await expect(stat(fixture.stateRoot)).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+    for (const limit of [0, 65, 1.5])
+      await expect(
+        inspectManagedWorktreeHealth({
+          cwd: fixture.repositoryRoot,
+          stateRoot: fixture.stateRoot,
+          limit,
+        }),
+      ).rejects.toThrow(/limit/u)
+  })
+
+  it('qualifies Agent lifecycle evidence without mutating lifecycle state', async () => {
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    for (const state of [
+      'completed',
+      'failed',
+      'cancelled',
+      'orphaned',
+    ] as const) {
+      const fixture = await repository()
+      const lifecycleStore = new SubagentLifecycleStore(
+        fixture.stateRoot,
+        sessionId,
+        agentId,
+      )
+      const execution = await lifecycleStore.start()
+      const token = execution.token
+      if (state === 'orphaned') {
+        await execution.running()
+        await execution.release()
+        await lifecycleStore.reconcileOwnerLoss()
+      } else {
+        await execution.running()
+        if (state === 'cancelled') await execution.beginCancellation()
+        await execution.finish(state)
+        await execution.release()
+      }
+      const abandoned = await abandonedRecord(
+        fixture,
+        {
+          ownerId: `agent:${sessionId}:${agentId}:${token}`,
+          kind: 'agent',
+        },
+        'none',
+      )
+      const before = await lifecycleStore.read()
+      const report = await inspectManagedWorktreeHealth({
+        cwd: fixture.repositoryRoot,
+        stateRoot: fixture.stateRoot,
+      })
+      expect(report.entries[0]).toMatchObject({
+        worktreeId: abandoned.worktreeId,
+        status: state === 'completed' ? 'safely-releasable' : 'retained',
+      })
+      expect(await lifecycleStore.read()).toEqual(before)
+    }
+
+    const missingFixture = await repository()
+    const missing = await abandonedRecord(
+      missingFixture,
+      {
+        ownerId: `agent:${sessionId}:${agentId}:missing-token`,
+        kind: 'agent',
+      },
+      'none',
+    )
+    expect(
+      (
+        await inspectManagedWorktreeHealth({
+          cwd: missingFixture.repositoryRoot,
+          stateRoot: missingFixture.stateRoot,
+        })
+      ).entries[0],
+    ).toMatchObject({ worktreeId: missing.worktreeId, status: 'unsafe' })
+
+    const mismatchedFixture = await repository()
+    const mismatchedStore = new SubagentLifecycleStore(
+      mismatchedFixture.stateRoot,
+      sessionId,
+      agentId,
+    )
+    const completed = await mismatchedStore.start()
+    await completed.running()
+    await completed.finish('completed')
+    await completed.release()
+    await abandonedRecord(
+      mismatchedFixture,
+      {
+        ownerId: `agent:${sessionId}:${agentId}:different-token`,
+        kind: 'agent',
+      },
+      'none',
+    )
+    await expect(
+      inspectManagedWorktreeHealth({
+        cwd: mismatchedFixture.repositoryRoot,
+        stateRoot: mismatchedFixture.stateRoot,
+      }),
+    ).resolves.toMatchObject({
+      entries: [
+        expect.objectContaining({
+          status: 'unsafe',
+          reason: 'Agent lifecycle owner token does not match worktree owner',
+        }),
+      ],
+    })
+
+    const runningFixture = await repository()
+    const runningStore = new SubagentLifecycleStore(
+      runningFixture.stateRoot,
+      sessionId,
+      agentId,
+    )
+    const running = await runningStore.start()
+    await running.running()
+    await abandonedRecord(
+      runningFixture,
+      {
+        ownerId: `agent:${sessionId}:${agentId}:${running.token}`,
+        kind: 'agent',
+      },
+      'none',
+    )
+    try {
+      await expect(
+        inspectManagedWorktreeHealth({
+          cwd: runningFixture.repositoryRoot,
+          stateRoot: runningFixture.stateRoot,
+        }),
+      ).resolves.toMatchObject({
+        entries: [
+          expect.objectContaining({
+            status: 'unsafe',
+            reason:
+              'Agent lifecycle remains running; owner state is unavailable',
+          }),
+        ],
+      })
+    } finally {
+      await running.release()
+    }
+  })
+
+  it('sorts registry records and reports bounded truncation', async () => {
+    const fixture = await repository()
+    const first = await abandonedRecord(
+      fixture,
+      { ownerId: 'workflow:wf_health-bound-one:a0000000000000000' },
+      'none',
+    )
+    const second = await abandonedRecord(
+      fixture,
+      { ownerId: 'workflow:wf_health-bound-two:a0000000000000000' },
+      'none',
+    )
+    const report = await inspectManagedWorktreeHealth({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+      limit: 1,
+    })
+    expect(report.truncated).toBe(true)
+    expect(report.inspected).toBe(1)
+    expect(report.entries).toHaveLength(1)
+    expect(report.entries[0]?.recordPath).toBe(
+      [first.path, second.path].sort()[0],
+    )
+    expect(report.entries[0]).toMatchObject({
+      status: 'safely-releasable',
+      present: false,
+      reason:
+        'checkout is absent and remaining ownership evidence is releasable',
+    })
+  })
+
+  it('reports retained, released, unsafe, and corrupt entries deterministically', async () => {
+    const fixture = await repository()
+    const retained = await abandonedRecord(fixture, {
+      ownerId: 'workflow:wf_health-retained:a0000000000000000',
+      state: 'retained',
+      retentionReason: `manual retention ${'x'.repeat(300)}`,
+    })
+    const released = await abandonedRecord(
+      fixture,
+      {
+        ownerId: 'workflow:wf_health-released:a0000000000000000',
+        state: 'released',
+      },
+      'none',
+    )
+    const contradictory = await abandonedRecord(fixture, {
+      ownerId: 'workflow:wf_health-contradictory:a0000000000000000',
+      state: 'released',
+    })
+    const unsafe = await abandonedRecord(fixture, {
+      ownerId: 'workflow:wf_health-dirty:a0000000000000000',
+    })
+    await writeFile(join(unsafe.worktreePath, 'tracked.txt'), 'changed\n')
+    await mkdir(
+      join(
+        fixture.stateRoot,
+        'managed-worktrees',
+        sanitizeProjectPath(retained.identity),
+      ),
+      { recursive: true },
+    )
+    await writeFile(
+      join(
+        fixture.stateRoot,
+        'managed-worktrees',
+        sanitizeProjectPath(retained.identity),
+        'corrupt.json',
+      ),
+      JSON.stringify({ version: `secret-not-for-output${'x'.repeat(512)}` }),
+    )
+    const report = await inspectManagedWorktreeHealth({
+      cwd: fixture.repositoryRoot,
+      stateRoot: fixture.stateRoot,
+    })
+    expect(report.counts).toEqual({
+      active: 0,
+      retained: 2,
+      safelyReleasable: 0,
+      released: 1,
+      unsafe: 2,
+    })
+    expect(report.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          worktreeId: retained.worktreeId,
+          status: 'retained',
+          reason: expect.any(String),
+        }),
+        expect.objectContaining({
+          worktreeId: released.worktreeId,
+          status: 'released',
+          present: false,
+          reason: 'record is released',
+        }),
+        expect.objectContaining({
+          worktreeId: unsafe.worktreeId,
+          status: 'retained',
+          reason: 'worktree has uncommitted changes',
+        }),
+        expect.objectContaining({
+          worktreeId: contradictory.worktreeId,
+          status: 'unsafe',
+          reason:
+            'released record has contradictory checkout or branch evidence',
+        }),
+        expect.objectContaining({
+          recordPath: join(
+            fixture.stateRoot,
+            'managed-worktrees',
+            sanitizeProjectPath(retained.identity),
+            'corrupt.json',
+          ),
+          status: 'unsafe',
+        }),
+      ]),
+    )
+    expect(
+      report.entries.find((entry) => entry.worktreeId === retained.worktreeId)
+        ?.reason.length,
+    ).toBeLessThanOrEqual(256)
+    expect(JSON.stringify(report)).not.toContain('secret-not-for-output')
+  })
+
   it('explicitly retains a clean checkout and permits a later cleanup retry', async () => {
     const fixture = await repository()
     const worktree = await createOwnedManagedWorktree(ownedOptions(fixture))

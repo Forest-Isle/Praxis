@@ -198,6 +198,44 @@ directories as ownership evidence.
 
 Elapsed time alone never authorizes deletion.
 
+## Diagnostics and observability
+
+`inspectManagedWorktreeHealth` is a read-only, project-scoped projection of
+the authoritative native registry at
+`$PRAXIS_HOME/state/managed-worktrees/<project-key>/` (normally
+`~/.praxis/state/managed-worktrees/...`). It does not scan arbitrary Git
+worktrees or create state directories when the registry is empty. Inspection
+is bounded to 64 registry entries; the result sets `truncated: true` when
+additional records exist. Counts always include all five statuses, including
+zero values: `active`, `retained`, `safely-releasable`, `released`, and
+`unsafe`. The first is currently owned, retained is kept for review or
+continuation, safely-releasable passes current release gates, released has
+completed release, and unsafe has invalid or uncertain ownership, path, Git,
+lease, or other evidence.
+
+Each entry includes a stable, bounded reason (at most 256 Unicode code points),
+and nested worktree details are credential-redacted. The legacy Team-only
+compatibility root remains
+`$PRAXIS_HOME/state/team-worktrees/<project-key>/<team-id>/...`. It is checked
+only at the exact Team path, is reported as `retained` with reason `legacy Team
+worktree is outside the managed lifecycle`, and is never adopted, migrated, or
+garbage-collected. Managed and legacy evidence for the same generation is
+`unsafe`.
+
+`praxis doctor` exposes this projection as the `worktrees` check in headless
+text/JSON and the interactive TUI. Any `unsafe` entry is a failure. Retained,
+safely releasable, or truncated evidence is a warning; active/released-only
+evidence (or no records) passes. Details include the repository root, fixed
+counts, truncation, and bounded entries. The TUI presents a read-only warning
+group and has no cleanup or release action.
+
+Team `status`, `logs`, and `attach` use the same lifecycle projection. JSON
+entries expose `status` and `reason`, logs include bounded lifecycle events,
+and text summaries append nonzero five-state counts. Unsafe evidence degrades
+otherwise healthy or idle Team health; `blocked` and `stopping` retain
+precedence. Retained or safely releasable evidence alone does not degrade
+health. These surfaces report evidence only and never perform bulk cleanup.
+
 ## Hooks
 
 `WorktreeCreate` and `WorktreeRemove` are Praxis-native lifecycle hooks. They
@@ -262,4 +300,4 @@ Private state remains outside append-only transcripts.
 1. #630: lifecycle store, ownership proof, safe rollback, and Workflow migration (complete).
 2. #625: lifecycle hooks; #626: bounded reconciliation and safe garbage collection (complete).
 3. #627: Agent migration and restore compatibility (complete); #628: durable Team migration (complete).
-4. #629: doctor/observability surfaces, final gates, and operator documentation (future).
+4. #629: doctor/observability surfaces, final gates, and operator documentation (complete).

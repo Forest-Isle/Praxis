@@ -508,6 +508,21 @@ Team and Swarm are explicit, local-only capabilities. The native CLI provides
 or JSON; tmux is optional presentation and never lifecycle authority. The CLI
 keeps Team observability modules behind the explicit Team gate, so a disabled
 Team does not load mailbox, ownership, or dashboard modules during startup.
+The application boundary exposes one shared, read-only managed-worktree
+lifecycle classifier to doctor and Team projections. It reads only the
+project-scoped native registry at
+`$PRAXIS_HOME/state/managed-worktrees/<project-key>/`, returns the bounded five
+states (`active`, `retained`, `safely-releasable`, `released`, `unsafe`), fixed
+counts, up to 64 entries, explicit truncation, and stable bounded reasons.
+Doctor recursively credential-redacts the nested details it publishes, then
+maps unsafe evidence to failure and retained, safely releasable, or
+truncated evidence to warning; its TUI projection is read-only. Team status,
+logs, and attach reuse the projection, with unsafe evidence degrading healthy
+or idle Teams while blocked/stopping retains precedence. The legacy Team-only
+`$PRAXIS_HOME/state/team-worktrees/<project-key>/<team-id>/...` root is checked
+only as an exact compatibility path and remains retained, never adopted or
+garbage-collected. These are native lifecycle diagnostics, not a Claude
+data-plane dependency or a bulk-cleanup mechanism.
 The removable Claude Team adapter is fail-closed on unknown fields and covers
 fixture-verified lead-only create (empty native roster/task list), delete/send,
 shutdown, and plan-response shapes. Native task persistence, notification

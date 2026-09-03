@@ -7,6 +7,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Features
 
+* add bounded native managed-worktree lifecycle diagnostics to doctor and Team observability ([#629](https://github.com/Forest-Isle/Praxis/issues/629))
 * migrate foreground and background Agent isolation to ownership-recorded repo-local managed worktrees with strict restore compatibility ([#627](https://github.com/Forest-Isle/Praxis/issues/627))
 * reconcile abandoned managed worktrees with bounded ownership-safe crash recovery ([#626](https://github.com/Forest-Isle/Praxis/issues/626))
 * add isolated project outcome evaluations with bounded verifier artifacts ([#541](https://github.com/Forest-Isle/Praxis/issues/541))

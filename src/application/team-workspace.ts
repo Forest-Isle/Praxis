@@ -198,7 +198,7 @@ export class NativeTeamWorkspaceProvider implements TeamWorkspaceProvider {
     if (managedExists) {
       managed = await restoreOwnedManagedWorktree({
         cwd: this.cwd,
-        stateRoot: this.nativeRoot,
+        stateRoot: resolve(this.nativeRoot, 'state'),
         path: managedPath,
         parentDirectoryName: input.teamId,
         directoryName: hash,
@@ -213,7 +213,7 @@ export class NativeTeamWorkspaceProvider implements TeamWorkspaceProvider {
     } else {
       managed = await createOwnedManagedWorktree({
         cwd: this.cwd,
-        stateRoot: this.nativeRoot,
+        stateRoot: resolve(this.nativeRoot, 'state'),
         parentDirectoryName: input.teamId,
         directoryName: hash,
         branch,
@@ -251,7 +251,7 @@ export class NativeTeamWorkspaceProvider implements TeamWorkspaceProvider {
         live ??
         (await restoreOwnedManagedWorktree({
           cwd: this.cwd,
-          stateRoot: this.nativeRoot,
+          stateRoot: resolve(this.nativeRoot, 'state'),
           path: managedPath,
           parentDirectoryName: input.teamId,
           directoryName: hash,

@@ -1,13 +1,18 @@
-import { access, chmod, mkdir, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { access, chmod, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp } from 'node:fs/promises'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run } from '../cli.js'
+import { createOwnedManagedWorktree } from '../application/managed-worktree.js'
+import { inspectManagedWorktreeRegistry } from '../persistence/managed-worktree-store.js'
 import { ProviderCredentialVault } from '../persistence/provider-credential-vault.js'
 import { loadNativeSharedResources } from '../persistence/native-resources.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   assessWorkspaceTrust,
   persistWorkspaceTrust,
@@ -24,6 +29,7 @@ import {
 } from './doctor.js'
 
 const roots: string[] = []
+const execFileAsync = promisify(execFile)
 
 async function fixture(): Promise<{
   root: string
@@ -102,6 +108,27 @@ describe('Praxis doctor', () => {
       detectClaudeVersion: async () => '2.1.208',
       ...deterministicDistTags(),
     })
+  }
+
+  async function initializeGitProject(projectRoot: string): Promise<void> {
+    await execFileAsync('git', ['-C', projectRoot, 'init', '-q'])
+    await execFileAsync('git', [
+      '-C',
+      projectRoot,
+      'config',
+      'user.email',
+      'praxis@example.test',
+    ])
+    await execFileAsync('git', [
+      '-C',
+      projectRoot,
+      'config',
+      'user.name',
+      'Praxis Test',
+    ])
+    await writeFile(join(projectRoot, 'tracked.txt'), 'base\n')
+    await execFileAsync('git', ['-C', projectRoot, 'add', 'tracked.txt'])
+    await execFileAsync('git', ['-C', projectRoot, 'commit', '-qm', 'seed'])
   }
 
   it('uses only an exact trusted project provider selection', async () => {
@@ -590,13 +617,145 @@ describe('Praxis doctor', () => {
     })
 
     expect(report.ok).toBe(true)
-    expect(report.checks).toHaveLength(11)
+    expect(report.checks).toHaveLength(12)
+    expect(
+      report.checks.find((check) => check.id === 'worktrees'),
+    ).toMatchObject({
+      status: 'pass',
+      summary: 'No managed worktree records found',
+    })
     expect(report.checks.every((check) => check.status !== 'fail')).toBe(true)
     const output = formatDoctorReport(report)
     expect(output).toContain('No installation or configuration issues found.')
     expect(output).not.toContain('secret-not-for-output')
     expect(output).not.toMatch(/subscription|keychain|organization/i)
   })
+
+  it('fails the headless worktree check for corrupt bounded registry evidence', async () => {
+    const value = await fixture()
+    const identity = await realpath(value.projectRoot)
+    const registry = join(
+      value.configRoot,
+      'state',
+      'managed-worktrees',
+      sanitizeProjectPath(identity),
+    )
+    await mkdir(registry, { recursive: true })
+    await writeFile(
+      join(registry, 'corrupt.json'),
+      JSON.stringify({ version: `secret-not-for-output${'x'.repeat(512)}` }),
+    )
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'anthropic',
+      PRAXIS_API_KEY: 'fixture-key',
+      PRAXIS_MODEL: 'claude-sonnet-4-20250514',
+    })
+    const check = report.checks.find((entry) => entry.id === 'worktrees')
+    expect(report.ok).toBe(false)
+    expect(check).toMatchObject({
+      status: 'fail',
+      details: {
+        counts: { unsafe: 1 },
+        truncated: false,
+        entries: [expect.objectContaining({ status: 'unsafe' })],
+      },
+    })
+    expect(formatDoctorReport(report)).toContain('[FAIL] worktrees:')
+    expect(JSON.stringify(report)).not.toContain('secret-not-for-output')
+    expect(formatDoctorReport(report)).not.toContain('secret-not-for-output')
+  })
+
+  it('keeps the doctor worktree details bounded and marks truncation', async () => {
+    const value = await fixture()
+    const identity = await realpath(value.projectRoot)
+    const registry = join(
+      value.configRoot,
+      'state',
+      'managed-worktrees',
+      sanitizeProjectPath(identity),
+    )
+    await mkdir(registry, { recursive: true })
+    await Promise.all(
+      Array.from({ length: 65 }, (_, index) =>
+        writeFile(
+          join(registry, `${String(index).padStart(2, '0')}.json`),
+          '{invalid',
+        ),
+      ),
+    )
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'anthropic',
+      PRAXIS_API_KEY: 'fixture-key',
+      PRAXIS_MODEL: 'claude-sonnet-4-20250514',
+    })
+    const check = report.checks.find((entry) => entry.id === 'worktrees')
+    expect(check).toMatchObject({
+      status: 'fail',
+      details: {
+        counts: { unsafe: 64 },
+        truncated: true,
+        entries: expect.any(Array),
+      },
+    })
+    expect((check?.details?.entries as unknown[]).length).toBe(64)
+  })
+
+  it.each([
+    ['active', 'pass', 'active'],
+    ['retained', 'warn', 'retained'],
+    ['safely-releasable', 'warn', 'safelyReleasable'],
+    ['released', 'pass', 'released'],
+  ] as const)(
+    'maps %s managed worktree evidence to a %s doctor check',
+    async (lifecycle, expectedStatus, countKey) => {
+      const value = await fixture()
+      await initializeGitProject(value.projectRoot)
+      const stateRoot = join(value.configRoot, 'state')
+      const worktree = await createOwnedManagedWorktree({
+        cwd: value.projectRoot,
+        stateRoot,
+        directoryName: `doctor-${lifecycle}`,
+        ownerId: `workflow:wf_doctor-${lifecycle}:a0000000000000000`,
+        label: 'Workflow',
+        kind: 'workflow',
+        policy: 'ephemeral',
+      })
+      try {
+        if (lifecycle === 'retained') {
+          await worktree.retain('doctor retained evidence')
+        } else if (lifecycle === 'released') {
+          await worktree.release()
+        } else if (lifecycle === 'safely-releasable') {
+          await worktree.retain('release fixture lease')
+          const identity = await realpath(value.projectRoot)
+          const registry = await inspectManagedWorktreeRegistry({
+            stateRoot,
+            repositoryRoot: identity,
+            limit: 64,
+          })
+          const entry = registry.entries.find((item) => 'record' in item)
+          if (!entry || !('record' in entry))
+            throw new Error('expected managed worktree record')
+          const active = { ...entry.record, state: 'active' as const }
+          delete active.retentionReason
+          await writeFile(entry.path, `${JSON.stringify(active)}\n`)
+        }
+        const report = await doctorFor(value, {
+          PRAXIS_PROVIDER: 'anthropic',
+          PRAXIS_API_KEY: 'fixture-key',
+          PRAXIS_MODEL: 'claude-sonnet-4-20250514',
+        })
+        const check = report.checks.find((entry) => entry.id === 'worktrees')
+        expect(check).toMatchObject({
+          status: expectedStatus,
+          details: { counts: { [countKey]: 1 } },
+        })
+      } finally {
+        if (lifecycle === 'active')
+          await worktree.retain('release active test lease')
+      }
+    },
+  )
 
   it('aggregates independent configuration failures without exposing secrets', async () => {
     const value = await fixture()
@@ -686,6 +845,25 @@ describe('Praxis doctor', () => {
         latestVersion: null,
       },
     })
+    expect(report.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'worktrees',
+          status: 'pass',
+          details: expect.objectContaining({
+            counts: {
+              active: 0,
+              retained: 0,
+              safelyReleasable: 0,
+              released: 0,
+              unsafe: 0,
+            },
+            truncated: false,
+            entries: [],
+          }),
+        }),
+      ]),
+    )
     expect(stdout).not.toContain('not checked')
   })
 
@@ -996,7 +1174,7 @@ describe('Praxis doctor', () => {
       latestVersion: null,
       registryStatus: 'loading',
     })
-    expect(progressReport?.checks).toHaveLength(11)
+    expect(progressReport?.checks).toHaveLength(12)
     expect(progressReport?.summary).toEqual({
       passed: expect.any(Number),
       warnings: expect.any(Number),
@@ -1016,7 +1194,7 @@ describe('Praxis doctor', () => {
     })
     expect(report.updates.error).toBeUndefined()
     expect(JSON.stringify(report)).not.toContain('"registryStatus":"loading"')
-    expect(report.checks).toHaveLength(11)
+    expect(report.checks).toHaveLength(12)
   })
 
   it('reports unavailable registry state without altering ok or the check summary', async () => {
@@ -1043,7 +1221,7 @@ describe('Praxis doctor', () => {
     })
 
     expect(report.ok).toBe(true)
-    expect(report.checks).toHaveLength(11)
+    expect(report.checks).toHaveLength(12)
     expect(report.summary.failed).toBe(0)
     const updates = report.updates
     expect(updates).toMatchObject({
