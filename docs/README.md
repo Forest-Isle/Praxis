@@ -75,6 +75,8 @@ authoritative CLI surface.
 - [Active-turn Input](ACTIVE_TURN_INPUT.md) — safe-boundary steering, queued
   follow-up turns, pending-input presentation, and race behavior.
 - [Workflow Contract](STAGE23_WORKFLOW.md)
+- [Managed Worktree Lifecycle](MANAGED_WORKTREE_LIFECYCLE.md) — ownership,
+  retention, recovery, and migration design for Workflow, Agent, and Team.
 - [Dynamic Wakeup Contract](STAGE24_DYNAMIC_WAKEUP.md)
 - [Native Worktrees](STAGE25_WORKTREES.md)
 

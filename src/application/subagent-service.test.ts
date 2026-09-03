@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   stat,
@@ -459,6 +460,84 @@ describe('foreground Claude Agent execution', () => {
     expect(models).toEqual(['workflow-model-a', 'workflow-model-b'])
     expect(clients[0]).not.toBe(clients[1])
     await executor.close()
+  })
+
+  it('runs Workflow isolation in the owned repo-local cwd and reports retention', async () => {
+    const { configRoot, cwd, fixtureRoot } = await gitRepository(
+      'praxis-workflow-owned-isolation-',
+    )
+    const toolCwds: string[] = []
+    let turn = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'workflow_touch', name: 'TouchCwd', input: {} },
+            }
+            return
+          }
+          yield { type: 'text-delta', delta: 'WORKFLOW_ISOLATED' }
+        },
+      },
+      baseTools: {
+        definitions: () => [
+          {
+            name: 'TouchCwd',
+            description: 'Write in the active cwd',
+            inputSchema: { type: 'object', properties: {} },
+          },
+        ],
+        prepare: async (call) => call,
+        execute: async (_call, context) => {
+          toolCwds.push(context.cwd)
+          await writeFile(join(context.cwd, 'workflow-change.txt'), 'changed\n')
+          return { content: 'changed', isError: false }
+        },
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+
+    try {
+      const result = await executor.runWorkflowAgent({
+        sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        runId: 'owned-isolation-run',
+        agentId: 'a1234567890abcdef',
+        transcriptDirectory: join(fixtureRoot, 'workflow'),
+        prompt: 'Touch the isolated cwd',
+        isolation: 'worktree',
+      })
+      const expectedPath = join(
+        await realpath(cwd),
+        '.praxis',
+        'worktrees',
+        'workflow',
+        'owned-isolation-run-a1234567890abcdef',
+      )
+
+      expect(toolCwds).toEqual([expectedPath])
+      expect(result).toMatchObject({
+        result: 'WORKFLOW_ISOLATED',
+        isolationPath: expectedPath,
+        isolationRetained: true,
+        isolationWarning: expect.stringContaining(expectedPath),
+      })
+      expect(
+        await readFile(join(expectedPath, 'workflow-change.txt'), 'utf8'),
+      ).toBe('changed\n')
+      await expect(
+        readFile(join(cwd, 'workflow-change.txt'), 'utf8'),
+      ).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await executor.close()
+    }
   })
 
   it('installs the no-hook stop boundary for durable follow-ups', async () => {
