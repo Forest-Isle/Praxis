@@ -1407,7 +1407,7 @@ describe('Claude-style TUI components', () => {
         screenReader={false}
       />,
     )
-    expect(list.lastFrame()).toContain('Uncommitted changes (git diff HEAD)')
+    expect(list.lastFrame()).toContain('Changes since session start')
     expect(list.lastFrame()).toContain('Current')
     expect(list.lastFrame()).toContain('T1')
     expect(list.lastFrame()).toContain('❯ fixture.txt')

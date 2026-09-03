@@ -145,7 +145,11 @@ import {
   projectTuiHooksSurface,
   type TuiHooksSurfaceModel,
 } from './tui/hooks-surface-model.js'
-import { loadGitDiff, type TuiDiffSnapshot } from './tui/git-diff.js'
+import {
+  createTuiGitDiffSession,
+  type TuiGitDiffSession,
+  type TuiDiffSnapshot,
+} from './tui/git-diff.js'
 import {
   projectTuiDiffSurface,
   type TuiDiffSurfaceModel,
@@ -627,6 +631,7 @@ interface InteractiveAppProps {
   allowDangerouslySkipPermissions?: boolean
   additionalDirectories?: readonly string[]
   diffLoader?: () => Promise<TuiDiffSnapshot>
+  gitDiffSession?: TuiGitDiffSession
   doctorLoader?: (onProgress?: DoctorProgressListener) => Promise<DoctorReport>
   fileLoader?: () => Promise<readonly TuiFileEntry[]>
   externalEditor?: (
@@ -1135,6 +1140,7 @@ export function InteractiveApp({
   allowDangerouslySkipPermissions = false,
   additionalDirectories = [],
   diffLoader,
+  gitDiffSession: suppliedGitDiffSession,
   doctorLoader,
   fileLoader,
   externalEditor = editTuiPrompt,
@@ -1205,9 +1211,20 @@ export function InteractiveApp({
   const [runtimeCwd, setRuntimeCwd] = useState(display.cwd)
   const runtimeCwdRef = useRef(display.cwd)
   const runtimeGitignoreRef = useRef(true)
-  const loadDiffSnapshot = useMemo(
-    () => diffLoader ?? (() => loadGitDiff(runtimeCwd)),
-    [diffLoader, runtimeCwd],
+  const gitDiffSession = useMemo(
+    () =>
+      suppliedGitDiffSession ?? createTuiGitDiffSession(display.cwd, signal),
+    [display.cwd, signal, suppliedGitDiffSession],
+  )
+  const loadDiffSnapshot = useMemo<
+    (signal?: AbortSignal) => Promise<TuiDiffSnapshot>
+  >(
+    () =>
+      diffLoader
+        ? () => diffLoader()
+        : (signal?: AbortSignal) =>
+            gitDiffSession.load(runtimeCwdRef.current, signal),
+    [diffLoader, gitDiffSession],
   )
   const loadDoctorReport = useMemo(
     () =>
@@ -4285,6 +4302,7 @@ export function InteractiveApp({
           inspection.canonicalTarget,
           inspection.canonicalTarget,
         )
+        await gitDiffSession.prepare(cwd, signal)
         activeSessionTrust.add(cwd)
         runtimeCwdRef.current = cwd
         setRuntimeCwd(cwd)
@@ -4996,7 +5014,7 @@ export function InteractiveApp({
       }
       if (turnMutatedFilesRef.current) {
         try {
-          const snapshot = await loadDiffSnapshot()
+          const snapshot = await loadDiffSnapshot(signal)
           setTurnDiffs((current) => [
             ...current.filter((source) => source.label !== `T${turnNumber}`),
             { label: `T${turnNumber}`, snapshot },
@@ -8513,7 +8531,7 @@ export function InteractiveApp({
           setBusy(true)
           setStatus('loading diff')
           try {
-            const current = await loadDiffSnapshot()
+            const current = await loadDiffSnapshot(signal)
             updateMenu({
               kind: 'diff',
               snapshots: [
@@ -8931,6 +8949,10 @@ export async function runInteractive(options: {
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
     : controller.signal
+  const gitDiffSession = createTuiGitDiffSession(
+    options.display?.cwd ?? process.cwd(),
+    signal,
+  )
   let currentResume = options.resume
   let currentInitialPrompt = options.initialPrompt
   let initialAgentPromptResolved = false
@@ -9067,6 +9089,7 @@ export async function runInteractive(options: {
         configRoot={configRoot}
         statePath={statePath}
         factory={options.factory}
+        gitDiffSession={gitDiffSession}
         initialSessions={initialSessions}
         slashCommands={initialSlashCommands}
         agents={initialAgents}

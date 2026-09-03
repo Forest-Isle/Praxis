@@ -337,6 +337,23 @@ recorded error/output/ordering contract. This is a Praxis native implementation
 with focused process, scope, root, ordering, interruption, and output evidence;
 it makes no external-parity or external-qualification claim.
 
+### Task 5.5: Session-start diff review surface — implemented by #153 [depends: Task 2.3]
+
+The interactive `/diff` surface captures the canonical worktree and exact Git
+HEAD object ID before the first Turn, then recomputes the current index and
+worktree against that immutable in-memory baseline. Commits created later in
+the same invocation therefore cannot hide earlier work. Headed and unborn
+repositories include current untracked files; paths are lexical and shell-free;
+binary, unmerged, and transiently unavailable paths remain inspectable through
+bounded notes rather than unsafe content or whole-snapshot failure.
+
+Each per-file patch retains at most 256 KiB of UTF-8 content with an explicit
+truncation marker, while control-list truncation and cancellation fail closed
+before publishing partial state. Focused real-Git coverage includes moved HEAD,
+untracked/deleted/Unicode paths, binary and merge-conflict states, multibyte
+truncation, unborn-to-first-commit behavior, transient failure, and abort. This
+is a Praxis-native review-correctness contract, not an external-parity claim.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,

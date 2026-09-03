@@ -167,7 +167,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `Ctrl+V` text/image clipboard paste, `Ctrl+Z` shell suspension and `fg`
   recovery, permission-gated provider-free `!` shell turns that persist shell
   input/output for later ordinary prompts without creating an assistant turn,
-  navigable current/per-turn Git diff views, semantic plan/question decision panels with complete
+  navigable session-start/current-per-turn Git diff views with bounded per-file
+  patches and readable binary/conflict/transient-path notes, semantic plan/question decision panels with complete
   screen-reader actions, semantic screen projection across selectable surfaces,
   deterministic resize-aware URL/form elicitation rendering, and measured
   context budgets; print mode,
