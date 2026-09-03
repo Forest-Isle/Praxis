@@ -457,6 +457,10 @@ describe('createOwnedManagedWorktree', () => {
     await execFileAsync('git', [
       '-C',
       fixture.repositoryRoot,
+      '-c',
+      'user.name=Praxis Test',
+      '-c',
+      'user.email=praxis@example.invalid',
       'commit',
       '-am',
       'main head',
