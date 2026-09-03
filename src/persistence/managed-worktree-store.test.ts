@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   ManagedWorktreeStore,
+  inspectManagedWorktreeRegistry,
   type ManagedWorktreeRecord,
 } from './managed-worktree-store.js'
 
@@ -194,5 +195,100 @@ describe('ManagedWorktreeStore', () => {
     expect(await readFile(store.path, 'utf8').catch(() => original)).toBe(
       original,
     )
+  })
+
+  it('returns a deterministic bounded registry snapshot with structured invalid entries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-managed-snapshot-'))
+    roots.push(root)
+    const repositoryRoot = join(root, 'repo')
+    for (let index = 0; index < 65; index += 1) {
+      const id = index.toString(16).padStart(2, '0').repeat(32).slice(0, 64)
+      const value = record(root, {
+        worktreeId: id,
+        worktreePath: join(
+          repositoryRoot,
+          '.praxis',
+          'worktrees',
+          'workflow',
+          `w-${index}`,
+        ),
+      })
+      await new ManagedWorktreeStore(
+        join(root, 'state'),
+        repositoryRoot,
+        id,
+      ).create(value)
+    }
+    const snapshot = await inspectManagedWorktreeRegistry({
+      stateRoot: join(root, 'state'),
+      repositoryRoot,
+      limit: 64,
+    })
+    expect(snapshot.entries).toHaveLength(64)
+    expect(snapshot.truncated).toBe(true)
+    expect(snapshot.entries.every((entry) => 'record' in entry)).toBe(true)
+  })
+
+  it('returns structured errors for invalid registry candidates without following or mutating them', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-managed-snapshot-errors-'),
+    )
+    roots.push(root)
+    const repositoryRoot = join(root, 'repo')
+    const valid = record(root)
+    await storeFor(root, valid).create(valid)
+    const managedRoot = join(root, 'state', 'managed-worktrees')
+    const registry = join(managedRoot, (await readdir(managedRoot))[0] ?? '')
+
+    const malformedPath = join(registry, `${'0'.repeat(64)}.json`)
+    const unknownPath = join(registry, `${'1'.repeat(64)}.json`)
+    const mismatchedPath = join(registry, `${'2'.repeat(64)}.json`)
+    const symlinkPath = join(registry, `${'4'.repeat(64)}.json`)
+    const sentinelPath = join(root, 'sentinel.json')
+    const malformedBytes = '{ malformed json\n'
+    const unknown = JSON.stringify({
+      ...valid,
+      worktreeId: '1'.repeat(64),
+      version: 2,
+    })
+    const mismatched = JSON.stringify({ ...valid, worktreeId: '3'.repeat(64) })
+    const sentinelBytes = 'external sentinel\n'
+    await writeFile(malformedPath, malformedBytes)
+    await writeFile(unknownPath, unknown)
+    await writeFile(mismatchedPath, mismatched)
+    await writeFile(sentinelPath, sentinelBytes)
+    await symlink(sentinelPath, symlinkPath)
+
+    const snapshot = await inspectManagedWorktreeRegistry({
+      stateRoot: join(root, 'state'),
+      repositoryRoot,
+      limit: 64,
+    })
+
+    expect(snapshot.entries.map((entry) => entry.path)).toEqual(
+      [...snapshot.entries].map((entry) => entry.path).sort(),
+    )
+    expect(snapshot.entries.filter((entry) => 'record' in entry)).toHaveLength(
+      1,
+    )
+    const errors = snapshot.entries.filter((entry) => 'error' in entry)
+    expect(errors).toHaveLength(4)
+    expect(errors.find((entry) => entry.path === malformedPath)?.error).toMatch(
+      /JSON|json|parse|malformed|corrupt/u,
+    )
+    expect(errors.find((entry) => entry.path === unknownPath)?.error).toMatch(
+      /version|unsupported|unknown/u,
+    )
+    expect(
+      errors.find((entry) => entry.path === mismatchedPath)?.error,
+    ).toMatch(/filename|worktree.?id|mismatch/u)
+    expect(errors.find((entry) => entry.path === symlinkPath)?.error).toMatch(
+      /symlink|regular file/u,
+    )
+    expect(await readFile(malformedPath, 'utf8')).toBe(malformedBytes)
+    expect(await readFile(unknownPath, 'utf8')).toBe(unknown)
+    expect(await readFile(mismatchedPath, 'utf8')).toBe(mismatched)
+    expect((await lstat(symlinkPath)).isSymbolicLink()).toBe(true)
+    expect(await readFile(sentinelPath, 'utf8')).toBe(sentinelBytes)
   })
 })

@@ -41,4 +41,34 @@ describe('ExclusiveFileLease', () => {
     expect(handle?.token).not.toBe('dead-owner')
     await handle?.release()
   })
+
+  it('reclaims a PID-reused lock but retains legacy and unavailable live locks', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-exclusive-reuse-lease-'))
+    const make = async (value: Record<string, unknown>) => {
+      const path = join(root, `${Math.random()}.lock`)
+      await writeFile(path, JSON.stringify(value))
+      return path
+    }
+    const base = {
+      version: 1,
+      pid: process.pid,
+      token: 'old-owner',
+      createdAt: '2026-08-24T00:00:00.000Z',
+    }
+    const reused = await new ExclusiveFileLease(
+      await make({ ...base, processStart: 'old' }),
+      { processStart: async () => 'new' },
+    ).tryAcquire()
+    expect(reused?.token).not.toBe('old-owner')
+    await reused?.release()
+    const legacy = await new ExclusiveFileLease(await make(base), {
+      processStart: async () => 'new',
+    }).tryAcquire()
+    expect(legacy).toBeNull()
+    const unavailable = await new ExclusiveFileLease(
+      await make({ ...base, processStart: 'old' }),
+      { processStart: async () => null },
+    ).tryAcquire()
+    expect(unavailable).toBeNull()
+  })
 })

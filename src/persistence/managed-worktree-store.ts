@@ -31,6 +31,14 @@ export interface ManagedWorktreeRecord {
   retentionReason?: string
 }
 
+export type ManagedWorktreeRegistryEntry =
+  | { path: string; record: ManagedWorktreeRecord }
+  | { path: string; error: string }
+export interface ManagedWorktreeRegistrySnapshot {
+  entries: readonly ManagedWorktreeRegistryEntry[]
+  truncated: boolean
+}
+
 const RECORD_FIELDS = new Set([
   'version',
   'worktreeId',
@@ -120,8 +128,10 @@ function validateRecord(value: unknown): ManagedWorktreeRecord {
   ) {
     throw invalidRecord('unexpected or missing field')
   }
+  if (record.version !== 1) {
+    throw invalidRecord(`unsupported version: ${String(record.version)}`)
+  }
   if (
-    record.version !== 1 ||
     typeof record.worktreeId !== 'string' ||
     !ID_PATTERN.test(record.worktreeId) ||
     (record.kind !== 'workflow' &&
@@ -201,6 +211,30 @@ async function prepareDirectory(path: string, root: string): Promise<void> {
   await assertDirectoryChain(path, root)
 }
 
+async function withProjectLease<T>(
+  directory: string,
+  stateRoot: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  await prepareDirectory(directory, stateRoot)
+  const projectLease = new ExclusiveFileLease(join(directory, '.registry.lock'))
+  let lease: ExclusiveFileLeaseHandle | null = null
+  for (let attempt = 0; attempt < PROJECT_LEASE_ATTEMPTS; attempt += 1) {
+    lease = await projectLease.tryAcquire()
+    if (lease) break
+    await sleep(PROJECT_LEASE_DELAY_MS)
+  }
+  if (!lease)
+    throw new Error(
+      `Timed out acquiring managed worktree registry lock: ${join(directory, '.registry.lock')}`,
+    )
+  try {
+    return await operation()
+  } finally {
+    await lease.release()
+  }
+}
+
 async function readRegularFile(
   path: string,
   description: string,
@@ -260,6 +294,53 @@ function managedWorktreeRecordPath(
   )
 }
 
+export async function inspectManagedWorktreeRegistry(options: {
+  stateRoot: string
+  repositoryRoot: string
+  limit: number
+}): Promise<ManagedWorktreeRegistrySnapshot> {
+  if (!Number.isSafeInteger(options.limit) || options.limit < 0) {
+    throw new Error('Managed worktree registry limit must be non-negative')
+  }
+  const directory = resolve(
+    managedWorktreeRecordPath(
+      options.stateRoot,
+      options.repositoryRoot,
+      'a'.repeat(32),
+    ),
+    '..',
+  )
+  return withProjectLease(directory, resolve(options.stateRoot), async () => {
+    const names: string[] = []
+    const dir = await opendir(directory)
+    for await (const entry of dir)
+      if (entry.name.endsWith('.json')) names.push(entry.name)
+    names.sort()
+    const selected = names.slice(0, options.limit)
+    const entries: ManagedWorktreeRegistryEntry[] = []
+    for (const name of selected) {
+      const path = join(directory, name)
+      try {
+        const info = await lstat(path)
+        if (!info.isFile() || info.isSymbolicLink())
+          throw new Error('record must be a regular file')
+        const record = await readRecord(path)
+        if (record.repositoryRoot !== options.repositoryRoot)
+          throw new Error('record repository identity does not match project')
+        if (name !== `${record.worktreeId}.json`)
+          throw new Error('record filename does not match worktree ID')
+        entries.push({ path, record })
+      } catch (error) {
+        entries.push({
+          path,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { entries, truncated: names.length > selected.length }
+  })
+}
+
 export class ManagedWorktreeStore {
   readonly path: string
   readonly lockPath: string
@@ -269,7 +350,6 @@ export class ManagedWorktreeStore {
   private readonly repositoryRoot: string
   private readonly worktreeId: string
   private readonly worktreeLease: ExclusiveFileLease
-  private readonly projectLease: ExclusiveFileLease
 
   constructor(stateRoot: string, repositoryRoot: string, worktreeId: string) {
     this.stateRoot = resolve(stateRoot)
@@ -280,7 +360,6 @@ export class ManagedWorktreeStore {
     this.lockPath = join(this.directory, `${worktreeId}.lock`)
     this.projectLockPath = join(this.directory, '.registry.lock')
     this.worktreeLease = new ExclusiveFileLease(this.lockPath)
-    this.projectLease = new ExclusiveFileLease(this.projectLockPath)
   }
 
   async acquireLease(): Promise<ExclusiveFileLeaseHandle | null> {
@@ -366,23 +445,7 @@ export class ManagedWorktreeStore {
   }
 
   private async withProjectLease<T>(operation: () => Promise<T>): Promise<T> {
-    await prepareDirectory(this.directory, this.stateRoot)
-    let lease: ExclusiveFileLeaseHandle | null = null
-    for (let attempt = 0; attempt < PROJECT_LEASE_ATTEMPTS; attempt += 1) {
-      lease = await this.projectLease.tryAcquire()
-      if (lease) break
-      await sleep(PROJECT_LEASE_DELAY_MS)
-    }
-    if (!lease) {
-      throw new Error(
-        `Timed out acquiring managed worktree registry lock: ${this.projectLockPath}`,
-      )
-    }
-    try {
-      return await operation()
-    } finally {
-      await lease.release()
-    }
+    return withProjectLease(this.directory, this.stateRoot, operation)
   }
 
   private async assertUnreservedPath(worktreePath: string): Promise<void> {

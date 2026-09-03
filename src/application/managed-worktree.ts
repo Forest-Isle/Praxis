@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 
 import {
   ManagedWorktreeStore,
+  inspectManagedWorktreeRegistry,
   type ManagedWorktreeRecord,
 } from '../persistence/managed-worktree-store.js'
 import { resolveProjectIdentity } from '../platform/project-identity.js'
@@ -65,6 +66,26 @@ export interface OwnedManagedWorktreeOptions {
   hooks?: ManagedWorktreeHooks
 }
 
+export type ManagedWorktreeReconciliationDisposition =
+  'released' | 'retained' | 'skipped' | 'invalid'
+export interface ManagedWorktreeReconciliationEntry {
+  recordPath: string
+  worktreeId?: string
+  disposition: ManagedWorktreeReconciliationDisposition
+  reason: string
+}
+export interface ManagedWorktreeReconciliationResult {
+  repositoryRoot: string
+  inspected: number
+  truncated: boolean
+  entries: readonly ManagedWorktreeReconciliationEntry[]
+}
+
+const reconciliationCache = new Map<
+  string,
+  Promise<ManagedWorktreeReconciliationResult>
+>()
+
 async function gitRaw(cwd: string, args: readonly string[]): Promise<string> {
   return (
     await execFileAsync('git', ['-C', cwd, ...args], { encoding: 'utf8' })
@@ -84,6 +105,58 @@ async function gitOptional(
   } catch (error) {
     if ((error as { code?: unknown }).code === 1) return null
     throw error
+  }
+}
+
+async function ownedBranchRef(
+  repositoryRoot: string,
+  branch: string,
+  baseCommit: string,
+): Promise<'absent' | 'match' | 'ambiguous'> {
+  try {
+    const checked = await git(repositoryRoot, [
+      'check-ref-format',
+      '--branch',
+      branch,
+    ])
+    if (checked !== branch) return 'ambiguous'
+  } catch {
+    return 'ambiguous'
+  }
+  try {
+    const value = await git(repositoryRoot, [
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `refs/heads/${branch}`,
+    ])
+    return value === baseCommit ? 'match' : 'ambiguous'
+  } catch (error) {
+    return Number((error as { code?: unknown }).code) === 1
+      ? 'absent'
+      : 'ambiguous'
+  }
+}
+
+async function removeOwnedBranch(
+  repositoryRoot: string,
+  branch: string,
+  baseCommit: string,
+): Promise<void> {
+  const ref = await ownedBranchRef(repositoryRoot, branch, baseCommit)
+  if (ref === 'absent') return
+  if (ref === 'ambiguous') throw new Error('owned branch moved or is ambiguous')
+  try {
+    await git(repositoryRoot, [
+      'update-ref',
+      '-d',
+      `refs/heads/${branch}`,
+      baseCommit,
+    ])
+  } catch (error) {
+    throw new Error(
+      `could not safely remove owned branch: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
 
@@ -341,7 +414,11 @@ async function inspectOwnedCheckout(
     '--short',
     'HEAD',
   ])
-  if (branch) throw new Error('worktree is not detached')
+  if (record.branch === null) {
+    if (branch) throw new Error('worktree is not detached')
+  } else if (branch !== record.branch) {
+    throw new Error('worktree branch does not match ownership record')
+  }
   return { status, head }
 }
 
@@ -393,6 +470,344 @@ async function retain(
   }
 }
 
+async function reconciliationRetain(
+  store: ManagedWorktreeStore,
+  record: ManagedWorktreeRecord,
+  base: { recordPath: string; worktreeId: string },
+  reason: string,
+): Promise<ManagedWorktreeReconciliationEntry> {
+  const result = await retain(store, record, reason)
+  return {
+    ...base,
+    disposition: 'retained',
+    reason: result.reason ?? reason,
+  }
+}
+
+export async function reconcileManagedWorktrees(options: {
+  cwd: string
+  stateRoot: string
+  hooks?: ManagedWorktreeHooks
+}): Promise<ManagedWorktreeReconciliationResult> {
+  const repositoryRoot = await resolveProjectIdentity(options.cwd)
+  const snapshot = await inspectManagedWorktreeRegistry({
+    stateRoot: options.stateRoot,
+    repositoryRoot,
+    limit: 64,
+  })
+  const entries: ManagedWorktreeReconciliationEntry[] = []
+  for (const item of snapshot.entries) {
+    if ('error' in item) {
+      entries.push({
+        recordPath: item.path,
+        disposition: 'invalid',
+        reason: item.error,
+      })
+      continue
+    }
+    const original = item.record
+    const baseEntry = { recordPath: item.path, worktreeId: original.worktreeId }
+    const store = new ManagedWorktreeStore(
+      options.stateRoot,
+      repositoryRoot,
+      original.worktreeId,
+    )
+    const lease = await store.acquireLease()
+    if (!lease) {
+      entries.push({
+        ...baseEntry,
+        disposition: 'skipped',
+        reason: 'worktree lease is live or unavailable',
+      })
+      continue
+    }
+    try {
+      let record: ManagedWorktreeRecord
+      try {
+        record = await store.read()
+      } catch (error) {
+        entries.push({
+          ...baseEntry,
+          disposition: 'invalid',
+          reason: `record could not be reread: ${error instanceof Error ? error.message : String(error)}`,
+        })
+        continue
+      }
+      if (!sameOwnership(record, original)) {
+        entries.push({
+          ...baseEntry,
+          disposition: 'retained',
+          reason: 'ownership record changed during reconciliation',
+        })
+        continue
+      }
+      if (record.state === 'released') {
+        entries.push({
+          ...baseEntry,
+          disposition: 'skipped',
+          reason: 'already released',
+        })
+        continue
+      }
+      if (record.state === 'retained') {
+        entries.push({
+          ...baseEntry,
+          disposition: 'retained',
+          reason: record.retentionReason ?? 'record is retained',
+        })
+        continue
+      }
+      if (record.policy === 'durable' || record.kind === 'team') {
+        entries.push(
+          await reconciliationRetain(
+            store,
+            record,
+            baseEntry,
+            record.policy === 'durable'
+              ? 'durable retention policy'
+              : 'team worktree is retained',
+          ),
+        )
+        continue
+      }
+      if (
+        !['workflow', 'agent'].includes(record.kind) ||
+        !record.ownerId.startsWith(`${record.kind}:`) ||
+        !['creating', 'active', 'releasing'].includes(record.state)
+      ) {
+        entries.push(
+          await reconciliationRetain(
+            store,
+            record,
+            baseEntry,
+            'record is not an interrupted ephemeral owner',
+          ),
+        )
+        continue
+      }
+      const releasing =
+        record.state === 'creating' ? record : nextRecord(record, 'releasing')
+      if (record.state !== 'creating') {
+        try {
+          await store.update(releasing)
+        } catch (error) {
+          entries.push({
+            ...baseEntry,
+            disposition: 'retained',
+            reason: `could not mark releasing: ${error instanceof Error ? error.message : String(error)}`,
+          })
+          continue
+        }
+      }
+      const registered = await registeredWorktrees(repositoryRoot).catch(
+        () => null,
+      )
+      if (!registered) {
+        entries.push(
+          await reconciliationRetain(
+            store,
+            releasing,
+            baseEntry,
+            'could not inspect registered worktrees',
+          ),
+        )
+        continue
+      }
+      let exists = false
+      try {
+        const info = await lstat(record.worktreePath)
+        exists = true
+        if (info.isSymbolicLink()) throw new Error('worktree path is a symlink')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          entries.push(
+            await reconciliationRetain(
+              store,
+              releasing,
+              baseEntry,
+              (error as Error).message,
+            ),
+          )
+          continue
+        }
+      }
+      if (!exists) {
+        if (registered.has(resolve(record.worktreePath))) {
+          entries.push(
+            await reconciliationRetain(
+              store,
+              releasing,
+              baseEntry,
+              'worktree is missing but remains registered',
+            ),
+          )
+          continue
+        }
+        if (record.branch !== null) {
+          const ref = await ownedBranchRef(
+            repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )
+          if (ref === 'ambiguous') {
+            entries.push(
+              await reconciliationRetain(
+                store,
+                releasing,
+                baseEntry,
+                'owned branch is missing or moved',
+              ),
+            )
+            continue
+          }
+          try {
+            if (ref === 'match')
+              await removeOwnedBranch(
+                repositoryRoot,
+                record.branch,
+                record.baseCommit,
+              )
+          } catch (error) {
+            entries.push(
+              await reconciliationRetain(
+                store,
+                releasing,
+                baseEntry,
+                `could not remove owned branch: ${(error as Error).message}`,
+              ),
+            )
+            continue
+          }
+        }
+        try {
+          await store.update(nextRecord(releasing, 'released'))
+        } catch (error) {
+          entries.push({
+            ...baseEntry,
+            disposition: 'released',
+            reason: `released; state finalization warning: ${(error as Error).message}`,
+          })
+          continue
+        }
+        entries.push({
+          ...baseEntry,
+          disposition: 'released',
+          reason: 'checkout already absent',
+        })
+        continue
+      }
+      let inspection: { status: string; head: string }
+      try {
+        inspection = await inspectOwnedCheckout(record, registered)
+      } catch (error) {
+        entries.push(
+          await reconciliationRetain(
+            store,
+            releasing,
+            baseEntry,
+            (error as Error).message,
+          ),
+        )
+        continue
+      }
+      if (inspection.status || inspection.head !== record.baseCommit) {
+        const reason = inspection.status
+          ? 'worktree has uncommitted changes'
+          : 'worktree HEAD does not match base commit'
+        entries.push(
+          await reconciliationRetain(store, releasing, baseEntry, reason),
+        )
+        continue
+      }
+      if (options.hooks) {
+        try {
+          const outcome = await options.hooks.beforeRemove({
+            worktreePath: record.worktreePath,
+            worktreeKind: record.kind,
+            worktreeId: record.worktreeId,
+            ownerId: record.ownerId,
+            baseCommit: record.baseCommit,
+            reason: 'reconcile',
+          })
+          if (outcome.blockedReason)
+            throw new Error(`hook blocked: ${outcome.blockedReason}`)
+        } catch (error) {
+          const reason = `WorktreeRemove hook failed: ${error instanceof Error ? error.message : String(error)}`
+          entries.push(
+            await reconciliationRetain(store, releasing, baseEntry, reason),
+          )
+          continue
+        }
+        try {
+          const post = await inspectOwnedCheckout(record)
+          if (post.status || post.head !== record.baseCommit)
+            throw new Error('hook left worktree unsafe')
+        } catch (error) {
+          const reason = (error as Error).message
+          entries.push(
+            await reconciliationRetain(store, releasing, baseEntry, reason),
+          )
+          continue
+        }
+      }
+      try {
+        if (
+          record.branch !== null &&
+          (await ownedBranchRef(
+            repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )) === 'ambiguous'
+        )
+          throw new Error('owned branch moved')
+        await git(repositoryRoot, ['worktree', 'remove', record.worktreePath])
+      } catch (error) {
+        const reason = (error as Error).message
+        entries.push(
+          await reconciliationRetain(store, releasing, baseEntry, reason),
+        )
+        continue
+      }
+      try {
+        if (record.branch !== null)
+          await removeOwnedBranch(
+            repositoryRoot,
+            record.branch,
+            record.baseCommit,
+          )
+      } catch (error) {
+        const reason = `checkout removed but owned branch was preserved: ${(error as Error).message}`
+        entries.push(
+          await reconciliationRetain(store, releasing, baseEntry, reason),
+        )
+        continue
+      }
+      try {
+        await store.update(nextRecord(releasing, 'released'))
+        entries.push({
+          ...baseEntry,
+          disposition: 'released',
+          reason: 'reconciled abandoned worktree',
+        })
+      } catch (error) {
+        entries.push({
+          ...baseEntry,
+          disposition: 'released',
+          reason: `released; state finalization warning: ${(error as Error).message}`,
+        })
+      }
+    } finally {
+      await lease.release()
+    }
+  }
+  return {
+    repositoryRoot,
+    inspected: snapshot.entries.length,
+    truncated: snapshot.truncated,
+    entries,
+  }
+}
+
 export async function createOwnedManagedWorktree(
   options: OwnedManagedWorktreeOptions,
 ): Promise<ManagedWorktree> {
@@ -415,6 +830,17 @@ export async function createOwnedManagedWorktree(
   } catch {
     throw worktreeError(options, 'isolation requires a Git repository')
   }
+  const reconciliationKey = repositoryRoot
+  let reconciliation = reconciliationCache.get(reconciliationKey)
+  if (!reconciliation) {
+    reconciliation = reconcileManagedWorktrees({
+      cwd: repositoryRoot,
+      stateRoot: options.stateRoot,
+      ...(options.hooks ? { hooks: options.hooks } : {}),
+    })
+    reconciliationCache.set(reconciliationKey, reconciliation)
+  }
+  await reconciliation
   const kindRoot = join(repositoryRoot, '.praxis', 'worktrees', options.kind)
   const worktreePath = join(kindRoot, options.directoryName)
   const rootRelative = relative(kindRoot, worktreePath)

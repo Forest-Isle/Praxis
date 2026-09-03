@@ -218,7 +218,10 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   Workflow turns use ownership-recorded repo-local temporary worktrees, run
   trust-admitted synchronous lifecycle hooks, safely roll back blocked
   creation, and retain dirty, committed, unsafe, or removal-blocked results
-  for inspection. Experimental
+  for inspection. On the first later managed-worktree use per process and
+  project, reconciliation inspects at most 64 records, skips live leases,
+  deletes only clean ownership-proven abandoned ephemeral checkouts, and
+  retains ambiguous or unsafe work. Experimental
   local Teams (`PRAXIS_ENABLE_TEAMS=true`) stay absent from ordinary startup by
   default and add durable task ownership plus one ordered mailbox with stable
   identities, fixed broadcast recipients, durable cursors, bounded retention,

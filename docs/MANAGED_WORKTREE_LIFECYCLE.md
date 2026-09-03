@@ -169,7 +169,10 @@ Asynchronous configuration for these events is rejected during validation.
   removal, a registry-finalization failure returns removed plus a warning.
 - Restore accepts legacy retained paths only when Git still registers the real
   worktree root for the same repository; legacy paths are never GC candidates.
-- Branch deletion is attempted only for a matching branch owned by the record.
+- Branch deletion is attempted only for a matching branch owned by the record,
+  using an expected-old-OID compare-and-delete; indeterminate lookups and
+  concurrent ref moves fail closed and retain the lifecycle record and any
+  remaining artifact.
 - A cleanup race loses safely through the lease and idempotent state machine.
 - Registry corruption, permission errors, unsupported versions, and uncertain
   process ownership fail closed without deleting files.
