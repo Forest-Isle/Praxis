@@ -116,8 +116,8 @@ ownership and repository search proved them unowned.
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
 are the active qualification source. The manifest declares 74 behaviors: 66
-are qualified and 8 are explicitly excluded. It contains 146 evidence entries:
-105 Vitest entries, 35 black-box fixture entries, and 6 gate entries.
+are qualified and 8 are explicitly excluded. It contains 157 evidence entries:
+107 Vitest entries, 44 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain
@@ -131,6 +131,16 @@ provider compatibility and keeps automatic cross-protocol fallback
 `npm run verify:fixture-contracts` performs its structural check and is part of
 `npm run check`. `npm run test:core-completion` remains only as a compatibility
 alias for `npm run test:fixtures`.
+
+The native project-eval evidence also includes the LSP diagnostics admission
+lane. Its four fixtures compare an explicit checker baseline with a test-local
+candidate that appends bounded, contained current-file diagnostics after
+successful mutations. The measured result is 4/4 task and safety outcomes for
+both variants: 21 baseline turns (5.25 average, four expected checker errors)
+versus 17 candidate turns (4.25 average, zero tool errors), a -1 average-turn
+delta with no permission, retry, timeout, interruption, pass, or safety
+regression. This evidence does not implement live LSP diagnostics or establish
+Claude/external parity.
 
 ## Acceptance
 

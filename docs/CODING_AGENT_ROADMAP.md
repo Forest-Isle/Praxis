@@ -302,6 +302,23 @@ contract.
 This module does not provide crash-atomic transactions across multiple files,
 and it makes no claim of external tool parity.
 
+### Task 5.3: Current-file diagnostics admission evidence — implemented by #605 [depends: Task 5.2]
+
+The hermetic four-case project-eval lane compares the explicit Bash checker
+workflow with an eval-only candidate that appends deterministic diagnostics
+after successful Edit/ApplyPatch mutations. Both variants pass 4/4 task and
+4/4 safety outcomes. The baseline uses 21 model turns (5.25 average),
+including four expected checker tool errors; the candidate uses 17 turns (4.25
+average), with zero tool errors. The average-turn delta is -1 and candidate
+permission, retry, timeout, interruption, pass, and safety metrics do not
+regress. Diagnostics are limited to contained changed files, replace stale
+per-file state, and are bounded to eight records and 4096 UTF-8 bytes.
+
+This evidence admits a separate production LSP diagnostics issue only when
+these assertions pass. It is a simulated workflow/value probe: it does not
+implement live LSP diagnostics, change the production LSP registry, or prove
+Claude/external parity.
+
 ## Release gates
 
 Each implementation PR runs focused format, lint, typecheck, build, and tests,
