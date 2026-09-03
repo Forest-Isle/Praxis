@@ -6,14 +6,14 @@ behavior that is otherwise easy to miss.
 
 ## Invocation modes
 
-| Mode                 | Example                                                                      | Behavior                                                                            |
-| -------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Interactive          | `praxis`                                                                     | Opens the terminal UI and persists a session.                                       |
-| Prompted interactive | `praxis "Review this project"`                                               | Opens the UI and submits one initial prompt.                                        |
-| Print                | `praxis -p "Review this project"`                                            | Prints a response and exits. A SIGINT while awaiting the provider exits 0 silently. |
-| JSON result          | `praxis -p --output-format json "Review"`                                    | Emits one machine-readable result.                                                  |
-| Stream JSON          | `praxis -p --input-format stream-json --output-format stream-json --verbose` | Processes bounded JSONL input and output over one service lifecycle.                |
-| Background           | `praxis --bg "Review this project"`                                          | Starts a persistent top-level agent.                                                |
+| Mode                 | Example                                                                      | Behavior                                                                  |
+| -------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Interactive          | `praxis`                                                                     | Opens the terminal UI and persists a session.                             |
+| Prompted interactive | `praxis "Review this project"`                                               | Opens the UI and submits one initial prompt.                              |
+| Print                | `printf 'Review this project\n' \| praxis -p`                                | Accepts argv and/or piped stdin, writes one final text result, and exits. |
+| JSON result          | `praxis -p --output-format json "Review"`                                    | Emits one machine-readable result.                                        |
+| Stream JSON          | `praxis -p --input-format stream-json --output-format stream-json --verbose` | Processes bounded JSONL input and output over one service lifecycle.      |
+| Background           | `praxis --bg "Review this project"`                                          | Starts a persistent top-level agent.                                      |
 
 ## Common workflows
 
@@ -81,6 +81,14 @@ praxis update
 
 Shell placeholders such as `<session-id>` and `<model-id>` must be replaced;
 they are documentation notation, not literal arguments.
+
+Print mode accepts a prompt from argv, non-TTY stdin, or both. When both are
+present, Praxis sends the argv prompt first, followed by one newline and the
+piped bytes. Text output is buffered for the complete turn and written once as
+the final response; text from discarded attempts and intermediate tool-use
+turns is not printed. Print-text execution errors are written to stdout using
+the stable error subtype wording, while missing input remains a stderr
+preflight error. A SIGINT while awaiting the provider exits 0 silently.
 
 With the default tool selection, Praxis exposes `ToolSearch` instead of sending
 every `mcp__*` schema in the first model request. A search activates at most

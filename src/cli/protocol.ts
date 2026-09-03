@@ -392,14 +392,58 @@ export function createSuccessResult(
   }
 }
 
+interface ErrorResultClassification {
+  subtype: string
+  maxBudgetUsd?: string
+  maxTurns?: string
+}
+
+function classifyErrorResult(message: string): ErrorResultClassification {
+  const maxBudget = /Maximum budget of \$([0-9]+(?:\.[0-9]+)?) exceeded/iu.exec(
+    message,
+  )
+  if (maxBudget || /maximum budget|budget .* exceeded/iu.test(message)) {
+    return {
+      subtype: 'error_max_budget_usd',
+      ...(maxBudget?.[1] === undefined ? {} : { maxBudgetUsd: maxBudget[1] }),
+    }
+  }
+  const maxTurns = /Maximum model turns of (\d+) exceeded/iu.exec(message)
+  if (maxTurns || /maximum model turns|model turn limit/iu.test(message)) {
+    return {
+      subtype: 'error_max_turns',
+      ...(maxTurns?.[1] === undefined ? {} : { maxTurns: maxTurns[1] }),
+    }
+  }
+  if (/StructuredOutput/iu.test(message)) {
+    return { subtype: 'error_max_structured_output_retries' }
+  }
+  return { subtype: 'error_during_execution' }
+}
+
 function errorResultSubtype(message: string): string {
-  if (/maximum budget|budget .* exceeded/iu.test(message))
-    return 'error_max_budget_usd'
-  if (/maximum model turns|model turn limit/iu.test(message))
-    return 'error_max_turns'
-  if (/StructuredOutput/iu.test(message))
-    return 'error_max_structured_output_retries'
-  return 'error_during_execution'
+  return classifyErrorResult(message).subtype
+}
+
+export function formatPrintTextError(
+  message: string,
+  context: ProtocolErrorProjectionContext = {},
+): string {
+  if (context.providerApiError === true) {
+    const normalized =
+      typeof context.apiErrorStatus === 'number'
+        ? normalizeApiError(message, context.apiErrorStatus)
+        : message
+    return `${normalized}\n`
+  }
+  const classification = classifyErrorResult(message)
+  if (classification.maxTurns !== undefined)
+    return `Error: Reached max turns (${classification.maxTurns})`
+  if (classification.maxBudgetUsd !== undefined)
+    return `Error: Exceeded USD budget (${classification.maxBudgetUsd})`
+  if (classification.subtype === 'error_max_structured_output_retries')
+    return 'Error: Failed to provide valid structured output after maximum retries'
+  return 'Execution error'
 }
 
 export function createErrorResult(

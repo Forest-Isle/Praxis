@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createErrorResult,
   createSuccessResult,
+  formatPrintTextError,
   isHeadlessCostCommand,
   matchHeadlessColorCommand,
   parseCliInvocation,
@@ -263,6 +264,33 @@ describe('CLI protocol', () => {
         3,
       ),
     ).toMatchObject({ subtype: 'error_max_turns', num_turns: 3 })
+  })
+
+  it('formats print text errors using the pinned projections', () => {
+    expect(formatPrintTextError('Maximum model turns of 3 exceeded')).toBe(
+      'Error: Reached max turns (3)',
+    )
+    expect(formatPrintTextError('Maximum budget of $1.000000 exceeded')).toBe(
+      'Error: Exceeded USD budget (1.000000)',
+    )
+    expect(
+      formatPrintTextError('StructuredOutput must be called exactly once'),
+    ).toBe(
+      'Error: Failed to provide valid structured output after maximum retries',
+    )
+    expect(
+      formatPrintTextError('API Error: 500 secret', {
+        providerApiError: true,
+        apiErrorStatus: 500,
+      }),
+    ).toBe('API Error: 500 secret\n')
+    expect(
+      formatPrintTextError('provider unavailable', {
+        providerApiError: true,
+        apiErrorStatus: null,
+      }),
+    ).toBe('provider unavailable\n')
+    expect(formatPrintTextError('arbitrary failure')).toBe('Execution error')
   })
 
   it('projects provider and local success envelopes with stable metrics', () => {

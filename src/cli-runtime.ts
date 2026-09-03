@@ -219,6 +219,7 @@ import {
   createSuccessResult,
   isHeadlessCostCommand,
   matchHeadlessColorCommand,
+  formatPrintTextError,
   parseCliInvocation,
   projectProtocolTimings,
   readStreamJsonMessages,
@@ -1072,6 +1073,7 @@ export interface CliIO {
   stdout(message: string | Uint8Array): void
   stderr(message: string): void
   isTTY?: boolean
+  stdinIsTTY?: boolean
   readStdinLines?: () => AsyncIterable<string | Uint8Array>
   readSecret?: (prompt: string, signal?: AbortSignal) => Promise<string>
 }
@@ -1430,6 +1432,7 @@ const consoleIO: CliIO = {
   stdout: (message) => process.stdout.write(message),
   stderr: (message) => process.stderr.write(message),
   isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+  stdinIsTTY: Boolean(process.stdin.isTTY),
   readStdinLines: () => process.stdin,
   readSecret: readConsoleSecret,
 }
@@ -5541,6 +5544,7 @@ function eventSink(
   io: CliIO,
   outputFormat: CliOutputFormat,
   legacyJson = false,
+  printText = false,
 ): RuntimeEventSink {
   const sensitiveValues = sensitiveEnvironmentValues(process.env)
   if (legacyJson) {
@@ -5563,6 +5567,14 @@ function eventSink(
     }
   }
   if (outputFormat !== 'text') return () => undefined
+  if (printText)
+    return (event) => {
+      if (event.type === 'warning') {
+        io.stderr(
+          `Warning: ${redactSensitiveText(event.message, sensitiveValues)}\n`,
+        )
+      }
+    }
   let turnBuffered = false
   let bufferedText = ''
   const flushBufferedText = () => {
@@ -5613,6 +5625,32 @@ function promptFrom(values: readonly string[]): string {
   const prompt = values.join(' ').trim()
   if (prompt.length === 0) throw new Error('Prompt is required')
   return prompt
+}
+
+async function resolvePrintTextPrompt(
+  io: CliIO,
+  argvPrompt: string | undefined,
+): Promise<string> {
+  const missingInput = () =>
+    new Error(
+      'Error: Input must be provided either through stdin or as a prompt argument when using --print',
+    )
+  if (io.stdinIsTTY !== false) {
+    if (argvPrompt !== undefined) return argvPrompt
+    throw missingInput()
+  }
+  const input = io.readStdinLines?.()
+  if (!input) throw new Error('print text input requires stdin support')
+  const chunks: Buffer[] = []
+  for await (const chunk of input) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  const stdinText = Buffer.concat(chunks).toString('utf8')
+  if (argvPrompt !== undefined && stdinText.length > 0)
+    return `${argvPrompt}\n${stdinText}`
+  if (argvPrompt !== undefined) return argvPrompt
+  if (stdinText.length > 0) return stdinText
+  throw missingInput()
 }
 
 function backgroundWorkerArgv(argv: readonly string[]): string[] {
@@ -7111,10 +7149,17 @@ async function execute(
   }
   const headlessPromptArgs =
     command === 'resume' ? args.slice(2) : knownCommand ? args.slice(1) : args
-  const headlessPrompt =
+  const headlessTurnReached =
+    invocation.rewindFiles === undefined &&
+    !['sessions', 'fork', 'inspect', 'export'].includes(command ?? 'run')
+  const argvHeadlessPrompt =
     inputFormat === 'text' && headlessPromptArgs.length > 0
       ? promptFrom(headlessPromptArgs)
       : undefined
+  const headlessPrompt =
+    inputFormat === 'text' && headlessTurnReached && invocation.print
+      ? await resolvePrintTextPrompt(io, argvHeadlessPrompt)
+      : argvHeadlessPrompt
   if (headlessPrompt === '/release-notes' && !invocation.disableSlashCommands) {
     const startedAt = Date.now()
     const sessionId = invocation.sessionId ?? randomUUID()
@@ -7172,9 +7217,6 @@ async function execute(
     }
     return 0
   }
-  const headlessTurnReached =
-    invocation.rewindFiles === undefined &&
-    !['sessions', 'fork', 'inspect', 'export'].includes(command ?? 'run')
   if (streamIterator && headlessTurnReached) {
     const first = await nextStreamUser()
     if (first) firstStreamMessage = first
@@ -7244,7 +7286,12 @@ async function execute(
                 )
               }
             }
-          : eventSink(io, outputFormat, invocation.legacyJson),
+          : eventSink(
+              io,
+              outputFormat,
+              invocation.legacyJson,
+              invocation.print && inputFormat === 'text',
+            ),
     requireProvider:
       !streamInputExhausted &&
       !firstTurnIsLocalColor &&
@@ -7401,6 +7448,7 @@ async function execute(
     if (streamInputExhausted) return 0
     const initialPrompt =
       firstStreamMessage?.prompt ??
+      headlessPrompt ??
       promptFrom(
         command === 'resume'
           ? args.slice(2)
@@ -7420,7 +7468,6 @@ async function execute(
       signal?.addEventListener('abort', forwardAbort, { once: true })
       currentTurnAbort = streamIterator ? turnAbort : undefined
       const runSignal = streamIterator ? turnAbort.signal : signal
-      await ensureCostBaseline(activeSessionId)
       jsonModelTurns = 0
       jsonRequestAt = undefined
       jsonOutputAt = undefined
@@ -7437,6 +7484,7 @@ async function execute(
       let colorArgs: string | undefined
       let costTurn = false
       try {
+        await ensureCostBaseline(activeSessionId)
         costTurn =
           !invocation.disableSlashCommands && isHeadlessCostCommand(prompt)
         colorArgs = invocation.disableSlashCommands
@@ -7572,6 +7620,12 @@ async function execute(
               errorContext,
             ),
           )
+        } else if (
+          invocation.print &&
+          inputFormat === 'text' &&
+          outputFormat === 'text'
+        ) {
+          io.stdout(formatPrintTextError(message, errorContext))
         } else {
           if (currentTurnAbort === turnAbort) currentTurnAbort = undefined
           signal?.removeEventListener('abort', forwardAbort)
@@ -7609,6 +7663,8 @@ async function execute(
         )
       } else if (outputFormat !== 'text')
         writeJson(io, { type: 'result', ...result })
+      else if (invocation.print && inputFormat === 'text')
+        io.stdout(`${result.text}\n`)
       else io.stdout(localCommand ? `${result.text}\n` : '\n')
       if (streamOutput && invocation.promptSuggestions) {
         try {

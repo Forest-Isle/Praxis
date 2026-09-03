@@ -132,6 +132,114 @@ describe('direct process lifecycle', () => {
   )
 
   it(
+    'reads a print prompt from piped stdin in the direct process',
+    { timeout: 60_000 },
+    async () => {
+      configDir = await mkdtemp(join(tmpdir(), 'praxis-cli-process-'))
+      const requestBodies: string[] = []
+      let resolveRequest: (() => void) | undefined
+      const requestReceived = new Promise<void>((resolve) => {
+        resolveRequest = resolve
+      })
+      server = createServer((request, response) => {
+        let body = ''
+        request.setEncoding('utf8')
+        request.on('data', (chunk: string) => {
+          body += chunk
+        })
+        request.on('end', () => {
+          requestBodies.push(body)
+          resolveRequest?.()
+          response.writeHead(200, { 'content-type': 'text/event-stream' })
+          response.end(
+            [
+              'data: {"choices":[{"delta":{"content":"process answer"}}]}',
+              '',
+              'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+              '',
+              'data: [DONE]',
+              '',
+              '',
+            ].join('\n'),
+          )
+        })
+      })
+      server.listen(0, '127.0.0.1')
+      await new Promise<void>((resolve) => server?.once('listening', resolve))
+      const address = server.address()
+      if (address === null || typeof address === 'string') {
+        throw new Error('print provider server has no TCP address')
+      }
+      const providerUrl = `http://127.0.0.1:${address.port}/v1`
+
+      const childEnv: Record<string, string> = {}
+      for (const [key, value] of Object.entries(process.env)) {
+        if (
+          value !== undefined &&
+          key !== 'NODE_OPTIONS' &&
+          !key.startsWith('PRAXIS_') &&
+          !key.startsWith('CLAUDE_') &&
+          !key.startsWith('ANTHROPIC_') &&
+          !key.startsWith('OPENAI_') &&
+          !key.startsWith('DEEPSEEK_')
+        ) {
+          childEnv[key] = value
+        }
+      }
+      childEnv.PRAXIS_API_KEY = 'praxis-cli-process-test-key'
+      childEnv.PRAXIS_MODEL = 'test-model'
+      childEnv.PRAXIS_BASE_URL = providerUrl
+      childEnv.PRAXIS_CLAUDE_BINARY = join(configDir, 'missing-claude')
+      childEnv.PRAXIS_HOME = join(configDir, 'config')
+
+      const child = spawn(
+        process.execPath,
+        ['--import', 'tsx', CLI_ENTRY, '-p'],
+        {
+          cwd: REPO_ROOT,
+          env: childEnv,
+          stdio: ['pipe', 'pipe', 'pipe'],
+        },
+      )
+      let stdout = ''
+      let stderr = ''
+      child.stdout?.setEncoding('utf8')
+      child.stderr?.setEncoding('utf8')
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk
+      })
+      child.stderr?.on('data', (chunk: string) => {
+        stderr += chunk
+      })
+
+      try {
+        child.stdin?.end('process stdin prompt\n')
+        await Promise.race([
+          requestReceived,
+          new Promise<never>((_, reject) => {
+            setTimeout(
+              () =>
+                reject(new Error('print provider request was not received')),
+              30_000,
+            )
+          }),
+        ])
+        const exitCode = await waitForExit(child, 30_000)
+        expect(exitCode).toBe(0)
+        expect(
+          requestBodies.some((body) => body.includes('process stdin prompt')),
+        ).toBe(true)
+        expect(stdout).toBe('process answer\n')
+        expect(stderr).toBe('')
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGKILL')
+        }
+      }
+    },
+  )
+
+  it(
     'exits silently on SIGINT while print output awaits a provider',
     { timeout: 120_000 },
     async () => {

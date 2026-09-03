@@ -93,6 +93,7 @@ Praxis 还提供实验性的 `openai-codex` 提供商，用于 ChatGPT-backed Co
 
 ```sh
 praxis -p "检查此项目"
+printf '检查此项目\n' | praxis -p
 praxis -p --output-format json "总结测试失败情况"
 praxis --resume
 praxis sessions --json
