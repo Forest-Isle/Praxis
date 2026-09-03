@@ -120,6 +120,14 @@ deletable unless current Git and owner evidence independently pass every gate.
 6. On a blocking hook or partial failure, remove only artifacts proven to have
    been created by this operation; otherwise persist `retained` with a reason.
 
+Agent foreground and background executions use the same `agent` kind and
+`ephemeral` policy. Each execution creates a fresh ownership record whose
+owner token is the exact subagent lifecycle execution token. A clean release
+removes the checkout; dirty or committed work is retained with its existing
+path and warning surfaces. A clean continuation creates the deterministic
+Agent path again under a new owner-token record, while a retained continuation
+restores the existing checkout.
+
 ### Normal release
 
 1. Persist `releasing` while holding the worktree lease.
@@ -127,6 +135,19 @@ deletable unless current Git and owner evidence independently pass every gate.
 3. Dirty work or commits after the base become `retained` and are reported.
 4. Run the synchronous `WorktreeRemove` hook with reason `normal`.
 5. Remove the registered checkout and owned branch, then persist `released`.
+
+### Restore and continuation
+
+Managed Agent restore requires the complete ownership proof: record, marker,
+Git registration, repository identity, canonical path, kind, policy, matching
+Agent owner prefix, and an acquired lease. A hydrated restore that closes
+before continuation releases its lease, leaving retained state available for a
+later owner. Only the exact former
+`<stateRoot>/agent-worktrees/<session-id>-<agent-id>` path may use legacy
+validation; it must be a real, registered worktree for the same repository.
+Legacy paths are never adopted into the registry or garbage collection, and
+arbitrary registered worktrees are rejected so callers fall back to the parent
+cwd.
 
 ### Crash reconciliation
 
@@ -136,7 +157,12 @@ directories as ownership evidence.
 
 - A live lease or active owner state is skipped.
 - Durable, failed, owner-lost, orphaned, and unknown-owner records are retained.
-- An interrupted or terminal ephemeral owner is eligible for Git inspection.
+- An interrupted Workflow owner is eligible for Git inspection. Agent records
+  are first matched to their persisted execution lifecycle and exact owner
+  token; live, missing, corrupt, unavailable, mismatched, failed, cancelled,
+  and orphaned Agent lifecycles are retained without hooks or deletion.
+- A matching completed Agent lifecycle is eligible for the same Git inspection
+  and clean release gates as Workflow.
 - Dirty, committed, mismatched, malformed, or hook-blocked candidates are
   retained with a precise reason.
 - A clean, matching ephemeral candidate runs `WorktreeRemove` with reason
@@ -160,6 +186,10 @@ block decision blocks the transition. Other non-zero exits are recorded and
 reported but follow the existing advisory command-hook behavior. Hook output
 uses the existing workspace-trust-filtered runner and never enters transcripts.
 Asynchronous configuration for these events is rejected during validation.
+
+Workflow and both foreground and background Agent executions use this same
+trusted synchronous create/remove lifecycle. Agent hooks match `agent`, and
+private ownership or hook data remains outside JSONL transcripts.
 
 ## Errors and invariants
 
@@ -196,7 +226,7 @@ Private state remains outside append-only transcripts.
 
 ## Delivery sequence
 
-1. #630: lifecycle store, ownership proof, safe rollback, and Workflow migration.
-2. #625: lifecycle hooks; #626: bounded reconciliation and safe garbage collection.
-3. #627: Agent migration and restore compatibility; #628: durable Team migration.
-4. #629: doctor/observability surfaces, final gates, and operator documentation.
+1. #630: lifecycle store, ownership proof, safe rollback, and Workflow migration (complete).
+2. #625: lifecycle hooks; #626: bounded reconciliation and safe garbage collection (complete).
+3. #627: Agent migration and restore compatibility (complete); #628: durable Team migration (future).
+4. #629: doctor/observability surfaces, final gates, and operator documentation (future).

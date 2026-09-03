@@ -34,6 +34,8 @@ import type { ClaudeHookCommandExecutor } from '../hooks/claude-hooks.js'
 import { ClaudePermissionResolver } from '../permissions/claude-permission-resolver.js'
 import type { ClaudeMcpRuntime } from '../mcp/claude-mcp-tools.js'
 import { resolveDataPlanePaths } from '../persistence/data-plane.js'
+import { ManagedWorktreeStore } from '../persistence/managed-worktree-store.js'
+import { sanitizeProjectPath } from '../platform/project-path-key.js'
 import {
   SubagentExecution,
   SubagentLifecycleStore,
@@ -42,6 +44,10 @@ import {
 import { FallbackModelProvider } from '../providers/fallback-provider.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import { NativeSidechainTranscript } from './native-sidechain-transcript.js'
+import { createAgentWorktree } from './agent-worktree.js'
+import { parseAgentWorktreeOwner } from './agent-worktree-owner.js'
+import { reconcileManagedWorktrees } from './managed-worktree.js'
+import { BackgroundAgentRunError } from './background-agent-manager.js'
 import { ClaudeSessionService } from './session-service.js'
 import {
   type AgentPermissionMode,
@@ -84,6 +90,47 @@ function contextSnapshot(system: readonly string[] = []): ContextSnapshot {
       stability: 'session',
     })),
   }
+}
+
+async function seedIncompleteIsolatedSidechain(options: {
+  configRoot: string
+  cwd: string
+  sessionId: string
+  agentId: string
+  worktreePath: string
+  name: string
+}): Promise<void> {
+  const paths = resolveDataPlanePaths({
+    dataPlane: 'native',
+    root: options.configRoot,
+    cwd: options.cwd,
+    sessionId: options.sessionId,
+  })
+  const directory = join(paths.projectRoot, options.sessionId, 'subagents')
+  await mkdir(directory, { recursive: true })
+  const transcript = new NativeSidechainTranscript({
+    sessionId: options.sessionId,
+    agentId: options.agentId,
+    directory,
+    transcriptFile: join(directory, `agent-${options.agentId}.jsonl`),
+    metadataFile: join(directory, `agent-${options.agentId}.meta.json`),
+    lockFile: join(
+      paths.praxisRoot,
+      'locks',
+      `${options.sessionId}-${options.agentId}.lock`,
+    ),
+  })
+  await transcript.create('RESTORE_ISOLATION_ROOT', {
+    agentType: 'general-purpose',
+    description: 'Restore isolated checkout',
+    toolUseId: 'call_restore_isolation_origin',
+    spawnDepth: 1,
+    cwd: options.worktreePath,
+    promptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    isolation: 'worktree',
+    worktreePath: options.worktreePath,
+    name: options.name,
+  })
 }
 
 const emptyTools: ToolRegistry = {
@@ -2375,9 +2422,7 @@ describe('foreground Claude Agent execution', () => {
       await readFile(join(subagentDirectory, metadataFile ?? ''), 'utf8'),
     ) as { worktreePath?: string }
     expect(metadata.worktreePath).toEqual(expect.any(String))
-    await expect(stat(metadata.worktreePath ?? '')).rejects.toMatchObject({
-      code: 'ENOENT',
-    })
+    await expect(stat(metadata.worktreePath ?? '')).resolves.toBeDefined()
     await expect(
       readFile(
         join(
@@ -2535,13 +2580,54 @@ describe('foreground Claude Agent execution', () => {
     })
   })
 
-  it('settles setup failure before surfacing worktree cleanup failure', async () => {
+  it('retains a real worktree when native sidechain setup fails', async () => {
     const { configRoot, cwd } = await gitRepository(
-      'praxis-agent-setup-cleanup-failure-',
+      'praxis-agent-setup-failure-retention-',
     )
     const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const promptId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     let providerCalls = 0
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const hookCalls: Record<string, unknown>[] = []
+    const hooks = new ClaudeHookRunner({
+      settings: [
+        {
+          path: '/project.json',
+          scope: 'project',
+          value: {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  matcher: 'agent',
+                  hooks: [{ type: 'command', command: 'agent-create' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      cwd,
+      executeCommand: async (command, input) => {
+        hookCalls.push({ command, ...input })
+        if (command === 'agent-create') {
+          const owner = parseAgentWorktreeOwner(String(input.owner_id))
+          if (!owner || typeof input.worktree_path !== 'string')
+            throw new Error('invalid Agent hook input')
+          const subagents = join(paths.projectRoot, sessionId, 'subagents')
+          await mkdir(subagents, { recursive: true })
+          await writeFile(
+            join(subagents, `agent-${owner.agentId}.meta.json`),
+            'occupied\n',
+          )
+        }
+        return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
     const executor = new ClaudeSubagentExecutor({
       configRoot,
       dataPlane: 'native',
@@ -2556,92 +2642,72 @@ describe('foreground Claude Agent execution', () => {
       },
       baseTools: emptyTools,
       permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks,
     })
-    const cleanup = vi.fn(async () => {
-      throw new Error('worktree cleanup failed')
+    const registry = executor.registry(sessionId, 0, () => promptId)
+    const call = await registry.prepare(
+      {
+        id: 'call_setup_failure',
+        name: 'Agent',
+        input: {
+          description: 'Setup failure',
+          prompt: 'Must not run',
+          subagent_type: 'general-purpose',
+          isolation: 'worktree',
+          run_in_background: true,
+        },
+      },
+      { cwd },
+    )
+    await expect(registry.execute(call, { cwd })).rejects.toThrow(/EEXIST/u)
+    expect(providerCalls).toBe(0)
+    expect(hookCalls).toHaveLength(1)
+    expect(hookCalls[0]).toMatchObject({
+      worktree_kind: 'agent',
+      hook_event_name: 'WorktreeCreate',
     })
-    const worktreeSpy = vi
-      .spyOn(
-        executor as unknown as {
-          createAgentWorktree: (...args: unknown[]) => Promise<{
-            cwd: string
-            cleanup: () => Promise<{ retained: boolean }>
-          }>
-        },
-        'createAgentWorktree',
-      )
-      .mockResolvedValue({ cwd: join(cwd, 'fake-worktree'), cleanup })
-    const sidechainSpy = vi
-      .spyOn(NativeSidechainTranscript.prototype, 'create')
-      .mockRejectedValue(new Error('sidechain setup failed'))
-    try {
-      const registry = executor.registry(sessionId, 0, () => promptId)
-      const call = await registry.prepare(
-        {
-          id: 'call_setup_cleanup_failure',
-          name: 'Agent',
-          input: {
-            description: 'Setup cleanup failure',
-            prompt: 'Must not run',
-            subagent_type: 'general-purpose',
-            isolation: 'worktree',
-            run_in_background: true,
-          },
-        },
-        { cwd },
-      )
-      let thrown: unknown
-      try {
-        await registry.execute(call, { cwd })
-      } catch (error) {
-        thrown = error
-      }
-      expect(thrown).toBeInstanceOf(AggregateError)
-      const aggregate = thrown as AggregateError
-      expect(aggregate.errors).toHaveLength(2)
-      expect((aggregate.errors[0] as Error).message).toBe(
-        'sidechain setup failed',
-      )
-      expect((aggregate.errors[1] as Error).message).toBe(
-        'worktree cleanup failed',
-      )
-      expect(providerCalls).toBe(0)
-      expect(cleanup).toHaveBeenCalledTimes(1)
 
-      const paths = resolveDataPlanePaths({
-        dataPlane: 'native',
-        root: configRoot,
-        cwd,
-        sessionId,
-      })
-      const lifecycleDirectory = join(
-        paths.praxisRoot,
-        'subagent-lifecycle',
-        sessionId,
-      )
-      const lifecycleFiles = (await readdir(lifecycleDirectory)).filter(
-        (file) => file.endsWith('.json'),
-      )
-      expect(lifecycleFiles).toHaveLength(1)
-      const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
-      expect(JSON.parse(await readFile(lifecyclePath, 'utf8'))).toMatchObject({
-        version: 2,
-        lifecycle: { state: 'failed', revision: 1 },
-        detail: 'sidechain setup failed',
-        result: {
-          text: 'sidechain setup failed',
-          usage: { inputTokens: 0, outputTokens: 0 },
-          toolUseCount: 0,
-          durationMs: 0,
-        },
-      })
-      await expect(stat(`${lifecyclePath}.owner.lock`)).rejects.toMatchObject({
-        code: 'ENOENT',
-      })
-    } finally {
-      sidechainSpy.mockRestore()
-      worktreeSpy.mockRestore()
-    }
+    const lifecycleDirectory = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    const lifecycleFiles = (await readdir(lifecycleDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(lifecycleFiles).toHaveLength(1)
+    const lifecyclePath = join(lifecycleDirectory, lifecycleFiles[0] ?? '')
+    const lifecycleRecord = JSON.parse(await readFile(lifecyclePath, 'utf8'))
+    expect(lifecycleRecord).toMatchObject({
+      version: 2,
+      lifecycle: { state: 'failed', revision: 1 },
+      detail: expect.stringContaining('EEXIST'),
+      result: {
+        text: expect.stringContaining('EEXIST'),
+      },
+    })
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const records = (await readdir(registryDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(records).toHaveLength(1)
+    const record = JSON.parse(
+      await readFile(join(registryDirectory, records[0] ?? ''), 'utf8'),
+    ) as { state: string; worktreePath: string }
+    expect(record.state).toBe('retained')
+    await expect(stat(record.worktreePath)).resolves.toBeDefined()
+    const reconciliation = await reconcileManagedWorktrees({
+      cwd,
+      stateRoot: paths.praxisRoot,
+    })
+    expect(reconciliation.entries).toContainEqual(
+      expect.objectContaining({ disposition: 'retained' }),
+    )
+    await executor.close()
   })
 
   it('loads native custom agent memory and preloads declared skills', async () => {
@@ -3964,6 +4030,7 @@ describe('foreground Claude Agent execution', () => {
       provider: {
         capabilities: { streaming: true, usage: true, tools: false },
         async *complete(request) {
+          yield* []
           started()
           request.signal?.addEventListener('abort', observedAbort, {
             once: true,
@@ -4021,6 +4088,162 @@ describe('foreground Claude Agent execution', () => {
       process.off('unhandledRejection', onUnhandled)
       beginCancellation.mockRestore()
       await executor.close()
+    }
+  })
+
+  it('retains and restores a real orphaned managed Agent checkout before continuation', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-managed-crash-restore-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const transcriptPath = join(
+      paths.projectRoot,
+      sessionId,
+      'subagents',
+      `agent-${agentId}.jsonl`,
+    )
+    const lifecycleStore = new SubagentLifecycleStore(
+      paths.praxisRoot,
+      sessionId,
+      agentId,
+      transcriptPath,
+    )
+    const execution = await lifecycleStore.start()
+    await execution.running()
+    const worktree = await createAgentWorktree({
+      cwd,
+      stateRoot: paths.praxisRoot,
+      sessionId,
+      agentId,
+      executionToken: execution.token,
+    })
+    await seedIncompleteIsolatedSidechain({
+      configRoot,
+      cwd,
+      sessionId,
+      agentId,
+      worktreePath: worktree.cwd,
+      name: 'managed-crash-agent',
+    })
+    await execution.release()
+
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const recordFile = (await readdir(registryDirectory)).find((file) =>
+      file.endsWith('.json'),
+    )
+    if (!recordFile) throw new Error('Managed Agent record is missing')
+    const record = JSON.parse(
+      await readFile(join(registryDirectory, recordFile), 'utf8'),
+    ) as { worktreeId: string }
+    const managedStore = new ManagedWorktreeStore(
+      paths.praxisRoot,
+      await realpath(cwd),
+      record.worktreeId,
+    )
+    await rm(managedStore.lockPath, { force: true })
+
+    const reconciliation = await reconcileManagedWorktrees({
+      cwd,
+      stateRoot: paths.praxisRoot,
+    })
+    expect(reconciliation.entries).toContainEqual(
+      expect.objectContaining({
+        worktreeId: record.worktreeId,
+        disposition: 'retained',
+      }),
+    )
+    await expect(stat(worktree.cwd)).resolves.toBeDefined()
+    expect(
+      (
+        await JSON.parse(
+          await readFile(join(registryDirectory, recordFile), 'utf8'),
+        )
+      ).state,
+    ).toBe('retained')
+
+    const registeredBeforeContinuation = (
+      await execFileAsync('git', ['-C', cwd, 'worktree', 'list', '--porcelain'])
+    ).stdout
+    expect(
+      registeredBeforeContinuation
+        .split('\n')
+        .filter((line) => line === `worktree ${worktree.cwd}`),
+    ).toHaveLength(1)
+
+    const observedCwds: string[] = []
+    const resumed = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'MANAGED_CRASH_RESTORED' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      contextAssembler: {
+        async assemble(options) {
+          observedCwds.push(options?.cwd ?? '')
+          return contextSnapshot()
+        },
+      },
+    })
+    try {
+      await resumed.hydratePersistedTasks(sessionId, cwd)
+      const registry = resumed.registry(
+        sessionId,
+        0,
+        () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      )
+      await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_managed_crash_send',
+            name: 'SendMessage',
+            input: { to: agentId, message: 'Continue managed crash recovery' },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      const output = await registry.execute(
+        await registry.prepare(
+          {
+            id: 'call_managed_crash_output',
+            name: 'TaskOutput',
+            input: { task_id: agentId, block: true, timeout: 30_000 },
+          },
+          { cwd },
+        ),
+        { cwd },
+      )
+      expect(output.content).toContain('MANAGED_CRASH_RESTORED')
+      expect(observedCwds).toEqual([worktree.cwd])
+      await expect(stat(worktree.cwd)).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(
+        (
+          await JSON.parse(
+            await readFile(join(registryDirectory, recordFile), 'utf8'),
+          )
+        ).state,
+      ).toBe('released')
+    } finally {
+      await resumed.close()
+      await worktree.cleanup()
     }
   })
 
@@ -5920,6 +6143,14 @@ describe('foreground Claude Agent execution', () => {
     const result = await registry.execute(call, { cwd })
 
     const worktreePath = String(result.nativeToolUseResult?.worktreePath)
+    const expectedWorktreePath = join(
+      await realpath(cwd),
+      '.praxis',
+      'worktrees',
+      'agent',
+      `${sessionId}-${String(result.nativeToolUseResult?.agentId)}`,
+    )
+    expect(worktreePath).toBe(expectedWorktreePath)
     expect(toolCwds).toEqual([worktreePath])
     expect(contextCwds).toEqual([worktreePath, worktreePath])
     expect(requests).toHaveLength(2)
@@ -5954,9 +6185,148 @@ describe('foreground Claude Agent execution', () => {
         ),
         'utf8',
       ),
-    ) as { cwd?: string }
+    ) as { cwd?: string; worktreePath?: string }
     expect(metadata.cwd).toBe(worktreePath)
+    expect(metadata.worktreePath).toBe(worktreePath)
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const records = await readdir(registryDirectory)
+    expect(records.filter((name) => name.endsWith('.json'))).toHaveLength(1)
+    const record = JSON.parse(
+      await readFile(join(registryDirectory, records[0] ?? ''), 'utf8'),
+    ) as { state?: string; worktreePath?: string }
+    expect(record).toMatchObject({
+      state: 'released',
+      worktreePath,
+    })
+    const transcript = await readFile(
+      join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
+      'utf8',
+    )
+    expect(transcript).not.toMatch(/ownerId|worktreeId|PRAXIS_WORKTREE/u)
     await expect(stat(worktreePath)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('runs Agent lifecycle hooks with agent matcher fields outside the transcript', async () => {
+    const { configRoot, cwd } = await gitRepository('praxis-agent-hooks-')
+    const hookCalls: Record<string, unknown>[] = []
+    const hooks = new ClaudeHookRunner({
+      settings: [
+        {
+          path: '/project.json',
+          scope: 'project',
+          value: {
+            hooks: {
+              WorktreeCreate: [
+                {
+                  matcher: 'agent',
+                  hooks: [{ type: 'command', command: 'agent-create' }],
+                },
+              ],
+              WorktreeRemove: [
+                {
+                  matcher: 'agent',
+                  hooks: [{ type: 'command', command: 'agent-remove' }],
+                },
+              ],
+            },
+          },
+        },
+      ],
+      cwd,
+      executeCommand: async (command, input) => {
+        hookCalls.push({ command, ...input })
+        return { stdout: '', stderr: '', exitCode: 0, durationMs: 1 }
+      },
+    })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'AGENT_HOOKED' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      hooks,
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const result = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_agent_hooks',
+          name: 'Agent',
+          input: {
+            description: 'Agent hooks',
+            prompt: 'Run with hooks',
+            isolation: 'worktree',
+            run_in_background: false,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const agentId = String(result.nativeToolUseResult?.agentId)
+    expect(hookCalls).toHaveLength(2)
+    expect(hookCalls.map((input) => input.command)).toEqual([
+      'agent-create',
+      'agent-remove',
+    ])
+    expect(hookCalls[0]).toMatchObject({
+      session_id: sessionId,
+      permission_mode: 'default',
+      hook_event_name: 'WorktreeCreate',
+      transcript_path: expect.any(String),
+      worktree_kind: 'agent',
+      worktree_id: expect.any(String),
+      owner_id: expect.any(String),
+      base_commit: expect.any(String),
+      cwd: result.nativeToolUseResult?.worktreePath,
+      worktree_path: result.nativeToolUseResult?.worktreePath,
+    })
+    expect(hookCalls[1]).toMatchObject({
+      session_id: sessionId,
+      permission_mode: 'default',
+      worktree_kind: 'agent',
+      transcript_path: hookCalls[0]?.transcript_path,
+      worktree_id: hookCalls[0]?.worktree_id,
+      owner_id: hookCalls[0]?.owner_id,
+      base_commit: hookCalls[0]?.base_commit,
+      cwd: result.nativeToolUseResult?.worktreePath,
+      worktree_path: result.nativeToolUseResult?.worktreePath,
+      hook_event_name: 'WorktreeRemove',
+      reason: 'normal',
+    })
+    expect(String(hookCalls[0]?.owner_id)).toContain(
+      `agent:${sessionId}:${agentId}:`,
+    )
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const transcript = await readFile(
+      join(paths.projectRoot, sessionId, 'subagents', `agent-${agentId}.jsonl`),
+      'utf8',
+    )
+    expect(transcript).not.toMatch(
+      /agent-create|agent-remove|owner_id|worktree_id/u,
+    )
+    await executor.close()
   })
 
   it('rejects an oversized subagent context before provider transport', async () => {
@@ -6072,6 +6442,14 @@ describe('foreground Claude Agent execution', () => {
     const result = await registry.execute(call, { cwd })
 
     const worktreePath = String(result.nativeToolUseResult?.worktreePath)
+    const expectedWorktreePath = join(
+      await realpath(cwd),
+      '.praxis',
+      'worktrees',
+      'agent',
+      `${sessionId}-${String(result.nativeToolUseResult?.agentId)}`,
+    )
+    expect(worktreePath).toBe(expectedWorktreePath)
     expect(result.nativeToolUseResult).toMatchObject({
       worktreePath,
       worktreeRetained: true,
@@ -6081,6 +6459,15 @@ describe('foreground Claude Agent execution', () => {
     expect(await readFile(join(worktreePath, 'agent-change.txt'), 'utf8')).toBe(
       'changed\n',
     )
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    await expect(
+      stat(join(paths.praxisRoot, 'agent-worktrees')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(
       readFile(join(cwd, 'agent-change.txt'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' })
@@ -6139,6 +6526,765 @@ describe('foreground Claude Agent execution', () => {
     expect(await readFile(join(worktreePath, 'agent-change.txt'), 'utf8')).toBe(
       'changed\n',
     )
+  })
+
+  async function runIsolatedRetentionCase(
+    mode: 'failure' | 'cancellation',
+  ): Promise<{
+    result: NonNullable<BackgroundAgentRunError['result']>
+    lifecycleState: 'failed' | 'cancelled'
+  }> {
+    const { configRoot, cwd } = await gitRepository(
+      `praxis-agent-worktree-${mode}-retention-`,
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let started!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete(request) {
+          if (mode === 'failure') {
+            yield* []
+            throw new Error('provider failed')
+          }
+          yield* []
+          started()
+          await new Promise<void>((resolve) => {
+            request.signal?.addEventListener('abort', () => resolve(), {
+              once: true,
+            })
+          })
+          throw new DOMException('Aborted', 'AbortError')
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const call = await registry.prepare(
+      {
+        id: `call_${mode}_retention`,
+        name: 'Agent',
+        input: {
+          description: `${mode} retention`,
+          prompt: `${mode} in isolation`,
+          isolation: 'worktree',
+          run_in_background: false,
+        },
+      },
+      { cwd },
+    )
+    const controller = new AbortController()
+    const operation = registry.execute(
+      call,
+      mode === 'cancellation' ? { cwd, signal: controller.signal } : { cwd },
+    )
+    if (mode === 'cancellation') {
+      await providerStarted
+      controller.abort()
+    }
+    let thrown: unknown
+    try {
+      await operation
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(BackgroundAgentRunError)
+    const result = (thrown as BackgroundAgentRunError).result
+    if (!result) throw new Error('Expected Agent failure result')
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const lifecycleDirectory = join(
+      paths.praxisRoot,
+      'subagent-lifecycle',
+      sessionId,
+    )
+    const lifecycleFiles = (await readdir(lifecycleDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(lifecycleFiles).toHaveLength(1)
+    const lifecycle = JSON.parse(
+      await readFile(join(lifecycleDirectory, lifecycleFiles[0] ?? ''), 'utf8'),
+    ) as { lifecycle: { state: 'failed' | 'cancelled' } }
+    await executor.close()
+    return { result, lifecycleState: lifecycle.lifecycle.state }
+  }
+
+  it.each(['failure', 'cancellation'] as const)(
+    'retains a clean isolated Agent worktree after %s',
+    async (mode) => {
+      const { result, lifecycleState } = await runIsolatedRetentionCase(mode)
+      const worktreePath = result.isolationPath
+      if (!worktreePath) throw new Error('Expected retained worktree path')
+      expect(result).toMatchObject({
+        isolationRetained: true,
+        isolationWarning: expect.stringContaining(worktreePath),
+      })
+      await expect(stat(worktreePath)).resolves.toBeDefined()
+      expect(lifecycleState).toBe(mode === 'failure' ? 'failed' : 'cancelled')
+    },
+  )
+
+  it('recreates one deterministic managed path for a clean Agent continuation', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-continuation-',
+    )
+    let turn = 0
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield {
+            type: 'text-delta',
+            delta: turn++ === 0 ? 'FIRST_CLEAN_DONE' : 'SECOND_CLEAN_DONE',
+          }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const launched = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_clean_continuation',
+          name: 'Agent',
+          input: {
+            description: 'Clean continuation',
+            prompt: 'Finish cleanly',
+            isolation: 'worktree',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const agentId = String(launched.nativeToolUseResult?.agentId)
+    expect(launched.nativeToolUseResult).toMatchObject({
+      agentId,
+      description: 'Clean continuation',
+      worktreePath: join(
+        await realpath(cwd),
+        '.praxis',
+        'worktrees',
+        'agent',
+        `${sessionId}-${agentId}`,
+      ),
+    })
+    const first = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_clean_continuation_output_1',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(first.content).toContain('FIRST_CLEAN_DONE')
+    const path = join(
+      await realpath(cwd),
+      '.praxis',
+      'worktrees',
+      'agent',
+      `${sessionId}-${agentId}`,
+    )
+    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' })
+    const sent = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_clean_continuation_send',
+          name: 'SendMessage',
+          input: { to: agentId, message: 'Continue once' },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('resumedAgentId')
+    const second = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_clean_continuation_output_2',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(second.content).toContain('SECOND_CLEAN_DONE')
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const records = (await readdir(registryDirectory)).filter((name) =>
+      name.endsWith('.json'),
+    )
+    expect(records).toHaveLength(2)
+    const pathsInRecords = await Promise.all(
+      records.map(
+        async (record) =>
+          (
+            JSON.parse(
+              await readFile(join(registryDirectory, record), 'utf8'),
+            ) as {
+              worktreePath: string
+            }
+          ).worktreePath,
+      ),
+    )
+    expect(pathsInRecords).toEqual([path, path])
+    await executor.close()
+  })
+
+  it('retains a committed isolated Agent checkout at the managed path', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-committed-',
+    )
+    let turn = 0
+    const tools: ToolRegistry = {
+      definitions: () => [
+        {
+          name: 'CommitChange',
+          description: 'Commit a change in the current checkout',
+          inputSchema: { type: 'object', properties: {} },
+        },
+      ],
+      prepare: async (call) => call,
+      execute: async (_call, context) => {
+        await writeFile(join(context.cwd, 'agent-commit.txt'), 'committed\n')
+        await execFileAsync('git', [
+          '-C',
+          context.cwd,
+          'add',
+          'agent-commit.txt',
+        ])
+        await execFileAsync('git', [
+          '-C',
+          context.cwd,
+          '-c',
+          'user.name=Praxis Test',
+          '-c',
+          'user.email=praxis@example.invalid',
+          'commit',
+          '-m',
+          'Agent committed change',
+        ])
+        return { content: 'COMMITTED', isError: false }
+      },
+    }
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: { id: 'call_committed', name: 'CommitChange', input: {} },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'COMMITTED_DONE' }
+          }
+        },
+      },
+      baseTools: tools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const result = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_committed_agent',
+          name: 'Agent',
+          input: {
+            description: 'Committed isolation',
+            prompt: 'Commit a change',
+            isolation: 'worktree',
+            run_in_background: false,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const path = String(result.nativeToolUseResult?.worktreePath)
+    expect(path).toBe(
+      join(
+        await realpath(cwd),
+        '.praxis',
+        'worktrees',
+        'agent',
+        `${sessionId}-${String(result.nativeToolUseResult?.agentId)}`,
+      ),
+    )
+    expect(result.nativeToolUseResult).toMatchObject({
+      worktreePath: path,
+      worktreeRetained: true,
+    })
+    await expect(
+      readFile(join(path, 'agent-commit.txt'), 'utf8'),
+    ).resolves.toBe('committed\n')
+    await executor.close()
+  })
+
+  it('releases an owned restore lease when a hydrated Agent is closed before continuation', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-close-restore-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    let turn = 0
+    const first = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: true },
+        async *complete() {
+          if (turn++ === 0) {
+            yield {
+              type: 'tool-call',
+              call: {
+                id: 'call_close_restore_write',
+                name: 'Write',
+                input: { file_path: 'retained.txt', content: 'retained\n' },
+              },
+            }
+          } else {
+            yield { type: 'text-delta', delta: 'RETAINED_BACKGROUND_DONE' }
+          }
+        },
+      },
+      baseTools: new LocalToolRegistry({ cwd }),
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    const registry = first.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const launched = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_close_restore',
+          name: 'Agent',
+          input: {
+            description: 'Retain background checkout',
+            prompt: 'Retain this work',
+            isolation: 'worktree',
+            run_in_background: true,
+          },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    const agentId = String(launched.nativeToolUseResult?.agentId)
+    await first.outputBackgroundTask(agentId, { block: true, timeout: 30_000 })
+
+    const second = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'SHOULD_NOT_RUN' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await second.hydratePersistedTasks(sessionId, cwd)
+    expect(second.backgroundSnapshots()).toHaveLength(1)
+    await Promise.all([second.close(), second.close()])
+    await second.close()
+
+    const third = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'SHOULD_NOT_RUN' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await third.hydratePersistedTasks(sessionId, cwd)
+    expect(third.backgroundSnapshots()).toHaveLength(1)
+    await third.close()
+    await first.close()
+  })
+
+  it('attempts every hydrated Agent disposer and caches close failures', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-close-aggregate-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentIds = ['a0123456789abcdef', 'a1123456789abcdef']
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    for (const [index, agentId] of agentIds.entries()) {
+      const transcriptPath = join(
+        paths.projectRoot,
+        sessionId,
+        'subagents',
+        `agent-${agentId}.jsonl`,
+      )
+      const lifecycleStore = new SubagentLifecycleStore(
+        paths.praxisRoot,
+        sessionId,
+        agentId,
+        transcriptPath,
+      )
+      const execution = await lifecycleStore.start()
+      await execution.running()
+      const worktree = await createAgentWorktree({
+        cwd,
+        stateRoot: paths.praxisRoot,
+        sessionId,
+        agentId,
+        executionToken: execution.token,
+      })
+      await seedIncompleteIsolatedSidechain({
+        configRoot,
+        cwd,
+        sessionId,
+        agentId,
+        worktreePath: worktree.cwd,
+        name: `close-aggregate-${index}`,
+      })
+      await execution.finish(
+        'failed',
+        {
+          text: `failed-${index}`,
+          usage: { inputTokens: 0, outputTokens: 0 },
+          toolUseCount: 0,
+          durationMs: 0,
+        },
+        `failed-${index}`,
+        {
+          id: `${index + 1}1111111-1111-4111-8111-111111111111`,
+          status: 'failed',
+          toolUseId: `close-aggregate-${index}`,
+          error: `failed-${index}`,
+        },
+      )
+      await execution.release()
+      await worktree.retain(`initial failure ${index}`)
+    }
+
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'SHOULD_NOT_RUN' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+    await executor.hydratePersistedTasks(sessionId, cwd)
+    expect(executor.backgroundSnapshots()).toHaveLength(2)
+    const registryDirectory = join(
+      paths.praxisRoot,
+      'managed-worktrees',
+      sanitizeProjectPath(await realpath(cwd)),
+    )
+    const recordFiles = (await readdir(registryDirectory)).filter((file) =>
+      file.endsWith('.json'),
+    )
+    expect(recordFiles).toHaveLength(2)
+    const records = await Promise.all(
+      recordFiles.map(async (file) => ({
+        file,
+        value: JSON.parse(
+          await readFile(join(registryDirectory, file), 'utf8'),
+        ) as { worktreeId: string; retentionReason?: string },
+      })),
+    )
+    for (const { value } of records) {
+      const managedStore = new ManagedWorktreeStore(
+        paths.praxisRoot,
+        await realpath(cwd),
+        value.worktreeId,
+      )
+      await rm(managedStore.lockPath, { force: true })
+      await mkdir(managedStore.lockPath)
+    }
+
+    let thrown: unknown
+    try {
+      await executor.close()
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toHaveLength(2)
+    const afterFirstClose = await Promise.all(
+      records.map(({ file }) =>
+        readFile(join(registryDirectory, file), 'utf8'),
+      ),
+    )
+    expect(
+      afterFirstClose.every((source) => source.includes('launch was rejected')),
+    ).toBe(true)
+    await expect(executor.close()).rejects.toBe(thrown)
+    const afterRepeatedClose = await Promise.all(
+      records.map(({ file }) =>
+        readFile(join(registryDirectory, file), 'utf8'),
+      ),
+    )
+    expect(afterRepeatedClose).toEqual(afterFirstClose)
+  })
+
+  it('restores the exact legacy global Agent path without managed adoption', async () => {
+    const { configRoot, cwd } = await gitRepository(
+      'praxis-agent-worktree-legacy-restore-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const paths = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: configRoot,
+      cwd,
+      sessionId,
+    })
+    const legacyPath = join(
+      paths.praxisRoot,
+      'agent-worktrees',
+      `${sessionId}-${agentId}`,
+    )
+    await mkdir(join(paths.praxisRoot, 'agent-worktrees'), { recursive: true })
+    await execFileAsync('git', [
+      '-C',
+      cwd,
+      'worktree',
+      'add',
+      '--detach',
+      legacyPath,
+      'HEAD',
+    ])
+    await writeFile(join(legacyPath, 'legacy-change.txt'), 'legacy\n')
+    await seedIncompleteIsolatedSidechain({
+      configRoot,
+      cwd,
+      sessionId,
+      agentId,
+      worktreePath: legacyPath,
+      name: 'legacy-restored-agent',
+    })
+    const observedCwds: string[] = []
+    const warnings: RuntimeEvent[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'LEGACY_RESTORED_DONE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => warnings.push(event),
+      contextAssembler: {
+        async assemble(options) {
+          observedCwds.push(options?.cwd ?? '')
+          return contextSnapshot()
+        },
+      },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    const sent = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_legacy_restore_send',
+          name: 'SendMessage',
+          input: { to: 'legacy-restored-agent', message: 'Continue legacy' },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(sent.content).toContain('resumedAgentId')
+    const output = await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_legacy_restore_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(output.content).toContain('LEGACY_RESTORED_DONE')
+    expect(warnings.filter(({ type }) => type === 'warning')).toEqual([])
+    expect(output.content).toContain(
+      `<worktree_path>${legacyPath}</worktree_path>`,
+    )
+    expect(output.content).toContain(
+      '<worktree_retained>true</worktree_retained>',
+    )
+    expect(observedCwds).toEqual([legacyPath])
+    await expect(
+      readFile(join(legacyPath, 'legacy-change.txt'), 'utf8'),
+    ).resolves.toBe('legacy\n')
+    await expect(
+      stat(join(paths.praxisRoot, 'managed-worktrees')),
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+    await executor.close()
+  })
+
+  it('rejects an arbitrary registered retained path and falls back without deletion', async () => {
+    const { configRoot, cwd, fixtureRoot } = await gitRepository(
+      'praxis-agent-worktree-invalid-retained-',
+    )
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const agentId = 'a0123456789abcdef'
+    const unrelatedPath = join(fixtureRoot, 'registered-but-not-agent-owned')
+    await execFileAsync('git', [
+      '-C',
+      cwd,
+      'worktree',
+      'add',
+      '--detach',
+      unrelatedPath,
+      'HEAD',
+    ])
+    await writeFile(join(unrelatedPath, 'preserve.txt'), 'preserve\n')
+    await seedIncompleteIsolatedSidechain({
+      configRoot,
+      cwd,
+      sessionId,
+      agentId,
+      worktreePath: unrelatedPath,
+      name: 'invalid-retained-agent',
+    })
+    const observedCwds: string[] = []
+    const warnings: RuntimeEvent[] = []
+    const executor = new ClaudeSubagentExecutor({
+      configRoot,
+      dataPlane: 'native',
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'FALLBACK_DONE' }
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+      eventSink: (event) => warnings.push(event),
+      contextAssembler: {
+        async assemble(options) {
+          observedCwds.push(options?.cwd ?? '')
+          return contextSnapshot()
+        },
+      },
+    })
+    const registry = executor.registry(
+      sessionId,
+      0,
+      () => 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    )
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_invalid_retained_send',
+          name: 'SendMessage',
+          input: { to: 'invalid-retained-agent', message: 'Continue safely' },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    await registry.execute(
+      await registry.prepare(
+        {
+          id: 'call_invalid_retained_output',
+          name: 'TaskOutput',
+          input: { task_id: agentId, block: true, timeout: 30_000 },
+        },
+        { cwd },
+      ),
+      { cwd },
+    )
+    expect(observedCwds).toEqual([cwd])
+    expect(warnings).toContainEqual({
+      type: 'warning',
+      message: expect.stringContaining(
+        'could not restore its retained worktree; falling back to parent cwd',
+      ),
+    })
+    await expect(
+      readFile(join(unrelatedPath, 'preserve.txt'), 'utf8'),
+    ).resolves.toBe('preserve\n')
+    await executor.close()
   })
 
   it('enforces the session Agent call budget before creating another sidechain', async () => {

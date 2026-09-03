@@ -75,11 +75,8 @@ import {
   type BackgroundAgentTaskSpec,
 } from './background-agent-manager.js'
 import { isBackgroundBashTaskId } from './background-task-id.js'
-import {
-  createManagedWorktree,
-  restoreManagedWorktree,
-  type ManagedWorktree,
-} from './managed-worktree.js'
+import type { ManagedWorktree } from './managed-worktree.js'
+import { createAgentWorktree, restoreAgentWorktree } from './agent-worktree.js'
 import { createWorkflowWorktree } from './workflow-worktree.js'
 import {
   NativeSidechainTranscript,
@@ -838,6 +835,8 @@ export class ClaudeSubagentExecutor {
     InMemorySidechainStore
   >()
   private readonly foreground = new Map<string, ForegroundAgentTask>()
+  private readonly agentRunDisposers = new Set<() => Promise<void>>()
+  private closePromise?: Promise<void>
 
   isEnabled(name: string): boolean {
     return this.options.toolNames?.includes(name) ?? true
@@ -863,12 +862,27 @@ export class ClaudeSubagentExecutor {
   }
 
   async close(): Promise<void> {
-    for (const agentId of [...this.foreground.keys()]) {
-      this.backgroundForegroundTask(agentId)
-    }
-    await this.background.close()
-    this.foreground.clear()
-    this.ephemeralSidechains.clear()
+    if (this.closePromise) return this.closePromise
+    this.closePromise = (async () => {
+      for (const agentId of [...this.foreground.keys()]) {
+        this.backgroundForegroundTask(agentId)
+      }
+      await this.background.close()
+      this.foreground.clear()
+      this.ephemeralSidechains.clear()
+      const disposers = [...this.agentRunDisposers]
+      this.agentRunDisposers.clear()
+      const results = await Promise.allSettled(
+        disposers.map((dispose) => dispose()),
+      )
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      )
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'Agent worktree cleanup failed')
+      }
+    })()
+    return this.closePromise
   }
 
   backgroundSnapshots(): readonly BackgroundAgentSnapshot[] {
@@ -1214,6 +1228,8 @@ export class ClaudeSubagentExecutor {
       ? await lifecycleStore.start()
       : undefined
     let initialIsolation: ManagedWorktree | undefined
+    const initialMemoryOwnerToken =
+      this.options.persistence === 'memory' ? randomUUID() : undefined
     const settleInitialSetupFailure = async (
       primary: unknown,
       isolation?: ManagedWorktree,
@@ -1241,7 +1257,10 @@ export class ClaudeSubagentExecutor {
         secondary.push(error)
       }
       try {
-        await isolation?.cleanup()
+        if (isolation)
+          await isolation.retain(
+            `Background agent setup failed; worktree retained at ${isolation.cwd}`,
+          )
       } catch (error) {
         secondary.push(error)
       }
@@ -1254,12 +1273,19 @@ export class ClaudeSubagentExecutor {
     }
     try {
       initialIsolation = input.isolation
-        ? await this.createAgentWorktree(
-            paths.praxisRoot,
+        ? await this.createAgentIsolation({
+            praxisRoot: paths.praxisRoot,
             sessionId,
             agentId,
-            parentCwd,
-          )
+            executionToken:
+              initialExecution?.token ??
+              initialMemoryOwnerToken ??
+              randomUUID(),
+            cwd: parentCwd,
+            signal: context.signal,
+            permissionMode: input.permissionMode,
+            transcriptPath: sidechainPaths.transcriptFile,
+          })
         : undefined
     } catch (error) {
       return settleInitialSetupFailure(error, initialIsolation)
@@ -1306,13 +1332,17 @@ export class ClaudeSubagentExecutor {
       ...(lifecycleStore ? { lifecycle: lifecycleStore } : {}),
       ...(initialExecution ? { initialExecution } : {}),
       ...(initialIsolation ? { initialIsolation } : {}),
-      createIsolation: () =>
-        this.createAgentWorktree(
-          paths.praxisRoot,
+      createIsolation: (execution, signal) =>
+        this.createAgentIsolation({
+          praxisRoot: paths.praxisRoot,
           sessionId,
           agentId,
-          parentCwd,
-        ),
+          executionToken: execution?.token ?? randomUUID(),
+          cwd: parentCwd,
+          signal,
+          permissionMode: input.permissionMode,
+          transcriptPath: sidechainPaths.transcriptFile,
+        }),
       execute: async (cwd, message, signal, continuation) => {
         const turnProvider = continuation
           ? this.providerForTurn(input.model)
@@ -1340,6 +1370,7 @@ export class ClaudeSubagentExecutor {
         return nativeSidechain.withLease((nativeLease) => run({ nativeLease }))
       },
     })
+    this.agentRunDisposers.add(backgroundRun.disposeBeforeStart)
     const resolvedModel = provider.model ?? 'praxis/provider'
     const spec: BackgroundAgentTaskSpec = {
       agentId,
@@ -1503,17 +1534,33 @@ export class ClaudeSubagentExecutor {
     })
   }
 
-  private createAgentWorktree(
-    praxisRoot: string,
-    sessionId: string,
-    agentId: string,
-    cwd = this.cwd(),
-  ): Promise<ManagedWorktree> {
-    return createManagedWorktree({
-      cwd,
-      parentDirectory: join(praxisRoot, 'agent-worktrees'),
-      directoryName: `${sessionId}-${agentId}`,
-      label: 'Agent',
+  private createAgentIsolation(options: {
+    praxisRoot: string
+    sessionId: string
+    agentId: string
+    executionToken: string
+    cwd: string
+    signal: AbortSignal | undefined
+    permissionMode: AgentPermissionMode | undefined
+    transcriptPath: string | undefined
+  }): Promise<ManagedWorktree> {
+    return createAgentWorktree({
+      cwd: options.cwd,
+      stateRoot: options.praxisRoot,
+      sessionId: options.sessionId,
+      agentId: options.agentId,
+      executionToken: options.executionToken,
+      ...(this.options.hooks && options.transcriptPath
+        ? {
+            hookContext: {
+              runner: this.options.hooks,
+              sessionId: options.sessionId,
+              transcriptPath: options.transcriptPath,
+              permissionMode: options.permissionMode ?? 'default',
+              ...(options.signal ? { signal: options.signal } : {}),
+            },
+          }
+        : {}),
     })
   }
 
@@ -1525,7 +1572,10 @@ export class ClaudeSubagentExecutor {
     recover?: boolean
     initialExecution?: SubagentExecution
     initialIsolation?: ManagedWorktree
-    createIsolation: () => Promise<ManagedWorktree>
+    createIsolation: (
+      execution?: SubagentExecution,
+      signal?: AbortSignal,
+    ) => Promise<ManagedWorktree>
     execute: (
       cwd: string,
       message: string,
@@ -1600,7 +1650,16 @@ export class ClaudeSubagentExecutor {
       }
       if (isolation) {
         try {
-          await isolation.cleanup()
+          const retainIsolation =
+            execution !== undefined ||
+            lifecycleState === 'failed' ||
+            lifecycleState === 'cancelled' ||
+            lifecycleState === 'orphaned'
+          if (retainIsolation)
+            await isolation.retain(
+              `Background agent launch was rejected; worktree retained at ${isolation.cwd}`,
+            )
+          else await isolation.cleanup()
         } catch (error) {
           errors.push(error)
         }
@@ -1696,7 +1755,7 @@ export class ClaudeSubagentExecutor {
           isolation = options.input.isolation
             ? (retainedIsolation ??
               availableIsolation ??
-              (await options.createIsolation()))
+              (await options.createIsolation(execution, signal)))
             : undefined
           availableIsolation = undefined
           result = await options.execute(
@@ -1707,9 +1766,19 @@ export class ClaudeSubagentExecutor {
           )
         } catch (error) {
           failure = error
-        } finally {
+        }
+        if (isolation) {
           try {
-            cleanup = await isolation?.cleanup()
+            cleanup =
+              failure !== undefined || signal.aborted
+                ? await isolation.retain(
+                    `${
+                      signal.aborted
+                        ? 'Background agent was aborted'
+                        : 'Background agent failed'
+                    }; worktree retained at ${isolation.cwd}`,
+                  )
+                : await isolation.cleanup()
           } catch (error) {
             failure ??= error
           }
@@ -2328,10 +2397,22 @@ export class ClaudeSubagentExecutor {
         isolation = undefined
       } else {
         try {
-          restoredIsolation = await restoreManagedWorktree({
+          restoredIsolation = await restoreAgentWorktree({
             cwd: parentCwd,
+            stateRoot: paths.praxisRoot,
+            sessionId,
+            agentId,
             path: metadata.worktreePath,
-            label: 'Agent',
+            ...(this.options.hooks
+              ? {
+                  hookContext: {
+                    runner: this.options.hooks,
+                    sessionId,
+                    transcriptPath: sidechainPaths.transcriptFile,
+                    permissionMode: metadata?.permissionMode ?? 'default',
+                  },
+                }
+              : {}),
           })
         } catch (error) {
           this.options.eventSink?.({
@@ -2385,13 +2466,17 @@ export class ClaudeSubagentExecutor {
       recover: lifecycle.lifecycle.state === 'orphaned',
       initialLifecycleState: lifecycle.lifecycle.state,
       ...(restoredIsolation ? { initialIsolation: restoredIsolation } : {}),
-      createIsolation: () =>
-        this.createAgentWorktree(
-          paths.praxisRoot,
+      createIsolation: (execution, signal) =>
+        this.createAgentIsolation({
+          praxisRoot: paths.praxisRoot,
           sessionId,
           agentId,
-          parentCwd,
-        ),
+          executionToken: execution?.token ?? randomUUID(),
+          cwd: parentCwd,
+          signal,
+          permissionMode,
+          transcriptPath: sidechainPaths.transcriptFile,
+        }),
       execute: async (cwd, message, signal, continuation) => {
         // Recovery never restores provider-native route state. Each recovered
         // execution, including every later follow-up, gets a fresh turn.
@@ -2419,6 +2504,7 @@ export class ClaudeSubagentExecutor {
         return nativeSidechain.withLease((nativeLease) => run({ nativeLease }))
       },
     })
+    this.agentRunDisposers.add(backgroundRun.disposeBeforeStart)
     const spec = {
       agentId,
       ...(name ? { name } : {}),
