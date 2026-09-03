@@ -1369,23 +1369,17 @@ async function retainOwnedManagedWorktree(
   }
 }
 
-function createManagedWorktreeHandle(
-  store: ManagedWorktreeStore,
-  options: Pick<
-    OwnedManagedWorktreeOptions,
-    'label' | 'kind' | 'policy' | 'hooks'
-  >,
-  record: ManagedWorktreeRecord,
-  lease: ExclusiveFileLeaseHandle,
-): ManagedWorktree {
-  let executionLease: ExclusiveFileLeaseHandle | undefined = lease
+function createManagedWorktreeSettlement(
+  initialLease?: ExclusiveFileLeaseHandle,
+): (
+  operation: (
+    heldLease: ExclusiveFileLeaseHandle | undefined,
+  ) => Promise<ManagedWorktreeCleanup>,
+) => Promise<ManagedWorktreeCleanup> {
+  let executionLease = initialLease
   let removedResult: ManagedWorktreeCleanup | undefined
   let operationInFlight: Promise<ManagedWorktreeCleanup> | undefined
-  const settle = (
-    operation: (
-      heldLease: ExclusiveFileLeaseHandle | undefined,
-    ) => Promise<ManagedWorktreeCleanup>,
-  ): Promise<ManagedWorktreeCleanup> => {
+  return (operation) => {
     if (removedResult) return Promise.resolve(removedResult)
     if (operationInFlight) return operationInFlight
     const heldLease = executionLease
@@ -1400,6 +1394,18 @@ function createManagedWorktreeHandle(
         operationInFlight = undefined
       })
   }
+}
+
+function createManagedWorktreeHandle(
+  store: ManagedWorktreeStore,
+  options: Pick<
+    OwnedManagedWorktreeOptions,
+    'label' | 'kind' | 'policy' | 'hooks'
+  >,
+  record: ManagedWorktreeRecord,
+  lease: ExclusiveFileLeaseHandle,
+): ManagedWorktree {
+  const settle = createManagedWorktreeSettlement(lease)
   return {
     cwd: record.worktreePath,
     cleanup: () =>
@@ -1561,23 +1567,7 @@ export async function createManagedWorktree(options: {
     }
   }
 
-  let removedResult: ManagedWorktreeCleanup | undefined
-  let operationInFlight: Promise<ManagedWorktreeCleanup> | undefined
-  const settle = (
-    operation: () => Promise<ManagedWorktreeCleanup>,
-  ): Promise<ManagedWorktreeCleanup> => {
-    if (removedResult) return Promise.resolve(removedResult)
-    if (operationInFlight) return operationInFlight
-    operationInFlight = operation()
-    return operationInFlight
-      .then((result) => {
-        if (!result.retained) removedResult = result
-        return result
-      })
-      .finally(() => {
-        operationInFlight = undefined
-      })
-  }
+  const settle = createManagedWorktreeSettlement()
   return {
     cwd: path,
     cleanup: () =>

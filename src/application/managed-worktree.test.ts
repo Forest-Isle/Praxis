@@ -237,13 +237,41 @@ describe('createOwnedManagedWorktree', () => {
     )
   })
 
-  it('rejects blank retention reasons without releasing the held lease', async () => {
+  it('accepts and persists the maximum bounded retention reason', async () => {
     const fixture = await repository()
     const worktree = await createOwnedManagedWorktree(ownedOptions(fixture))
+    const reason = 'r'.repeat(1024)
+    const owned = await recordPath(fixture, 'workflow:run-1:agent-1')
 
-    await expect(worktree.retain('  ')).rejects.toThrow(/reason is invalid/u)
+    await expect(worktree.retain(reason)).resolves.toEqual({
+      retained: true,
+      reason,
+    })
+    expect(
+      (await JSON.parse(await readFile(owned.path, 'utf8'))).retentionReason,
+    ).toBe(reason)
     await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
   })
+
+  it.each([
+    '',
+    '  ',
+    'r'.repeat(1025),
+    'reason\0control',
+    `reason${String.fromCharCode(0x1f)}control`,
+    `reason${String.fromCharCode(0x7f)}control`,
+  ])(
+    'rejects invalid retention reason %j without releasing the held lease',
+    async (reason) => {
+      const fixture = await repository()
+      const worktree = await createOwnedManagedWorktree(ownedOptions(fixture))
+
+      await expect(worktree.retain(reason)).rejects.toThrow(
+        /reason is invalid/u,
+      )
+      await expect(worktree.cleanup()).resolves.toEqual({ retained: false })
+    },
+  )
 
   it('runs lifecycle hooks around activation and removal with ownership identity', async () => {
     const fixture = await repository()

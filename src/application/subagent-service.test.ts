@@ -186,6 +186,71 @@ describe('StructuredOutputRegistry', () => {
   })
 })
 
+describe('ClaudeSubagentExecutor close settlement', () => {
+  function executor(): ClaudeSubagentExecutor {
+    return new ClaudeSubagentExecutor({
+      configRoot: '/tmp/praxis-close-settlement-test',
+      dataPlane: 'native',
+      cwd: '/tmp',
+      claudeVersion: '2.1.208',
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield* []
+        },
+      },
+      baseTools: emptyTools,
+      permissions: { resolve: () => ({ behavior: 'allow' }) },
+    })
+  }
+
+  function disposersFor(value: ClaudeSubagentExecutor) {
+    return (
+      value as unknown as {
+        agentRunDisposers: Set<() => Promise<void>>
+      }
+    ).agentRunDisposers
+  }
+
+  it('settles concurrent and repeated close calls once per disposer', async () => {
+    const value = executor()
+    const disposer = vi.fn(async () => undefined)
+    disposersFor(value).add(disposer)
+
+    await Promise.all([value.close(), value.close()])
+    await value.close()
+
+    expect(disposer).toHaveBeenCalledOnce()
+  })
+
+  it('aggregates all disposer failures and does not rerun them', async () => {
+    const value = executor()
+    const first = new Error('first disposer failed')
+    const second = new Error('second disposer failed')
+    const firstDisposer = vi.fn(async () => {
+      throw first
+    })
+    const secondDisposer = vi.fn(async () => {
+      throw second
+    })
+    disposersFor(value).add(firstDisposer)
+    disposersFor(value).add(secondDisposer)
+
+    let thrown: unknown
+    try {
+      await value.close()
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect(thrown).toMatchObject({ message: 'Agent worktree cleanup failed' })
+    expect((thrown as AggregateError).errors).toEqual([first, second])
+    await expect(value.close()).rejects.toBe(thrown)
+    expect(firstDisposer).toHaveBeenCalledOnce()
+    expect(secondDisposer).toHaveBeenCalledOnce()
+  })
+})
+
 beforeEach(() => {
   delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
 })
