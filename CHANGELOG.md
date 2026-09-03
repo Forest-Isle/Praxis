@@ -31,6 +31,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.60.1](https://github.com/Forest-Isle/Praxis/compare/v0.60.0...v0.60.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* align print text I/O ([#623](https://github.com/Forest-Isle/Praxis/issues/623)) ([b6beece](https://github.com/Forest-Isle/Praxis/commit/b6beececca73566ae6527006a4d612ce5d4f256b))
+* establish ownership-safe Workflow worktrees ([#631](https://github.com/Forest-Isle/Praxis/issues/631)) ([c72d9ef](https://github.com/Forest-Isle/Praxis/commit/c72d9ef51628a640ee2c2dc5a0aa5723b45f8caf)), closes [#630](https://github.com/Forest-Isle/Praxis/issues/630)
+
 ## [0.60.0](https://github.com/Forest-Isle/Praxis/compare/v0.59.1...v0.60.0) (2026-09-03)
 
 
