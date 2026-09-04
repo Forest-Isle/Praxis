@@ -42,6 +42,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.3](https://github.com/Forest-Isle/Praxis/compare/v0.62.2...v0.62.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* align Anthropic thinking temperature ([#649](https://github.com/Forest-Isle/Praxis/issues/649)) ([6f79f56](https://github.com/Forest-Isle/Praxis/commit/6f79f56997cf7b7da1aa09789600df6098a6489d)), closes [#648](https://github.com/Forest-Isle/Praxis/issues/648)
+
 ## [0.62.2](https://github.com/Forest-Isle/Praxis/compare/v0.62.1...v0.62.2) (2026-09-04)
 
 
