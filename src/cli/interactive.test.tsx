@@ -2899,7 +2899,9 @@ describe('InteractiveApp', () => {
 
   it('opens context, status, skills, and tasks as local TUI surfaces', async () => {
     let serviceCreations = 0
+    const contextWindowTokens = vi.fn(() => 200_000)
     const factory: InteractiveServiceFactory = {
+      contextWindowTokens,
       async createService() {
         serviceCreations += 1
         return {
@@ -2935,7 +2937,6 @@ describe('InteractiveApp', () => {
           version: '0.2.0',
           cwd: '/tmp/praxis',
           model: 'fixture-model',
-          contextWindowTokens: 200_000,
         }}
         slashCommands={[
           {
@@ -2951,6 +2952,7 @@ describe('InteractiveApp', () => {
     app.stdin.write('\r')
     await flush()
     expect(app.lastFrame()).toContain('Context Usage · 9/200000 tokens')
+    expect(contextWindowTokens).toHaveBeenCalledWith()
     expect(serviceCreations).toBe(0)
 
     app.stdin.write('/status')
@@ -7060,7 +7062,11 @@ describe('InteractiveApp', () => {
       model: string | undefined
       effort: string | undefined
     }> = []
+    const contextWindowTokens = vi.fn((modelId?: string) =>
+      modelId === 'provider/model-custom' ? undefined : 200_000,
+    )
     const factory: InteractiveServiceFactory = {
+      contextWindowTokens,
       async createService(options) {
         creates.push({ model: options.model, effort: options.effort })
         return {
@@ -7123,6 +7129,13 @@ describe('InteractiveApp', () => {
         ? true
         : undefined,
     )
+
+    expect(contextWindowTokens).toHaveBeenCalledWith('provider/model-custom')
+    app.stdin.write('/context')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Context capacity unavailable')
+    expect(app.lastFrame()).not.toContain('/200000 tokens')
 
     app.stdin.write('run')
     app.stdin.write('\r')
@@ -7699,6 +7712,65 @@ describe('InteractiveApp', () => {
     await flush()
 
     expect(app.lastFrame()).toContain('⏺ done')
+    app.stdin.write('/context')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Context Usage · 6/100 tokens')
+  })
+
+  it('clears previewed context capacity when active runtime omits it', async () => {
+    let serviceCreations = 0
+    const factory: InteractiveServiceFactory = {
+      contextWindowTokens: () => 200_000,
+      async createService() {
+        serviceCreations += 1
+        return {
+          async run() {
+            return {
+              sessionId: 'session-1',
+              text: 'done',
+              usage: { inputTokens: 4, outputTokens: 2 },
+            }
+          },
+          async resume() {
+            throw new Error('unused')
+          },
+          async fork() {
+            throw new Error('unused')
+          },
+          async sessions() {
+            return []
+          },
+          runtimeInfo() {
+            return {
+              cwd: '/workspace',
+              model: 'fixture-model',
+              tools: [],
+              mcpServers: [],
+              permissionMode: 'default',
+              slashCommands: [],
+              agents: [],
+              skills: [],
+              claudeCodeVersion: '2.1.208',
+            }
+          },
+        }
+      },
+    }
+    const app = render(
+      <InteractiveApp factory={factory} initialSessions={[]} />,
+    )
+
+    app.stdin.write('run')
+    app.stdin.write('\r')
+    await flush()
+    expect(serviceCreations).toBe(1)
+
+    app.stdin.write('/context')
+    app.stdin.write('\r')
+    await flush()
+    expect(app.lastFrame()).toContain('Context capacity unavailable')
+    expect(app.lastFrame()).not.toContain('/200000 tokens')
   })
 
   it('toggles retained thinking with Ctrl+O without losing the full text', async () => {

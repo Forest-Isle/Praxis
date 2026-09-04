@@ -166,7 +166,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   resize-safe lifecycle, Ctrl-C restoration, fullscreen `Ctrl+L` redraw, and
   mouse-wheel/drag selection with edge autoscroll and OSC 52 copy,
   interactive `/doctor` diagnostics, per-session model/effort/permission controls,
-  context/status/skill/task dashboards, prompt stash and continuation shortcuts,
+  context/status/skill/task dashboards whose context view previews the selected
+  provider/model capacity before the first turn and reports unavailable capacity
+  without fabricated percentages, prompt stash and continuation shortcuts,
   filterable `@` file and agent references, composer undo, `Ctrl+G` external
   editing, shared `/keybindings` creation/editing and supported-action remapping,
   shared built-in and custom `/theme` profiles with immediate

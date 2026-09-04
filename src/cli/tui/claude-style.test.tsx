@@ -2858,4 +2858,49 @@ describe('Claude-style TUI components', () => {
       else process.env.FORCE_COLOR = previousForceColor
     }
   })
+
+  it('renders unavailable context capacity semantically', () => {
+    const entries = projectTranscriptPresentation(
+      [
+        {
+          kind: 'context',
+          usedTokens: 42,
+          model: 'fixture',
+          memoryFiles: [{ path: 'memory.md', tokens: 7 }],
+          skills: [{ name: 'skill-x', tokens: 9 }],
+        },
+      ],
+      'normal',
+    )
+    const app = render(
+      <Transcript screenReader={false} activeText="" entries={entries} />,
+    )
+    const frame = app.lastFrame() ?? ''
+    expect(frame).toContain('Context capacity unavailable')
+    expect(frame).toContain('fixture · 42 tokens')
+    expect(frame).toContain('Memory files · /memory')
+    expect(frame).toContain('memory.md: 7 tokens')
+    expect(frame).toContain('skill-x: ~9 tokens')
+    expect(frame).toContain('Loaded')
+    expect(frame).not.toMatch(/undefined|%|Free space|Autocompact|[⛁⛶⛝]/u)
+    const screenReader = render(
+      <Transcript screenReader activeText="" entries={entries} />,
+    )
+    const accessible = screenReader.lastFrame() ?? ''
+    expect(accessible).toContain('Context capacity unavailable')
+    expect(accessible).toContain('Memory files:')
+    expect(accessible).toContain('Skills: skill-x')
+    expect(accessible).not.toMatch(/undefined|%|Free space|Autocompact|[⛁⛶⛝]/u)
+
+    const narrow = render(
+      <Box width={32}>
+        <Transcript screenReader={false} activeText="" entries={entries} />
+      </Box>,
+    )
+    const narrowRows = (narrow.lastFrame() ?? '').split('\n')
+    expect(narrowRows.every((line) => line.length <= 32)).toBe(true)
+    expect((narrow.lastFrame() ?? '').replace(/\s+/gu, ' ')).toContain(
+      'Context capacity unavailable',
+    )
+  })
 })

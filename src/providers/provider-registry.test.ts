@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createProviderRegistry,
+  resolveProviderContextWindowTokens,
   resolveProviderRegistry,
 } from './provider-registry.js'
 import { FallbackModelProvider } from './fallback-provider.js'
@@ -31,6 +32,48 @@ const target = (protocol: ProviderTarget['protocol']): ProviderTarget => ({
 })
 
 describe('ProviderRegistry', () => {
+  it('previews context capacity from protocol and model without provider I/O', () => {
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'anthropic-messages',
+        modelId: 'claude-sonnet-4',
+      }),
+    ).toBe(200_000)
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'anthropic-messages',
+        modelId: 'claude-sonnet-4[1m]',
+      }),
+    ).toBe(1_000_000)
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'anthropic-messages',
+        modelId: 'claude-sonnet-4[1m]',
+        explicitContextWindowTokens: 777_777,
+      }),
+    ).toBe(777_777)
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'openai-compatible',
+        modelId: 'gpt-test',
+      }),
+    ).toBeUndefined()
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'openai-responses',
+        modelId: 'gpt-test',
+        explicitContextWindowTokens: 123_456,
+      }),
+    ).toBe(123_456)
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'codex-subscription',
+        modelId: 'gpt-test',
+        explicitContextWindowTokens: 123_456,
+      }),
+    ).toBeUndefined()
+  })
+
   it('creates OpenAI and Anthropic adapters from one resolved target', () => {
     const credential = {
       type: 'api-key' as const,

@@ -552,6 +552,7 @@ interface InteractiveSessionCommands {
 
 export interface InteractiveServiceFactory {
   scheduledPrompts?: boolean
+  contextWindowTokens?(modelId?: string): number | undefined
   createService(options: {
     eventSink: RuntimeEventSink
     requireProvider: boolean
@@ -1516,7 +1517,7 @@ export function InteractiveApp({
   const [usage, setUsage] = useState<ModelUsage | undefined>()
   const [costUsd, setCostUsd] = useState<number | undefined>()
   const [contextWindowTokens, setContextWindowTokens] = useState(
-    display.contextWindowTokens,
+    display.contextWindowTokens ?? factory.contextWindowTokens?.(),
   )
   const [historyState, setHistoryState] = useState(() => {
     const items = [...initialHistory]
@@ -3662,8 +3663,7 @@ export function InteractiveApp({
       setAvailableSlashCommands(created.slashCommands?.() ?? slashCommands)
       setAvailableAgents(created.agentDefinitions?.() ?? agents)
       const runtimeInfo = created.runtimeInfo?.()
-      if (runtimeInfo?.contextWindowTokens !== undefined)
-        setContextWindowTokens(runtimeInfo.contextWindowTokens)
+      setContextWindowTokens(runtimeInfo?.contextWindowTokens)
       return created
     } finally {
       if (serviceCreationRef.current === pending) {
@@ -3749,6 +3749,7 @@ export function InteractiveApp({
   }
 
   const changeModel = (model: string | undefined) => {
+    setContextWindowTokens(factory.contextWindowTokens?.(model))
     updateRuntimePreferences((current) => {
       if (model !== undefined) return { ...current, model }
       const withoutModel = { ...current }
@@ -8575,7 +8576,9 @@ export function InteractiveApp({
         const contextEntry: Extract<TranscriptItem, { kind: 'context' }> = {
           kind: 'context',
           usedTokens: Math.max(measuredTokens, skillTokens),
-          contextWindowTokens: runtimeDisplay.contextWindowTokens ?? 200_000,
+          ...(runtimeDisplay.contextWindowTokens === undefined
+            ? {}
+            : { contextWindowTokens: runtimeDisplay.contextWindowTokens }),
           model: runtimeDisplay.model ?? 'provider default',
           skills,
           memoryFiles: [],

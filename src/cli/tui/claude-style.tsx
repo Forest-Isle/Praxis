@@ -802,6 +802,74 @@ function ContextUsageBlock({
   screenReader,
 }: Extract<TranscriptItem, { kind: 'context' }> & { screenReader: boolean }) {
   const theme = useTuiTheme()
+  const resourceTree = (
+    <>
+      <Text> </Text>
+      <Text {...theme.text.heading} bold>
+        Memory files · /memory
+      </Text>
+      {memoryFiles.length === 0 ? (
+        <Text dimColor>└ No memory files</Text>
+      ) : (
+        memoryFiles.map((file, index) => (
+          <Text key={file.path} dimColor>
+            {index === memoryFiles.length - 1 ? '└' : '├'} {file.path}:{' '}
+            {file.tokens} tokens
+          </Text>
+        ))
+      )}
+      <Text> </Text>
+      <Text {...theme.text.heading} bold>
+        Skills · /skills
+      </Text>
+      <Text> </Text>
+      <Text>Loaded</Text>
+      {skills.length === 0 ? (
+        <Text dimColor>└ No skills loaded</Text>
+      ) : (
+        skills.map((skill, index) => (
+          <Text key={skill.name} dimColor>
+            {index === skills.length - 1 ? '└' : '├'} {skill.name}: ~
+            {skill.tokens} tokens
+          </Text>
+        ))
+      )}
+    </>
+  )
+  if (screenReader && contextWindowTokens === undefined) {
+    return (
+      <Box flexDirection="column">
+        <Text {...theme.text.heading}>Context Usage</Text>
+        <Text>
+          {model ?? 'provider default'} · {usedTokens.toLocaleString()} tokens ·
+          Context capacity unavailable
+        </Text>
+        <Text>
+          Memory files:{' '}
+          {memoryFiles
+            .map((file) => `${file.path} (${file.tokens} tokens)`)
+            .join(', ') || 'none'}
+        </Text>
+        <Text>
+          Skills: {skills.map(({ name }) => name).join(', ') || 'none'}
+        </Text>
+      </Box>
+    )
+  }
+  if (contextWindowTokens === undefined) {
+    return (
+      <Box flexDirection="column" marginTop={1} marginLeft={2}>
+        <Text {...theme.text.heading} bold>
+          Context Usage
+        </Text>
+        <Text dimColor>
+          {model ?? 'provider default'} · {usedTokens.toLocaleString()} tokens ·
+          Context capacity unavailable
+        </Text>
+        {resourceTree}
+      </Box>
+    )
+  }
   const totalTokens = Math.max(1, contextWindowTokens)
   const compactBuffer = Math.round(totalTokens * 0.165)
   const usable = Math.max(1, totalTokens - compactBuffer)
@@ -864,36 +932,7 @@ function ContextUsageBlock({
           </Text>
         </Box>
       </Box>
-      <Text> </Text>
-      <Text {...theme.text.heading} bold>
-        Memory files · /memory
-      </Text>
-      {memoryFiles.length === 0 ? (
-        <Text dimColor>└ No memory files</Text>
-      ) : (
-        memoryFiles.map((file, index) => (
-          <Text key={file.path} dimColor>
-            {index === memoryFiles.length - 1 ? '└' : '├'} {file.path}:{' '}
-            {file.tokens} tokens
-          </Text>
-        ))
-      )}
-      <Text> </Text>
-      <Text {...theme.text.heading} bold>
-        Skills · /skills
-      </Text>
-      <Text> </Text>
-      <Text>Loaded</Text>
-      {skills.length === 0 ? (
-        <Text dimColor>└ No skills loaded</Text>
-      ) : (
-        skills.map((skill, index) => (
-          <Text key={skill.name} dimColor>
-            {index === skills.length - 1 ? '└' : '├'} {skill.name}: ~
-            {skill.tokens} tokens
-          </Text>
-        ))
-      )}
+      {resourceTree}
     </Box>
   )
 }

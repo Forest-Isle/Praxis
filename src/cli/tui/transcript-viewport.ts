@@ -295,6 +295,40 @@ function contextUsageLineCount(
   >,
   width: number,
 ): number {
+  if (item.contextWindowTokens === undefined) {
+    const resourceWidth = Math.max(1, width - 2)
+    const memoryRows = item.memoryFiles.length
+      ? item.memoryFiles.reduce(
+          (rows, file, index) =>
+            rows +
+            wrappedLineCount(
+              `${index === item.memoryFiles.length - 1 ? '└' : '├'} ${file.path}: ${file.tokens} tokens`,
+              resourceWidth,
+            ),
+          0,
+        )
+      : wrappedLineCount('└ No memory files', resourceWidth)
+    const skillRows = item.skills.length
+      ? item.skills.reduce(
+          (rows, skill, index) =>
+            rows +
+            wrappedLineCount(
+              `${index === item.skills.length - 1 ? '└' : '├'} ${skill.name}: ~${skill.tokens} tokens`,
+              resourceWidth,
+            ),
+          0,
+        )
+      : wrappedLineCount('└ No skills loaded', resourceWidth)
+    return (
+      8 +
+      wrappedLineCount(
+        `${item.model ?? 'provider default'} · ${item.usedTokens.toLocaleString()} tokens · Context capacity unavailable`,
+        resourceWidth,
+      ) +
+      memoryRows +
+      skillRows
+    )
+  }
   const totalTokens = Math.max(1, item.contextWindowTokens)
   const compactBuffer = Math.round(totalTokens * 0.165)
   const usable = Math.max(1, totalTokens - compactBuffer)
@@ -459,6 +493,14 @@ function screenReaderContextLineCount(
   >,
   width: number,
 ): number {
+  if (item.contextWindowTokens === undefined) {
+    return [
+      'Context Usage',
+      `${item.model ?? 'provider default'} · ${item.usedTokens.toLocaleString()} tokens · Context capacity unavailable`,
+      `Memory files: ${item.memoryFiles.map((file) => `${file.path} (${file.tokens} tokens)`).join(', ') || 'none'}`,
+      `Skills: ${item.skills.map(({ name }) => name).join(', ') || 'none'}`,
+    ].reduce((rows, line) => rows + wrappedLineCount(line, width), 0)
+  }
   const totalTokens = Math.max(1, item.contextWindowTokens)
   const compactBuffer = Math.round(totalTokens * 0.165)
   return [

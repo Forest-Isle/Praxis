@@ -19,6 +19,25 @@ import {
 } from './transcript-viewport.js'
 
 describe('presentation viewport', () => {
+  it('counts unavailable context resource rows in both modes', () => {
+    const item: TranscriptItem = {
+      kind: 'context',
+      usedTokens: 42,
+      memoryFiles: [{ path: 'a'.repeat(40), tokens: 7 }],
+      skills: [{ name: 'b'.repeat(40), tokens: 9 }],
+    }
+    for (const mode of ['normal', 'screen-reader'] as const) {
+      const entry = projectTranscriptPresentation([item], mode)[0]
+      if (!entry) throw new Error('missing context entry')
+      const estimate = estimateTranscriptEntryLines(entry, 20, mode)
+      expect(
+        projectTranscriptPresentationTail([entry], estimate - 1, 20, mode),
+      ).toEqual([])
+      expect(
+        projectTranscriptPresentationTail([entry], estimate, 20, mode),
+      ).toHaveLength(1)
+    }
+  })
   it('provides grapheme-safe terminal-cell helpers', () => {
     const text = '界e\u0301👩‍💻'
     expect(terminalTextWidth(text)).toBe(5)
