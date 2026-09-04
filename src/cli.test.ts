@@ -4097,10 +4097,52 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         environment: {},
         approveWorkspaceTrust: prompt,
       })
-      expect(accepted).toEqual({
+      expect(accepted).toMatchObject({
         effectiveModel: 'project-model',
         trustProjectRequestAvailable: false,
       })
+      expect(accepted.contextWindowTokensForModel()).toBeUndefined()
+      const preview = async (environment: NodeJS.ProcessEnv) =>
+        resolveInteractiveProviderStartup({
+          controls: DEFAULT_CLI_CONTROLS,
+          configRoot,
+          statePath,
+          cwd,
+          environment,
+        })
+      expect(
+        (
+          await preview({
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_MODEL: 'claude-sonnet-4',
+          })
+        ).contextWindowTokensForModel(),
+      ).toBe(200_000)
+      expect(
+        (
+          await preview({
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_MODEL: 'claude-sonnet-4[1m]',
+          })
+        ).contextWindowTokensForModel(),
+      ).toBe(1_000_000)
+      expect(
+        (
+          await preview({
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_MODEL: 'claude-sonnet-4',
+            PRAXIS_CONTEXT_WINDOW_TOKENS: '777777',
+          })
+        ).contextWindowTokensForModel(),
+      ).toBe(777_777)
+      expect(
+        (
+          await preview({
+            PRAXIS_PROVIDER: 'openai',
+            PRAXIS_MODEL: 'gpt-fixture',
+          })
+        ).contextWindowTokensForModel(),
+      ).toBeUndefined()
       expect(prompt).not.toHaveBeenCalled()
 
       const canonicalCwd = await realpath(cwd)

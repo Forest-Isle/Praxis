@@ -214,7 +214,9 @@ also carries live lifecycle/input state.
   native `tui` runtime setting, and resumes the active session after
   the renderer restart.
 - `ContextUsageBlock`: transcript-native usage grid, autocompact reserve, and
-  estimates for skills discovered through the shared Praxis data plane.
+  estimates for skills discovered through the shared Praxis data plane. Before
+  the first provider turn it previews the selected provider/model capability;
+  absent capability has a semantic unavailable state instead of inferred metrics.
 - `ConfigDashboard`: the shared Status, Config, and Usage pane opened at the
   command-specific default tab by `/status`, `/config`, or `/usage`. Subscription
   account rows and the enterprise-only Gates tab stay outside the product boundary.
@@ -434,9 +436,15 @@ also carries live lifecycle/input state.
   file-mutating-turn sources, up/down selects or scrolls, Enter drills into a
   file, and Esc returns or closes the dashboard. These bounds are a native
   Praxis contract rather than a claim of exact external parity.
-- `/context` appends a titled Claude-shaped context-usage block with model/token
+- `/context` appends a titled Claude-shaped context-usage block without a model
+  turn or provider-service creation. Known capacity shows the model/token
   summary, 5×5 grid, estimated categories, free space, autocompact reserve,
-  memory files, and skills without a model turn. `/status` opens the shared
+  memory files, and skills. Before runtime activation it derives capacity from
+  the selected provider/model and explicit override; model changes recompute or
+  clear the preview, while active runtime metadata remains authoritative. When
+  capacity is unavailable, visual, narrow, screen-reader, semantic-row, viewport,
+  and export projections retain measured tokens, memory, and skills but omit
+  percentages, the grid, free space, and autocompact amounts. `/status` opens the shared
   Status/Config/Usage pane, `/skills` lists entries from the
   existing shared skill catalog, and `/tasks` opens the existing workflow/task
   state; `/workflows` remains a hidden legacy alias. `/plan` switches the

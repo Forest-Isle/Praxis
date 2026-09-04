@@ -101,6 +101,28 @@ describe('projectTuiRows', () => {
     expect(rows[1]?.segments[0]?.role).toBe('heading')
   })
 
+  it('projects unavailable context capacity without a denominator', () => {
+    const rows = projectTuiRows({
+      entries: [
+        entry('context-unavailable', {
+          kind: 'context',
+          usedTokens: 42,
+          memoryFiles: [],
+          skills: [],
+        }),
+      ],
+      width: 80,
+      mode: 'normal',
+    })
+    const text = rows
+      .map((row) => row.segments.map((segment) => segment.text).join(''))
+      .join('\n')
+    expect(text).toContain('Context capacity unavailable')
+    expect(text).toContain('42 tokens')
+    expect(text).not.toContain('undefined')
+    expect(text).not.toContain('Context Usage · 42/')
+  })
+
   it('assigns semantic operation roles for running, success, and failure', () => {
     const rows = projectTuiRows({
       entries: [

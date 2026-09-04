@@ -8,6 +8,26 @@ import {
 } from './conversation-export.js'
 
 describe('conversation export', () => {
+  it('exports known and unavailable context capacity distinctly', () => {
+    const known = conversationExportText({ version: 'test', cwd: '/tmp' }, [
+      {
+        kind: 'context',
+        usedTokens: 10,
+        contextWindowTokens: 100,
+        memoryFiles: [],
+        skills: [],
+      },
+    ])
+    const unavailable = conversationExportText(
+      { version: 'test', cwd: '/tmp' },
+      [{ kind: 'context', usedTokens: 10, memoryFiles: [], skills: [] }],
+    )
+    expect(known).toContain('10/100 tokens')
+    expect(unavailable).toContain('Context capacity unavailable')
+    expect(unavailable).not.toContain('undefined')
+    expect(unavailable).not.toContain('Context Usage: 10/')
+  })
+
   it('formats the complete local transcript as readable terminal text', () => {
     const text = conversationExportText(
       {

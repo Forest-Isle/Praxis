@@ -11,8 +11,10 @@ import {
 } from './codex-oauth.js'
 import {
   resolveProviderTarget,
+  type ProviderProtocol,
   type ProviderTarget,
 } from './provider-settings.js'
+import { resolveAnthropicModelSpec } from './anthropic-model-spec.js'
 import type {
   ProviderCredentialSourceMetadata,
   ProviderCredentialReader,
@@ -84,6 +86,24 @@ export interface ProviderRegistry {
   readonly target: ProviderTarget
   readonly credentialSource: ProviderRegistrySourceMetadata
   create(modelId?: string): ModelProvider
+}
+
+export function resolveProviderContextWindowTokens(options: {
+  protocol: ProviderProtocol
+  modelId: string
+  explicitContextWindowTokens?: number
+}): number | undefined {
+  if (options.protocol === 'anthropic-messages')
+    return resolveAnthropicModelSpec(
+      options.modelId,
+      options.explicitContextWindowTokens,
+    ).contextWindowTokens
+  if (
+    options.protocol === 'openai-compatible' ||
+    options.protocol === 'openai-responses'
+  )
+    return options.explicitContextWindowTokens
+  return undefined
 }
 
 export async function resolveProviderRegistry(

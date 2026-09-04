@@ -22,7 +22,7 @@ export type TranscriptItem =
   | {
       kind: 'context'
       usedTokens: number
-      contextWindowTokens: number
+      contextWindowTokens?: number
       model?: string
       skills: readonly { name: string; tokens: number }[]
       memoryFiles: readonly { path: string; tokens: number }[]

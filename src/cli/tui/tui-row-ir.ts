@@ -77,7 +77,10 @@ function entryText(entry: TranscriptPresentationEntry): StyledText {
       }
     if (item.kind === 'context')
       return {
-        text: `Context Usage · ${item.usedTokens}/${item.contextWindowTokens} tokens`,
+        text:
+          item.contextWindowTokens === undefined
+            ? `Context Usage · ${item.usedTokens} tokens · Context capacity unavailable`
+            : `Context Usage · ${item.usedTokens}/${item.contextWindowTokens} tokens`,
         role: 'heading',
       }
   }

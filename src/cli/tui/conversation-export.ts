@@ -39,7 +39,9 @@ export function conversationExportText(
     } else if (item.kind === 'context') {
       output.push(
         '',
-        `Context Usage: ${item.usedTokens}/${item.contextWindowTokens} tokens`,
+        item.contextWindowTokens === undefined
+          ? `Context Usage: ${item.usedTokens} tokens · Context capacity unavailable`
+          : `Context Usage: ${item.usedTokens}/${item.contextWindowTokens} tokens`,
       )
     } else {
       output.push(...lines(item.text, item.kind === 'warning' ? '⚠ ' : '· '))

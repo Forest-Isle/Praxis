@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* derive `/context` capacity from the selected provider/model before the first turn and report unavailable capacity without fabricated metrics ([#53](https://github.com/Forest-Isle/Praxis/issues/53))
 * advertise Anthropic context windows and support the exact terminal `[1m]` model mode ([#642](https://github.com/Forest-Isle/Praxis/issues/642))
 * estimate image context cost independently of base64 payload size ([#639](https://github.com/Forest-Isle/Praxis/issues/639))
 * move Workflow isolation into ownership-verified repo-local worktrees ([#630](https://github.com/Forest-Isle/Praxis/issues/630))

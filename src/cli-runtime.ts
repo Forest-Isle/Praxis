@@ -186,7 +186,10 @@ import {
   ProviderAuthenticationError,
   resolveProviderCredential,
 } from './providers/provider-auth.js'
-import { resolveProviderRegistry } from './providers/provider-registry.js'
+import {
+  resolveProviderContextWindowTokens,
+  resolveProviderRegistry,
+} from './providers/provider-registry.js'
 import {
   ProviderSettingsError,
   resolveProviderTarget,
@@ -3360,6 +3363,7 @@ export async function resolveInteractiveProviderStartup(options: {
 }): Promise<{
   effectiveModel: string | undefined
   trustProjectRequestAvailable: boolean
+  contextWindowTokensForModel: (modelId?: string) => number | undefined
 }> {
   const environment = options.environment ?? process.env
   const disabled =
@@ -3368,24 +3372,27 @@ export async function resolveInteractiveProviderStartup(options: {
     truthyEnvironmentValue(environment.CLAUDE_CODE_SIMPLE)
   if (disabled) {
     let effectiveModel: string | undefined
+    let protocol:
+      | Parameters<typeof resolveProviderContextWindowTokens>[0]['protocol']
+      | undefined
     try {
-      effectiveModel = (
-        await resolveProviderTarget({
-          configRoot: options.configRoot,
-          cwd: options.cwd,
-          environment,
-          ...(options.controls.model === undefined
-            ? {}
-            : { model: options.controls.model }),
-          ...(options.controls.provider === undefined
-            ? {}
-            : { provider: options.controls.provider }),
-          ...(options.controls.providerProfile === undefined
-            ? {}
-            : { profile: options.controls.providerProfile }),
-          includeSettings: false,
-        })
-      ).modelId
+      const target = await resolveProviderTarget({
+        configRoot: options.configRoot,
+        cwd: options.cwd,
+        environment,
+        ...(options.controls.model === undefined
+          ? {}
+          : { model: options.controls.model }),
+        ...(options.controls.provider === undefined
+          ? {}
+          : { provider: options.controls.provider }),
+        ...(options.controls.providerProfile === undefined
+          ? {}
+          : { profile: options.controls.providerProfile }),
+        includeSettings: false,
+      })
+      effectiveModel = target.modelId
+      protocol = target.protocol
     } catch (error) {
       if (!(
         error instanceof ProviderSettingsError &&
@@ -3393,9 +3400,20 @@ export async function resolveInteractiveProviderStartup(options: {
       ))
         throw error
     }
+    const context = parseContextEnvironment(environment)
     return {
       effectiveModel,
       trustProjectRequestAvailable: options.controls.trustProject,
+      contextWindowTokensForModel: (modelId) =>
+        protocol === undefined
+          ? undefined
+          : resolveProviderContextWindowTokens({
+              protocol,
+              modelId: modelId ?? effectiveModel ?? '',
+              ...(context.contextWindowTokens === undefined
+                ? {}
+                : { explicitContextWindowTokens: context.contextWindowTokens }),
+            }),
     }
   }
   const assessment = await assessCurrentWorkspaceProviderSelection({
@@ -3421,32 +3439,49 @@ export async function resolveInteractiveProviderStartup(options: {
     }
   }
   let effectiveModel: string | undefined
+  let protocol:
+    | Parameters<typeof resolveProviderContextWindowTokens>[0]['protocol']
+    | undefined
   try {
-    effectiveModel = (
-      await resolveProviderTarget({
-        configRoot: options.configRoot,
-        cwd: options.cwd,
-        environment,
-        ...(options.controls.model === undefined
-          ? {}
-          : { model: options.controls.model }),
-        ...(options.controls.provider === undefined
-          ? {}
-          : { provider: options.controls.provider }),
-        ...(options.controls.providerProfile === undefined
-          ? {}
-          : { profile: options.controls.providerProfile }),
-        includeSettings: true,
-        includeProjectSettings,
-      })
-    ).modelId
+    const target = await resolveProviderTarget({
+      configRoot: options.configRoot,
+      cwd: options.cwd,
+      environment,
+      ...(options.controls.model === undefined
+        ? {}
+        : { model: options.controls.model }),
+      ...(options.controls.provider === undefined
+        ? {}
+        : { provider: options.controls.provider }),
+      ...(options.controls.providerProfile === undefined
+        ? {}
+        : { profile: options.controls.providerProfile }),
+      includeSettings: true,
+      includeProjectSettings,
+    })
+    effectiveModel = target.modelId
+    protocol = target.protocol
   } catch (error) {
     if (!(
       error instanceof ProviderSettingsError && error.code === 'model_required'
     ))
       throw error
   }
-  return { effectiveModel, trustProjectRequestAvailable }
+  const context = parseContextEnvironment(environment)
+  return {
+    effectiveModel,
+    trustProjectRequestAvailable,
+    contextWindowTokensForModel: (modelId) =>
+      protocol === undefined
+        ? undefined
+        : resolveProviderContextWindowTokens({
+            protocol,
+            modelId: modelId ?? effectiveModel ?? '',
+            ...(context.contextWindowTokens === undefined
+              ? {}
+              : { explicitContextWindowTokens: context.contextWindowTokens }),
+          }),
+  }
 }
 
 export function createDefaultDependencies(
@@ -3554,6 +3589,7 @@ export function createDefaultDependencies(
         statePath: interactiveStatePath,
         factory: {
           createService: createInteractiveService,
+          contextWindowTokens: startup.contextWindowTokensForModel,
           scheduledPrompts: Boolean(effectiveModel),
         },
         ...(signal ? { signal } : {}),
