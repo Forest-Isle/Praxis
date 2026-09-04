@@ -46,6 +46,15 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.6](https://github.com/Forest-Isle/Praxis/compare/v0.62.5...v0.62.6) (2026-09-04)
+
+
+### Bug Fixes
+
+* account for Anthropic web search costs ([#663](https://github.com/Forest-Isle/Praxis/issues/663)) ([3719c43](https://github.com/Forest-Isle/Praxis/commit/3719c4314c0b13608a578ada3c25c3089a9ced35)), closes [#662](https://github.com/Forest-Isle/Praxis/issues/662)
+* price Anthropic one-hour cache writes ([#661](https://github.com/Forest-Isle/Praxis/issues/661)) ([5ae92cd](https://github.com/Forest-Isle/Praxis/commit/5ae92cd582962c4dd956250289c12770e8bc400c))
+* price current Anthropic models safely ([#658](https://github.com/Forest-Isle/Praxis/issues/658)) ([9ddb962](https://github.com/Forest-Isle/Praxis/commit/9ddb96269827fef5e6031e1d7100bbda975f9fbe)), closes [#657](https://github.com/Forest-Isle/Praxis/issues/657)
+
 ## [0.62.5](https://github.com/Forest-Isle/Praxis/compare/v0.62.4...v0.62.5) (2026-09-04)
 
 
