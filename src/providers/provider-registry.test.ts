@@ -116,6 +116,8 @@ describe('ProviderRegistry', () => {
       anthropicModelAliasOverrides: { opus: 'custom-opus' },
     })
     expect(registry.target.modelId).toBe('claude-sonnet-5')
+    expect(registry.hasExplicitModelAlias('opus')).toBe(true)
+    expect(registry.hasExplicitModelAlias('haiku')).toBe(false)
     expect(registry.create('opus').model).toBe('custom-opus')
     expect(registry.create('opus[1m]').model).toBe('custom-opus[1m]')
     expect(registry.create('haiku').model).toBe('claude-haiku-4-5-20251001')
@@ -130,7 +132,26 @@ describe('ProviderRegistry', () => {
       anthropicModelAliasOverrides: { sonnet: 'should-not-apply' },
     })
     expect(custom.target.modelId).toBe('sonnet')
+    expect(custom.hasExplicitModelAlias('sonnet')).toBe(false)
     expect(custom.create('opus').model).toBe('opus')
+
+    const builtInWithoutOverride = createProviderRegistry({
+      target: {
+        ...target('anthropic-messages'),
+        providerId: 'anthropic',
+        modelId: 'haiku',
+      },
+      credential,
+    })
+    expect(builtInWithoutOverride.hasExplicitModelAlias('haiku')).toBe(false)
+    expect(builtInWithoutOverride.hasExplicitModelAlias('unknown')).toBe(false)
+
+    const nonAnthropic = createProviderRegistry({
+      target: target('openai-compatible'),
+      credential,
+      anthropicModelAliasOverrides: { haiku: 'should-not-apply' },
+    })
+    expect(nonAnthropic.hasExplicitModelAlias('haiku')).toBe(false)
   })
 
   it('enables one Anthropic stream-to-non-stream fallback by default', async () => {

@@ -1835,13 +1835,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
           ? defaultProvider
           : createProviderStack(selectedModel, 'turn')
       }
-      const haikuOverride = runtimeEnvironment.ANTHROPIC_DEFAULT_HAIKU_MODEL
-      if (
-        registry.target.providerId === 'anthropic' &&
-        registry.target.protocol === 'anthropic-messages' &&
-        haikuOverride !== undefined &&
-        haikuOverride.trim() !== ''
-      ) {
+      if (registry.hasExplicitModelAlias('haiku')) {
         sessionNameProviderFactory = () =>
           createProviderStack('haiku', 'completion')
       }
