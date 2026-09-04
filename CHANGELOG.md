@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* resolve Anthropic family model aliases to current verified model identities ([#664](https://github.com/Forest-Isle/Praxis/issues/664))
 * charge Anthropic Web Search requests at the provider-reported per-request rate ([#662](https://github.com/Forest-Isle/Praxis/issues/662))
 * preserve and price Anthropic 1-hour prompt-cache creation usage ([#660](https://github.com/Forest-Isle/Praxis/issues/660))
 * price current Anthropic Claude model identifiers and terminal `[1m]` variants ([#657](https://github.com/Forest-Isle/Praxis/issues/657))

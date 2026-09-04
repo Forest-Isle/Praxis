@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -98,6 +98,39 @@ describe('ProviderRegistry', () => {
     })
     expect(openai.create().model).toBe('fixture-model')
     expect(anthropic.create('other-model').model).toBe('other-model')
+  })
+
+  it('resolves built-in Anthropic family aliases at the registry seam', () => {
+    const credential = {
+      type: 'api-key' as const,
+      secret: 'secret',
+      source: { source: 'env' as const, name: 'FIXTURE_KEY' },
+    }
+    const registry = createProviderRegistry({
+      target: {
+        ...target('anthropic-messages'),
+        providerId: 'anthropic',
+        modelId: 'sonnet',
+      },
+      credential,
+      anthropicModelAliasOverrides: { opus: 'custom-opus' },
+    })
+    expect(registry.target.modelId).toBe('claude-sonnet-5')
+    expect(registry.create('opus').model).toBe('custom-opus')
+    expect(registry.create('opus[1m]').model).toBe('custom-opus[1m]')
+    expect(registry.create('haiku').model).toBe('claude-haiku-4-5-20251001')
+
+    const custom = createProviderRegistry({
+      target: {
+        ...target('anthropic-messages'),
+        providerId: 'relay',
+        modelId: 'sonnet',
+      },
+      credential,
+      anthropicModelAliasOverrides: { sonnet: 'should-not-apply' },
+    })
+    expect(custom.target.modelId).toBe('sonnet')
+    expect(custom.create('opus').model).toBe('opus')
   })
 
   it('enables one Anthropic stream-to-non-stream fallback by default', async () => {
@@ -230,6 +263,56 @@ describe('ProviderRegistry', () => {
       'Anthropic [1m] model spec must include a base model name',
     )
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
+  })
+
+  it('flows built-in Anthropic environment aliases into long-context requests', async () => {
+    const requestBodies: Array<Record<string, unknown>> = []
+    const requestBetas: string[] = []
+    const fetchImplementation = vi.fn(async (_input, init) => {
+      requestBodies.push(
+        JSON.parse(String(init?.body)) as Record<string, unknown>,
+      )
+      requestBetas.push(new Headers(init?.headers).get('anthropic-beta') ?? '')
+      if (requestBodies.at(-1)?.stream === true)
+        return new Response(
+          'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n',
+        )
+      return Response.json({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'complete' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 2, output_tokens: 3 },
+      })
+    })
+    const registry = createProviderRegistry({
+      target: {
+        ...target('anthropic-messages'),
+        providerId: 'anthropic',
+        modelId: 'sonnet',
+      },
+      credential: {
+        type: 'api-key',
+        secret: 'secret',
+        source: { source: 'env', name: 'ANTHROPIC_API_KEY' },
+      },
+      anthropicModelAliasOverrides: { sonnet: 'fixture-sonnet' },
+      fetchImplementation,
+    })
+    const provider = registry.create('sonnet[1m]')
+    for await (const event of provider.complete({ messages: [] })) {
+      expect(event).toBeDefined()
+    }
+
+    expect(provider.model).toBe('fixture-sonnet[1m]')
+    expect(provider.capabilities.contextWindowTokens).toBe(1_000_000)
+    expect(requestBodies.map((body) => body.model)).toEqual([
+      'fixture-sonnet',
+      'fixture-sonnet',
+    ])
+    expect(
+      requestBetas.every((value) => value.includes('context-1m-2025-08-07')),
+    ).toBe(true)
   })
 
   it('keeps Anthropic non-streaming recovery inside multi-model routing', async () => {
@@ -644,5 +727,40 @@ describe('ProviderRegistry', () => {
     ).resolves.toMatchObject({
       target: { providerId: 'openai', modelId: 'safe-model' },
     })
+  })
+
+  it('parses built-in Anthropic model aliases from explicit environment', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-provider-alias-'))
+    const vault = { read: async () => undefined, modify: async () => undefined }
+    try {
+      const registry = await resolveProviderRegistry({
+        configRoot: root,
+        cwd: root,
+        environment: {
+          PRAXIS_PROVIDER: 'anthropic',
+          PRAXIS_MODEL: 'sonnet',
+          ANTHROPIC_API_KEY: 'secret',
+          ANTHROPIC_DEFAULT_SONNET_MODEL: 'fixture-sonnet',
+        },
+        vault,
+      })
+      expect(registry.target.modelId).toBe('fixture-sonnet')
+      expect(registry.create().model).toBe('fixture-sonnet')
+
+      const fallback = await resolveProviderRegistry({
+        configRoot: root,
+        cwd: root,
+        environment: {
+          PRAXIS_PROVIDER: 'anthropic',
+          PRAXIS_MODEL: 'sonnet',
+          ANTHROPIC_API_KEY: 'secret',
+          ANTHROPIC_DEFAULT_SONNET_MODEL: '   ',
+        },
+        vault,
+      })
+      expect(fallback.target.modelId).toBe('claude-sonnet-5')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })
