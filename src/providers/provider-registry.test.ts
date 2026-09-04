@@ -117,8 +117,11 @@ describe('ProviderRegistry', () => {
     })
     expect(registry.target.modelId).toBe('claude-sonnet-5')
     expect(registry.hasExplicitModelAlias('opus')).toBe(true)
+    expect(registry.hasExplicitModelAlias('best')).toBe(true)
+    expect(registry.hasExplicitModelAlias('best[1m]')).toBe(false)
     expect(registry.hasExplicitModelAlias('haiku')).toBe(false)
     expect(registry.create('opus').model).toBe('custom-opus')
+    expect(registry.create('best').model).toBe('custom-opus')
     expect(registry.create('opus[1m]').model).toBe('custom-opus[1m]')
     expect(registry.create('haiku').model).toBe('claude-haiku-4-5-20251001')
 
@@ -133,7 +136,9 @@ describe('ProviderRegistry', () => {
     })
     expect(custom.target.modelId).toBe('sonnet')
     expect(custom.hasExplicitModelAlias('sonnet')).toBe(false)
+    expect(custom.hasExplicitModelAlias('best')).toBe(false)
     expect(custom.create('opus').model).toBe('opus')
+    expect(custom.create('best').model).toBe('best')
 
     const builtInWithoutOverride = createProviderRegistry({
       target: {
@@ -144,6 +149,7 @@ describe('ProviderRegistry', () => {
       credential,
     })
     expect(builtInWithoutOverride.hasExplicitModelAlias('haiku')).toBe(false)
+    expect(builtInWithoutOverride.hasExplicitModelAlias('best')).toBe(false)
     expect(builtInWithoutOverride.hasExplicitModelAlias('unknown')).toBe(false)
 
     const nonAnthropic = createProviderRegistry({
@@ -152,6 +158,8 @@ describe('ProviderRegistry', () => {
       anthropicModelAliasOverrides: { haiku: 'should-not-apply' },
     })
     expect(nonAnthropic.hasExplicitModelAlias('haiku')).toBe(false)
+    expect(nonAnthropic.hasExplicitModelAlias('best')).toBe(false)
+    expect(nonAnthropic.create('best').model).toBe('best')
   })
 
   it('enables one Anthropic stream-to-non-stream fallback by default', async () => {

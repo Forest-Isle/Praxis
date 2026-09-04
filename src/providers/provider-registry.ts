@@ -369,9 +369,10 @@ class NativeProviderRegistry implements ProviderRegistry {
       this.target.protocol !== 'anthropic-messages'
     )
       return false
-    if (modelId !== 'sonnet' && modelId !== 'opus' && modelId !== 'haiku')
+    const family = modelId === 'best' ? 'opus' : modelId
+    if (family !== 'sonnet' && family !== 'opus' && family !== 'haiku')
       return false
-    const override = this.options.anthropicModelAliasOverrides?.[modelId]
+    const override = this.options.anthropicModelAliasOverrides?.[family]
     return override !== undefined && override.trim().length > 0
   }
 

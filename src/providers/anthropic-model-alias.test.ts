@@ -9,6 +9,7 @@ describe('Anthropic model aliases', () => {
   it('resolves the built-in family aliases', () => {
     expect(resolveAnthropicModelAlias('sonnet')).toBe('claude-sonnet-5')
     expect(resolveAnthropicModelAlias('opus')).toBe('claude-opus-5')
+    expect(resolveAnthropicModelAlias('best')).toBe('claude-opus-5')
     expect(resolveAnthropicModelAlias('haiku')).toBe(
       'claude-haiku-4-5-20251001',
     )
@@ -29,6 +30,10 @@ describe('Anthropic model aliases', () => {
       'custom-sonnet[1m]',
     )
     expect(resolveAnthropicModelAlias('opus', overrides)).toBe('claude-opus-5')
+    expect(resolveAnthropicModelAlias('best', overrides)).toBe('claude-opus-5')
+    expect(resolveAnthropicModelAlias('best', { opus: 'custom-opus' })).toBe(
+      'custom-opus',
+    )
     expect(resolveAnthropicModelAlias('haiku', overrides)).toBe(
       'custom-haiku[1m]',
     )
@@ -53,8 +58,8 @@ describe('Anthropic model aliases', () => {
       'provider/sonnet',
       'sonnet[1m][1m]',
       'haiku[1m]',
+      'best[1m]',
       'default',
-      'best',
       'opusplan',
     ]) {
       expect(resolveAnthropicModelAlias(model)).toBe(model)
