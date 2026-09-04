@@ -69,6 +69,7 @@ import {
   translateProviderEvents,
 } from '../native/translation.js'
 import {
+  AgentBudgetExceededError,
   AgentRunCancelledError,
   type AgentRunRequest,
   type AgentRunResult,
@@ -5698,6 +5699,14 @@ export class ClaudeSessionService {
             try {
               result = await attemptMainTurn()
             } catch (error) {
+              if (error instanceof AgentBudgetExceededError) {
+                turnAccounting.complete({
+                  kind: 'runtime',
+                  recovery: recoveryResults,
+                  result: error.result,
+                })
+                throw error
+              }
               if (!budget || !isPromptTooLongError(error)) throw error
               const recovery = await contextEngine.recover(
                 error,

@@ -702,6 +702,16 @@ export class AgentRunCancelledError extends Error {
   }
 }
 
+export class AgentBudgetExceededError extends Error {
+  override readonly name = 'AgentBudgetExceededError'
+  readonly result: AgentRunResult
+
+  constructor(message: string, result: AgentRunResult) {
+    super(message)
+    this.result = result
+  }
+}
+
 export type RuntimeEventSink = (event: RuntimeEvent) => void
 
 const emptyUsage = (): ModelUsage => ({ inputTokens: 0, outputTokens: 0 })
@@ -1129,6 +1139,33 @@ export class AgentRuntime {
     let linesRemoved = 0
     let activeAttemptHasPresentation = false
     let activeAttemptDiscarded = false
+    const materializeResult = (text: string): AgentRunResult => {
+      const modelUsage =
+        modelUsageByModel.size === 0
+          ? undefined
+          : Object.fromEntries(modelUsageByModel)
+      return {
+        text,
+        usage,
+        ...(modelUsage === undefined ? {} : { modelUsage }),
+        ...(sawExternallyMeteredSummary
+          ? {
+              unrecordedModelUsage: Object.fromEntries(
+                unrecordedModelUsageByModel,
+              ),
+              unrecordedDurationApiMs,
+              unrecordedDurationApiWithoutRetriesMs,
+            }
+          : {}),
+        ...(durationApiMs === 0 ? {} : { durationApiMs }),
+        ...(durationApiMs === 0 && durationApiWithoutRetriesMs === 0
+          ? {}
+          : { durationApiWithoutRetriesMs }),
+        ...(durationToolMs === 0 ? {} : { durationToolMs }),
+        ...(linesAdded === 0 ? {} : { linesAdded }),
+        ...(linesRemoved === 0 ? {} : { linesRemoved }),
+      }
+    }
     const maxModelTurns = request.maxModelTurns ?? this.options.maxModelTurns
     if (
       maxModelTurns !== undefined &&
@@ -1222,8 +1259,9 @@ export class AgentRuntime {
           spent !== undefined &&
           spent >= this.options.maxBudgetUsd
         ) {
-          throw new Error(
+          throw new AgentBudgetExceededError(
             `Maximum budget of $${this.options.maxBudgetUsd.toFixed(6)} exceeded`,
+            materializeResult(''),
           )
         }
         modelTurns += 1
@@ -1635,31 +1673,7 @@ export class AgentRuntime {
             continue
           }
           this.emit({ type: 'state', state: 'completed' })
-          const modelUsage =
-            modelUsageByModel.size === 0
-              ? undefined
-              : Object.fromEntries(modelUsageByModel)
-          return {
-            text,
-            usage,
-            ...(modelUsage === undefined ? {} : { modelUsage }),
-            ...(sawExternallyMeteredSummary
-              ? {
-                  unrecordedModelUsage: Object.fromEntries(
-                    unrecordedModelUsageByModel,
-                  ),
-                  unrecordedDurationApiMs,
-                  unrecordedDurationApiWithoutRetriesMs,
-                }
-              : {}),
-            ...(durationApiMs === 0 ? {} : { durationApiMs }),
-            ...(durationApiMs === 0 && durationApiWithoutRetriesMs === 0
-              ? {}
-              : { durationApiWithoutRetriesMs }),
-            ...(durationToolMs === 0 ? {} : { durationToolMs }),
-            ...(linesAdded === 0 ? {} : { linesAdded }),
-            ...(linesRemoved === 0 ? {} : { linesRemoved }),
-          }
+          return materializeResult(text)
         }
 
         const scheduledToolResults = await toolScheduler.settle()
