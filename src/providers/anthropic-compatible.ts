@@ -1054,6 +1054,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       body: JSON.stringify({
         model: this.wireModel,
         max_tokens: maxTokens,
+        ...(thinking?.mode === 'disabled' ? { temperature: 1 } : {}),
         messages: serialized.messages,
         stream: this.streaming,
         ...(thinkingPayload ? { thinking: thinkingPayload } : {}),
