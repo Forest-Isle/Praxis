@@ -18,7 +18,10 @@ import {
   createAnthropicPromptCachePolicyResolver,
   type AnthropicPromptCachePolicy,
 } from './anthropic-prompt-cache.js'
-import { resolveAnthropicModelSpec } from './anthropic-model-spec.js'
+import {
+  resolveAnthropicEffort,
+  resolveAnthropicModelSpec,
+} from './anthropic-model-spec.js'
 
 export interface AnthropicCompatibleProviderOptions {
   baseUrl: string
@@ -1043,6 +1046,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       this.promptCaching,
     )
     const requestTools = request.tools
+    const effort = resolveAnthropicEffort(this.wireModel, request.effort)
     const requestInit: RequestInit = {
       method: 'POST',
       headers: {
@@ -1058,9 +1062,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         messages: serialized.messages,
         stream: this.streaming,
         ...(thinkingPayload ? { thinking: thinkingPayload } : {}),
-        ...(request.effort
-          ? { output_config: { effort: request.effort } }
-          : {}),
+        ...(effort ? { output_config: { effort } } : {}),
         ...(serialized.system.length ? { system: serialized.system } : {}),
         ...(request.webSearch
           ? {

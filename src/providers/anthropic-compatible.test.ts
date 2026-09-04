@@ -1056,6 +1056,81 @@ describe('AnthropicCompatibleProvider', () => {
     ).toThrow('cannot be used with adaptive thinking')
   })
 
+  it('normalizes Anthropic effort values by the resolved wire model', async () => {
+    const response = () =>
+      new Response(
+        'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+      )
+    const cases = [
+      ['claude-sonnet-4-6', 'xhigh', 'high', true],
+      ['claude-opus-4-6', 'xhigh', 'high', true],
+      ['claude-sonnet-4-6[1m]', 'xhigh', 'high', true],
+      ['claude-sonnet-4-6', 'max', 'max', true],
+      ['claude-opus-4-6', 'max', 'max', true],
+      ['claude-sonnet-4-6', 'low', 'low', true],
+      ['claude-sonnet-4-6', 'medium', 'medium', true],
+      ['claude-sonnet-4-6', 'high', 'high', true],
+      ['claude-opus-4-5', 'xhigh', 'high', true],
+      ['claude-opus-4-5-20251101', 'max', 'high', true],
+      ['claude-opus-4-5', 'low', 'low', true],
+      ['claude-opus-4-5', 'medium', 'medium', true],
+      ['claude-opus-4-5', 'high', 'high', true],
+      ['custom-model', 'xhigh', 'xhigh', true],
+      ['custom-model', 'max', 'max', true],
+      ['claude-opus-4-8', 'xhigh', 'xhigh', true],
+      ['claude-probe-unknown', 'max', 'max', true],
+      ['custom-model', undefined, undefined, false],
+    ] as const
+
+    for (const [model, effort, expected, hasOutputConfig] of cases) {
+      let body: Record<string, unknown> | undefined
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model,
+        fetchImplementation: async (_input, init) => {
+          body = JSON.parse(String(init?.body))
+          return response()
+        },
+      })
+      const request =
+        effort === undefined ? { messages: [] } : { effort, messages: [] }
+      for await (const event of provider.complete(request)) void event
+      if (hasOutputConfig) {
+        expect(body).toHaveProperty('output_config', { effort: expected })
+      } else {
+        expect(body).not.toHaveProperty('output_config')
+      }
+    }
+
+    let nonStreamingBody: Record<string, unknown> | undefined
+    const nonStreaming = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-opus-4-5',
+      streaming: false,
+      fetchImplementation: async (_input, init) => {
+        nonStreamingBody = JSON.parse(String(init?.body))
+        return new Response(
+          JSON.stringify({
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            stop_reason: 'end_turn',
+            usage: { input_tokens: 0, output_tokens: 0 },
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        )
+      },
+    })
+    for await (const event of nonStreaming.complete({
+      effort: 'max',
+      messages: [],
+    }))
+      void event
+    expect(nonStreamingBody).toHaveProperty('output_config', { effort: 'high' })
+  })
+
   it('maps disabled thinking and rejects a disabled token budget', async () => {
     let body: Record<string, unknown> | undefined
     const provider = new AnthropicCompatibleProvider({

@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* normalize Anthropic effort values for known Claude model families ([#651](https://github.com/Forest-Isle/Praxis/issues/651))
 * correct the Anthropic wire temperature when thinking is disabled ([#648](https://github.com/Forest-Isle/Praxis/issues/648))
 * support native adaptive thinking for explicit Claude Sonnet 4.6 and Opus 4.6 models without a fixed token budget ([#646](https://github.com/Forest-Isle/Praxis/issues/646))
 * derive `/context` capacity from the selected provider/model before the first turn and report unavailable capacity without fabricated metrics ([#53](https://github.com/Forest-Isle/Praxis/issues/53))
