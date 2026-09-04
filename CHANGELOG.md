@@ -40,6 +40,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.2](https://github.com/Forest-Isle/Praxis/compare/v0.62.1...v0.62.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* derive context capacity before runtime ([#644](https://github.com/Forest-Isle/Praxis/issues/644)) ([03bc866](https://github.com/Forest-Isle/Praxis/commit/03bc8667c4da1735cb00dc6323da283052f35f00)), closes [#53](https://github.com/Forest-Isle/Praxis/issues/53)
+* send native Anthropic adaptive thinking payloads ([#647](https://github.com/Forest-Isle/Praxis/issues/647)) ([56c658b](https://github.com/Forest-Isle/Praxis/commit/56c658b009caae7c0a9c594a9ce636ca300cdd4f)), closes [#646](https://github.com/Forest-Isle/Praxis/issues/646)
+
 ## [0.62.1](https://github.com/Forest-Isle/Praxis/compare/v0.62.0...v0.62.1) (2026-09-04)
 
 
