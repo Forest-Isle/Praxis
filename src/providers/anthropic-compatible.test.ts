@@ -822,7 +822,7 @@ describe('AnthropicCompatibleProvider', () => {
       documents: true,
       webSearch: true,
       thinking: {
-        modes: ['enabled', 'adaptive', 'disabled'],
+        modes: ['enabled', 'disabled'],
         maxTokens: true,
       },
       contextWindowTokens: 250_000,
@@ -880,7 +880,7 @@ describe('AnthropicCompatibleProvider', () => {
       apiKey: 'secret',
       model: 'fixture-model',
       maxOutputTokens: 1024,
-      thinking: { mode: 'adaptive', maxTokens: 2048 },
+      thinking: { mode: 'enabled', maxTokens: 2048 },
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
         headers = new Headers(init?.headers)
@@ -954,6 +954,100 @@ describe('AnthropicCompatibleProvider', () => {
       { type: 'text-delta', delta: 'done' },
       { type: 'usage', usage: { inputTokens: 4, outputTokens: 3 } },
     ])
+  })
+
+  it('serializes adaptive thinking only for supported models and rejects invalid combinations before fetch', async () => {
+    const response = () =>
+      new Response(
+        'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+      )
+    const requestBodies: Record<string, unknown>[] = []
+    for (const model of ['claude-sonnet-4-6', 'claude-opus-4-6']) {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model,
+        thinking: { mode: 'adaptive' },
+        fetchImplementation: async (_input, init) => {
+          requestBodies.push(JSON.parse(String(init?.body)))
+          return response()
+        },
+      })
+      for await (const event of provider.complete({ messages: [] })) void event
+      expect(provider.capabilities.thinking?.modes).toEqual([
+        'enabled',
+        'adaptive',
+        'disabled',
+      ])
+    }
+    expect(requestBodies).toHaveLength(2)
+    for (const body of requestBodies) {
+      expect(body.thinking).toEqual({ type: 'adaptive' })
+      expect(body).not.toHaveProperty('thinking.budget_tokens')
+    }
+
+    let longContextBody: Record<string, unknown> | undefined
+    let longContextHeaders: Headers | undefined
+    const longContext = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-6[1m]',
+      thinking: { mode: 'adaptive' },
+      fetchImplementation: async (_input, init) => {
+        longContextBody = JSON.parse(String(init?.body))
+        longContextHeaders = new Headers(init?.headers)
+        return response()
+      },
+    })
+    for await (const event of longContext.complete({
+      messages: [],
+      betas: ['context-1m-2025-08-07'],
+    }))
+      void event
+    expect(longContext.model).toBe('claude-sonnet-4-6[1m]')
+    expect(longContext.capabilities.thinking?.modes).toContain('adaptive')
+    expect(longContextBody?.model).toBe('claude-sonnet-4-6')
+    expect(longContextBody?.thinking).toEqual({ type: 'adaptive' })
+    expect(longContextHeaders?.get('anthropic-beta')).toBe(
+      'context-1m-2025-08-07,interleaved-thinking-2025-05-14',
+    )
+
+    const fetchImplementation = vi.fn()
+    expect(
+      () =>
+        new AnthropicCompatibleProvider({
+          baseUrl: 'https://api.anthropic.example/v1',
+          apiKey: 'secret',
+          model: 'claude-sonnet-4-6-latest',
+          thinking: { mode: 'adaptive' },
+          fetchImplementation,
+        }),
+    ).toThrow('only supported for explicit Claude Sonnet 4.6 or Opus 4.6')
+    const unsupported = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'custom-model',
+      fetchImplementation,
+    })
+    const unsupportedStream = unsupported.complete({
+      messages: [],
+      thinking: { mode: 'adaptive' },
+    })
+    const unsupportedIterator = unsupportedStream[Symbol.asyncIterator]()
+    await expect(unsupportedIterator.next()).rejects.toThrow(
+      'only supported for explicit Claude Sonnet 4.6 or Opus 4.6',
+    )
+    expect(fetchImplementation).not.toHaveBeenCalled()
+    expect(
+      () =>
+        new AnthropicCompatibleProvider({
+          baseUrl: 'https://api.anthropic.example/v1',
+          apiKey: 'secret',
+          model: 'claude-opus-4-6',
+          thinking: { mode: 'adaptive', maxTokens: 1024 },
+          fetchImplementation,
+        }),
+    ).toThrow('cannot be used with adaptive thinking')
   })
 
   it('maps disabled thinking and rejects a disabled token budget', async () => {

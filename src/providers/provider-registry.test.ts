@@ -212,6 +212,15 @@ describe('ProviderRegistry', () => {
     }).create('claude-sonnet-4[1m]')
     expect(longContext.model).toBe('claude-sonnet-4[1m]')
     expect(longContext.capabilities.contextWindowTokens).toBe(1_000_000)
+    const adaptiveLongContext = createProviderRegistry({
+      target: target('anthropic-messages'),
+      credential,
+    }).create('claude-sonnet-4-6[1m]')
+    expect(adaptiveLongContext.capabilities.thinking?.modes).toEqual([
+      'enabled',
+      'adaptive',
+      'disabled',
+    ])
     const openai = createProviderRegistry({
       target: target('openai-compatible'),
       credential,
