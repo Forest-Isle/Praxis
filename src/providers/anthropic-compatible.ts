@@ -952,12 +952,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     this.streaming = options.streaming ?? true
     this.fetchImplementation = options.fetchImplementation ?? fetch
     this.maxOutputTokens = positiveInteger(
-      options.maxOutputTokens ??
-        (this.wireModel.includes('claude-opus-4-6')
-          ? 64_000
-          : this.wireModel.startsWith('claude-')
-            ? 32_000
-            : 8192),
+      options.maxOutputTokens ?? modelSpec.defaultMaxOutputTokens,
       'Max output tokens',
     )
     this.capabilities = {

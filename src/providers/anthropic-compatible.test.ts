@@ -31,7 +31,7 @@ describe('AnthropicCompatibleProvider', () => {
     const provider = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.com/v1',
       apiKey: 'secret',
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-6',
       streaming: false,
       fetchImplementation: async (_input, init) => {
         body = JSON.parse(String(init?.body))
@@ -76,6 +76,7 @@ describe('AnthropicCompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] }))
       events.push(event)
     expect(body?.stream).toBe(false)
+    expect(body?.max_tokens).toBe(64_000)
     expect(Object.prototype.hasOwnProperty.call(body, 'temperature')).toBe(
       false,
     )
@@ -855,24 +856,39 @@ describe('AnthropicCompatibleProvider', () => {
   })
 
   it('derives a default max output tokens capability per model family', () => {
-    const claude = new AnthropicCompatibleProvider({
+    const cases = [
+      ['claude-opus-4-6', 64_000],
+      ['claude-opus-4-7@20260901', 64_000],
+      ['claude-opus-4-8:latest', 64_000],
+      ['claude-opus-5/preview', 64_000],
+      ['claude-sonnet-5[1m]', 64_000],
+      ['bedrock/claude-opus-4-6', 64_000],
+      ['claude-opus-4-5', 32_000],
+      ['claude-opus-4-9', 32_000],
+      ['claude-opus-4-60', 32_000],
+      ['claude-sonnet-4-20250514', 32_000],
+      ['claude-sonnet-50', 32_000],
+      ['claude-sonnet-6', 32_000],
+      ['claude-haiku-5', 32_000],
+      ['fixture-model', 8_192],
+    ] as const
+
+    for (const [model, expected] of cases) {
+      const provider = new AnthropicCompatibleProvider({
+        baseUrl: 'https://api.anthropic.example/v1',
+        apiKey: 'secret',
+        model,
+      })
+      expect(provider.capabilities.maxOutputTokens, model).toBe(expected)
+    }
+
+    const overridden = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-5',
+      maxOutputTokens: 16_384,
     })
-    expect(claude.capabilities.maxOutputTokens).toBe(32_000)
-    const opus = new AnthropicCompatibleProvider({
-      baseUrl: 'https://api.anthropic.example/v1',
-      apiKey: 'secret',
-      model: 'claude-opus-4-6',
-    })
-    expect(opus.capabilities.maxOutputTokens).toBe(64_000)
-    const generic = new AnthropicCompatibleProvider({
-      baseUrl: 'https://api.anthropic.example/v1',
-      apiKey: 'secret',
-      model: 'fixture-model',
-    })
-    expect(generic.capabilities.maxOutputTokens).toBe(8_192)
+    expect(overridden.capabilities.maxOutputTokens).toBe(16_384)
   })
 
   it('maps thinking controls and preserves signed blocks across tool turns', async () => {
