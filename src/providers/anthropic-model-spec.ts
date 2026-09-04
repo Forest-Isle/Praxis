@@ -1,5 +1,16 @@
 export const ANTHROPIC_LONG_CONTEXT_BETA = 'context-1m-2025-08-07'
 
+function defaultMaxOutputTokens(wireModel: string): number {
+  if (
+    /(?:^|[^a-z0-9])claude-(?:opus-4-[678]|opus-5|sonnet-5)(?=$|[-@.:/_])/.test(
+      wireModel,
+    )
+  ) {
+    return 64_000
+  }
+  return wireModel.startsWith('claude-') ? 32_000 : 8192
+}
+
 export function resolveAnthropicEffort(
   wireModel: string,
   effort: string | undefined,
@@ -18,6 +29,7 @@ export interface ResolvedAnthropicModelSpec {
   readonly model: string
   readonly wireModel: string
   readonly contextWindowTokens: number
+  readonly defaultMaxOutputTokens: number
   readonly betas: readonly string[]
   readonly supportsAdaptiveThinking: boolean
 }
@@ -34,6 +46,7 @@ export function resolveAnthropicModelSpec(
   return Object.freeze({
     model,
     wireModel,
+    defaultMaxOutputTokens: defaultMaxOutputTokens(wireModel),
     contextWindowTokens:
       explicitContextWindowTokens ?? (longContext ? 1_000_000 : 200_000),
     betas: Object.freeze(longContext ? [ANTHROPIC_LONG_CONTEXT_BETA] : []),
