@@ -5683,10 +5683,22 @@ export class ClaudeSessionService {
             onPermissionUpdates: (updates: readonly PermissionUpdate[]) =>
               this.applyPermissionUpdates(sessionId, updates),
           }
-          const attemptMainTurn = () =>
-            signal
-              ? runtime.run({ ...runtimeRequest, signal })
-              : runtime.run(runtimeRequest)
+          const attemptMainTurn = async (): Promise<AgentRunResult> => {
+            try {
+              return signal
+                ? await runtime.run({ ...runtimeRequest, signal })
+                : await runtime.run(runtimeRequest)
+            } catch (error) {
+              if (error instanceof AgentBudgetExceededError) {
+                turnAccounting.complete({
+                  kind: 'runtime',
+                  recovery: recoveryResults,
+                  result: error.result,
+                })
+              }
+              throw error
+            }
+          }
           const surfaceExhaustedRecovery = (error: ModelProviderError) => {
             this.options.eventSink?.({
               type: 'failed',
@@ -5699,14 +5711,6 @@ export class ClaudeSessionService {
             try {
               result = await attemptMainTurn()
             } catch (error) {
-              if (error instanceof AgentBudgetExceededError) {
-                turnAccounting.complete({
-                  kind: 'runtime',
-                  recovery: recoveryResults,
-                  result: error.result,
-                })
-                throw error
-              }
               if (!budget || !isPromptTooLongError(error)) throw error
               const recovery = await contextEngine.recover(
                 error,
@@ -5734,6 +5738,9 @@ export class ClaudeSessionService {
                   retryError instanceof AgentRunCancelledError
                 ) {
                   throw new AgentRunCancelledError()
+                }
+                if (retryError instanceof AgentBudgetExceededError) {
+                  throw retryError
                 }
                 surfaceExhaustedRecovery(error)
                 throw error

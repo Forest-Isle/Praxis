@@ -5433,6 +5433,107 @@ describe('ClaudeSessionService', () => {
     ])
   })
 
+  it('records a budget failure from a reactive prompt-too-long retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-retry-budget-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let completions = 0
+    let compactCalls = 0
+    const model = 'claude-sonnet-5[1m]'
+    const provider: ModelProvider = {
+      model,
+      capabilities: {
+        streaming: true,
+        usage: true,
+        tools: true,
+        terminalReasons: true,
+        contextWindowTokens: 3_500,
+      },
+      async *complete() {
+        completions += 1
+        if (completions === 1) {
+          yield {
+            type: 'text-delta',
+            delta: `old context ${'discarded '.repeat(1500)}`,
+          }
+          yield { type: 'terminal', reason: 'end_turn' }
+          return
+        }
+        if (completions === 2) {
+          yield { type: 'text-delta', delta: 'discarded partial answer' }
+          yield { type: 'terminal', reason: 'prompt_too_long' }
+          return
+        }
+        yield {
+          type: 'tool-call',
+          call: { id: 'retry-call', name: 'Read', input: {} },
+        }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 500,
+            webSearchRequests: 2,
+          },
+        }
+        yield { type: 'terminal', reason: 'tool_use' }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      contextReserveTokens: 1_500,
+      maxBudgetUsd: 0.02,
+      pricing: new ModelPricingRegistry(),
+      compactor: {
+        async compact() {
+          compactCalls += 1
+          return {
+            summary:
+              compactCalls === 1
+                ? `REACTIVE_BUDGET_SUMMARY_1 ${'first '.repeat(300)}`
+                : 'REACTIVE_BUDGET_SUMMARY_2',
+            usage: { inputTokens: 0, outputTokens: 0 },
+            durationMs: 1,
+            model,
+          }
+        },
+      },
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        schedulingPolicy: () => ({ concurrency: 'exclusive' as const }),
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'ok', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    })
+
+    const first = await service.run('seed old context')
+    await expect(service.resume(first.sessionId, 'continue')).rejects.toThrow(
+      'Maximum budget',
+    )
+    expect(completions).toBe(3)
+    const snapshot = await service.costSnapshot(first.sessionId)
+    expect(snapshot.modelUsage[model]).toEqual({
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 2,
+      costUsd: 0.027,
+    })
+    expect(snapshot.totalCostUsd).toBe(0.027)
+  })
+
   it('does not retry when reactive compaction makes no occupancy progress', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-reactive-no-progress-'))
     roots.push(root)
