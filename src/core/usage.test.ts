@@ -40,6 +40,16 @@ describe('ModelPricingRegistry', () => {
         '{"fixture":{"inputPerMillionUsd":-1}}',
       ),
     ).toThrow('non-negative')
+    expect(
+      ModelPricingRegistry.fromEnvironment(
+        '{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2,"cacheCreationInputPerMillionUsd":3,"cacheCreationInputPerMillionUsd1h":7}}',
+      ).resolve('fixture'),
+    ).toEqual({
+      inputPerMillionUsd: 1,
+      outputPerMillionUsd: 2,
+      cacheCreationInputPerMillionUsd: 3,
+      cacheCreationInputPerMillionUsd1h: 7,
+    })
   })
 
   it('returns no pricing for unknown models', () => {
@@ -110,6 +120,7 @@ describe('ModelPricingRegistry', () => {
         outputPerMillionUsd: output,
         cacheReadInputPerMillionUsd: cacheRead,
         cacheCreationInputPerMillionUsd: cacheCreation,
+        cacheCreationInputPerMillionUsd1h: input * 2,
       })
     }
     expect(registry.resolve('claude-sonnet-5[1m]')).toEqual(
@@ -138,5 +149,51 @@ describe('ModelPricingRegistry', () => {
     expect(exactEnvironment.diagnose('claude-sonnet-5[1m]').source).toBe(
       'environment',
     )
+  })
+
+  it('prices mixed five-minute and one-hour cache creation exactly', () => {
+    const pricing = {
+      inputPerMillionUsd: 2,
+      outputPerMillionUsd: 4,
+      cacheCreationInputPerMillionUsd: 2.5,
+      cacheCreationInputPerMillionUsd1h: 4,
+    }
+    expect(
+      usageCostUsd(
+        {
+          inputTokens: 20,
+          outputTokens: 10,
+          cacheCreationInputTokens: 5,
+          cacheCreationInputTokens1h: 3,
+        },
+        pricing,
+      ),
+    ).toBe((15 * 2 + 10 * 4 + 2 * 2.5 + 3 * 4) / 1_000_000)
+    expect(
+      usageCostUsd(
+        {
+          inputTokens: 20,
+          outputTokens: 10,
+          cacheCreationInputTokens: 5,
+          cacheCreationInputTokens1h: 3,
+        },
+        {
+          inputPerMillionUsd: 2,
+          outputPerMillionUsd: 4,
+          cacheCreationInputPerMillionUsd: 2.5,
+        },
+      ),
+    ).toBe((15 * 2 + 10 * 4 + 5 * 2.5) / 1_000_000)
+    expect(() =>
+      usageCostUsd(
+        {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheCreationInputTokens: 2,
+          cacheCreationInputTokens1h: 3,
+        },
+        pricing,
+      ),
+    ).toThrow('no greater than')
   })
 })

@@ -507,17 +507,42 @@ const emptyToolRegistry: ToolRegistry = {
 }
 
 function mergeUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  for (const usage of [left, right]) {
+    const oneHour = usage.cacheCreationInputTokens1h
+    if (
+      oneHour !== undefined &&
+      (!Number.isSafeInteger(oneHour) ||
+        oneHour < 0 ||
+        oneHour > (usage.cacheCreationInputTokens ?? 0))
+    ) {
+      throw new Error(
+        'Model usage has an invalid cacheCreationInputTokens1h counter',
+      )
+    }
+  }
   const cacheReadInputTokens =
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const cacheCreationInputTokens1h =
+    (left.cacheCreationInputTokens1h ?? 0) +
+    (right.cacheCreationInputTokens1h ?? 0)
   const webSearchRequests =
     (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
+  if (
+    !Number.isSafeInteger(cacheCreationInputTokens1h) ||
+    cacheCreationInputTokens1h > cacheCreationInputTokens
+  ) {
+    throw new Error(
+      'Model usage has an invalid cacheCreationInputTokens1h counter',
+    )
+  }
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(cacheCreationInputTokens1h === 0 ? {} : { cacheCreationInputTokens1h }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
@@ -527,6 +552,7 @@ const sessionUsageCounterFields = [
   'outputTokens',
   'cacheReadInputTokens',
   'cacheCreationInputTokens',
+  'cacheCreationInputTokens1h',
   'webSearchRequests',
 ] as const
 
@@ -543,6 +569,14 @@ function assertValidSessionUsageEntry(model: string, usage: ModelUsage): void {
         `Model usage for "${model}" has an invalid ${field} counter`,
       )
     }
+  }
+  if (
+    (usage.cacheCreationInputTokens1h ?? 0) >
+    (usage.cacheCreationInputTokens ?? 0)
+  ) {
+    throw new Error(
+      `Model usage for "${model}" has an invalid cacheCreationInputTokens1h counter`,
+    )
   }
   for (const field of sessionUsageMetadataFields) {
     const value = usage[field]
@@ -604,6 +638,9 @@ function addSessionUsageChecked(
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const cacheCreationInputTokens1h =
+    (left.cacheCreationInputTokens1h ?? 0) +
+    (right.cacheCreationInputTokens1h ?? 0)
   const webSearchRequests =
     (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   if (
@@ -611,9 +648,15 @@ function addSessionUsageChecked(
     !Number.isSafeInteger(outputTokens) ||
     !Number.isSafeInteger(cacheReadInputTokens) ||
     !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens1h) ||
     !Number.isSafeInteger(webSearchRequests)
   ) {
     throw new Error('Model usage total overflow')
+  }
+  if (cacheCreationInputTokens1h > cacheCreationInputTokens) {
+    throw new Error(
+      `Model usage for "${model}" has an invalid cacheCreationInputTokens1h counter`,
+    )
   }
   const metadata = mergeSessionUsageMetadata(model, left, right)
   return {
@@ -621,6 +664,7 @@ function addSessionUsageChecked(
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(cacheCreationInputTokens1h === 0 ? {} : { cacheCreationInputTokens1h }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
     ...metadata,
   }
@@ -670,6 +714,7 @@ function hasNonZeroUsage(usage: ModelUsage): boolean {
     usage.outputTokens > 0 ||
     (usage.cacheReadInputTokens ?? 0) > 0 ||
     (usage.cacheCreationInputTokens ?? 0) > 0 ||
+    (usage.cacheCreationInputTokens1h ?? 0) > 0 ||
     (usage.webSearchRequests ?? 0) > 0
   )
 }
@@ -694,6 +739,19 @@ function requireManualCompactUsage(usage: ModelUsage): void {
       usage.cacheCreationInputTokens,
       'usage.cacheCreationInputTokens',
     )
+  }
+  if (usage.cacheCreationInputTokens1h !== undefined) {
+    requireUsageCounter(
+      usage.cacheCreationInputTokens1h,
+      'usage.cacheCreationInputTokens1h',
+    )
+    if (
+      usage.cacheCreationInputTokens1h > (usage.cacheCreationInputTokens ?? 0)
+    ) {
+      throw new TypeError(
+        'usage.cacheCreationInputTokens1h must not exceed usage.cacheCreationInputTokens',
+      )
+    }
   }
   if (usage.webSearchRequests !== undefined) {
     requireUsageCounter(usage.webSearchRequests, 'usage.webSearchRequests')

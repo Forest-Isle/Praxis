@@ -708,6 +708,7 @@ describe('BackgroundAgentManager', () => {
         outputTokens: 50,
         cacheReadInputTokens: 10,
         cacheCreationInputTokens: 4,
+        cacheCreationInputTokens1h: 1,
         webSearchRequests: 3,
       },
       modelUsage: {
@@ -729,6 +730,7 @@ describe('BackgroundAgentManager', () => {
         outputTokens: 30,
         cacheReadInputTokens: 2,
         cacheCreationInputTokens: 7,
+        cacheCreationInputTokens1h: 2,
         webSearchRequests: 2,
       },
       modelUsage: {
@@ -736,6 +738,7 @@ describe('BackgroundAgentManager', () => {
           inputTokens: 10,
           outputTokens: 5,
           cacheCreationInputTokens: 8,
+          cacheCreationInputTokens1h: 4,
         },
         'model-c': {
           inputTokens: 20,
@@ -778,6 +781,7 @@ describe('BackgroundAgentManager', () => {
       outputTokens: 80,
       cacheReadInputTokens: 12,
       cacheCreationInputTokens: 11,
+      cacheCreationInputTokens1h: 3,
       webSearchRequests: 5,
     })
     expect(consumed.modelUsage).toEqual({
@@ -791,6 +795,7 @@ describe('BackgroundAgentManager', () => {
         inputTokens: 50,
         outputTokens: 25,
         cacheCreationInputTokens: 8,
+        cacheCreationInputTokens1h: 4,
       },
       'model-c': {
         inputTokens: 20,
@@ -897,6 +902,47 @@ describe('BackgroundAgentManager', () => {
     await expect(
       negativeAggregate.notifications({ waitForRunning: false }),
     ).rejects.toThrow('invalid inputTokens counter')
+
+    const invalidAggregate = new BackgroundAgentManager()
+    invalidAggregate.launch(
+      spec(async () => ({
+        text: 'BAD',
+        usage: {
+          inputTokens: 2,
+          outputTokens: 1,
+          cacheCreationInputTokens: 1,
+          cacheCreationInputTokens1h: 2,
+        },
+        toolUseCount: 1,
+        durationMs: 5,
+      })),
+    )
+    await invalidAggregate.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      invalidAggregate.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid cacheCreationInputTokens1h counter')
+
+    const invalidModel = new BackgroundAgentManager()
+    invalidModel.launch(
+      runWithModelUsage({
+        'model-a': {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheCreationInputTokens: 1,
+          cacheCreationInputTokens1h: 2,
+        },
+      }),
+    )
+    await invalidModel.output('a0123456789abcdef', {
+      block: true,
+      timeout: 30_000,
+    })
+    await expect(
+      invalidModel.notifications({ waitForRunning: false }),
+    ).rejects.toThrow('invalid cacheCreationInputTokens1h counter')
 
     const aggregateOverflow = new BackgroundAgentManager()
     aggregateOverflow.launch(

@@ -130,7 +130,11 @@ describe('TurnAccounting', () => {
       recovery: [
         {
           isError: true,
-          usage: usage(1, 1),
+          usage: {
+            ...usage(1, 1),
+            cacheCreationInputTokens: 1,
+            cacheCreationInputTokens1h: 1,
+          },
           modelUsage: { 'recovery-model': usage(1, 1) },
           durationApiMs: 100,
           durationToolMs: 2,
@@ -138,8 +142,18 @@ describe('TurnAccounting', () => {
         },
         {
           isError: false,
-          usage: usage(2, 1),
-          modelUsage: { 'recovery-model': usage(2, 1) },
+          usage: {
+            ...usage(2, 1),
+            cacheCreationInputTokens: 2,
+            cacheCreationInputTokens1h: 2,
+          },
+          modelUsage: {
+            'recovery-model': {
+              ...usage(2, 1),
+              cacheCreationInputTokens: 2,
+              cacheCreationInputTokens1h: 2,
+            },
+          },
           durationApiMs: 100,
           durationToolMs: 3,
           linesAdded: 4,
@@ -147,7 +161,11 @@ describe('TurnAccounting', () => {
       ],
       result: {
         isError: true,
-        usage: usage(3, 2),
+        usage: {
+          ...usage(3, 2),
+          cacheCreationInputTokens: 3,
+          cacheCreationInputTokens1h: 3,
+        },
         modelUsage: { 'shell-model': usage(3, 2) },
         durationApiMs: 7,
         durationToolMs: 5,
@@ -155,8 +173,18 @@ describe('TurnAccounting', () => {
       },
     })
     expect(outcome).toMatchObject({
-      usage: usage(6, 4),
-      modelUsage: { 'recovery-model': usage(2, 1) },
+      usage: {
+        ...usage(6, 4),
+        cacheCreationInputTokens: 6,
+        cacheCreationInputTokens1h: 6,
+      },
+      modelUsage: {
+        'recovery-model': {
+          ...usage(2, 1),
+          cacheCreationInputTokens: 2,
+          cacheCreationInputTokens1h: 2,
+        },
+      },
       durationApiMs: 7,
     })
     expect(cost.snapshot()).toMatchObject({
@@ -513,6 +541,24 @@ describe('TurnAccounting', () => {
       modelUsage: before.modelUsage,
       apiDurationMs: before.apiDurationMs,
     })
+
+    const invalidCost = tracker()
+    const invalidAccounting = new TurnAccounting({ tracker: invalidCost })
+    const invalidBefore = invalidCost.snapshot()
+    expect(() =>
+      invalidAccounting.complete({
+        kind: 'runtime',
+        recovery: [],
+        result: {
+          usage: {
+            ...usage(1, 0),
+            cacheCreationInputTokens: 1,
+            cacheCreationInputTokens1h: 2,
+          },
+        },
+      }),
+    ).toThrow('Model usage has an invalid cacheCreationInputTokens1h counter')
+    expect(invalidCost.snapshot()).toEqual(invalidBefore)
   })
 
   it('preflights tracker overflow before duration and line mutations', () => {

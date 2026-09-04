@@ -30,6 +30,7 @@ export interface PersistedSubagentRunResult {
     outputTokens: number
     cacheReadInputTokens?: number
     cacheCreationInputTokens?: number
+    cacheCreationInputTokens1h?: number
     webSearchRequests?: number
     contextWindow?: number
     maxOutputTokens?: number
@@ -107,10 +108,16 @@ function isUsage(value: unknown): boolean {
   for (const field of [
     'cacheReadInputTokens',
     'cacheCreationInputTokens',
+    'cacheCreationInputTokens1h',
     'webSearchRequests',
   ])
     if (usage[field] !== undefined && !isNonnegativeInteger(usage[field]))
       return false
+  if (
+    (usage.cacheCreationInputTokens1h ?? 0) >
+    (usage.cacheCreationInputTokens ?? 0)
+  )
+    return false
   for (const field of ['contextWindow', 'maxOutputTokens'])
     if (
       usage[field] !== undefined &&

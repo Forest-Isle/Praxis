@@ -112,6 +112,8 @@ export interface ModelUsage {
   outputTokens: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
+  /** One-hour cache writes included in cacheCreationInputTokens. */
+  cacheCreationInputTokens1h?: number
   webSearchRequests?: number
   /** Positive safe integer when the completing model's context window is known. */
   contextWindow?: number
@@ -738,17 +740,42 @@ const unsupportedDocumentResult =
   'Provider does not support document tool results'
 
 function addUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
+  for (const usage of [left, right]) {
+    const oneHour = usage.cacheCreationInputTokens1h
+    if (
+      oneHour !== undefined &&
+      (!Number.isSafeInteger(oneHour) ||
+        oneHour < 0 ||
+        oneHour > (usage.cacheCreationInputTokens ?? 0))
+    ) {
+      throw new Error(
+        'Model usage has an invalid cacheCreationInputTokens1h counter',
+      )
+    }
+  }
   const cacheReadInputTokens =
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const cacheCreationInputTokens1h =
+    (left.cacheCreationInputTokens1h ?? 0) +
+    (right.cacheCreationInputTokens1h ?? 0)
   const webSearchRequests =
     (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
+  if (
+    !Number.isSafeInteger(cacheCreationInputTokens1h) ||
+    cacheCreationInputTokens1h > cacheCreationInputTokens
+  ) {
+    throw new Error(
+      'Model usage has an invalid cacheCreationInputTokens1h counter',
+    )
+  }
   return {
     inputTokens: left.inputTokens + right.inputTokens,
     outputTokens: left.outputTokens + right.outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(cacheCreationInputTokens1h === 0 ? {} : { cacheCreationInputTokens1h }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
   }
 }
@@ -804,6 +831,7 @@ const modelUsageCounterFields = [
   'outputTokens',
   'cacheReadInputTokens',
   'cacheCreationInputTokens',
+  'cacheCreationInputTokens1h',
   'webSearchRequests',
 ] as const
 
@@ -815,6 +843,7 @@ function hasNonZeroModelUsage(usage: ModelUsage): boolean {
     usage.outputTokens > 0 ||
     (usage.cacheReadInputTokens ?? 0) > 0 ||
     (usage.cacheCreationInputTokens ?? 0) > 0 ||
+    (usage.cacheCreationInputTokens1h ?? 0) > 0 ||
     (usage.webSearchRequests ?? 0) > 0
   )
 }
@@ -830,6 +859,14 @@ function assertValidModelUsageEntry(model: string, usage: ModelUsage): void {
         `Model usage for "${model}" has an invalid ${field} counter`,
       )
     }
+  }
+  if (
+    (usage.cacheCreationInputTokens1h ?? 0) >
+    (usage.cacheCreationInputTokens ?? 0)
+  ) {
+    throw new Error(
+      `Model usage for "${model}" has an invalid cacheCreationInputTokens1h counter`,
+    )
   }
   for (const field of modelUsageMetadataFields) {
     const value = usage[field]
@@ -891,6 +928,9 @@ function addUsageChecked(
     (left.cacheReadInputTokens ?? 0) + (right.cacheReadInputTokens ?? 0)
   const cacheCreationInputTokens =
     (left.cacheCreationInputTokens ?? 0) + (right.cacheCreationInputTokens ?? 0)
+  const cacheCreationInputTokens1h =
+    (left.cacheCreationInputTokens1h ?? 0) +
+    (right.cacheCreationInputTokens1h ?? 0)
   const webSearchRequests =
     (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0)
   if (
@@ -898,9 +938,15 @@ function addUsageChecked(
     !Number.isSafeInteger(outputTokens) ||
     !Number.isSafeInteger(cacheReadInputTokens) ||
     !Number.isSafeInteger(cacheCreationInputTokens) ||
+    !Number.isSafeInteger(cacheCreationInputTokens1h) ||
     !Number.isSafeInteger(webSearchRequests)
   ) {
     throw new Error('Model usage total overflow')
+  }
+  if (cacheCreationInputTokens1h > cacheCreationInputTokens) {
+    throw new Error(
+      `Model usage for "${model}" has an invalid cacheCreationInputTokens1h counter`,
+    )
   }
   const metadata = mergeModelUsageMetadata(model, left, right)
   return {
@@ -908,6 +954,7 @@ function addUsageChecked(
     outputTokens,
     ...(cacheReadInputTokens === 0 ? {} : { cacheReadInputTokens }),
     ...(cacheCreationInputTokens === 0 ? {} : { cacheCreationInputTokens }),
+    ...(cacheCreationInputTokens1h === 0 ? {} : { cacheCreationInputTokens1h }),
     ...(webSearchRequests === 0 ? {} : { webSearchRequests }),
     ...metadata,
   }

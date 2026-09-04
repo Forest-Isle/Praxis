@@ -304,6 +304,7 @@ describe('CLI protocol', () => {
             outputTokens: 3,
             cacheReadInputTokens: 4,
             cacheCreationInputTokens: 5,
+            cacheCreationInputTokens1h: 3,
             webSearchRequests: 1,
           },
           costUsd: 0.5,
@@ -338,8 +339,8 @@ describe('CLI protocol', () => {
         server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
         service_tier: 'standard',
         cache_creation: {
-          ephemeral_1h_input_tokens: 0,
-          ephemeral_5m_input_tokens: 0,
+          ephemeral_1h_input_tokens: 3,
+          ephemeral_5m_input_tokens: 2,
         },
         inference_geo: '',
         iterations: [],

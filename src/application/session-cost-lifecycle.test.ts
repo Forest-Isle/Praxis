@@ -206,4 +206,80 @@ describe('ClaudeSessionService cost lifecycle', () => {
       snapshot.wallDurationMs,
     )
   })
+
+  it('charges mixed Anthropic cache TTL usage before enforcing the budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cost-lifecycle-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const sessionId = '23232323-2323-4232-8232-232323232323'
+    const model = 'claude-sonnet-5[1m]'
+    let providerCalls = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      model,
+      async *complete() {
+        providerCalls += 1
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call', name: 'Read', input: {} },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'fixture answer' }
+        }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 500,
+            cacheCreationInputTokens: 5,
+            cacheCreationInputTokens1h: 3,
+          },
+        }
+      },
+    }
+    const pricing = new ModelPricingRegistry()
+    const modelPricing = pricing.resolve('claude-sonnet-5')
+    if (modelPricing === undefined) throw new Error('missing builtin pricing')
+    const expectedCostUsd = usageCostUsd(
+      {
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationInputTokens: 5,
+        cacheCreationInputTokens1h: 3,
+      },
+      modelPricing,
+    )
+    expect(expectedCostUsd).toBe(0.007007)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing,
+      maxBudgetUsd: 0.007004,
+      sessionPersistence: true,
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        schedulingPolicy: () => ({ concurrency: 'exclusive' as const }),
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'ok', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    })
+
+    await expect(service.run('hello', undefined, sessionId)).rejects.toThrow(
+      'Maximum budget',
+    )
+    expect(providerCalls).toBe(1)
+    await service.close()
+  })
 })

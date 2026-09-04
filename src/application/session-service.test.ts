@@ -6481,6 +6481,48 @@ describe('ClaudeSessionService', () => {
     },
   )
 
+  it('does not append or record tracker totals for an impossible cache TTL subset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-cache-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['original answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'invalid cache summary',
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheCreationInputTokens: 1,
+              cacheCreationInputTokens1h: 2,
+            },
+            durationMs: 5,
+            model: 'compact-model',
+          }
+        },
+      },
+    })
+
+    const run = await service.run('start')
+    const before = await service.costSnapshot(run.sessionId)
+    await expect(service.compact(run.sessionId)).rejects.toThrow(
+      'usage.cacheCreationInputTokens1h must not exceed',
+    )
+    const after = await service.costSnapshot(run.sessionId)
+    expect(trackedTotals(after)).toEqual(trackedTotals(before))
+    const transcript = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, run.sessionId),
+    )
+    expect(transcript.some((event) => event.kind === 'context-boundary')).toBe(
+      false,
+    )
+  })
+
   it('does not touch cost state when compacting a nonexistent session', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-manual-compact-missing-'))
     roots.push(root)
@@ -8199,6 +8241,8 @@ describe('ClaudeSessionService', () => {
             usage: {
               inputTokens: 10,
               outputTokens: 4,
+              cacheCreationInputTokens: 3,
+              cacheCreationInputTokens1h: 1,
               webSearchRequests: 3,
             },
           }
@@ -8210,6 +8254,8 @@ describe('ClaudeSessionService', () => {
           usage: {
             inputTokens: 3,
             outputTokens: 1,
+            cacheCreationInputTokens: 1,
+            cacheCreationInputTokens1h: 1,
             webSearchRequests: 1,
           },
         }
@@ -8242,6 +8288,7 @@ describe('ClaudeSessionService', () => {
             outputTokens: 5,
             cacheReadInputTokens: 8,
             cacheCreationInputTokens: 2,
+            cacheCreationInputTokens1h: 1,
             webSearchRequests: 2,
           },
         }
@@ -8283,13 +8330,16 @@ describe('ClaudeSessionService', () => {
       inputTokens: 33,
       outputTokens: 10,
       cacheReadInputTokens: 8,
-      cacheCreationInputTokens: 2,
+      cacheCreationInputTokens: 6,
+      cacheCreationInputTokens1h: 3,
       webSearchRequests: 6,
     })
     expect(run.modelUsage).toEqual({
       'main-fixture-model': {
         inputTokens: 13,
         outputTokens: 5,
+        cacheCreationInputTokens: 4,
+        cacheCreationInputTokens1h: 2,
         webSearchRequests: 4,
       },
       'child-fixture-model': {
@@ -8297,10 +8347,11 @@ describe('ClaudeSessionService', () => {
         outputTokens: 5,
         cacheReadInputTokens: 8,
         cacheCreationInputTokens: 2,
+        cacheCreationInputTokens1h: 1,
         webSearchRequests: 2,
       },
     })
-    expect(run.costUsd).toBe(18 / 1_000_000 + 20 / 1_000_000)
+    expect(run.costUsd).toBe(16 / 1_000_000 + 20 / 1_000_000)
     await expect(readFile(join(cwd, 'child.txt'), 'utf8')).resolves.toBe(
       'line one\nline two\nline three',
     )
@@ -8316,9 +8367,9 @@ describe('ClaudeSessionService', () => {
       inputTokens: 13,
       outputTokens: 5,
       cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
+      cacheCreationInputTokens: 4,
       webSearchRequests: 4,
-      costUsd: 18 / 1_000_000,
+      costUsd: 16 / 1_000_000,
     })
     expect(snapshot.modelUsage['child-fixture-model']).toEqual({
       inputTokens: 20,
@@ -8328,7 +8379,7 @@ describe('ClaudeSessionService', () => {
       webSearchRequests: 2,
       costUsd: 20 / 1_000_000,
     })
-    expect(snapshot.totalCostUsd).toBe(18 / 1_000_000 + 20 / 1_000_000)
+    expect(snapshot.totalCostUsd).toBe(16 / 1_000_000 + 20 / 1_000_000)
     expect(snapshot.linesAdded).toBe(3)
     expect(snapshot.linesRemoved).toBe(0)
     expect(snapshot.hasUnknownModelCost).toBe(false)
