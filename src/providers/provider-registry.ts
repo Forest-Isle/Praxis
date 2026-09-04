@@ -15,6 +15,11 @@ import {
   type ProviderTarget,
 } from './provider-settings.js'
 import { resolveAnthropicModelSpec } from './anthropic-model-spec.js'
+import {
+  anthropicModelAliasOverridesFromEnvironment,
+  resolveAnthropicModelAlias,
+  type AnthropicModelAliasOverrides,
+} from './anthropic-model-alias.js'
 import type {
   ProviderCredentialSourceMetadata,
   ProviderCredentialReader,
@@ -59,6 +64,7 @@ export interface ProviderRegistryOptions {
   }) => AnthropicPromptCachePolicy
   fetchImplementation?: typeof fetch
   providerEnvironment?: ReturnType<typeof parseProviderEnvironment>
+  anthropicModelAliasOverrides?: AnthropicModelAliasOverrides
   vault?: CodexOAuthVault
 }
 
@@ -139,6 +145,11 @@ export async function resolveProviderRegistry(
     PRAXIS_BASE_URL: target.baseUrl,
   } as NodeJS.ProcessEnv
   const providerEnvironment = parseProviderEnvironment(controlsEnvironment)
+  const anthropicModelAliasOverrides =
+    target.providerId === 'anthropic' &&
+    target.protocol === 'anthropic-messages'
+      ? anthropicModelAliasOverridesFromEnvironment(environment)
+      : undefined
   const promptCacheResolver =
     target.protocol === 'anthropic-messages'
       ? createAnthropicPromptCachePolicyResolver(controlsEnvironment)
@@ -159,6 +170,9 @@ export async function resolveProviderRegistry(
     ...(promptCacheResolver === undefined
       ? {}
       : { anthropicPromptCacheResolver: promptCacheResolver }),
+    ...(anthropicModelAliasOverrides === undefined
+      ? {}
+      : { anthropicModelAliasOverrides }),
     ...(options.fetchImplementation === undefined
       ? {}
       : { fetchImplementation: options.fetchImplementation }),
@@ -179,7 +193,7 @@ class NativeProviderRegistry implements ProviderRegistry {
   private readonly codexManager: CodexOAuthCredentialManager | undefined
 
   constructor(private readonly options: ProviderRegistryOptions) {
-    this.target = options.target
+    this.target = this.resolveTarget(options.target)
     this.credentialSource = options.credential.source
     if (options.target.protocol === 'codex-subscription') {
       if (options.credential.type !== 'oauth') {
@@ -205,7 +219,7 @@ class NativeProviderRegistry implements ProviderRegistry {
   }
 
   create(modelId = this.target.modelId): ModelProvider {
-    const target = { ...this.target, modelId }
+    const target = this.resolveTarget({ ...this.target, modelId })
     if (target.protocol === 'codex-subscription') {
       if (!this.codexManager)
         throw new ProviderAuthenticationError(
@@ -346,6 +360,21 @@ class NativeProviderRegistry implements ProviderRegistry {
       'unsupported_provider',
       `Unsupported provider protocol: ${target.protocol}`,
     )
+  }
+
+  private resolveTarget(target: ProviderTarget): ProviderTarget {
+    if (
+      target.providerId !== 'anthropic' ||
+      target.protocol !== 'anthropic-messages'
+    )
+      return target
+    return {
+      ...target,
+      modelId: resolveAnthropicModelAlias(
+        target.modelId,
+        this.options.anthropicModelAliasOverrides,
+      ),
+    }
   }
 
   private withDeadline(provider: ModelProvider): ModelProvider {

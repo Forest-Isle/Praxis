@@ -3745,6 +3745,23 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         await envWins.close?.()
       }
 
+      const anthropicAlias = await createService({ PRAXIS_MODEL: 'sonnet' })
+      try {
+        expect(anthropicAlias.runtimeInfo?.().model).toBe('claude-sonnet-5')
+      } finally {
+        await anthropicAlias.close?.()
+      }
+
+      const anthropicOverride = await createService({
+        PRAXIS_MODEL: 'sonnet',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'fixture-sonnet',
+      })
+      try {
+        expect(anthropicOverride.runtimeInfo?.().model).toBe('fixture-sonnet')
+      } finally {
+        await anthropicOverride.close?.()
+      }
+
       const cliWins = await createService(
         { PRAXIS_MODEL: 'env-model' },
         { ...DEFAULT_CLI_CONTROLS, model: 'cli-model' },
