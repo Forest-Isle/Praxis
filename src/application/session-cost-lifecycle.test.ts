@@ -282,4 +282,77 @@ describe('ClaudeSessionService cost lifecycle', () => {
     expect(providerCalls).toBe(1)
     await service.close()
   })
+
+  it('charges Anthropic web searches before enforcing the next-request budget', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cost-lifecycle-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const sessionId = '24242424-2424-4242-8242-242424242424'
+    const model = 'claude-sonnet-5[1m]'
+    let providerCalls = 0
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: true },
+      model,
+      async *complete() {
+        providerCalls += 1
+        if (providerCalls === 1) {
+          yield {
+            type: 'tool-call',
+            call: { id: 'call', name: 'Read', input: {} },
+          }
+        } else {
+          yield { type: 'text-delta', delta: 'fixture answer' }
+        }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 500,
+            webSearchRequests: 2,
+          },
+        }
+      },
+    }
+    const pricing = new ModelPricingRegistry()
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing,
+      maxBudgetUsd: 0.02,
+      sessionPersistence: true,
+      tools: {
+        definitions: () => [
+          {
+            name: 'Read',
+            description: 'Read',
+            inputSchema: { type: 'object' },
+          },
+        ],
+        schedulingPolicy: () => ({ concurrency: 'exclusive' as const }),
+        prepare: async (call) => call,
+        execute: async () => ({ content: 'ok', isError: false }),
+      },
+      permissions: { resolve: () => ({ behavior: 'allow' as const }) },
+    })
+
+    await expect(service.run('hello', undefined, sessionId)).rejects.toThrow(
+      'Maximum budget',
+    )
+    expect(providerCalls).toBe(1)
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.totalCostUsd).toBe(0.027)
+    expect(snapshot.modelUsage[model]).toEqual({
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      webSearchRequests: 2,
+      costUsd: 0.027,
+    })
+    await service.close()
+  })
 })

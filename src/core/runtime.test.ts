@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
+  AgentBudgetExceededError,
   AgentRunCancelledError,
   AgentRuntime,
   malformedModelToolCall,
@@ -1050,12 +1051,23 @@ describe('AgentRuntime', () => {
       costUsd: (usage) => usage.inputTokens / 1_000_000,
       maxBudgetUsd: 0.000001,
     })
-    await expect(
-      runtime.run({
+    let failure: unknown
+    try {
+      await runtime.run({
         messages: [{ role: 'user', content: 'budget' }],
         onStop: async () => ['continue'],
-      }),
-    ).rejects.toThrow('Maximum budget')
+      })
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AgentBudgetExceededError)
+    if (!(failure instanceof AgentBudgetExceededError)) {
+      throw new Error('expected a typed budget failure')
+    }
+    expect(failure.message).toBe('Maximum budget of $0.000001 exceeded')
+    expect(failure.result).toMatchObject({
+      usage: { inputTokens: 2, outputTokens: 1 },
+    })
     expect(calls).toBe(1)
   })
 

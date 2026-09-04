@@ -7,6 +7,7 @@ export interface ModelPricing {
   cacheCreationInputPerMillionUsd?: number
   /** Falls back to cacheCreationInputPerMillionUsd when omitted. */
   cacheCreationInputPerMillionUsd1h?: number
+  webSearchPerRequestUsd?: number
 }
 
 export type ModelPricingTable = Readonly<Record<string, ModelPricing>>
@@ -33,6 +34,7 @@ function anthropicPricing(
     cacheReadInputPerMillionUsd,
     cacheCreationInputPerMillionUsd,
     cacheCreationInputPerMillionUsd1h: inputPerMillionUsd * 2,
+    webSearchPerRequestUsd: 0.01,
   }
 }
 
@@ -43,6 +45,7 @@ const BUILTIN_PRICING: ModelPricingTable = {
     cacheReadInputPerMillionUsd: 0.3,
     cacheCreationInputPerMillionUsd: 3.75,
     cacheCreationInputPerMillionUsd1h: 6,
+    webSearchPerRequestUsd: 0.01,
   },
   'claude-3-7-sonnet-20250219': {
     inputPerMillionUsd: 3,
@@ -50,6 +53,7 @@ const BUILTIN_PRICING: ModelPricingTable = {
     cacheReadInputPerMillionUsd: 0.3,
     cacheCreationInputPerMillionUsd: 3.75,
     cacheCreationInputPerMillionUsd1h: 6,
+    webSearchPerRequestUsd: 0.01,
   },
   'claude-sonnet-4-20250514': {
     inputPerMillionUsd: 3,
@@ -57,6 +61,7 @@ const BUILTIN_PRICING: ModelPricingTable = {
     cacheReadInputPerMillionUsd: 0.3,
     cacheCreationInputPerMillionUsd: 3.75,
     cacheCreationInputPerMillionUsd1h: 6,
+    webSearchPerRequestUsd: 0.01,
   },
   'claude-opus-4-20250514': {
     inputPerMillionUsd: 15,
@@ -64,6 +69,7 @@ const BUILTIN_PRICING: ModelPricingTable = {
     cacheReadInputPerMillionUsd: 1.5,
     cacheCreationInputPerMillionUsd: 18.75,
     cacheCreationInputPerMillionUsd1h: 30,
+    webSearchPerRequestUsd: 0.01,
   },
   'claude-fable-5-1': anthropicPricing(10, 50, 0.25, 12.5),
   'claude-opus-5': anthropicPricing(5, 25, 0.5, 6.25),
@@ -115,6 +121,7 @@ function parsePricing(value: unknown, label: string): ModelPricing {
   const cacheRead = record.cacheReadInputPerMillionUsd
   const cacheCreation = record.cacheCreationInputPerMillionUsd
   const cacheCreation1h = record.cacheCreationInputPerMillionUsd1h
+  const webSearch = record.webSearchPerRequestUsd
   if (cacheRead !== undefined && !validRate(cacheRead)) {
     throw new Error(`${label}.cacheReadInputPerMillionUsd must be non-negative`)
   }
@@ -128,6 +135,9 @@ function parsePricing(value: unknown, label: string): ModelPricing {
       `${label}.cacheCreationInputPerMillionUsd1h must be non-negative`,
     )
   }
+  if (webSearch !== undefined && !validRate(webSearch)) {
+    throw new Error(`${label}.webSearchPerRequestUsd must be non-negative`)
+  }
   return {
     inputPerMillionUsd: input,
     outputPerMillionUsd: output,
@@ -140,6 +150,7 @@ function parsePricing(value: unknown, label: string): ModelPricing {
     ...(cacheCreation1h === undefined
       ? {}
       : { cacheCreationInputPerMillionUsd1h: cacheCreation1h }),
+    ...(webSearch === undefined ? {} : { webSearchPerRequestUsd: webSearch }),
   }
 }
 
@@ -265,5 +276,8 @@ export function usageCostUsd(usage: ModelUsage, pricing: ModelPricing): number {
       (pricing.cacheCreationInputPerMillionUsd1h ??
         pricing.cacheCreationInputPerMillionUsd ??
         pricing.inputPerMillionUsd)
-  return (input + output + cacheRead + cacheCreationCost) / 1_000_000
+  return (
+    (input + output + cacheRead + cacheCreationCost) / 1_000_000 +
+    (usage.webSearchRequests ?? 0) * (pricing.webSearchPerRequestUsd ?? 0)
+  )
 }

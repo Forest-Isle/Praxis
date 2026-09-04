@@ -27,6 +27,34 @@ describe('ModelPricingRegistry', () => {
     ).toBeCloseTo(0.00176)
   })
 
+  it('adds provider-reported web search requests after token pricing', () => {
+    const pricing = {
+      inputPerMillionUsd: 10,
+      outputPerMillionUsd: 20,
+      cacheReadInputPerMillionUsd: 1,
+      cacheCreationInputPerMillionUsd: 4,
+      webSearchPerRequestUsd: 0.01,
+    }
+    expect(
+      usageCostUsd(
+        {
+          inputTokens: 100,
+          outputTokens: 50,
+          cacheReadInputTokens: 20,
+          cacheCreationInputTokens: 10,
+          webSearchRequests: 2,
+        },
+        pricing,
+      ),
+    ).toBe(0.00176 + 0.02)
+    expect(
+      usageCostUsd(
+        { inputTokens: 100, outputTokens: 50, webSearchRequests: 2 },
+        { inputPerMillionUsd: 10, outputPerMillionUsd: 20 },
+      ),
+    ).toBe(0.002)
+  })
+
   it('parses explicit environment pricing and rejects invalid values', () => {
     const registry = ModelPricingRegistry.fromEnvironment(
       '{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2}}',
@@ -42,14 +70,32 @@ describe('ModelPricingRegistry', () => {
     ).toThrow('non-negative')
     expect(
       ModelPricingRegistry.fromEnvironment(
-        '{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2,"cacheCreationInputPerMillionUsd":3,"cacheCreationInputPerMillionUsd1h":7}}',
+        '{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2,"cacheCreationInputPerMillionUsd":3,"cacheCreationInputPerMillionUsd1h":7,"webSearchPerRequestUsd":0.01}}',
       ).resolve('fixture'),
     ).toEqual({
       inputPerMillionUsd: 1,
       outputPerMillionUsd: 2,
       cacheCreationInputPerMillionUsd: 3,
       cacheCreationInputPerMillionUsd1h: 7,
+      webSearchPerRequestUsd: 0.01,
     })
+    const environmentPricing = ModelPricingRegistry.fromEnvironment(
+      '{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2,"webSearchPerRequestUsd":0.01}}',
+    ).resolve('fixture')
+    if (!environmentPricing) throw new Error('fixture pricing missing')
+    expect(
+      usageCostUsd(
+        { inputTokens: 1000, outputTokens: 500, webSearchRequests: 2 },
+        environmentPricing,
+      ),
+    ).toBe(0.002 + 0.02)
+    for (const rate of ['-1', '"0.01"', '1e400']) {
+      expect(() =>
+        ModelPricingRegistry.fromEnvironment(
+          `{"fixture":{"inputPerMillionUsd":1,"outputPerMillionUsd":2,"webSearchPerRequestUsd":${rate}}}`,
+        ),
+      ).toThrow('webSearchPerRequestUsd must be non-negative')
+    }
   })
 
   it('returns no pricing for unknown models', () => {
@@ -110,6 +156,10 @@ describe('ModelPricingRegistry', () => {
       'claude-3-5-sonnet-latest': [3, 15, 0.3, 3.75],
       'claude-3-5-haiku-20241022': [0.8, 4, 0.08, 1],
       'claude-3-5-haiku-latest': [0.8, 4, 0.08, 1],
+      'claude-3-5-sonnet-20241022': [3, 15, 0.3, 3.75],
+      'claude-3-7-sonnet-20250219': [3, 15, 0.3, 3.75],
+      'claude-sonnet-4-20250514': [3, 15, 0.3, 3.75],
+      'claude-opus-4-20250514': [15, 75, 1.5, 18.75],
     } as const
     for (const [
       model,
@@ -121,6 +171,7 @@ describe('ModelPricingRegistry', () => {
         cacheReadInputPerMillionUsd: cacheRead,
         cacheCreationInputPerMillionUsd: cacheCreation,
         cacheCreationInputPerMillionUsd1h: input * 2,
+        webSearchPerRequestUsd: 0.01,
       })
     }
     expect(registry.resolve('claude-sonnet-5[1m]')).toEqual(
@@ -128,6 +179,12 @@ describe('ModelPricingRegistry', () => {
     )
     expect(registry.resolve('claude-opus-5')).not.toBe(
       registry.resolve('claude-opus-4-8'),
+    )
+    expect(registry.resolve('gpt-4o')).not.toHaveProperty(
+      'webSearchPerRequestUsd',
+    )
+    expect(registry.resolve('gpt-4o-mini')).not.toHaveProperty(
+      'webSearchPerRequestUsd',
     )
 
     const baseEnvironment = new ModelPricingRegistry({
