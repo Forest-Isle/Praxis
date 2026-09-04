@@ -98,6 +98,13 @@ cd /path/to/project
 praxis
 ```
 
+Anthropic models use a 200,000-token context window by default, including
+unknown model IDs. Add the exact terminal `[1m]` suffix (for example,
+`claude-sonnet-4-20250514[1m]`) to request a 1,000,000-token context window;
+Praxis keeps that selected model public, removes the suffix on the wire, and
+adds the `context-1m-2025-08-07` Anthropic beta once. An explicit
+`PRAXIS_CONTEXT_WINDOW_TOKENS` value overrides either inferred window.
+
 Common non-interactive operations:
 
 ```sh
@@ -294,7 +301,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   route, whether primary or fallback, stays sticky only through that logical
   Turn's tool continuations; incompatible routes fail closed, and the next
   independent Turn starts from primary. Recovery may persist only an optional
-  selected model, never provider route or wire state.
+  selected model, never provider route or wire state. Anthropic uses a
+  200,000-token default or exact terminal `[1m]` model syntax for 1,000,000
+  tokens; `PRAXIS_CONTEXT_WINDOW_TOKENS` overrides the advertised window.
 - **Transactional self-update** — `praxis update` verifies the package before
   installing it, rejects concurrent updates, and can roll back after an
   interruption or crash.

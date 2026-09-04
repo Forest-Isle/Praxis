@@ -239,6 +239,11 @@ explicit context-window capabilities without putting provider-native payloads
 in shared transcripts. The public and Codex Responses transports share the
 stateless Responses codec while retaining transport-owned authentication and
 header differences.
+`AnthropicCompatibleProvider` owns Anthropic model-spec resolution: it
+preserves the public selected model while deriving the wire model, long-context
+beta, and advertised context capability. This keeps the wire/public separation
+inside the adapter; shared core and transcript contracts, and other provider
+protocols, remain unchanged.
 The Anthropic full-response adapter normalizes its bounded response through the
 same event state machine as SSE. Image tool results stay provider-neutral in
 core: Anthropic keeps them nested under `tool_result`, while OpenAI-compatible

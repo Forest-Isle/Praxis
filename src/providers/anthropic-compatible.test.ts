@@ -805,13 +805,13 @@ describe('AnthropicCompatibleProvider', () => {
     ).rejects.toThrow('multiple terminal stop reasons')
   })
 
-  it('exposes only an explicitly configured context window', () => {
+  it('exposes the configured context window', () => {
     const provider = new AnthropicCompatibleProvider({
       baseUrl: 'https://api.anthropic.example/v1',
       apiKey: 'secret',
       model: 'fixture-model',
       webSearch: true,
-      contextWindowTokens: 200_000,
+      contextWindowTokens: 250_000,
     })
 
     expect(provider.capabilities).toEqual({
@@ -825,7 +825,7 @@ describe('AnthropicCompatibleProvider', () => {
         modes: ['enabled', 'adaptive', 'disabled'],
         maxTokens: true,
       },
-      contextWindowTokens: 200_000,
+      contextWindowTokens: 250_000,
       maxOutputTokens: 8_192,
       terminalReasons: true,
     })
@@ -848,7 +848,7 @@ describe('AnthropicCompatibleProvider', () => {
       maxOutputTokens: 16_384,
     })
     expect(provider.capabilities.maxOutputTokens).toBe(16_384)
-    expect(provider.capabilities.contextWindowTokens).toBeUndefined()
+    expect(provider.capabilities.contextWindowTokens).toBe(200_000)
   })
 
   it('derives a default max output tokens capability per model family', () => {

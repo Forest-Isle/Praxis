@@ -281,10 +281,7 @@ class NativeProviderRegistry implements ProviderRegistry {
         ...(this.options.anthropicPromptCacheResolver === undefined
           ? {}
           : {
-              promptCaching: this.options.anthropicPromptCacheResolver({
-                baseUrl: target.baseUrl,
-                model: target.modelId,
-              }),
+              promptCacheResolver: this.options.anthropicPromptCacheResolver,
             }),
         ...(this.options.providerEnvironment?.maxOutputTokens === undefined
           ? {}

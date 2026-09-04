@@ -78,7 +78,11 @@ Rules:
     its base64 payload size; observed provider usage remains authoritative.
     Between-turn compaction replays current user
     messages verbatim after the summary, and the compactor's own provider call
-    must fit the configured full context window.
+    must fit the configured full context window. Context budgeting consumes
+    the provider-advertised window: Anthropic defaults to 200,000 tokens,
+    exact terminal `[1m]` advertises 1,000,000, and
+    `PRAXIS_CONTEXT_WINDOW_TOKENS` overrides both. Other adapters do not infer
+    a context window.
 13. Resume never silently replays an interrupted tool call. Recovery prepares
     the call through the current hook/tool pipeline, asks once against the
     actual prepared input, then applies the current deny/ask/allow policy.

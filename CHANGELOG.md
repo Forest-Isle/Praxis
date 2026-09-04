@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* advertise Anthropic context windows and support the exact terminal `[1m]` model mode ([#642](https://github.com/Forest-Isle/Praxis/issues/642))
 * estimate image context cost independently of base64 payload size ([#639](https://github.com/Forest-Isle/Praxis/issues/639))
 * move Workflow isolation into ownership-verified repo-local worktrees ([#630](https://github.com/Forest-Isle/Praxis/issues/630))
 * expand stdio MCP `${VAR}` environment grants at launch without weakening credential isolation ([#145](https://github.com/Forest-Isle/Praxis/issues/145))

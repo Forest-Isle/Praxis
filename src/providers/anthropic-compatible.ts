@@ -18,11 +18,16 @@ import {
   createAnthropicPromptCachePolicyResolver,
   type AnthropicPromptCachePolicy,
 } from './anthropic-prompt-cache.js'
+import { resolveAnthropicModelSpec } from './anthropic-model-spec.js'
 
 export interface AnthropicCompatibleProviderOptions {
   baseUrl: string
   apiKey: string
   model: string
+  promptCacheResolver?: (target: {
+    baseUrl: string
+    model: string
+  }) => AnthropicPromptCachePolicy
   maxOutputTokens?: number
   anthropicVersion?: string
   webSearch?: boolean
@@ -913,22 +918,28 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   private readonly maxToolMetadataBytes: number
   private readonly maxErrorBodyBytes: number
   private readonly thinking: ModelThinkingConfig | undefined
+  private readonly wireModel: string
+  private readonly providerBetas: readonly string[]
   private readonly promptCaching: AnthropicCacheControl | undefined
   private readonly streaming: boolean
 
   constructor(private readonly options: AnthropicCompatibleProviderOptions) {
-    if (options.contextWindowTokens !== undefined) {
-      positiveInteger(options.contextWindowTokens, 'Context window tokens')
-    }
+    const modelSpec = resolveAnthropicModelSpec(
+      options.model,
+      options.contextWindowTokens,
+    )
+    positiveInteger(modelSpec.contextWindowTokens, 'Context window tokens')
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/messages`
-    this.model = options.model
+    this.model = modelSpec.model
+    this.wireModel = modelSpec.wireModel
+    this.providerBetas = Object.freeze([...modelSpec.betas])
     this.streaming = options.streaming ?? true
     this.fetchImplementation = options.fetchImplementation ?? fetch
     this.maxOutputTokens = positiveInteger(
       options.maxOutputTokens ??
-        (options.model.includes('claude-opus-4-6')
+        (this.wireModel.includes('claude-opus-4-6')
           ? 64_000
-          : options.model.startsWith('claude-')
+          : this.wireModel.startsWith('claude-')
             ? 32_000
             : 8192),
       'Max output tokens',
@@ -944,23 +955,24 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         modes: ['enabled', 'adaptive', 'disabled'],
         maxTokens: true,
       },
-      ...(options.contextWindowTokens === undefined
-        ? {}
-        : { contextWindowTokens: options.contextWindowTokens }),
+      contextWindowTokens: modelSpec.contextWindowTokens,
       maxOutputTokens: this.maxOutputTokens,
       terminalReasons: true,
     }
     this.thinking = validateThinking(options.thinking)
     const promptCaching =
-      options.promptCaching === false
-        ? undefined
-        : (options.promptCaching ??
+      options.promptCaching !== undefined
+        ? options.promptCaching
+        : (options.promptCacheResolver?.({
+            baseUrl: options.baseUrl,
+            model: this.wireModel,
+          }) ??
           createAnthropicPromptCachePolicyResolver(
             {},
             'native',
           )({
             baseUrl: options.baseUrl,
-            model: options.model,
+            model: this.wireModel,
           }))
     this.promptCaching = promptCaching
       ? cacheControl(promptCaching.ttl)
@@ -996,6 +1008,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
               budget_tokens: thinking.maxTokens ?? maxTokens - 1,
             }
     const betas = [
+      ...this.providerBetas,
       ...(request.betas ?? []),
       ...(thinking && thinking.mode !== 'disabled'
         ? ['interleaved-thinking-2025-05-14']
@@ -1016,7 +1029,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         ...(betas.length ? { 'anthropic-beta': betas.join(',') } : {}),
       },
       body: JSON.stringify({
-        model: this.options.model,
+        model: this.wireModel,
         max_tokens: maxTokens,
         messages: serialized.messages,
         stream: this.streaming,

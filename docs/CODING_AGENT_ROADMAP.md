@@ -183,6 +183,16 @@ Provider-reported usage remains authoritative after its observation watermark.
 Provider/model-specific pixel formulas remain out of Core unless a future
 capability-aware adapter explicitly supplies one.
 
+### Task 2.5: Anthropic context-window model specs [implemented by #642; tracks #150]
+
+Anthropic Messages advertises 200,000 tokens for ordinary and unknown models;
+an exact terminal `[1m]` suffix advertises 1,000,000, remains public, strips
+only from the wire model, and adds `context-1m-2025-08-07` once. The explicit
+`PRAXIS_CONTEXT_WINDOW_TOKENS` override wins. Other adapters do not infer
+windows. Alias resolution, pricing/output limits, reserve/buffer changes,
+image formulas, and shared provider-wire/runtime/transcript types are
+non-goals.
+
 ## Phase 3 — Provider-native depth
 
 ### Task 3.1: API-key Responses adapter [implemented by #569; depends: Tasks 1.2, 2.1]

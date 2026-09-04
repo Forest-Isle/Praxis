@@ -99,6 +99,87 @@ describe('ProviderRegistry', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(2)
   })
 
+  it('resolves Anthropic context specs and applies long-context request semantics', async () => {
+    const requestBodies: Array<Record<string, unknown>> = []
+    const requestBetas: string[] = []
+    const fetchImplementation = vi.fn(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      requestBodies.push(body)
+      requestBetas.push(new Headers(init?.headers).get('anthropic-beta') ?? '')
+      if (body.stream === true) {
+        return new Response(
+          'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n',
+        )
+      }
+      return Response.json({
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'complete' }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 2, output_tokens: 3 },
+      })
+    })
+    const credential = {
+      type: 'api-key' as const,
+      secret: 'secret',
+      source: { source: 'env' as const, name: 'FIXTURE_KEY' },
+    }
+    const cacheModels: string[] = []
+    const registry = createProviderRegistry({
+      target: target('anthropic-messages'),
+      credential,
+      context: { contextWindowTokens: 777_777 },
+      anthropicThinking: { mode: 'enabled', maxTokens: 100 },
+      anthropicPromptCacheResolver: ({ model }) => {
+        cacheModels.push(model)
+        return false
+      },
+      fetchImplementation,
+    })
+    const provider = registry.create('claude-sonnet-4[1m]')
+    const events = []
+    for await (const event of provider.complete({
+      messages: [],
+      betas: ['context-1m-2025-08-07', 'custom-beta'],
+    }))
+      events.push(event)
+
+    expect(provider.model).toBe('claude-sonnet-4[1m]')
+    expect(provider.capabilities.contextWindowTokens).toBe(777_777)
+    expect(cacheModels).toEqual(['claude-sonnet-4', 'claude-sonnet-4'])
+    expect(requestBodies.map((body) => body.model)).toEqual([
+      'claude-sonnet-4',
+      'claude-sonnet-4',
+    ])
+    expect(requestBodies.map((body) => body.stream)).toEqual([true, false])
+    expect(requestBodies[0]).toBeDefined()
+    expect(requestBetas).toEqual([
+      'context-1m-2025-08-07,custom-beta,interleaved-thinking-2025-05-14',
+      'context-1m-2025-08-07,custom-beta,interleaved-thinking-2025-05-14',
+    ])
+
+    const ordinary = createProviderRegistry({
+      target: target('anthropic-messages'),
+      credential,
+    }).create('unknown')
+    expect(ordinary.capabilities.contextWindowTokens).toBe(200_000)
+    const longContext = createProviderRegistry({
+      target: target('anthropic-messages'),
+      credential,
+    }).create('claude-sonnet-4[1m]')
+    expect(longContext.model).toBe('claude-sonnet-4[1m]')
+    expect(longContext.capabilities.contextWindowTokens).toBe(1_000_000)
+    const openai = createProviderRegistry({
+      target: target('openai-compatible'),
+      credential,
+    }).create()
+    expect(openai.capabilities.contextWindowTokens).toBeUndefined()
+    expect(() => registry.create('[1m]')).toThrow(
+      'Anthropic [1m] model spec must include a base model name',
+    )
+    expect(fetchImplementation).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps Anthropic non-streaming recovery inside multi-model routing', async () => {
     const requestBodies: Array<Record<string, unknown>> = []
     const fetchImplementation = vi.fn(async (_input, init) => {
@@ -430,6 +511,7 @@ describe('ProviderRegistry', () => {
     registry.create('alternate-model')
 
     expect(resolved).toEqual([
+      { baseUrl: 'https://relay.example/v1', model: 'alternate-model' },
       { baseUrl: 'https://relay.example/v1', model: 'alternate-model' },
     ])
   })
