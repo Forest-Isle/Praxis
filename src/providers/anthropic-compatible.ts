@@ -137,16 +137,27 @@ function positiveInteger(value: number, label: string): number {
 
 function validateThinking(
   thinking: ModelThinkingConfig | undefined,
+  supportsAdaptiveThinking: boolean,
 ): ModelThinkingConfig | undefined {
   if (!thinking) return undefined
   if (!['enabled', 'adaptive', 'disabled'].includes(thinking.mode)) {
     throw new Error(`Unsupported thinking mode: ${thinking.mode}`)
+  }
+  if (thinking.mode === 'adaptive' && !supportsAdaptiveThinking) {
+    throw new Error(
+      'Adaptive thinking is only supported for explicit Claude Sonnet 4.6 or Opus 4.6 models',
+    )
   }
   if (thinking.maxTokens !== undefined) {
     positiveInteger(thinking.maxTokens, 'Max thinking tokens')
     if (thinking.mode === 'disabled') {
       throw new Error(
         'Max thinking tokens cannot be used when thinking is disabled',
+      )
+    }
+    if (thinking.mode === 'adaptive') {
+      throw new Error(
+        'Max thinking tokens cannot be used with adaptive thinking; use enabled thinking for a fixed budget',
       )
     }
   }
@@ -919,6 +930,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
   private readonly maxErrorBodyBytes: number
   private readonly thinking: ModelThinkingConfig | undefined
   private readonly wireModel: string
+  private readonly supportsAdaptiveThinking: boolean
   private readonly providerBetas: readonly string[]
   private readonly promptCaching: AnthropicCacheControl | undefined
   private readonly streaming: boolean
@@ -932,6 +944,7 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     this.endpoint = `${options.baseUrl.replace(/\/+$/, '')}/messages`
     this.model = modelSpec.model
     this.wireModel = modelSpec.wireModel
+    this.supportsAdaptiveThinking = modelSpec.supportsAdaptiveThinking
     this.providerBetas = Object.freeze([...modelSpec.betas])
     this.streaming = options.streaming ?? true
     this.fetchImplementation = options.fetchImplementation ?? fetch
@@ -952,14 +965,19 @@ export class AnthropicCompatibleProvider implements ModelProvider {
       documents: true,
       webSearch: options.webSearch === true,
       thinking: {
-        modes: ['enabled', 'adaptive', 'disabled'],
+        modes: modelSpec.supportsAdaptiveThinking
+          ? ['enabled', 'adaptive', 'disabled']
+          : ['enabled', 'disabled'],
         maxTokens: true,
       },
       contextWindowTokens: modelSpec.contextWindowTokens,
       maxOutputTokens: this.maxOutputTokens,
       terminalReasons: true,
     }
-    this.thinking = validateThinking(options.thinking)
+    this.thinking = validateThinking(
+      options.thinking,
+      this.supportsAdaptiveThinking,
+    )
     const promptCaching =
       options.promptCaching !== undefined
         ? options.promptCaching
@@ -993,7 +1011,10 @@ export class AnthropicCompatibleProvider implements ModelProvider {
     if (request.webSearch && request.tools?.length) {
       throw new Error('Web search cannot be combined with model tools')
     }
-    const thinking = validateThinking(request.thinking ?? this.thinking)
+    const thinking = validateThinking(
+      request.thinking ?? this.thinking,
+      this.supportsAdaptiveThinking,
+    )
     const maxTokens = Math.max(
       this.maxOutputTokens,
       thinking?.maxTokens === undefined ? 0 : thinking.maxTokens + 1,
@@ -1003,10 +1024,12 @@ export class AnthropicCompatibleProvider implements ModelProvider {
         ? undefined
         : thinking.mode === 'disabled'
           ? { type: 'disabled' }
-          : {
-              type: 'enabled',
-              budget_tokens: thinking.maxTokens ?? maxTokens - 1,
-            }
+          : thinking.mode === 'adaptive'
+            ? { type: 'adaptive' }
+            : {
+                type: 'enabled',
+                budget_tokens: thinking.maxTokens ?? maxTokens - 1,
+              }
     const betas = [
       ...this.providerBetas,
       ...(request.betas ?? []),

@@ -39,7 +39,8 @@ praxis --trust-project
 # Bound model execution
 praxis -p --model <model-id> --max-turns 4 "Investigate"
 praxis -p --max-budget-usd 0.50 --output-format json "Investigate"
-praxis -p --thinking adaptive --max-thinking-tokens 8192 "Reason within a cap"
+praxis -p --model claude-sonnet-4-6 --thinking adaptive "Reason adaptively"
+praxis -p --thinking enabled --max-thinking-tokens 8192 "Reason within a cap"
 
 # Provider-free session color command (also supports JSON and stream JSON)
 praxis -p "/color purple"

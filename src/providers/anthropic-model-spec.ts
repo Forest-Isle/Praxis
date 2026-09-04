@@ -5,6 +5,7 @@ export interface ResolvedAnthropicModelSpec {
   readonly wireModel: string
   readonly contextWindowTokens: number
   readonly betas: readonly string[]
+  readonly supportsAdaptiveThinking: boolean
 }
 
 export function resolveAnthropicModelSpec(
@@ -22,5 +23,7 @@ export function resolveAnthropicModelSpec(
     contextWindowTokens:
       explicitContextWindowTokens ?? (longContext ? 1_000_000 : 200_000),
     betas: Object.freeze(longContext ? [ANTHROPIC_LONG_CONTEXT_BETA] : []),
+    supportsAdaptiveThinking:
+      wireModel === 'claude-sonnet-4-6' || wireModel === 'claude-opus-4-6',
   })
 }

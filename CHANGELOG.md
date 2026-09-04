@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* support native adaptive thinking for explicit Claude Sonnet 4.6 and Opus 4.6 models without a fixed token budget ([#646](https://github.com/Forest-Isle/Praxis/issues/646))
 * derive `/context` capacity from the selected provider/model before the first turn and report unavailable capacity without fabricated metrics ([#53](https://github.com/Forest-Isle/Praxis/issues/53))
 * advertise Anthropic context windows and support the exact terminal `[1m]` model mode ([#642](https://github.com/Forest-Isle/Praxis/issues/642))
 * estimate image context cost independently of base64 payload size ([#639](https://github.com/Forest-Isle/Praxis/issues/639))

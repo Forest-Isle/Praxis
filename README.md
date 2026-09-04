@@ -104,6 +104,9 @@ unknown model IDs. Add the exact terminal `[1m]` suffix (for example,
 Praxis keeps that selected model public, removes the suffix on the wire, and
 adds the `context-1m-2025-08-07` Anthropic beta once. An explicit
 `PRAXIS_CONTEXT_WINDOW_TOKENS` value overrides either inferred window.
+Exact `claude-sonnet-4-6` and `claude-opus-4-6` selections also support
+`--thinking adaptive`; use `--thinking enabled --max-thinking-tokens <n>`
+when a fixed thinking-token budget is required.
 
 Common non-interactive operations:
 
