@@ -3762,6 +3762,16 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         await anthropicOverride.close?.()
       }
 
+      const anthropicBestOverride = await createService({
+        PRAXIS_MODEL: 'best',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'fixture-opus',
+      })
+      try {
+        expect(anthropicBestOverride.runtimeInfo?.().model).toBe('fixture-opus')
+      } finally {
+        await anthropicBestOverride.close?.()
+      }
+
       const cliWins = await createService(
         { PRAXIS_MODEL: 'env-model' },
         { ...DEFAULT_CLI_CONTROLS, model: 'cli-model' },

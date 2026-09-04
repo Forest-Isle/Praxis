@@ -36,7 +36,12 @@ export function resolveAnthropicModelAlias(
   overrides: AnthropicModelAliasOverrides = {},
 ): string {
   const longContext = model.endsWith('[1m]')
-  const family = longContext ? model.slice(0, -'[1m]'.length) : model
+  const family =
+    model === 'best'
+      ? 'opus'
+      : longContext
+        ? model.slice(0, -'[1m]'.length)
+        : model
   if (family !== 'sonnet' && family !== 'opus' && family !== 'haiku') {
     return model
   }
