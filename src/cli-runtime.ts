@@ -1666,6 +1666,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let providerForModel: ((model: string) => ModelProvider) | undefined
   let providerForMainModel: ((model: string) => ModelProvider) | undefined
   let providerForTurn: ((model?: string) => ModelProvider) | undefined
+  let sessionNameProviderFactory: (() => ModelProvider) | undefined
   let providerBillingMode: 'api' | 'subscription' | undefined
   const context = parseContextEnvironment(runtimeEnvironment)
   const apiKey = runtimeEnvironment.PRAXIS_API_KEY
@@ -1834,6 +1835,16 @@ const createDefaultService: CliDependencies['createService'] = async ({
           ? defaultProvider
           : createProviderStack(selectedModel, 'turn')
       }
+      const haikuOverride = runtimeEnvironment.ANTHROPIC_DEFAULT_HAIKU_MODEL
+      if (
+        registry.target.providerId === 'anthropic' &&
+        registry.target.protocol === 'anthropic-messages' &&
+        haikuOverride !== undefined &&
+        haikuOverride.trim() !== ''
+      ) {
+        sessionNameProviderFactory = () =>
+          createProviderStack('haiku', 'completion')
+      }
     } catch (error) {
       const optionalProviderError =
         error instanceof ProviderAuthenticationError ||
@@ -1894,6 +1905,9 @@ const createDefaultService: CliDependencies['createService'] = async ({
     deferMcpTools,
     ...(!experimentalNativeTranscriptWrites && sessionMemoryProviderFactory
       ? { sessionMemoryProviderFactory }
+      : {}),
+    ...(!experimentalNativeTranscriptWrites && sessionNameProviderFactory
+      ? { sessionNameProviderFactory }
       : {}),
     ...(!experimentalNativeTranscriptWrites && sessionKind !== undefined
       ? { sessionKind }

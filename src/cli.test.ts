@@ -3776,6 +3776,173 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
     }
   })
 
+  it('routes automatic session names through only the built-in Anthropic Haiku override', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-name-provider-'))
+    const configRoot = join(root, 'config')
+    await mkdir(configRoot, { recursive: true })
+    const settingsPath = join(configRoot, 'settings.json')
+    const requests: Array<{ url: string; model: string }> = []
+    const previousFetch = globalThis.fetch
+    const ambientNames = [
+      'PRAXIS_PROVIDER',
+      'PRAXIS_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    ] as const
+    const previousEnvironment = Object.fromEntries(
+      ambientNames.map((name) => [name, process.env[name]]),
+    )
+    for (const name of ambientNames) delete process.env[name]
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input)
+      const body = JSON.parse(String(init?.body)) as { model: string }
+      requests.push({ url, model: body.model })
+      if (url.includes('fixture.openai')) {
+        return new Response(
+          'data: {"choices":[{"delta":{"content":"main-answer"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
+          { headers: { 'content-type': 'text/event-stream' } },
+        )
+      }
+      const text =
+        body.model === 'title-model' ? 'review-auth-flow' : 'main-answer'
+      return new Response(
+        [
+          `data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n`,
+          'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+          `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":${JSON.stringify(text)}}}\n\n`,
+          'data: {"type":"content_block_stop","index":0}\n\n',
+          'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+          'data: {"type":"message_stop"}\n\n',
+        ].join(''),
+        { headers: { 'content-type': 'text/event-stream' } },
+      )
+    }) as typeof fetch
+
+    const runCase = async (
+      environment: Record<string, string>,
+      settings: Record<string, unknown>,
+    ): Promise<string[]> => {
+      await writeFile(settingsPath, JSON.stringify(settings))
+      const service = await createDefaultDependencies().createService({
+        eventSink: () => undefined,
+        requireProvider: true,
+        cwd: root,
+        configRoot,
+        providerEnvironment: {
+          PRAXIS_HOME: configRoot,
+          PRAXIS_API_KEY: 'test-key',
+          PRAXIS_MODEL: 'main-model',
+          ...environment,
+        },
+        controls: { ...DEFAULT_CLI_CONTROLS, dataPlane: 'native' },
+      })
+      try {
+        const result = await service.run('review authentication')
+        if (!service.sessionNameSuggestion) {
+          throw new Error('session-name suggestion is unavailable')
+        }
+        await service.sessionNameSuggestion(result.sessionId)
+      } finally {
+        await service.close?.()
+      }
+      const models = requests.map(({ model }) => model)
+      requests.length = 0
+      return models
+    }
+
+    try {
+      await expect(
+        runCase(
+          {
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_BASE_URL: 'https://fixture.anthropic/v1',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'title-model',
+          },
+          {},
+        ),
+      ).resolves.toEqual(['main-model', 'title-model'])
+      await expect(
+        runCase(
+          {
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_BASE_URL: 'https://fixture.anthropic/v1',
+          },
+          {},
+        ),
+      ).resolves.toEqual(['main-model', 'main-model'])
+      await expect(
+        runCase(
+          {
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_BASE_URL: 'https://fixture.anthropic/v1',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: '   ',
+          },
+          {},
+        ),
+      ).resolves.toEqual(['main-model', 'main-model'])
+
+      const customProfile = {
+        provider: 'custom-anthropic',
+        model: 'main-model',
+        providers: {
+          'custom-anthropic': {
+            protocol: 'anthropic-messages',
+            profiles: {
+              default: {
+                baseUrl: 'https://fixture.anthropic/v1',
+                credential: { source: 'env', name: 'CUSTOM_KEY' },
+              },
+            },
+          },
+        },
+      }
+      await expect(
+        runCase(
+          {
+            PRAXIS_PROVIDER: 'custom-anthropic',
+            CUSTOM_KEY: 'test-key',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'title-model',
+          },
+          customProfile,
+        ),
+      ).resolves.toEqual(['main-model', 'main-model'])
+
+      await expect(
+        runCase(
+          {
+            PRAXIS_PROVIDER: 'custom-openai',
+            CUSTOM_KEY: 'test-key',
+            ANTHROPIC_DEFAULT_HAIKU_MODEL: 'title-model',
+          },
+          {
+            provider: 'custom-openai',
+            model: 'main-model',
+            providers: {
+              'custom-openai': {
+                protocol: 'openai-compatible',
+                profiles: {
+                  default: {
+                    baseUrl: 'https://fixture.openai/v1',
+                    credential: { source: 'env', name: 'CUSTOM_KEY' },
+                  },
+                },
+              },
+            },
+          },
+        ),
+      ).resolves.toEqual(['main-model', 'main-model'])
+    } finally {
+      globalThis.fetch = previousFetch
+      for (const name of ambientNames) {
+        const value = previousEnvironment[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('routes custom env, vault, safe/bare, and legacy providers through the default service', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-provider-routes-'))
     const configRoot = join(root, 'config')
