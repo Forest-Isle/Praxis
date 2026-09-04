@@ -38,6 +38,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.1](https://github.com/Forest-Isle/Praxis/compare/v0.62.0...v0.62.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* bound image context estimates ([#640](https://github.com/Forest-Isle/Praxis/issues/640)) ([a4a7d40](https://github.com/Forest-Isle/Praxis/commit/a4a7d40e20379203f8511b5c100c06ff94c685f7))
+* honor Anthropic one-million-token models ([#643](https://github.com/Forest-Isle/Praxis/issues/643)) ([a1ab841](https://github.com/Forest-Isle/Praxis/commit/a1ab84115ca5fa67d5578cf44cbe5967c1f867be))
+
 ## [0.62.0](https://github.com/Forest-Isle/Praxis/compare/v0.61.0...v0.62.0) (2026-09-03)
 
 
