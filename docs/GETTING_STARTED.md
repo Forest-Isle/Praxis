@@ -69,7 +69,7 @@ secret manager, not in settings files or command arguments.
 ```sh
 export PRAXIS_PROVIDER="anthropic"
 export PRAXIS_API_KEY="your-api-key"
-export PRAXIS_MODEL="claude-sonnet-4-20250514"
+export PRAXIS_MODEL="claude-sonnet-4-6"
 ```
 
 The default endpoint is `https://api.anthropic.com/v1`. Set

@@ -62,14 +62,14 @@ praxis
 ```sh
 export PRAXIS_PROVIDER="anthropic"
 export PRAXIS_API_KEY="your-api-key"
-export PRAXIS_MODEL="claude-sonnet-4-20250514"
+export PRAXIS_MODEL="claude-sonnet-4-6"
 
 cd /path/to/project
 praxis
 ```
 
 Anthropic 模型默认使用 200,000 个上下文 token（包括未知模型 ID）。在模型名末尾添加精确的
-`[1m]`（例如 `claude-sonnet-4-20250514[1m]`）即可请求 1,000,000 个上下文 token；Praxis
+`[1m]`（例如 `claude-sonnet-4-6[1m]`）即可请求 1,000,000 个上下文 token；Praxis
 会保留公开显示的所选模型，仅在发送请求时去掉该后缀，并添加一次
 `context-1m-2025-08-07` Anthropic beta。显式设置 `PRAXIS_CONTEXT_WINDOW_TOKENS` 会覆盖这两种推断窗口。
 精确选择 `claude-sonnet-4-6` 或 `claude-opus-4-6` 时还可使用 `--thinking adaptive`；如需固定思考 token 预算，请使用

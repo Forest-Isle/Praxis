@@ -27,6 +27,44 @@ afterEach(async () => {
 })
 
 describe('ClaudeSessionService cost lifecycle', () => {
+  it('admits and records a priced terminal one-million-token model', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-session-cost-lifecycle-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    const statePath = join(root, '.claude.json')
+    const sessionId = '21212121-2121-4121-8121-212121212121'
+    const model = 'claude-sonnet-5[1m]'
+    const projectIdentity = await realpath(cwd)
+    const store = new ClaudeCostStateStore({ statePath, projectIdentity })
+    const provider: ModelProvider = {
+      capabilities: { streaming: true, usage: true, tools: false },
+      model,
+      async *complete() {
+        yield { type: 'text-delta', delta: 'fixture answer' }
+        yield { type: 'usage', usage: { inputTokens: 1000, outputTokens: 500 } }
+      },
+    }
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      pricing: new ModelPricingRegistry(),
+      maxBudgetUsd: 0.01,
+      sessionPersistence: true,
+      costStateStore: store,
+    })
+
+    await service.run('hello', undefined, sessionId)
+
+    const snapshot = await service.costSnapshot(sessionId)
+    expect(snapshot.hasUnknownModelCost).toBe(false)
+    expect(snapshot.totalCostUsd).toBeCloseTo(0.007)
+    await service.close()
+  })
+
   it('restores and saves the native state project slot with a persisted transcript', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-cost-lifecycle-'))
     roots.push(root)
