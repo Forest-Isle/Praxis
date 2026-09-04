@@ -1,5 +1,19 @@
 export const ANTHROPIC_LONG_CONTEXT_BETA = 'context-1m-2025-08-07'
 
+export function resolveAnthropicEffort(
+  wireModel: string,
+  effort: string | undefined,
+): string | undefined {
+  if (effort === undefined) return undefined
+  if (wireModel === 'claude-sonnet-4-6' || wireModel === 'claude-opus-4-6') {
+    return effort === 'xhigh' ? 'high' : effort
+  }
+  if (/^claude-opus-4-5(?:-|$)/.test(wireModel)) {
+    return effort === 'xhigh' || effort === 'max' ? 'high' : effort
+  }
+  return effort
+}
+
 export interface ResolvedAnthropicModelSpec {
   readonly model: string
   readonly wireModel: string
