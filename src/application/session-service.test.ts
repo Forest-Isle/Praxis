@@ -11959,31 +11959,49 @@ return 'done'`,
     expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
   })
 
-  it('meters a session-name suggestion into the session cost snapshot exactly once without transcript mutation', async () => {
+  it('meters each session-name suggestion into the session cost snapshot exactly once without transcript mutation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-session-name-metered-'))
     roots.push(root)
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
-    const requests: ModelRequest[] = []
-    const provider: ModelProvider = {
-      model: 'name-model',
+    const mainRequests: ModelRequest[] = []
+    const titleProviders: ModelProvider[] = []
+    const titleRequests: ModelRequest[][] = []
+    const provider = (
+      model: string,
+      response: string,
+      requests: ModelRequest[],
+    ): ModelProvider => ({
+      model,
       capabilities: { streaming: true, usage: true, tools: false },
       async *complete(request) {
         requests.push(request)
-        yield {
-          type: 'text-delta',
-          delta: requests.length === 1 ? 'main answer' : 'review-auth-flow',
-        }
+        yield { type: 'text-delta', delta: response }
         yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
       },
-    }
+    })
+    const mainProvider = provider('main-model', 'main answer', mainRequests)
+    let titleProviderFactoryCalls = 0
     const service = new ClaudeSessionService({
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
-      provider,
+      provider: mainProvider,
+      sessionNameProviderFactory: () => {
+        titleProviderFactoryCalls += 1
+        const requests: ModelRequest[] = []
+        const titleProvider = provider(
+          'name-model',
+          'review-auth-flow',
+          requests,
+        )
+        titleProviders.push(titleProvider)
+        titleRequests.push(requests)
+        return titleProvider
+      },
       pricing: new ModelPricingRegistry({
-        'name-model': { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+        'main-model': { inputPerMillionUsd: 2, outputPerMillionUsd: 4 },
+        'name-model': { inputPerMillionUsd: 3, outputPerMillionUsd: 5 },
       }),
     })
     const result = await service.run('review authentication')
@@ -11997,18 +12015,39 @@ return 'done'`,
     await expect(service.sessionNameSuggestion(result.sessionId)).resolves.toBe(
       'review-auth-flow',
     )
+    await expect(service.sessionNameSuggestion(result.sessionId)).resolves.toBe(
+      'review-auth-flow',
+    )
 
     const snapshot = await service.costSnapshot(result.sessionId)
+    expect(titleProviderFactoryCalls).toBe(2)
+    expect(titleProviders).toHaveLength(2)
+    expect(titleProviders[0]).not.toBe(titleProviders[1])
+    expect(titleRequests).toHaveLength(2)
+    expect(titleRequests.map((requests) => requests.length)).toEqual([1, 1])
+    expect(mainRequests).toHaveLength(1)
+    expect(mainRequests[0]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: 'review authentication',
+    })
+    expect(titleRequests[0]?.[0]?.messages.at(-1)?.role).toBe('user')
+    expect(titleRequests[0]?.[0]?.messages.at(-1)?.content).toContain(
+      'kebab-case',
+    )
+    expect(snapshot.modelUsage['main-model']).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      costUsd: 0.000016,
+    })
     expect(snapshot.modelUsage['name-model']).toMatchObject({
       inputTokens: 8,
       outputTokens: 4,
-      costUsd: 0.000032,
+      costUsd: 0.000044,
     })
     expect(snapshot.hasUnknownModelCost).toBe(false)
     expect(snapshot.apiDurationMs).toBeGreaterThanOrEqual(0)
     expect(snapshot.apiDurationWithoutRetriesMs).toBe(snapshot.apiDurationMs)
     expect(await readFile(paths.sessionFile, 'utf8')).toBe(before)
-    expect(requests).toHaveLength(2)
   })
 
   it('resumes and forks at an active user message using native transcript branches', async () => {

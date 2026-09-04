@@ -7,6 +7,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Features
 
+* route automatic session-name suggestions through an explicit Anthropic Haiku model override ([#667](https://github.com/Forest-Isle/Praxis/issues/667))
 * add bounded native managed-worktree lifecycle diagnostics to doctor and Team observability ([#629](https://github.com/Forest-Isle/Praxis/issues/629))
 * migrate foreground and background Agent isolation to ownership-recorded repo-local managed worktrees with strict restore compatibility ([#627](https://github.com/Forest-Isle/Praxis/issues/627))
 * reconcile abandoned managed worktrees with bounded ownership-safe crash recovery ([#626](https://github.com/Forest-Isle/Praxis/issues/626))

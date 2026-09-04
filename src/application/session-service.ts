@@ -291,6 +291,8 @@ export interface ClaudeSessionServiceOptions {
   providerForMainModel?: (model: string) => ModelProvider
   /** Creates one fresh main-turn provider per outer user turn; never used for auxiliary model calls. */
   providerForTurn?: (model?: string) => ModelProvider
+  /** Creates one fresh provider for each automatic session-name suggestion. */
+  sessionNameProviderFactory?: () => ModelProvider
   /** Creates a provider adapter dedicated to Session memory requests so
    *  adapter-local cache and retry state are not shared with the foreground. */
   sessionMemoryProviderFactory?: () => ModelProvider
@@ -2506,7 +2508,8 @@ export class ClaudeSessionService {
     sessionId: string,
     signal?: AbortSignal,
   ): Promise<string | null> {
-    const provider = this.provider()
+    const provider =
+      this.options.sessionNameProviderFactory?.() ?? this.provider()
     {
       const transcript = new NativeSessionTranscript({
         sessionId,

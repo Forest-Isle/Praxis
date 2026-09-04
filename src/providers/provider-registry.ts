@@ -91,6 +91,7 @@ export type ProviderRegistrySourceMetadata = ProviderCredentialSourceMetadata
 export interface ProviderRegistry {
   readonly target: ProviderTarget
   readonly credentialSource: ProviderRegistrySourceMetadata
+  hasExplicitModelAlias(modelId: string): boolean
   create(modelId?: string): ModelProvider
 }
 
@@ -360,6 +361,18 @@ class NativeProviderRegistry implements ProviderRegistry {
       'unsupported_provider',
       `Unsupported provider protocol: ${target.protocol}`,
     )
+  }
+
+  hasExplicitModelAlias(modelId: string): boolean {
+    if (
+      this.target.providerId !== 'anthropic' ||
+      this.target.protocol !== 'anthropic-messages'
+    )
+      return false
+    if (modelId !== 'sonnet' && modelId !== 'opus' && modelId !== 'haiku')
+      return false
+    const override = this.options.anthropicModelAliasOverrides?.[modelId]
+    return override !== undefined && override.trim().length > 0
   }
 
   private resolveTarget(target: ProviderTarget): ProviderTarget {
