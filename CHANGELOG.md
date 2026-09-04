@@ -43,6 +43,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.5](https://github.com/Forest-Isle/Praxis/compare/v0.62.4...v0.62.5) (2026-09-04)
+
+
+### Bug Fixes
+
+* align Anthropic max-output defaults ([#655](https://github.com/Forest-Isle/Praxis/issues/655)) ([90d793e](https://github.com/Forest-Isle/Praxis/commit/90d793e98f47c36bd0d92436c1d0f0bee196e93a)), closes [#654](https://github.com/Forest-Isle/Praxis/issues/654)
+
 ## [0.62.4](https://github.com/Forest-Isle/Praxis/compare/v0.62.3...v0.62.4) (2026-09-04)
 
 
