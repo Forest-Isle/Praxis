@@ -68,6 +68,11 @@ cd /path/to/project
 praxis
 ```
 
+Anthropic 模型默认使用 200,000 个上下文 token（包括未知模型 ID）。在模型名末尾添加精确的
+`[1m]`（例如 `claude-sonnet-4-20250514[1m]`）即可请求 1,000,000 个上下文 token；Praxis
+会保留公开显示的所选模型，仅在发送请求时去掉该后缀，并添加一次
+`context-1m-2025-08-07` Anthropic beta。显式设置 `PRAXIS_CONTEXT_WINDOW_TOKENS` 会覆盖这两种推断窗口。
+
 如需使用 OpenAI Responses API 的显式 API 密钥提供商：
 
 ```sh
@@ -129,7 +134,7 @@ praxis doctor
   新的可写 Team generation 使用 repo-local durable worktree，路径为
   `.praxis/worktrees/team/<team-id>/<generation-hash>`，并配有精确的所有权记录、标记、分支和 execution token；只读 Team member 继续使用 invocation checkout。完成、失败、取消、孤儿化、停止及持久化不确定时都会保留 writer 证据并释放 active lease；只有 Lead 明确且已持久化的 `accepted` 决策才能释放对应 generation，拒绝则保留它。经过所有权校验的 accepted 路径可显式处置已审阅的 dirty/committed 证据；hook block 或所有权不确定时会 fail closed。历史全局 Team worktree 只作为严格校验的兼容路径，绝不会被隐式接管。
 - **原生资源生态** — 支持递归 `@` 导入的共享 Praxis 指令、记忆、技能、命令、Agent、钩子、设置、MCP 服务器、插件，以及位于 `~/.praxis` 下的 append-only `praxis.transcript` JSONL 会话；MCP 连接、发现和工具操作均有明确时限，断开后可安全恢复，且绝不重放已派发的调用。Stdio MCP 环境授权会在启动时展开已定义的 `${NAME}` 引用，同时继续隔离无关的 ambient 凭据和 shell 启动变量；重连保留已派生的授权值，reload 则根据当前环境重新派生。默认工具选择会把 `mcp__*` schema 延迟到 turn-scoped `ToolSearch` 后加载；每次查询最多为下一次模型请求激活 8 个确定性匹配，发布的 MCP 工具描述最多保留 2,048 个 Unicode 码点。超过 100,000 UTF-8 字节的纯文本 MCP 结果会先脱敏，再写入会话级 `tool-results` 目录下权限为 `0600` 的 `.txt` 文件；提供商和 transcript 只接收包含绝对文件路径的有界提示。未超过限制的结果仍内联，结构化、混合媒体和二进制资源处理保持不变。声明 `readOnlyHint: true` 的 MCP 工具会通过提供商无关的权限元数据默认放行；显式 PreToolUse 及权限 ask/deny 决策仍具有更高优先级，缺失或为 false 的 hint 保持现有默认行为。这是 Praxis 自身的权限契约，并不表示已经验证 Claude Code 2.1.208 parity。显式具体工具 `--tools` 选择会直接加载选中的工具，而 `--disallowedTools ToolSearch` 会恢复完整工具列表。 每次组装上下文时，Git 状态都会从调用方解析出的 cwd 刷新，而环境与记忆在生命周期内保持稳定；采集使用 `--no-optional-locks`，仓库或 status 出错时 fail-closed 并省略 Git 上下文，最终渲染结果限制为 2,048 个 UTF-8 字节。
-- **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次尝试独立的 connect、字节级 idle 与 absolute-total timeout、对 malformed 流式工具参数进行 typed recovery（不执行工具且不丢失会话恢复能力）、默认启用一次有界的 Anthropic 非流式重放以恢复符合条件的 stream/idle 故障且不暴露失败尝试的输出，以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。每个主用户 Turn 以及独立的辅助 Agent、Workflow、Team、恢复或记忆 Turn 都会获得自己的提供商客户端。Session-memory 请求会复用 completion-scoped 客户端，但每次请求都会从 primary 重新开始路由；auto-mode critic 和 eval-judge 请求仍使用独立构造的一次性客户端。失败尝试会被缓冲，首个成功的路由（无论是 primary 还是 fallback）只会在该 logical Turn 的工具 continuation 中保持粘滞并封存；不兼容的路由会 fail closed，下一个独立 Turn 会从 primary 开始。恢复最多只会持久化可选的所选模型，不持久化提供商路由或 wire state。
+- **提供商无关的模型** — 原生 Provider Registry/Vault 路由、API 适配器、实验性的 Codex OAuth 适配器、明确的能力检查、每次尝试独立的 connect、字节级 idle 与 absolute-total timeout、对 malformed 流式工具参数进行 typed recovery（不执行工具且不丢失会话恢复能力）、默认启用一次有界的 Anthropic 非流式重放以恢复符合条件的 stream/idle 故障且不暴露失败尝试的输出，以及订阅运行仅保留 token 用量且不提供 API 美元成本的计量。每个主用户 Turn 以及独立的辅助 Agent、Workflow、Team、恢复或记忆 Turn 都会获得自己的提供商客户端。Session-memory 请求会复用 completion-scoped 客户端，但每次请求都会从 primary 重新开始路由；auto-mode critic 和 eval-judge 请求仍使用独立构造的一次性客户端。失败尝试会被缓冲，首个成功的路由（无论是 primary 还是 fallback）只会在该 logical Turn 的工具 continuation 中保持粘滞并封存；不兼容的路由会 fail closed，下一个独立 Turn 会从 primary 开始。恢复最多只会持久化可选的所选模型，不持久化提供商路由或 wire state。Anthropic 默认窗口为 200,000 个 token，模型名末尾精确使用 `[1m]` 时为 1,000,000；`PRAXIS_CONTEXT_WINDOW_TOKENS` 会覆盖所公布的窗口。
 - **事务式自更新** — `praxis update` 会在安装前验证软件包，拒绝并发更新，并可在中断或崩溃后回滚。
 
 当前 qualification 状态和可执行证据位于

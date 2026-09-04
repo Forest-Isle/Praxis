@@ -136,6 +136,12 @@ provider/profile, route/fallback seal, protocol, response, credential, and wire
 state are never persisted or restored. This decision does not expand the small
 `ModelProvider` contract or place provider-native state in core or transcripts.
 
+`AnthropicCompatibleProvider` also owns Anthropic model-spec resolution. It
+keeps the selected model public while deriving any wire-model suffix removal,
+long-context beta, and advertised context capability inside the Anthropic
+adapter. This preserves protocol isolation and does not introduce a shared
+provider-wire abstraction.
+
 ### Public OpenAI Responses transport
 
 `openai-responses` is an explicit built-in or custom API-key provider. The
