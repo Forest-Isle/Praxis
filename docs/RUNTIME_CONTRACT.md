@@ -73,7 +73,10 @@ Rules:
     current prompt, and tool definitions before every provider call. Automatic
     compaction summarizes completed history before appending a new prompt; after
     completed tool results it may compact between model turns. Unresolved tool
-    calls are never compacted. Between-turn compaction replays current user
+    calls are never compacted. Deterministic fallback accounting assigns each
+    typed image a fixed 1,600 visual tokens plus framing and never scales with
+    its base64 payload size; observed provider usage remains authoritative.
+    Between-turn compaction replays current user
     messages verbatim after the summary, and the compactor's own provider call
     must fit the configured full context window.
 13. Resume never silently replays an interrupted tool call. Recovery prepares

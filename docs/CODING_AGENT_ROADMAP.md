@@ -173,6 +173,16 @@ Acceptance: focused native context and run/resume fixtures prove fresh Git
 status, stable environment/memory, cwd-specific subagent context, bounded
 UTF-8 output, volatile placement, and non-persistence.
 
+### Task 2.4: Payload-independent image budgeting [implemented by #639; tracks #150]
+
+Provider-neutral deterministic context estimates assign each typed user or
+tool-result image a fixed 1,600 visual tokens plus the existing bounded
+framing. They never interpret base64 payload length as text, so compression or
+encoded byte size cannot trigger disproportionate preflight compaction.
+Provider-reported usage remains authoritative after its observation watermark.
+Provider/model-specific pixel formulas remain out of Core unless a future
+capability-aware adapter explicitly supplies one.
+
 ## Phase 3 — Provider-native depth
 
 ### Task 3.1: API-key Responses adapter [implemented by #569; depends: Tasks 1.2, 2.1]

@@ -70,6 +70,14 @@ export function estimateTextTokens(value: string): number {
   return Math.ceil(ascii / 4) + nonAscii
 }
 
+const IMAGE_VISUAL_TOKEN_ESTIMATE = 1_600
+// This provider-neutral conservative fallback never interprets billed usage;
+// observed provider usage remains authoritative at a ContextBudget watermark.
+
+function estimateImageTokens(mediaType: string): number {
+  return 8 + estimateTextTokens(mediaType) + IMAGE_VISUAL_TOKEN_ESTIMATE
+}
+
 function estimateMessageTokens(message: ModelMessage): number {
   let tokens = 4 + estimateTextTokens(message.role)
   if (message.role === 'tool') {
@@ -77,16 +85,14 @@ function estimateMessageTokens(message: ModelMessage): number {
       estimateTextTokens(message.toolCallId) +
       estimateTextTokens(message.content)
     for (const image of message.images ?? []) {
-      tokens +=
-        8 + estimateTextTokens(image.mediaType) + estimateTextTokens(image.data)
+      tokens += estimateImageTokens(image.mediaType)
     }
     return tokens + (message.isError ? 1 : 0)
   }
   tokens += estimateTextTokens(message.content)
   if (message.role === 'user') {
     for (const image of message.images ?? []) {
-      tokens +=
-        8 + estimateTextTokens(image.mediaType) + estimateTextTokens(image.data)
+      tokens += estimateImageTokens(image.mediaType)
     }
     for (const document of message.documents ?? []) {
       tokens += 8 + estimateTextTokens(document.mediaType) + 2000

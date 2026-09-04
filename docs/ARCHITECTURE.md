@@ -472,6 +472,10 @@ transcript.
 
 `ContextBudget` estimates provider-neutral request size across ephemeral system
 messages, active transcript projection, current prompt, and tool definitions.
+Its deterministic fallback assigns each typed image a fixed 1,600 visual
+tokens plus bounded framing; encoded base64 payload length is never treated as
+text. Provider-reported usage remains authoritative after the corresponding
+request watermark is observed.
 Provider capability or explicit CLI configuration supplies the window; Praxis
 does not guess model limits. `ModelCompactor` uses the active provider without
 tools, budgets its own request against the full provider window, and enforces a
