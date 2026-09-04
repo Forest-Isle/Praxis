@@ -48,6 +48,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.63.0](https://github.com/Forest-Isle/Praxis/compare/v0.62.7...v0.63.0) (2026-09-04)
+
+
+### Features
+
+* route session names through Haiku override ([#668](https://github.com/Forest-Isle/Praxis/issues/668)) ([328ecd4](https://github.com/Forest-Isle/Praxis/commit/328ecd4dbef970addc187160318ab0446e7f041e))
+
 ## [0.62.7](https://github.com/Forest-Isle/Praxis/compare/v0.62.6...v0.62.7) (2026-09-04)
 
 
