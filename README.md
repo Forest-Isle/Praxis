@@ -177,7 +177,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   patches and readable binary/conflict/transient-path notes, semantic plan/question decision panels with complete
   screen-reader actions, semantic screen projection across selectable surfaces,
   deterministic resize-aware URL/form elicitation rendering, and measured
-  context budgets; print mode,
+  context budgets with base64-payload-independent image estimates; print mode,
   structured JSON/JSONL, context compaction, tool loops, and bounded execution.
 - **Built-in tools** — read, write, edit, `ApplyPatch` for bounded ordered exact
   multi-file replacements, configured plugin LSP navigation with fresh bounded

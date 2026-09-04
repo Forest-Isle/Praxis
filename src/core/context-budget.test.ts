@@ -9,6 +9,34 @@ import {
 } from './context-budget.js'
 import { ModelProviderError } from './runtime.js'
 
+function imageEstimate(
+  role: 'user' | 'tool',
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+  data: string,
+): number {
+  const message =
+    role === 'user'
+      ? {
+          role,
+          content: '',
+          images: [{ type: 'image' as const, mediaType, data }],
+        }
+      : {
+          role,
+          toolCallId: 'image',
+          content: '',
+          images: [{ type: 'image' as const, mediaType, data }],
+          isError: false,
+        }
+  const empty =
+    role === 'user'
+      ? estimateModelRequestTokens([{ role, content: '' }])
+      : estimateModelRequestTokens([
+          { role, toolCallId: 'image', content: '', isError: false },
+        ])
+  return estimateModelRequestTokens([message]) - empty
+}
+
 describe('ContextBudget', () => {
   it('counts signed and redacted thinking retained for provider resume', () => {
     const withoutThinking = estimateModelRequestTokens([
@@ -75,6 +103,29 @@ describe('ContextBudget', () => {
         },
       ]),
     ).toBeGreaterThan(plain)
+  })
+
+  it('assigns a fixed image estimate independent of payload and message path', () => {
+    const mediaTypes = [
+      'image/png',
+      'image/jpeg',
+      'image/gif',
+      'image/webp',
+    ] as const
+    const payloads = ['', 'not-an-image', 'a', 'A'.repeat(1_400_000)]
+
+    for (const mediaType of mediaTypes) {
+      const estimates = payloads.map((data) =>
+        imageEstimate('user', mediaType, data),
+      )
+      expect(estimates.every((estimate) => estimate === 1611)).toBe(true)
+      expect(estimates.every((estimate) => estimate < 2000)).toBe(true)
+      for (const data of payloads) {
+        expect(imageEstimate('tool', mediaType, data)).toBe(
+          imageEstimate('user', mediaType, data),
+        )
+      }
+    }
   })
 
   it('reports available and overflow tokens and fails actionably', () => {
