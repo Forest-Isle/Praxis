@@ -47,6 +47,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.62.7](https://github.com/Forest-Isle/Praxis/compare/v0.62.6...v0.62.7) (2026-09-04)
+
+
+### Bug Fixes
+
+* resolve Anthropic family model aliases ([#665](https://github.com/Forest-Isle/Praxis/issues/665)) ([771d023](https://github.com/Forest-Isle/Praxis/commit/771d02391fd7f95a932ed16ec89931920cb4542e)), closes [#664](https://github.com/Forest-Isle/Praxis/issues/664)
+
 ## [0.62.6](https://github.com/Forest-Isle/Praxis/compare/v0.62.5...v0.62.6) (2026-09-04)
 
 
