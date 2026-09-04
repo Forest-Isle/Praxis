@@ -76,6 +76,9 @@ describe('AnthropicCompatibleProvider', () => {
     for await (const event of provider.complete({ messages: [] }))
       events.push(event)
     expect(body?.stream).toBe(false)
+    expect(Object.prototype.hasOwnProperty.call(body, 'temperature')).toBe(
+      false,
+    )
     expect(events).toEqual([
       {
         type: 'thinking-start',
@@ -984,6 +987,9 @@ describe('AnthropicCompatibleProvider', () => {
     for (const body of requestBodies) {
       expect(body.thinking).toEqual({ type: 'adaptive' })
       expect(body).not.toHaveProperty('thinking.budget_tokens')
+      expect(Object.prototype.hasOwnProperty.call(body, 'temperature')).toBe(
+        false,
+      )
     }
 
     let longContextBody: Record<string, unknown> | undefined
@@ -1070,6 +1076,60 @@ describe('AnthropicCompatibleProvider', () => {
       void event
     }
     expect(body?.thinking).toEqual({ type: 'disabled' })
+    expect(body?.temperature).toBe(1)
+    expect(Object.prototype.hasOwnProperty.call(body, 'temperature')).toBe(true)
+
+    const response = () =>
+      new Response(
+        'data: {"type":"message_start","message":{}}\n\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{}}\n\ndata: {"type":"message_stop"}\n\n',
+      )
+    let requestDisabledBody: Record<string, unknown> | undefined
+    const configuredEnabled = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      thinking: { mode: 'enabled', maxTokens: 1024 },
+      fetchImplementation: async (_input, init) => {
+        requestDisabledBody = JSON.parse(String(init?.body))
+        return response()
+      },
+    })
+    for await (const event of configuredEnabled.complete({
+      messages: [],
+      thinking: { mode: 'disabled' },
+    })) {
+      void event
+    }
+    expect(requestDisabledBody?.thinking).toEqual({ type: 'disabled' })
+    expect(requestDisabledBody?.temperature).toBe(1)
+    expect(
+      Object.prototype.hasOwnProperty.call(requestDisabledBody, 'temperature'),
+    ).toBe(true)
+
+    let requestEnabledBody: Record<string, unknown> | undefined
+    const configuredDisabled = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.example/v1',
+      apiKey: 'secret',
+      model: 'fixture-model',
+      thinking: { mode: 'disabled' },
+      fetchImplementation: async (_input, init) => {
+        requestEnabledBody = JSON.parse(String(init?.body))
+        return response()
+      },
+    })
+    for await (const event of configuredDisabled.complete({
+      messages: [],
+      thinking: { mode: 'enabled', maxTokens: 1024 },
+    })) {
+      void event
+    }
+    expect(requestEnabledBody?.thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 1024,
+    })
+    expect(
+      Object.prototype.hasOwnProperty.call(requestEnabledBody, 'temperature'),
+    ).toBe(false)
     expect(
       () =>
         new AnthropicCompatibleProvider({
