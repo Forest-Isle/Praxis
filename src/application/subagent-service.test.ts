@@ -1269,6 +1269,8 @@ describe('foreground Claude Agent execution', () => {
               inputTokens: 4,
               outputTokens: 2,
               cacheReadInputTokens: 9,
+              cacheCreationInputTokens: 4,
+              cacheCreationInputTokens1h: 2,
             },
           }
         } else {
@@ -1279,6 +1281,8 @@ describe('foreground Claude Agent execution', () => {
               inputTokens: 3,
               outputTokens: 1,
               cacheReadInputTokens: 6,
+              cacheCreationInputTokens: 3,
+              cacheCreationInputTokens1h: 1,
             },
           }
         }
@@ -1307,12 +1311,16 @@ describe('foreground Claude Agent execution', () => {
         inputTokens: 4,
         outputTokens: 2,
         cacheReadInputTokens: 9,
+        cacheCreationInputTokens: 4,
+        cacheCreationInputTokens1h: 2,
       },
     })
     expect(workflow.usage).toEqual({
       inputTokens: 4,
       outputTokens: 2,
       cacheReadInputTokens: 9,
+      cacheCreationInputTokens: 4,
+      cacheCreationInputTokens1h: 2,
     })
 
     const registry = executor.registry(
@@ -1344,12 +1352,16 @@ describe('foreground Claude Agent execution', () => {
         inputTokens: 3,
         outputTokens: 1,
         cacheReadInputTokens: 6,
+        cacheCreationInputTokens: 3,
+        cacheCreationInputTokens1h: 1,
       },
       modelUsage: {
         'raw-cache-model': {
           inputTokens: 3,
           outputTokens: 1,
           cacheReadInputTokens: 6,
+          cacheCreationInputTokens: 3,
+          cacheCreationInputTokens1h: 1,
         },
       },
     })

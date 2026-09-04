@@ -182,9 +182,20 @@ describe('SubagentLifecycleStore', () => {
     const id = '11111111-1111-4111-8111-111111111111'
     const result = {
       text: 'DONE',
-      usage: { inputTokens: 4, outputTokens: 2 },
+      usage: {
+        inputTokens: 4,
+        outputTokens: 2,
+        cacheCreationInputTokens: 5,
+        cacheCreationInputTokens1h: 3,
+      },
       modelUsage: {
-        fixture: { inputTokens: 4, outputTokens: 2, contextWindow: 100_000 },
+        fixture: {
+          inputTokens: 4,
+          outputTokens: 2,
+          cacheCreationInputTokens: 5,
+          cacheCreationInputTokens1h: 3,
+          contextWindow: 100_000,
+        },
       },
       durationApiMs: 1.5,
       durationApiWithoutRetriesMs: 1.25,
@@ -249,5 +260,20 @@ describe('SubagentLifecycleStore', () => {
     })
     if (!acknowledged) throw new Error('Expected acknowledged lifecycle state')
     await expect(store.matchesTranscript(acknowledged)).resolves.toBe(false)
+
+    const lifecyclePath = join(
+      root,
+      'subagent-lifecycle',
+      sessionId,
+      `${agentId}.json`,
+    )
+    const corrupted = JSON.parse(await readFile(lifecyclePath, 'utf8')) as {
+      result: { usage: { cacheCreationInputTokens1h: number } }
+    }
+    corrupted.result.usage.cacheCreationInputTokens1h = 6
+    await writeFile(lifecyclePath, `${JSON.stringify(corrupted)}\n`)
+    await expect(store.read()).rejects.toThrow(
+      'Invalid subagent lifecycle state',
+    )
   })
 })

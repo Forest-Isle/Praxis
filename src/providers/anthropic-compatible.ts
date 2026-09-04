@@ -65,6 +65,7 @@ interface StreamState {
   inputTokens: number
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
+  cacheCreationInputTokens1h?: number
   outputTokens: number
   webSearchRequests: number
   usageSeen: boolean
@@ -92,6 +93,54 @@ function readNonNegativeTokenCount(
     )
   }
   return value
+}
+
+function readCacheCreationInputTokens1h(
+  usage: Record<string, unknown>,
+): number | undefined {
+  const detail = usage.cache_creation
+  if (detail === undefined) return undefined
+  if (!isRecord(detail)) {
+    throw new ModelProviderError(
+      'Provider returned an invalid cache_creation usage object',
+      { retryable: false },
+    )
+  }
+  const total = readNonNegativeTokenCount(
+    usage,
+    'cache_creation_input_tokens',
+    true,
+  )
+  if (total === undefined) {
+    throw new ModelProviderError(
+      'Provider returned cache_creation usage without cache_creation_input_tokens',
+      { retryable: false },
+    )
+  }
+  const fiveMinute = readNonNegativeTokenCount(
+    detail,
+    'ephemeral_5m_input_tokens',
+    true,
+  )
+  const oneHour = readNonNegativeTokenCount(
+    detail,
+    'ephemeral_1h_input_tokens',
+    true,
+  )
+  if (fiveMinute === undefined || oneHour === undefined) {
+    throw new ModelProviderError(
+      'Provider returned an incomplete cache_creation usage object',
+      { retryable: false },
+    )
+  }
+  const sum = fiveMinute + oneHour
+  if (!Number.isSafeInteger(sum) || sum !== total) {
+    throw new ModelProviderError(
+      'Provider returned cache_creation usage whose TTL counters do not sum to cache_creation_input_tokens',
+      { retryable: false },
+    )
+  }
+  return oneHour
 }
 
 function webSearchLinks(value: unknown): { title: string; url: string }[] {
@@ -329,6 +378,10 @@ function parseSseEvent(
         typeof usage.cache_creation_input_tokens === 'number'
           ? usage.cache_creation_input_tokens
           : 0
+      const cacheCreationInputTokens1h = readCacheCreationInputTokens1h(usage)
+      if (cacheCreationInputTokens1h !== undefined) {
+        state.cacheCreationInputTokens1h = cacheCreationInputTokens1h
+      }
       state.cacheReadInputTokens =
         typeof usage.cache_read_input_tokens === 'number'
           ? usage.cache_read_input_tokens
@@ -699,6 +752,10 @@ function parseSseEvent(
           ...(state.cacheCreationInputTokens === 0
             ? {}
             : { cacheCreationInputTokens: state.cacheCreationInputTokens }),
+          ...(state.cacheCreationInputTokens1h === undefined ||
+          state.cacheCreationInputTokens1h === 0
+            ? {}
+            : { cacheCreationInputTokens1h: state.cacheCreationInputTokens1h }),
           ...(state.webSearchRequests === 0
             ? {}
             : { webSearchRequests: state.webSearchRequests }),
@@ -1258,6 +1315,10 @@ export class AnthropicCompatibleProvider implements ModelProvider {
           'cache_creation_input_tokens',
           false,
         )
+        const cacheCreationInputTokens1h = readCacheCreationInputTokens1h(
+          payload.usage,
+        )
+        const normalizedCacheCreationInputTokens = cacheCreationInputTokens ?? 0
         const usage = {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
@@ -1267,6 +1328,16 @@ export class AnthropicCompatibleProvider implements ModelProvider {
           ...(cacheCreationInputTokens === undefined
             ? {}
             : { cache_creation_input_tokens: cacheCreationInputTokens }),
+          ...(cacheCreationInputTokens1h === undefined
+            ? {}
+            : {
+                cache_creation: {
+                  ephemeral_5m_input_tokens:
+                    normalizedCacheCreationInputTokens -
+                    cacheCreationInputTokens1h,
+                  ephemeral_1h_input_tokens: cacheCreationInputTokens1h,
+                },
+              }),
           ...(payload.usage.server_tool_use === undefined
             ? {}
             : { server_tool_use: payload.usage.server_tool_use }),

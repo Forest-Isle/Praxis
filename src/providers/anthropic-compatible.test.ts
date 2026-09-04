@@ -65,6 +65,10 @@ describe('AnthropicCompatibleProvider', () => {
               output_tokens: 3,
               cache_read_input_tokens: 4,
               cache_creation_input_tokens: 5,
+              cache_creation: {
+                ephemeral_5m_input_tokens: 2,
+                ephemeral_1h_input_tokens: 3,
+              },
               server_tool_use: { web_search_requests: 1 },
             },
           }),
@@ -105,6 +109,7 @@ describe('AnthropicCompatibleProvider', () => {
           outputTokens: 3,
           cacheReadInputTokens: 4,
           cacheCreationInputTokens: 5,
+          cacheCreationInputTokens1h: 3,
           webSearchRequests: 1,
         },
       },
@@ -177,6 +182,70 @@ describe('AnthropicCompatibleProvider', () => {
     }
 
     await expect(consume()).rejects.toMatchObject({ retryable: false })
+  })
+
+  it.each([
+    ['non-object detail', { ephemeral_5m_input_tokens: 2 }],
+    [
+      'missing 1h counter',
+      { ephemeral_5m_input_tokens: 2, ephemeral_1h_input_tokens: undefined },
+    ],
+    [
+      'mismatched total',
+      { ephemeral_5m_input_tokens: 1, ephemeral_1h_input_tokens: 1 },
+    ],
+    [
+      'missing aggregate',
+      { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+    ],
+  ])('rejects invalid cache TTL usage: %s', async (_name, detail) => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      streaming: false,
+      fetchImplementation: async () =>
+        Response.json({
+          type: 'message',
+          role: 'assistant',
+          content: [],
+          stop_reason: 'end_turn',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            ...(_name === 'missing aggregate'
+              ? {}
+              : { cache_creation_input_tokens: 5 }),
+            cache_creation: _name === 'non-object detail' ? [] : detail,
+          },
+        }),
+    })
+    const consume = async () => {
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+    await expect(consume()).rejects.toMatchObject({ retryable: false })
+  })
+
+  it('rejects malformed cache TTL usage in streaming message_start', async () => {
+    const provider = new AnthropicCompatibleProvider({
+      baseUrl: 'https://api.anthropic.com/v1',
+      apiKey: 'secret',
+      model: 'claude-sonnet-4-20250514',
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":1,"cache_creation_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1}}}}\n\n',
+          ].join(''),
+          { headers: { 'content-type': 'text/event-stream' } },
+        ),
+    })
+    const consume = async () => {
+      for await (const event of provider.complete({ messages: [] })) void event
+    }
+    await expect(consume()).rejects.toMatchObject({
+      retryable: false,
+      message: expect.stringContaining('TTL counters'),
+    })
   })
 
   it('rejects malformed and oversized non-streaming response bodies', async () => {
@@ -1684,7 +1753,7 @@ describe('AnthropicCompatibleProvider', () => {
       capturedInit = init
       return new Response(
         [
-          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"server_tool_use":{"web_search_requests":2}}}}\n\n',
+          'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":7,"cache_creation_input_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"cache_read_input_tokens":3,"server_tool_use":{"web_search_requests":2}}}}\n\n',
           'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
           'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}\n\n',
           'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
@@ -1748,6 +1817,7 @@ describe('AnthropicCompatibleProvider', () => {
           inputTokens: 12,
           outputTokens: 3,
           cacheCreationInputTokens: 2,
+          cacheCreationInputTokens1h: 1,
           cacheReadInputTokens: 3,
           webSearchRequests: 3,
         },

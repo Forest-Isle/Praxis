@@ -559,6 +559,7 @@ return { first, second }`
             outputTokens: 50,
             cacheReadInputTokens: 10,
             cacheCreationInputTokens: 5,
+            cacheCreationInputTokens1h: 1,
             webSearchRequests: 2,
           },
           modelUsage: {
@@ -567,6 +568,7 @@ return { first, second }`
               outputTokens: 30,
               cacheReadInputTokens: 6,
               cacheCreationInputTokens: 3,
+              cacheCreationInputTokens1h: 1,
               webSearchRequests: 1,
             },
             'model-b': {
@@ -574,6 +576,7 @@ return { first, second }`
               outputTokens: 15,
               cacheReadInputTokens: 3,
               cacheCreationInputTokens: 1,
+              cacheCreationInputTokens1h: 1,
             },
           },
           toolUseCount: 1,
@@ -588,6 +591,7 @@ return { first, second }`
           outputTokens: 100,
           cacheReadInputTokens: 20,
           cacheCreationInputTokens: 10,
+          cacheCreationInputTokens1h: 2,
           webSearchRequests: 3,
         },
         modelUsage: {
@@ -596,6 +600,7 @@ return { first, second }`
             outputTokens: 60,
             cacheReadInputTokens: 12,
             cacheCreationInputTokens: 6,
+            cacheCreationInputTokens1h: 2,
             webSearchRequests: 2,
           },
           'model-c': {
@@ -603,6 +608,7 @@ return { first, second }`
             outputTokens: 40,
             cacheReadInputTokens: 8,
             cacheCreationInputTokens: 4,
+            cacheCreationInputTokens1h: 2,
             webSearchRequests: 1,
           },
         },
@@ -633,6 +639,7 @@ return { first, second }`
       outputTokens: 150,
       cacheReadInputTokens: 30,
       cacheCreationInputTokens: 15,
+      cacheCreationInputTokens1h: 3,
       webSearchRequests: 5,
     })
     expect(firstNotification.modelUsage).toEqual({
@@ -641,6 +648,7 @@ return { first, second }`
         outputTokens: 90,
         cacheReadInputTokens: 18,
         cacheCreationInputTokens: 9,
+        cacheCreationInputTokens1h: 3,
         webSearchRequests: 3,
       },
       'model-b': {
@@ -648,12 +656,14 @@ return { first, second }`
         outputTokens: 15,
         cacheReadInputTokens: 3,
         cacheCreationInputTokens: 1,
+        cacheCreationInputTokens1h: 1,
       },
       'model-c': {
         inputTokens: 80,
         outputTokens: 40,
         cacheReadInputTokens: 8,
         cacheCreationInputTokens: 4,
+        cacheCreationInputTokens1h: 2,
         webSearchRequests: 1,
       },
     })
@@ -788,6 +798,51 @@ return { value }`
     })
     await expect(manager.notifications(true)).rejects.toThrow(
       /Workflow model usage for "model-a" has conflicting contextWindow values: (?:100000 vs 200000|200000 vs 100000)/,
+    )
+    await manager.close()
+  })
+
+  it('rejects an impossible cache TTL subset at workflow notification aggregation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-workflow-cache-invalid-'))
+    roots.push(root)
+    const cwd = join(root, 'work')
+    const script = `export const meta = {
+  name: 'cache-probe',
+  description: 'Run cache probe agent',
+  phases: [{ title: 'Agent', detail: 'Run one agent' }],
+}
+const value = await agent(args.prompt, { label: 'Probe' })
+return { value }`
+    const runAgent = vi.fn(async () => ({
+      result: 'agent-result',
+      usage: {
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheCreationInputTokens: 1,
+        cacheCreationInputTokens1h: 2,
+      },
+      toolUseCount: 1,
+      durationMs: 4,
+      resolvedModel: 'model-a',
+    }))
+    const manager = new WorkflowManager(join(root, 'config'), cwd)
+    const launch = await manager.launch({
+      sessionId,
+      promptId: 'prompt-cache-invalid',
+      script,
+      parsed: parseWorkflowScript(script),
+      args: { prompt: 'invalid cache' },
+      defaultModel: 'model-a',
+      runAgent,
+      resolveNested: async () => {
+        throw new Error('not used')
+      },
+    })
+    await manager.output(launch.taskId, { block: true, timeout: 5_000 })
+    const progress = manager.list(sessionId)[0]?.progress[0]
+    expect(progress?.status).toBe('error')
+    expect(progress?.error).toContain(
+      'Workflow agent usage has an invalid cacheCreationInputTokens1h counter',
     )
     await manager.close()
   })

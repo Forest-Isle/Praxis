@@ -13,6 +13,7 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../core/runtime.js'
+import { cacheCreationInputTokenSplit } from '../core/usage.js'
 
 export type CliInputFormat = 'text' | 'stream-json'
 export type CliOutputFormat = 'text' | 'json' | 'stream-json'
@@ -296,6 +297,7 @@ export function projectProtocolTimings(
 }
 
 function protocolUsage(usage: ModelUsage): Record<string, unknown> {
+  const cacheCreation = cacheCreationInputTokenSplit(usage)
   return {
     input_tokens: usage.inputTokens,
     cache_creation_input_tokens: usage.cacheCreationInputTokens ?? 0,
@@ -307,8 +309,8 @@ function protocolUsage(usage: ModelUsage): Record<string, unknown> {
     },
     service_tier: 'standard',
     cache_creation: {
-      ephemeral_1h_input_tokens: 0,
-      ephemeral_5m_input_tokens: 0,
+      ephemeral_1h_input_tokens: cacheCreation.oneHour,
+      ephemeral_5m_input_tokens: cacheCreation.fiveMinute,
     },
     inference_geo: '',
     iterations: [],

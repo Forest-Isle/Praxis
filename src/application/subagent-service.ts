@@ -103,6 +103,7 @@ function mergeSubagentUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
       'outputTokens',
       'cacheReadInputTokens',
       'cacheCreationInputTokens',
+      'cacheCreationInputTokens1h',
       'webSearchRequests',
     ] as const) {
       const value = usage[field]
@@ -116,6 +117,14 @@ function mergeSubagentUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
         throw new Error(`Subagent usage has an invalid ${field}`)
       }
     }
+    if (
+      (usage.cacheCreationInputTokens1h ?? 0) >
+      (usage.cacheCreationInputTokens ?? 0)
+    ) {
+      throw new Error(
+        'Subagent usage has an invalid cacheCreationInputTokens1h counter',
+      )
+    }
   }
   const counters = {
     inputTokens: left.inputTokens + right.inputTokens,
@@ -125,11 +134,19 @@ function mergeSubagentUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
     cacheCreationInputTokens:
       (left.cacheCreationInputTokens ?? 0) +
       (right.cacheCreationInputTokens ?? 0),
+    cacheCreationInputTokens1h:
+      (left.cacheCreationInputTokens1h ?? 0) +
+      (right.cacheCreationInputTokens1h ?? 0),
     webSearchRequests:
       (left.webSearchRequests ?? 0) + (right.webSearchRequests ?? 0),
   }
   if (Object.values(counters).some((value) => !Number.isSafeInteger(value))) {
     throw new Error('Subagent usage total overflow')
+  }
+  if (counters.cacheCreationInputTokens1h > counters.cacheCreationInputTokens) {
+    throw new Error(
+      'Subagent usage has an invalid cacheCreationInputTokens1h counter',
+    )
   }
   const metadata = (field: 'contextWindow' | 'maxOutputTokens') => {
     const leftValue = left[field]
@@ -154,6 +171,11 @@ function mergeSubagentUsage(left: ModelUsage, right: ModelUsage): ModelUsage {
     ...(counters.cacheCreationInputTokens === 0
       ? {}
       : { cacheCreationInputTokens: counters.cacheCreationInputTokens }),
+    ...(counters.cacheCreationInputTokens1h === 0
+      ? {}
+      : {
+          cacheCreationInputTokens1h: counters.cacheCreationInputTokens1h,
+        }),
     ...(counters.webSearchRequests === 0
       ? {}
       : { webSearchRequests: counters.webSearchRequests }),

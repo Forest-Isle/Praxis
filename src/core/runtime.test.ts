@@ -3700,6 +3700,7 @@ describe('AgentRuntime', () => {
               outputTokens: 5,
               cacheReadInputTokens: 100,
               cacheCreationInputTokens: 50,
+              cacheCreationInputTokens1h: 20,
               webSearchRequests: 4,
             },
           }
@@ -3729,6 +3730,8 @@ describe('AgentRuntime', () => {
               inputTokens: 2,
               outputTokens: 2,
               cacheReadInputTokens: 10,
+              cacheCreationInputTokens: 10,
+              cacheCreationInputTokens1h: 4,
               webSearchRequests: 1,
             },
             'subagent-alpha': { inputTokens: 4, outputTokens: 3 },
@@ -3771,6 +3774,7 @@ describe('AgentRuntime', () => {
       outputTokens: 16,
       cacheReadInputTokens: 130,
       cacheCreationInputTokens: 50,
+      cacheCreationInputTokens1h: 20,
       webSearchRequests: 6,
     })
     // First-insertion order is stable: parent model first, then nested model.
@@ -3783,7 +3787,8 @@ describe('AgentRuntime', () => {
       inputTokens: 32,
       outputTokens: 17,
       cacheReadInputTokens: 140,
-      cacheCreationInputTokens: 50,
+      cacheCreationInputTokens: 60,
+      cacheCreationInputTokens1h: 24,
       webSearchRequests: 7,
     })
     expect(result.modelUsage?.['subagent-alpha']).toEqual({
@@ -4009,6 +4014,26 @@ describe('AgentRuntime', () => {
         }),
       }),
     ).rejects.toThrow('Model usage total overflow')
+
+    const invalidSubsetRuntime = new AgentRuntime(
+      providerFrom(async function* () {
+        yield { type: 'text-delta', delta: 'done' }
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheCreationInputTokens: 1,
+            cacheCreationInputTokens1h: 2,
+          },
+        }
+      }),
+    )
+    await expect(
+      invalidSubsetRuntime.run({
+        messages: [{ role: 'user', content: 'bad subset' }],
+      }),
+    ).rejects.toThrow('invalid cacheCreationInputTokens1h counter')
   })
 
   it('enriches the main-model raw usage row with provider capability metadata', async () => {
