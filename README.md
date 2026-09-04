@@ -92,7 +92,7 @@ For Anthropic Messages:
 ```sh
 export PRAXIS_PROVIDER="anthropic"
 export PRAXIS_API_KEY="your-api-key"
-export PRAXIS_MODEL="claude-sonnet-4-20250514"
+export PRAXIS_MODEL="claude-sonnet-4-6"
 
 cd /path/to/project
 praxis
@@ -100,7 +100,7 @@ praxis
 
 Anthropic models use a 200,000-token context window by default, including
 unknown model IDs. Add the exact terminal `[1m]` suffix (for example,
-`claude-sonnet-4-20250514[1m]`) to request a 1,000,000-token context window;
+`claude-sonnet-4-6[1m]`) to request a 1,000,000-token context window;
 Praxis keeps that selected model public, removes the suffix on the wire, and
 adds the `context-1m-2025-08-07` Anthropic beta once. An explicit
 `PRAXIS_CONTEXT_WINDOW_TOKENS` value overrides either inferred window.

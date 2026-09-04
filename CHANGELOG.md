@@ -29,6 +29,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* price current Anthropic Claude model identifiers and terminal `[1m]` variants ([#657](https://github.com/Forest-Isle/Praxis/issues/657))
 * use the verified 64,000-token output default for newer Anthropic Claude model families ([#654](https://github.com/Forest-Isle/Praxis/issues/654))
 * normalize Anthropic effort values for known Claude model families ([#651](https://github.com/Forest-Isle/Praxis/issues/651))
 * correct the Anthropic wire temperature when thinking is disabled ([#648](https://github.com/Forest-Isle/Praxis/issues/648))

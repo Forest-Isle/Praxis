@@ -19,6 +19,20 @@ export interface ModelPricingDiagnosis {
   budgetBehavior: 'enforce' | 'reject-before-provider'
 }
 
+function anthropicPricing(
+  inputPerMillionUsd: number,
+  outputPerMillionUsd: number,
+  cacheReadInputPerMillionUsd: number,
+  cacheCreationInputPerMillionUsd: number,
+): ModelPricing {
+  return {
+    inputPerMillionUsd,
+    outputPerMillionUsd,
+    cacheReadInputPerMillionUsd,
+    cacheCreationInputPerMillionUsd,
+  }
+}
+
 const BUILTIN_PRICING: ModelPricingTable = {
   'claude-3-5-sonnet-20241022': {
     inputPerMillionUsd: 3,
@@ -44,6 +58,27 @@ const BUILTIN_PRICING: ModelPricingTable = {
     cacheReadInputPerMillionUsd: 1.5,
     cacheCreationInputPerMillionUsd: 18.75,
   },
+  'claude-fable-5-1': anthropicPricing(10, 50, 0.25, 12.5),
+  'claude-opus-5': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-opus-4-8': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-opus-4-7': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-opus-4-6': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-opus-4-5': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-opus-4-5-20251101': anthropicPricing(5, 25, 0.5, 6.25),
+  'claude-sonnet-5': anthropicPricing(2, 10, 0.2, 2.5),
+  'claude-sonnet-4-6': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-sonnet-4-5': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-sonnet-4-5-20250929': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-haiku-4-5': anthropicPricing(1, 5, 0.1, 1.25),
+  'claude-haiku-4-5-20251001': anthropicPricing(1, 5, 0.1, 1.25),
+  'claude-opus-4': anthropicPricing(15, 75, 1.5, 18.75),
+  'claude-opus-4-1': anthropicPricing(15, 75, 1.5, 18.75),
+  'claude-opus-4-1-20250805': anthropicPricing(15, 75, 1.5, 18.75),
+  'claude-sonnet-4': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-3-5-sonnet-20240620': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-3-5-sonnet-latest': anthropicPricing(3, 15, 0.3, 3.75),
+  'claude-3-5-haiku-20241022': anthropicPricing(0.8, 4, 0.08, 1),
+  'claude-3-5-haiku-latest': anthropicPricing(0.8, 4, 0.08, 1),
   'gpt-4o': {
     inputPerMillionUsd: 5,
     outputPerMillionUsd: 15,
@@ -101,13 +136,36 @@ export class ModelPricingRegistry {
     this.environmentModels = new Set(Object.keys(overrides))
   }
 
+  private resolveKey(model: string): string | undefined {
+    if (Object.prototype.hasOwnProperty.call(this.table, model)) {
+      return model
+    }
+    const suffix = '[1m]'
+    if (!model.endsWith(suffix)) return undefined
+    const base = model.slice(0, -suffix.length)
+    if (base.length === 0 || base.endsWith(suffix)) return undefined
+    return Object.prototype.hasOwnProperty.call(this.table, base)
+      ? base
+      : undefined
+  }
+
   resolve(model: string): ModelPricing | undefined {
-    return this.table[model]
+    const key = this.resolveKey(model)
+    return key === undefined ? undefined : this.table[key]
   }
 
   diagnose(model: string): ModelPricingDiagnosis {
-    const pricing = this.resolve(model)
-    if (!pricing) {
+    const key = this.resolveKey(model)
+    if (key === undefined) {
+      return {
+        model,
+        source: 'unknown',
+        policy: 'fail-closed',
+        budgetBehavior: 'reject-before-provider',
+      }
+    }
+    const pricing = this.table[key]
+    if (pricing === undefined) {
       return {
         model,
         source: 'unknown',
@@ -117,7 +175,7 @@ export class ModelPricingRegistry {
     }
     return {
       model,
-      source: this.environmentModels.has(model) ? 'environment' : 'builtin',
+      source: this.environmentModels.has(key) ? 'environment' : 'builtin',
       pricing,
       policy: 'fail-closed',
       budgetBehavior: 'enforce',
