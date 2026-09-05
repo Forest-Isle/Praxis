@@ -50,6 +50,14 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.66.0](https://github.com/Forest-Isle/Praxis/compare/v0.65.0...v0.66.0) (2026-09-05)
+
+
+### Features
+
+* bind eval identities to build provenance ([#689](https://github.com/Forest-Isle/Praxis/issues/689)) ([7bf8ee5](https://github.com/Forest-Isle/Praxis/commit/7bf8ee5ed06fd5d2a4eb3feefdfd43a33e2c5f79)), closes [#688](https://github.com/Forest-Isle/Praxis/issues/688)
+* harden project eval evidence ([#695](https://github.com/Forest-Isle/Praxis/issues/695)) ([581c82c](https://github.com/Forest-Isle/Praxis/commit/581c82cc538f435051e8b5fc9474a2af694e6236)), closes [#694](https://github.com/Forest-Isle/Praxis/issues/694)
+
 ## [0.65.0](https://github.com/Forest-Isle/Praxis/compare/v0.64.1...v0.65.0) (2026-09-05)
 
 
