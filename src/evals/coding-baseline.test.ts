@@ -32,6 +32,13 @@ const FIXTURE_FILES = [
   'evals/small-feature/fixture/greeting.cjs',
 ] as const
 const roots: string[] = []
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+const loadTestBuildIdentity = async () => TEST_BUILD_IDENTITY
 
 interface Deferred<T> {
   promise: Promise<T>
@@ -407,6 +414,7 @@ async function runEval(variant: 'baseline' | 'candidate', outputDir: string) {
     { stdout: (message) => output.push(message), stderr: () => undefined },
     {
       configRoot: join(outputDir, 'config'),
+      loadBuildIdentity: loadTestBuildIdentity,
       runtimeFactory: createFactory(variant),
       version: 'baseline-test',
     },
@@ -483,6 +491,7 @@ describe('coding baseline suite', () => {
         },
         {
           configRoot: join(root, 'unused-config'),
+          loadBuildIdentity: loadTestBuildIdentity,
           runtimeFactory: createFactory('candidate'),
           version: 'baseline-test',
         },
@@ -516,6 +525,7 @@ describe('coding baseline suite', () => {
         { stdout: () => undefined, stderr: () => undefined },
         {
           configRoot: join(root, 'unused-config'),
+          loadBuildIdentity: loadTestBuildIdentity,
           runtimeFactory: createFactory('candidate'),
           version: 'baseline-test',
         },

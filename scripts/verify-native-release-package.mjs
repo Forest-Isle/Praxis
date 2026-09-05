@@ -1,8 +1,16 @@
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loadPraxisBuildIdentity } from '../dist/platform/praxis-build-identity.js'
 
 const exec = promisify(execFile)
 const root = await mkdtemp(join(tmpdir(), 'praxis-native-package-'))
@@ -43,6 +51,21 @@ try {
   )
 
   const packageRoot = join(installDirectory, 'node_modules', 'praxis-agent')
+  const installedIdentityPath = join(packageRoot, 'dist', 'build-identity.json')
+  const installedIdentity = JSON.parse(
+    await readFile(installedIdentityPath, 'utf8'),
+  )
+  await loadPraxisBuildIdentity(join(packageRoot, 'dist')).then((validated) => {
+    if (JSON.stringify(validated) !== JSON.stringify(installedIdentity))
+      throw new Error('installed build identity mismatch')
+  })
+  try {
+    await lstat(join(packageRoot, '.git'))
+    throw new Error('package-local .git must not be present')
+  } catch (error) {
+    if (error?.message === 'package-local .git must not be present') throw error
+    if (error?.code !== 'ENOENT') throw error
+  }
   const manifest = JSON.parse(
     await readFile(join(packageRoot, 'package.json'), 'utf8'),
   )

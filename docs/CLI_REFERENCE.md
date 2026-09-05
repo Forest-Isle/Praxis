@@ -186,11 +186,14 @@ Artifacts default to `$PRAXIS_HOME/evals/results/<timestamp>` (or the configured
 native config root), with `aggregate-result.json` and per-case/run
 `trace.jsonl`, `workspace-diff.json`, `verification.json`, `identity.json`, and
 `result.json`. `result.json`, `aggregate-result.json`, and
-`comparison-result.json` use schema `1.1`; `identity.json` uses schema `1.0`,
+`comparison-result.json` use schema `1.1`; `identity.json` uses schema `1.1`,
 while trace, workspace-diff, and verification formats are unchanged. Each run
 embeds a deterministic, path-independent identity covering the effective
 provider, profile, protocol, endpoint digest, alias-resolved model,
-configuration, tools, prompt, fixture corpus, and runtime. Raw endpoints,
+configuration, tools, prompt, fixture corpus, and runtime. The runtime build
+records the source revision, dirty state, and emitted-artifact digest. Candidate
+builds remain comparable when existing provider/model/configuration/tool,
+prompt/corpus, and runtime dimensions match. Raw endpoints,
 prompts, secrets, host environment, and absolute temporary paths are never
 persisted in that identity.
 

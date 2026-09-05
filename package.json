@@ -28,7 +28,7 @@
     "praxis": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/write-build-identity.mjs",
     "check": "npm run format:check && npm run lint && npm run test:docs && npm run verify:release-automation && npm run verify:ci-coverage && npm run verify:fixture-contracts && npm run check:boundaries && npm run typecheck && npm run build:native && npm run build && npm test",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "dev": "tsx src/cli.ts",

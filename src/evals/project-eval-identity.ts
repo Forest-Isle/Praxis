@@ -8,8 +8,12 @@ import {
 import type { EvalRuntimeIdentityDescriptor } from './eval-contract.js'
 import type { ProjectEvalCase } from './project-eval-schema.js'
 import type { FileManifest } from './project-eval-workspace.js'
+import {
+  validatePraxisBuildIdentity,
+  type PraxisBuildIdentity,
+} from '../platform/praxis-build-identity.js'
 
-export const PROJECT_EVAL_IDENTITY_SCHEMA_VERSION = '1.0' as const
+export const PROJECT_EVAL_IDENTITY_SCHEMA_VERSION = '1.1' as const
 export type ProjectEvalIdentitySchemaVersion =
   typeof PROJECT_EVAL_IDENTITY_SCHEMA_VERSION
 
@@ -21,6 +25,7 @@ export interface ProjectEvalRuntimeIdentity {
   node_version: string
   platform: string
   architecture: string
+  build: PraxisBuildIdentity
   runtime_sha256: IdentityDigest
 }
 
@@ -49,6 +54,7 @@ export interface CreateProjectEvalIdentityInput {
   nodeVersion?: string
   platform?: string
   architecture?: string
+  buildIdentity: PraxisBuildIdentity
 }
 
 export interface AggregateIdentityRun {
@@ -263,12 +269,14 @@ export function createProjectEvalIdentity(
   input: CreateProjectEvalIdentityInput,
 ): ProjectEvalIdentity {
   const provider = input.provider
+  const buildIdentity = validatePraxisBuildIdentity(input.buildIdentity)
   const runtimeBase = {
     engine: 'praxis' as const,
     praxis_version: string(input.praxisVersion, 'praxis_version'),
     node_version: string(input.nodeVersion ?? process.version, 'node_version'),
     platform: string(input.platform ?? process.platform, 'platform'),
     architecture: string(input.architecture ?? process.arch, 'architecture'),
+    build: buildIdentity,
   }
   const identityWithoutDigests = {
     schema_version: PROJECT_EVAL_IDENTITY_SCHEMA_VERSION,
@@ -308,6 +316,7 @@ function validateRuntime(
     'node_version',
     'platform',
     'architecture',
+    'build',
     'runtime_sha256',
   ]
   const runtimeUnknown = Object.keys(runtime).find(
@@ -321,6 +330,7 @@ function validateRuntime(
     node_version: string(runtime.node_version, `${path}.node_version`),
     platform: string(runtime.platform, `${path}.platform`),
     architecture: string(runtime.architecture, `${path}.architecture`),
+    build: validatePraxisBuildIdentity(runtime.build),
     runtime_sha256: digestField(
       runtime.runtime_sha256,
       `${path}.runtime_sha256`,
@@ -334,6 +344,7 @@ function validateRuntime(
       node_version: validated.node_version,
       platform: validated.platform,
       architecture: validated.architecture,
+      build: validated.build,
     })
   )
     fail(`${path}.runtime_sha256 does not match runtime fields`)
@@ -363,7 +374,7 @@ export function validateProjectEvalIdentity(
   const unknown = Object.keys(source).find((key) => !keys.includes(key))
   if (unknown) fail(`${unknown} is not supported`)
   if (source.schema_version !== PROJECT_EVAL_IDENTITY_SCHEMA_VERSION)
-    fail('schema_version must be "1.0"')
+    fail('schema_version must be "1.1"')
   const validated = {
     schema_version: PROJECT_EVAL_IDENTITY_SCHEMA_VERSION,
     provider_id: string(source.provider_id, 'provider_id'),

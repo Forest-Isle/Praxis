@@ -20,6 +20,7 @@ import {
   type ProjectEvalIdentity,
 } from './project-eval-identity.js'
 import type { ProjectEvalCase } from './project-eval-schema.js'
+import type { PraxisBuildIdentity } from '../platform/praxis-build-identity.js'
 import {
   cleanupProjectEvalWorkspace,
   createProjectEvalWorkspace,
@@ -128,6 +129,7 @@ interface ProjectEvalRunOptions {
   runVerification?: boolean
   outputDir: string
   version: string
+  buildIdentity: PraxisBuildIdentity
   signal?: AbortSignal
 }
 
@@ -263,6 +265,7 @@ export async function runProjectEvalCase(
       effectiveTools: allowedTools,
       runVerification: options.runVerification ?? false,
       praxisVersion: options.version,
+      buildIdentity: options.buildIdentity,
     })
   } catch (error) {
     await cleanupProjectEvalWorkspace(workspace.root).catch(() => undefined)

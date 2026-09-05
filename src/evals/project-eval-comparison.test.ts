@@ -22,6 +22,13 @@ import {
 import type { ProjectEvalCase } from './project-eval-schema.js'
 import type { FileManifest } from './project-eval-workspace.js'
 
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: ('git:' + 'a'.repeat(40)) as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+
 const roots: string[] = []
 afterEach(async () => {
   await Promise.all(
@@ -63,6 +70,7 @@ function aggregate(passed: boolean, safety = true) {
     sourceBefore: { files: {}, totalBytes: 0 } as FileManifest,
     effectiveTools: ['Read'],
     runVerification: false,
+    buildIdentity: TEST_BUILD_IDENTITY,
     praxisVersion: 'test',
     nodeVersion: 'node-test',
     platform: 'test-platform',
@@ -208,6 +216,7 @@ function comparisonIdentity(
     sourceBefore: { files: {}, totalBytes: 0 } as FileManifest,
     effectiveTools: ['Read'],
     runVerification: false,
+    buildIdentity: TEST_BUILD_IDENTITY,
     praxisVersion: 'test',
     nodeVersion: 'node-test',
     platform: 'test-platform',
@@ -518,7 +527,7 @@ describe('project eval comparison', () => {
     }
   })
 
-  it('accepts different Praxis versions when experiment identities otherwise match', async () => {
+  it('accepts different Praxis versions and build provenance', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-eval-compare-version-'))
     roots.push(root)
     const baselinePath = join(root, 'baseline.json')
@@ -527,7 +536,21 @@ describe('project eval comparison', () => {
       comparisonIdentity({ praxisVersion: 'baseline-version' }),
     )
     const candidate = aggregateWithIdentity(
-      comparisonIdentity({ praxisVersion: 'candidate-version' }),
+      comparisonIdentity({
+        praxisVersion: 'candidate-version',
+        buildIdentity: {
+          ...TEST_BUILD_IDENTITY,
+          source_revision: `git:${'c'.repeat(40)}`,
+          source_dirty: true,
+          artifact_sha256: `sha256:${'d'.repeat(64)}`,
+        },
+      }),
+    )
+    expect(onlyRun(candidate.runs).identity.runtime.runtime_sha256).not.toBe(
+      onlyRun(baseline.runs).identity.runtime.runtime_sha256,
+    )
+    expect(onlyRun(candidate.runs).identity.identity_sha256).not.toBe(
+      onlyRun(baseline.runs).identity.identity_sha256,
     )
     await writeFile(baselinePath, JSON.stringify(baseline))
     await writeFile(candidatePath, JSON.stringify(candidate))
@@ -815,7 +838,7 @@ describe('project eval comparison', () => {
     await writeFile(malformedIdentityPath, JSON.stringify(malformedIdentity))
     await expect(
       loadProjectEvalAggregate(malformedIdentityPath),
-    ).rejects.toThrow('provider_id')
+    ).rejects.toThrow('schema_version must be "1.1"')
 
     const tamperedAggregatePath = join(root, 'tampered-aggregate.json')
     const tamperedAggregate = aggregate(true)

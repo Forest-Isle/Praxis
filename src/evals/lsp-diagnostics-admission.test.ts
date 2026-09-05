@@ -36,6 +36,13 @@ const FIXTURE_ROOT = join(
 )
 const roots: string[] = []
 const keptWorkspaceRoots: string[] = []
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+const loadTestBuildIdentity = async () => TEST_BUILD_IDENTITY
 
 type DiagnosticSeverity = 'error' | 'warning' | 'information' | 'hint'
 
@@ -708,6 +715,7 @@ async function runEval(variant: 'baseline' | 'candidate', outputDir: string) {
     { stdout: (message) => output.push(message), stderr: () => undefined },
     {
       configRoot: join(outputDir, 'config'),
+      loadBuildIdentity: loadTestBuildIdentity,
       runtimeFactory: createFactory(variant),
       version: 'lsp-diagnostics-admission-test',
     },
@@ -976,6 +984,7 @@ describe('LSP diagnostics admission eval', () => {
         },
         {
           configRoot: join(root, 'unused'),
+          loadBuildIdentity: loadTestBuildIdentity,
           runtimeFactory: createFactory('candidate'),
           version: 'lsp-diagnostics-admission-test',
         },

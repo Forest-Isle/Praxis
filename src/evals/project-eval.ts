@@ -13,6 +13,7 @@ import {
 } from './project-eval-identity.js'
 import { executeProjectEvalCompareCommand } from './project-eval-comparison.js'
 import { discoverProjectEvalCases } from './project-eval-schema.js'
+import type { PraxisBuildIdentity } from '../platform/praxis-build-identity.js'
 
 export const PROJECT_EVAL_HELP = `Usage: praxis eval [options] <target>
 
@@ -35,6 +36,7 @@ Use praxis eval compare --help to compare two completed aggregate artifacts.`
 
 export interface ProjectEvalDependencies {
   runtimeFactory: IdentifiedEvalRuntimeFactory
+  loadBuildIdentity: () => Promise<PraxisBuildIdentity>
   version?: string
   configRoot: string
 }
@@ -265,6 +267,7 @@ export async function executeProjectEvalCommand(
     options.caseGlob,
     options.tags,
   )
+  const buildIdentity = await dependencies.loadBuildIdentity()
   const outputDirectory = options.outputDir
     ? resolve(callerCwd, options.outputDir)
     : join(
@@ -301,6 +304,7 @@ export async function executeProjectEvalCommand(
         runVerification: options.runVerification,
         outputDir: outputDirectory,
         version: dependencies.version ?? 'unknown',
+        buildIdentity,
         ...(signal === undefined ? {} : { signal }),
       })
       results.push(result)
