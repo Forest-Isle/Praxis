@@ -140,6 +140,11 @@ describe('data plane paths', () => {
     expect(getNativeDataOwnership('auto-memory').location).toBe(
       'memory/<project-key>/',
     )
+    expect(getNativeDataOwnership('compaction-accounting')).toMatchObject({
+      plane: 'praxis-sidecar',
+      praxisAccess: 'read-write',
+      location: 'compaction-receipts/<session-id>/',
+    })
     expect(NATIVE_DATA_OWNERSHIP).toBeDefined()
     expect(
       resolveNativePaths({

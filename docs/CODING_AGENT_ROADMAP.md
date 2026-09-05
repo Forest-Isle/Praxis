@@ -454,11 +454,19 @@ and risk-aware comparison gates.
 
 ## Phase 7 — Turn reliability
 
-### Task 7.1: Compaction transaction/error semantics [depends: Task 6.5]
+### Task 7.1: Compaction transaction/error semantics [implemented by #696; depends: Task 6.5]
 
-Classify compaction errors and add a durable accounting receipt at the
-compaction boundary. Acceptance: compaction preserves exact-once accounting,
-durable ordering, cancellation, and recovery across classified failures.
+Implemented by #696: manual, automatic, and reactive compaction now classify
+failures around a private Session-scoped accounting receipt. The receipt is
+prepared before the atomic boundary/summary append, binds reserved event IDs,
+and is acknowledged only after Session accounting and configured cost
+persistence converge. Recovery uses complete Transcript evidence, stable
+fingerprint ordering, immutable acknowledgements, and fresh no-store
+reconstruction to preserve exact-once accounting across process crashes and
+post-commit failures. The `application.context.compaction` fixture qualifies
+manual success and preflight rejection, no-store and configured-store recovery,
+automatic post-commit recovery, deterministic pending-chain ordering, and the
+private receipt-store round-trip.
 
 ### Task 7.2: Projection cursor continuity [depends: Task 7.1]
 

@@ -238,6 +238,81 @@ describe('NativeSessionTranscript', () => {
     )
   })
 
+  it('accepts exact reserved compaction IDs and rejects invalid or used IDs before append', async () => {
+    const { store, file } = await setup()
+    const transcript = new NativeSessionTranscript({
+      sessionId: 'session',
+      store,
+      createId: (() => {
+        let n = 0
+        return () => `reserved-${++n}`
+      })(),
+      now: () => timestamp,
+    })
+    await transcript.withLease({ kind: 'start' }, async (lease) => {
+      await lease.appendMessages({ messages: [user('before')] })
+      const before = await readFile(file, 'utf8')
+      for (const [boundaryId, summaryId] of [
+        ['', 'summary-fixed'],
+        ['../unsafe', 'summary-fixed'],
+        ['same-id', 'same-id'],
+        ['reserved-1', 'summary-fixed'],
+      ] as const) {
+        await expect(
+          lease.appendCompaction({
+            summary: 'invalid',
+            trigger: 'manual',
+            preTokens: 3,
+            postTokens: 1,
+            durationMs: 1,
+            boundaryId,
+            summaryId,
+          }),
+        ).rejects.toThrow(/nonblank, distinct, and unused/u)
+        expect(await readFile(file, 'utf8')).toBe(before)
+      }
+      await expect(
+        lease.appendCompaction({
+          summary: 'fixed',
+          trigger: 'manual',
+          preTokens: 3,
+          postTokens: 1,
+          durationMs: 1,
+          boundaryId: 'boundary-fixed',
+          summaryId: 'summary-fixed',
+        }),
+      ).resolves.toEqual({
+        boundaryId: 'boundary-fixed',
+        summaryId: 'summary-fixed',
+      })
+    })
+  })
+
+  it('rejects an unsafe generated compaction ID without changing transcript bytes', async () => {
+    const { store, file } = await setup()
+    const generated = ['message-id', '../unsafe-generated', 'summary-id']
+    const transcript = new NativeSessionTranscript({
+      sessionId: 'session',
+      store,
+      createId: () => generated.shift() ?? 'fallback-id',
+      now: () => timestamp,
+    })
+    await transcript.withLease({ kind: 'start' }, async (lease) => {
+      await lease.appendMessages({ messages: [user('before')] })
+      const before = await readFile(file, 'utf8')
+      await expect(
+        lease.appendCompaction({
+          summary: 'must not persist',
+          trigger: 'manual',
+          preTokens: 3,
+          postTokens: 1,
+          durationMs: 1,
+        }),
+      ).rejects.toThrow(/nonblank, distinct, and unused/u)
+      expect(await readFile(file, 'utf8')).toBe(before)
+    })
+  })
+
   it('rejects unresolved compaction without changing transcript bytes', async () => {
     const { store, file } = await setup()
     const transcript = new NativeSessionTranscript({
@@ -271,6 +346,8 @@ describe('NativeSessionTranscript', () => {
           preTokens: 10,
           postTokens: 3,
           durationMs: 1,
+          boundaryId: 'conflict-boundary',
+          summaryId: 'conflict-summary',
         }),
       ),
     ).rejects.toThrow(/unresolved tool calls/u)
@@ -327,6 +404,8 @@ describe('NativeSessionTranscript', () => {
           preTokens: 10,
           postTokens: 3,
           durationMs: 1,
+          boundaryId: 'conflict-boundary',
+          summaryId: 'conflict-summary',
         }),
       ).rejects.toThrow(/append conflict: tail-changed/u)
       expect(lease.activeMessages()).toEqual(before)

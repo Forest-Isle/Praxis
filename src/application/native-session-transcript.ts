@@ -50,6 +50,13 @@ export interface NativeCompactionAppend {
   readonly direction?: 'from' | 'up_to'
   readonly messagesSummarized?: number
   readonly preservePrefix?: boolean
+  /** IDs reserved by the compaction accounting transaction. */
+  readonly boundaryId?: string
+  readonly summaryId?: string
+}
+
+function isSafeNativeId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(value)
 }
 
 export type NativeInterruption =
@@ -485,8 +492,24 @@ export class NativeSessionTranscript {
               throw new Error(
                 'Cannot compact a native transcript with unresolved tool calls',
               )
-            const boundaryId = createUniqueId()
-            const summaryId = createUniqueId()
+            const boundaryId = input.boundaryId ?? createUniqueId()
+            const summaryId = input.summaryId ?? createUniqueId()
+            if (
+              typeof boundaryId !== 'string' ||
+              boundaryId.trim() === '' ||
+              typeof summaryId !== 'string' ||
+              summaryId.trim() === '' ||
+              !isSafeNativeId(boundaryId) ||
+              !isSafeNativeId(summaryId) ||
+              boundaryId === summaryId ||
+              (input.boundaryId !== undefined && usedIds.has(boundaryId)) ||
+              (input.summaryId !== undefined && usedIds.has(summaryId))
+            )
+              throw new Error(
+                'Native compaction boundary and summary IDs must be nonblank, distinct, and unused',
+              )
+            if (input.boundaryId !== undefined) usedIds.add(boundaryId)
+            if (input.summaryId !== undefined) usedIds.add(summaryId)
             const boundary: TranscriptEvent = {
               kind: 'context-boundary',
               id: boundaryId,
@@ -566,11 +589,21 @@ export class NativeSessionTranscript {
               summary,
               ...(suffixEvent === undefined ? [] : [suffixEvent]),
             ]
-            const appended = await nativeLease.appendMany(tail, compactedEvents)
-            if (appended.status === 'conflict')
+            let appended: Awaited<ReturnType<typeof nativeLease.appendMany>>
+            try {
+              appended = await nativeLease.appendMany(tail, compactedEvents)
+            } catch (error) {
+              if (input.boundaryId !== undefined) usedIds.delete(boundaryId)
+              if (input.summaryId !== undefined) usedIds.delete(summaryId)
+              throw error
+            }
+            if (appended.status === 'conflict') {
+              if (input.boundaryId !== undefined) usedIds.delete(boundaryId)
+              if (input.summaryId !== undefined) usedIds.delete(summaryId)
               throw new Error(
                 `native transcript append conflict: ${appended.reason}`,
               )
+            }
             records.push(
               { event: boundary },
               { event: summary },

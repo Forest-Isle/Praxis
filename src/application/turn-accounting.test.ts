@@ -42,11 +42,10 @@ describe('TurnAccounting', () => {
     prepared.commit()
 
     expect(cost.snapshot()).toMatchObject({
-      apiDurationMs: 4,
-      apiDurationWithoutRetriesMs: 3,
+      apiDurationMs: 0,
+      apiDurationWithoutRetriesMs: 0,
       modelUsage: {
         'other-model': expect.objectContaining({ inputTokens: 1 }),
-        'compact-model': expect.objectContaining({ inputTokens: 2 }),
       },
     })
     const outcome = accounting.complete({
@@ -110,14 +109,12 @@ describe('TurnAccounting', () => {
       },
     })
     expect(cost.snapshot()).toMatchObject({
-      apiDurationMs: 4,
-      apiDurationWithoutRetriesMs: 4,
+      apiDurationMs: 0,
+      apiDurationWithoutRetriesMs: 0,
       toolDurationMs: 7,
       linesAdded: 2,
       linesRemoved: 1,
-      modelUsage: {
-        'compact-model': expect.objectContaining({ inputTokens: 2 }),
-      },
+      modelUsage: {},
     })
     expect(cost.snapshot().modelUsage['runtime-model']).toBeUndefined()
   })
@@ -438,7 +435,7 @@ describe('TurnAccounting', () => {
     ).toThrow('after turn completion')
   })
 
-  it('fails a prepared commit against latest tracker state without contribution', () => {
+  it('keeps prepared commit independent of latest session tracker state', () => {
     const cost = tracker()
     const accounting = new TurnAccounting({ tracker: cost })
     const prepared = accounting.prepareCompaction({
@@ -452,9 +449,7 @@ describe('TurnAccounting', () => {
       usage: usage(Number.MAX_SAFE_INTEGER, 0),
     })
     const before = cost.snapshot()
-    expect(() => prepared.commit()).toThrow(
-      'inputTokens total must be a safe integer',
-    )
+    prepared.commit()
     expect(cost.snapshot()).toMatchObject({
       modelUsage: before.modelUsage,
       apiDurationMs: before.apiDurationMs,
@@ -465,7 +460,11 @@ describe('TurnAccounting', () => {
       recovery: [],
       result: { usage: usage(0, 0) },
     })
-    expect(outcome).toEqual({ usage: usage(0, 0) })
+    expect(outcome).toMatchObject({
+      usage: usage(1, 0),
+      durationApiMs: 2,
+      modelUsage: { 'same-model': usage(1, 0) },
+    })
   })
 
   it('preflights cumulative compaction overflow and metadata conflicts', () => {

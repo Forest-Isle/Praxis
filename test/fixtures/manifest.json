@@ -415,11 +415,17 @@
     {
       "id": "application.context.compaction",
       "seam": "Session compaction",
-      "contract": "Manual compaction replaces the native active branch with canonical compacted events.",
+      "contract": "Manual, automatic, and reactive native compaction replace the active branch with canonical events using preallocated boundary and summary IDs, then converge exact-once Session accounting through a private durable receipt.",
       "status": "qualified",
-      "modules": ["src/application/session-service.ts"],
+      "modules": [
+        "src/application/session-service.ts",
+        "src/application/compaction-accounting.ts",
+        "src/persistence/native-compaction-receipt-store.ts"
+      ],
       "outcomes": [
-        "The active context changes through durable canonical events."
+        "The authoritative append-only Transcript remains native schema data with no accounting or transaction fields; its complete evidence determines whether the compaction commit occurred.",
+        "Corrupt, partial, duplicate, mismatched, or otherwise ambiguous receipt and Transcript evidence fails closed without reapplying Session accounting.",
+        "After the native boundary and summary append, Session accounting applies and settles the receipt before post-boundary effects run."
       ],
       "evidence": [
         {
@@ -433,17 +439,54 @@
           "file": "src/application/session-service.test.ts",
           "testName": "ClaudeSessionService > keeps native transcript bytes unchanged across manual compaction preflight failures",
           "covers": ["negative", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > recovers exactly once after a committed manual cost save failure",
+          "covers": ["recovery", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > recovers one no-store manual compaction in a fresh service without replay",
+          "covers": ["success", "recovery", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > acknowledges a saved manual compaction after an acknowledgement crash without replay",
+          "covers": ["recovery", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > preserves committed accounting when automatic post-commit context refresh fails",
+          "covers": ["success", "recovery"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > reactively retries a prompt-too-long failure once after auto-compacting",
+          "covers": ["success", "recovery"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/compaction-accounting.test.ts",
+          "testName": "CompactionAccounting > orders an unacknowledged durable chain by fingerprints instead of filenames",
+          "covers": ["negative", "recovery", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/persistence/native-compaction-receipt-store.test.ts",
+          "testName": "NativeCompactionReceiptStore > round-trips private immutable receipt and acknowledgement artifacts",
+          "covers": ["success", "persistence"]
         }
       ],
       "risk": "high",
       "evidenceRequirements": {
-        "required": ["success", "negative", "persistence"],
-        "exemptions": [
-          {
-            "dimension": "recovery",
-            "reason": "One atomic compaction attempt either appends the replacement or leaves native bytes unchanged; it has no resumable intermediate state."
-          }
-        ]
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
       }
     },
     {
