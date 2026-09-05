@@ -13,7 +13,7 @@ import type {
 import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import type {
-  EvalRuntimeFactory,
+  IdentifiedEvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import { executeProjectEvalCommand } from './project-eval.js'
@@ -304,8 +304,17 @@ function scriptedProvider(
   return { provider, handshake: { started, release, requests } }
 }
 
-function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
+function createFactory(
+  variant: 'baseline' | 'candidate',
+): IdentifiedEvalRuntimeFactory {
   return {
+    identify: async (options) => ({
+      providerId: 'test-provider',
+      profileId: 'default',
+      protocol: 'openai-compatible',
+      endpoint: 'https://eval.test/v1',
+      modelId: options.model ?? 'coding-baseline-model',
+    }),
     create: async (options) => {
       const scripted = scriptedProvider(options, variant)
       const { provider, handshake } = scripted

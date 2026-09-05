@@ -2,6 +2,11 @@ import { mkdir, lstat, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
+import {
+  assertProjectEvalIdentitiesComparable,
+  validateProjectEvalAggregateIdentity,
+  validateProjectEvalIdentity,
+} from './project-eval-identity.js'
 import type {
   ProjectEvalAggregate,
   ProjectEvalRunSummary,
@@ -46,18 +51,20 @@ export interface ProjectEvalComparisonMetric<T = number | null> {
 }
 
 export interface ProjectEvalComparisonResult {
-  schema_version: '1.0'
+  schema_version: '1.1'
   baseline: {
     name: string
     source_path: string
     version: string
     model: string | null
+    identity_sha256: `sha256:${string}`
   }
   candidate: {
     name: string
     source_path: string
     version: string
     model: string | null
+    identity_sha256: `sha256:${string}`
   }
   comparable_run_count: number
   passed: boolean
@@ -230,7 +237,10 @@ function validateRun(value: unknown, index: number): ProjectEvalRunSummary {
     fail(`${path}.case`, 'unsafe case name')
   const runNumber = numberField(run.run, `${path}.run`, true)
   if (runNumber < 1) fail(`${path}.run`, 'must be positive')
-  stringField(run.model, `${path}.model`, true)
+  const model = stringField(run.model, `${path}.model`)
+  const identity = validateProjectEvalIdentity(run.identity)
+  if (model !== identity.model_id)
+    fail(`${path}.model`, 'does not match identity.model_id')
   boolField(run.passed, `${path}.passed`)
   if (run.score !== 0 && run.score !== 1)
     fail(`${path}.score`, 'must be 0 or 1')
@@ -267,7 +277,7 @@ function validateRun(value: unknown, index: number): ProjectEvalRunSummary {
     numberField(run.tool_errors, `${path}.tool_errors`, true)
     numberField(run.retries, `${path}.retries`, true)
   }
-  return run as unknown as ProjectEvalRunSummary
+  return { ...run, model, identity } as unknown as ProjectEvalRunSummary
 }
 
 export async function loadProjectEvalAggregate(
@@ -293,8 +303,11 @@ export async function loadProjectEvalAggregate(
   }
   const aggregate = objectField(value, 'root')
   const data = aggregate as unknown as ProjectEvalAggregate
-  if (aggregate.schema_version !== '1.0')
-    fail('schema_version', 'must be "1.0"')
+  if (aggregate.schema_version !== '1.1')
+    fail(
+      'schema_version',
+      'must be "1.1"; legacy "1.0" aggregates are unsupported',
+    )
   stringField(aggregate.version, 'version')
   stringField(aggregate.start, 'start')
   numberField(aggregate.duration_ms, 'duration_ms')
@@ -332,6 +345,18 @@ export async function loadProjectEvalAggregate(
   if (!Array.isArray(aggregate.runs) || aggregate.runs.length > 100000)
     fail('runs', 'expected a bounded array')
   const runs = aggregate.runs.map(validateRun)
+  for (const [index, run] of runs.entries())
+    if (run.identity.runtime.praxis_version !== aggregate.version)
+      fail(
+        `runs[${index}].identity.runtime.praxis_version`,
+        'must match aggregate version',
+      )
+  const expectedAggregateModel =
+    runs.length > 0 && runs.every((run) => run.model === runs[0]?.model)
+      ? (runs[0]?.model ?? null)
+      : null
+  if (aggregate.model !== expectedAggregateModel)
+    fail('model', 'does not match completed run identity models')
   if (data.run_count !== runs.length)
     fail('run_count', 'does not match runs length')
   if (
@@ -409,6 +434,14 @@ export async function loadProjectEvalAggregate(
     keys.add(key)
     caseNames.add(run.case)
   }
+  validateProjectEvalAggregateIdentity(
+    aggregate.identity_sha256,
+    runs.map((run) => ({
+      case: run.case,
+      run: run.run,
+      identity_sha256: run.identity.identity_sha256,
+    })),
+  )
   if (!data.partial && caseNames.size !== data.case_count)
     fail('case_count', 'does not match completed run cases')
   if (data.interrupted && !data.partial)
@@ -573,6 +606,16 @@ export function compareProjectEvalAggregates(
     throw new Error('Aggregates have different comparable run sets')
   if (leftRuns.length === 0)
     throw new Error('Comparison requires at least one completed run')
+  for (let index = 0; index < leftRuns.length; index += 1) {
+    const leftRun = leftRuns[index]
+    const rightRun = rightRuns[index]
+    if (!leftRun || !rightRun) continue
+    assertProjectEvalIdentitiesComparable(
+      leftRun.identity,
+      rightRun.identity,
+      `Identity mismatch for (${leftRun.case}, ${leftRun.run})`,
+    )
+  }
   const regressions = rightRuns.flatMap((run, index) =>
     leftRuns[index]?.passed && !run.passed
       ? [
@@ -614,18 +657,20 @@ export function compareProjectEvalAggregates(
         )
       : nullableMetric(null, null)
   const result: ProjectEvalComparisonResult = {
-    schema_version: '1.0',
+    schema_version: '1.1',
     baseline: {
       name: baselineName,
       source_path: baseline.sourcePath,
       version: left.version,
       model: left.model,
+      identity_sha256: left.identity_sha256,
     },
     candidate: {
       name: candidateName,
       source_path: candidate.sourcePath,
       version: right.version,
       model: right.model,
+      identity_sha256: right.identity_sha256,
     },
     comparable_run_count: leftRuns.length,
     passed:

@@ -189,6 +189,7 @@ import {
 import {
   resolveProviderContextWindowTokens,
   resolveProviderRegistry,
+  resolveProviderRuntimeTarget,
 } from './providers/provider-registry.js'
 import {
   ProviderSettingsError,
@@ -278,6 +279,10 @@ import {
   PROJECT_EVAL_HELP,
   type ProjectEvalDependencies,
 } from './evals/project-eval.js'
+import type {
+  EvalRuntimeFactoryIdentityOptions,
+  IdentifiedEvalRuntimeFactory,
+} from './evals/eval-contract.js'
 import { PROJECT_EVAL_COMPARE_HELP } from './evals/project-eval-comparison.js'
 import {
   CLAUDE_PLUGIN_PRUNE_HELP,
@@ -3229,6 +3234,28 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
     },
   }
 
+const defaultProjectEvalRuntimeFactory: IdentifiedEvalRuntimeFactory = {
+  create: (options) => defaultPluginEvalRuntimeFactory.create(options),
+  identify: async (options: EvalRuntimeFactoryIdentityOptions) => {
+    const environment = process.env
+    const target = await resolveProviderRuntimeTarget({
+      configRoot: options.configRoot,
+      cwd: options.cwd,
+      environment,
+      ...(options.model === undefined ? {} : { model: options.model }),
+      includeSettings: true,
+      includeProjectSettings: false,
+    })
+    return {
+      providerId: target.providerId,
+      profileId: target.profileId,
+      protocol: target.protocol,
+      endpoint: target.baseUrl,
+      modelId: target.modelId,
+    }
+  },
+}
+
 const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
   vote: async ({ criteria, focus, baseline, model, signal }) => {
     const environment = process.env
@@ -3503,7 +3530,7 @@ export function createDefaultDependencies(
       judge: defaultPluginEvalJudge,
     },
     projectEval: {
-      runtimeFactory: defaultPluginEvalRuntimeFactory,
+      runtimeFactory: defaultProjectEvalRuntimeFactory,
       version: VERSION,
       configRoot: resolveDataPlaneRoot(),
     },

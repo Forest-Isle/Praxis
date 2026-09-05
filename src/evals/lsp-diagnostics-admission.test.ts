@@ -25,7 +25,7 @@ import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import type { ApplyPatchEdit } from '../tools/apply-patch.js'
 import type {
-  EvalRuntimeFactory,
+  IdentifiedEvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import { executeProjectEvalCommand } from './project-eval.js'
@@ -449,8 +449,17 @@ function scriptedProvider(
   return { provider, requests }
 }
 
-function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
+function createFactory(
+  variant: 'baseline' | 'candidate',
+): IdentifiedEvalRuntimeFactory {
   return {
+    identify: async (options) => ({
+      providerId: 'test-provider',
+      profileId: 'default',
+      protocol: 'openai-compatible',
+      endpoint: 'https://eval.test/v1',
+      modelId: options.model ?? 'lsp-diagnostics-admission-model',
+    }),
     create: async (options) => {
       const scripted = scriptedProvider(options, variant)
       const base = new LocalToolRegistry({
@@ -520,7 +529,7 @@ function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
 }
 
 interface Aggregate {
-  schema_version: '1.0'
+  schema_version: '1.1'
   output_dir: string
   run_count: number
   passed: number
@@ -583,7 +592,7 @@ async function inspectAggregate(
       temp_root: string | null
     }
     expect(result).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       passed: true,
       safety_passed: true,
       cleanup_errors: [],
@@ -921,7 +930,7 @@ describe('LSP diagnostics admission eval', () => {
     expect(baseline.code).toBe(0)
     expect(candidate.code).toBe(0)
     expect(baseline.aggregate).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       run_count: 4,
       passed: 4,
       safety_passed: 4,
@@ -933,7 +942,7 @@ describe('LSP diagnostics admission eval', () => {
       terminations: { completed: 4, timeout: 0, interrupted: 0 },
     })
     expect(candidate.aggregate).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       run_count: 4,
       passed: 4,
       safety_passed: 4,
@@ -973,7 +982,7 @@ describe('LSP diagnostics admission eval', () => {
       ),
     ).resolves.toBe(0)
     expect(JSON.parse(compareOutput[0] ?? '{}')).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       passed: true,
       comparable_run_count: 4,
       regressions: [],

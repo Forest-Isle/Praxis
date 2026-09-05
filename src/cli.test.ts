@@ -2254,6 +2254,13 @@ expect:
       projectEval: {
         configRoot,
         runtimeFactory: {
+          identify: async (options) => ({
+            providerId: 'test-provider',
+            profileId: 'default',
+            protocol: 'openai-compatible',
+            endpoint: 'https://eval.test/v1',
+            modelId: options.model ?? 'test-model',
+          }),
           create: async (options) => {
             selectedModel = options.model
             return {
@@ -2313,6 +2320,80 @@ expect:
       })
       expect(compareCapture.stderr).toEqual([])
     } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the production Project Eval identity target resolver hermetically', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-cli-project-eval-identity-'),
+    )
+    const cwd = join(root, 'cwd')
+    const configRoot = join(root, 'config')
+    await mkdir(cwd, { recursive: true })
+    await mkdir(configRoot, { recursive: true })
+    const factory = createDefaultDependencies().projectEval?.runtimeFactory
+    if (!factory) throw new Error('Project Eval runtime factory unavailable')
+    const names = [
+      'PRAXIS_PROVIDER',
+      'PRAXIS_PROVIDER_PROFILE',
+      'PRAXIS_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    ] as const
+    const previous = Object.fromEntries(
+      names.map((name) => [name, process.env[name]]),
+    )
+    try {
+      process.env.PRAXIS_PROVIDER = 'anthropic'
+      delete process.env.PRAXIS_PROVIDER_PROFILE
+      delete process.env.PRAXIS_MODEL
+      process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'fixture-sonnet'
+      const options = {
+        dataPlane: 'native' as const,
+        cwd,
+        configRoot,
+        home: join(root, 'home'),
+        model: 'sonnet',
+        maxTurns: 1,
+        pluginDirectories: [],
+        allowedTools: ['Read'],
+        addDirs: [],
+        env: {},
+      }
+      await expect(factory.identify(options)).resolves.toMatchObject({
+        providerId: 'anthropic',
+        modelId: 'fixture-sonnet',
+      })
+
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({
+          provider: 'relay',
+          providers: {
+            relay: {
+              protocol: 'anthropic-messages',
+              profiles: {
+                default: {
+                  baseUrl: 'https://relay.example/v1',
+                  credential: { source: 'env', name: 'RELAY_KEY' },
+                },
+              },
+            },
+          },
+        }),
+      )
+      delete process.env.PRAXIS_PROVIDER
+      delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+      await expect(factory.identify(options)).resolves.toMatchObject({
+        providerId: 'relay',
+        modelId: 'sonnet',
+      })
+    } finally {
+      for (const name of names) {
+        const value = previous[name]
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
       await rm(root, { recursive: true, force: true })
     }
   })

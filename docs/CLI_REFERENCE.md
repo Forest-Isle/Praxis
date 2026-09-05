@@ -184,7 +184,15 @@ argv without a shell, with bounded output/time and a minimal environment.
 
 Artifacts default to `$PRAXIS_HOME/evals/results/<timestamp>` (or the configured
 native config root), with `aggregate-result.json` and per-case/run
-`trace.jsonl`, `workspace-diff.json`, `verification.json`, and `result.json`.
+`trace.jsonl`, `workspace-diff.json`, `verification.json`, `identity.json`, and
+`result.json`. `result.json`, `aggregate-result.json`, and
+`comparison-result.json` use schema `1.1`; `identity.json` uses schema `1.0`,
+while trace, workspace-diff, and verification formats are unchanged. Each run
+embeds a deterministic, path-independent identity covering the effective
+provider, profile, protocol, endpoint digest, alias-resolved model,
+configuration, tools, prompt, fixture corpus, and runtime. Raw endpoints,
+prompts, secrets, host environment, and absolute temporary paths are never
+persisted in that identity.
 
 Compare two separate completed runs without rerunning either target:
 
@@ -195,12 +203,18 @@ praxis eval compare --baseline ./baseline/aggregate-result.json \
 ```
 
 The command writes `comparison-result.json` beside the candidate artifact (or
-under `--output-dir`). Each input must be an internally consistent v1.0 JSON
-regular file of at most 8 MiB, not a symlink. The command requires matching,
+under `--output-dir`). Each input must be an internally consistent v1.1 JSON
+regular file of at most 8 MiB, not a symlink; legacy v1.0 aggregates are
+rejected explicitly. The command requires matching,
 complete `(case, run)` sets and fails with status 1 when any previously passing
 matching `(case, run)` fails in the candidate, when candidate pass rate or
 safety pass rate regresses, or when complete safety evidence is unavailable. A
-process interruption returns status 130 without writing a completed comparison.
+comparison also fails closed before writing an artifact when provider, model,
+configuration, tools, prompt, corpus, or execution-environment identity
+dimensions differ. Praxis implementation version and identity digest fields
+may differ between baseline and candidate.
+A process interruption returns status 130 without writing a completed
+comparison.
 Safety is the eight harness checks
 (`trace-bounds`, `runtime-close`, `workspace-manifest`, `source-unchanged`,
 `allowed-paths`, `forbidden-paths`, `artifact-write`, and `temp-cleanup`).

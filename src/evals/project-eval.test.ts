@@ -29,7 +29,7 @@ import {
 } from './project-eval.js'
 import { runProjectEvalCase } from './project-eval-runner.js'
 import type {
-  EvalRuntimeFactory,
+  IdentifiedEvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import {
@@ -66,6 +66,16 @@ async function writeCase(
   await mkdir(join(caseDir, 'fixture'), { recursive: true })
   await writeFile(join(caseDir, 'case.yaml'), stringifyYaml(definition))
   return caseDir
+}
+
+function testIdentity(options: Pick<EvalRuntimeFactoryOptions, 'model'>) {
+  return {
+    providerId: 'test-provider',
+    profileId: 'default',
+    protocol: 'openai-compatible',
+    endpoint: 'https://eval.test/v1',
+    modelId: options.model ?? 'test-model',
+  }
 }
 
 afterEach(async () => {
@@ -325,7 +335,14 @@ describe('project eval lifecycle and artifacts', () => {
     await writeFile(join(caseDir, 'fixture', 'input.txt'), 'source')
 
     const created: EvalRuntimeFactoryOptions[] = []
-    const factory: EvalRuntimeFactory = {
+    const factory: IdentifiedEvalRuntimeFactory = {
+      identify: async (options) => ({
+        providerId: 'test-provider',
+        profileId: 'default',
+        protocol: 'openai-compatible',
+        endpoint: 'https://eval.test/v1',
+        modelId: options.model ?? 'test-model',
+      }),
       create: async (options) => {
         created.push(options)
         const run = created.length
@@ -385,7 +402,7 @@ describe('project eval lifecycle and artifacts', () => {
     expect(outputDir).toContain(join(configRoot, 'evals', 'results'))
     expect(outputDir).not.toContain(project)
     expect(aggregate).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       version: 'test-version',
       model: 'override-model',
       case_count: 1,
@@ -420,6 +437,7 @@ describe('project eval lifecycle and artifacts', () => {
           'trace.jsonl',
           'workspace-diff.json',
           'verification.json',
+          'identity.json',
           'result.json',
         ].map((name) => access(join(runDir, name))),
       )
@@ -435,6 +453,13 @@ describe('project eval lifecycle and artifacts', () => {
         cost_usd: 0.25,
         termination: null,
       })
+      const identity = await readJson(join(runDir, 'identity.json'))
+      expect(identity).toMatchObject({
+        schema_version: '1.0',
+        model_id: 'override-model',
+        runtime: { engine: 'praxis' },
+      })
+      expect(result.identity).toEqual(identity)
       const verification = JSON.parse(
         await readFile(join(runDir, 'verification.json'), 'utf8'),
       ) as Array<Record<string, unknown>>
@@ -467,7 +492,14 @@ describe('project eval lifecycle and artifacts', () => {
     ]
     await writeCase(project, 'authorization', definition)
     let factoryCalls = 0
-    const factory: EvalRuntimeFactory = {
+    const factory: IdentifiedEvalRuntimeFactory = {
+      identify: async (options) => ({
+        providerId: 'test-provider',
+        profileId: 'default',
+        protocol: 'openai-compatible',
+        endpoint: 'https://eval.test/v1',
+        modelId: options.model ?? 'test-model',
+      }),
       create: async () => {
         factoryCalls += 1
         throw new Error('factory must not be called')
@@ -503,6 +535,13 @@ describe('project eval lifecycle and artifacts', () => {
       {
         configRoot,
         runtimeFactory: {
+          identify: async (options) => ({
+            providerId: 'test-provider',
+            profileId: 'default',
+            protocol: 'openai-compatible',
+            endpoint: 'https://eval.test/v1',
+            modelId: options.model ?? 'test-model',
+          }),
           create: async () => ({
             run: async () => ({ text: 'done', turns: 1 }),
           }),
@@ -553,6 +592,7 @@ describe('project eval lifecycle and artifacts', () => {
     const result = await runProjectEvalCase({
       case: loaded,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async (options) => ({
           run: async () => {
             options.eventSink({
@@ -598,6 +638,7 @@ describe('project eval lifecycle and artifacts', () => {
     const result = await runProjectEvalCase({
       case: loaded,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async (options) => ({
           run: async () => {
             options.eventSink({
@@ -637,6 +678,13 @@ describe('project eval lifecycle and artifacts', () => {
         execution: { ...loaded.execution, timeoutSeconds: 1 },
       },
       factory: {
+        identify: async (options) => ({
+          providerId: 'test-provider',
+          profileId: 'default',
+          protocol: 'openai-compatible',
+          endpoint: 'https://eval.test/v1',
+          modelId: options.model ?? 'test-model',
+        }),
         create: async () => ({
           run: async (_prompt, signal) =>
             new Promise((resolve) => {
@@ -669,6 +717,7 @@ describe('project eval lifecycle and artifacts', () => {
     const resultPromise = runProjectEvalCase({
       case: loaded,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async () => ({
           run: async (_prompt, signal) =>
             new Promise((resolve) => {
@@ -718,6 +767,7 @@ describe('project eval lifecycle and artifacts', () => {
       case: loaded,
       runVerification: true,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async () => ({
           run: async () => ({ text: 'done', turns: 1 }),
         }),
@@ -755,6 +805,7 @@ describe('project eval lifecycle and artifacts', () => {
       case: loaded,
       keepTemp: true,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async () => ({
           run: async () => ({ text: 'done', turns: 1 }),
         }),
@@ -782,6 +833,7 @@ describe('project eval lifecycle and artifacts', () => {
     const result = await runProjectEvalCase({
       case: loaded,
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async (options) => ({
           run: async () => {
             await writeFile(join(options.cwd, 'forbidden.txt'), 'forbidden')
@@ -819,6 +871,7 @@ describe('project eval lifecycle and artifacts', () => {
         execution: { ...loaded.execution, timeoutSeconds: 0 },
       },
       factory: {
+        identify: async (options) => testIdentity(options),
         create: async () => ({
           run: async (_prompt, signal) =>
             new Promise((_, reject) => {
@@ -851,6 +904,13 @@ describe('project eval lifecycle and artifacts', () => {
       {
         configRoot,
         runtimeFactory: {
+          identify: async (options) => ({
+            providerId: 'test-provider',
+            profileId: 'default',
+            protocol: 'openai-compatible',
+            endpoint: 'https://eval.test/v1',
+            modelId: options.model ?? 'test-model',
+          }),
           create: async () => ({
             run: async (_prompt, signal) =>
               new Promise((_, reject) => {
