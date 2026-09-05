@@ -420,7 +420,7 @@ status claims.
 Isolate provider/model/configuration overrides from the host environment.
 Acceptance: provider tests select and report only their declared configuration.
 
-### Task 6.3: Per-case regression gate [depends: Task 6.2]
+### Task 6.3: Per-case regression gate [depends: Task 6.2] [implemented by #680]
 
 Make aggregate comparisons fail when any previously passing individual case
 regresses. Acceptance: a case-level regression cannot be masked by another

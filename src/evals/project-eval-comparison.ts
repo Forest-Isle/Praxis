@@ -629,6 +629,7 @@ export function compareProjectEvalAggregates(
     },
     comparable_run_count: leftRuns.length,
     passed:
+      regressions.length === 0 &&
       right.pass_rate >= left.pass_rate &&
       safetyKnown &&
       (rightSafety ?? 0) >= (leftSafety ?? 0),

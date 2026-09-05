@@ -307,7 +307,7 @@ describe('project eval comparison', () => {
     })
   })
 
-  it('gates on aggregate pass rate while retaining per-run regressions', async () => {
+  it('fails when a matching run regresses despite aggregate pass-rate parity', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-eval-compare-rate-'))
     roots.push(root)
     const baselinePath = join(root, 'baseline.json')
@@ -346,9 +346,9 @@ describe('project eval comparison', () => {
         ],
         { stdout: (value) => output.push(value), stderr: () => undefined },
       ),
-    ).resolves.toBe(0)
+    ).resolves.toBe(1)
     expect(JSON.parse(output[0] ?? '{}')).toMatchObject({
-      passed: true,
+      passed: false,
       regressions: [{ case: 'case-a', run: 1 }],
       metrics: { pass_rate: { delta: 0 } },
     })

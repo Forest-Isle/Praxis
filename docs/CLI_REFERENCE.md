@@ -197,7 +197,8 @@ praxis eval compare --baseline ./baseline/aggregate-result.json \
 The command writes `comparison-result.json` beside the candidate artifact (or
 under `--output-dir`). Each input must be an internally consistent v1.0 JSON
 regular file of at most 8 MiB, not a symlink. The command requires matching,
-complete `(case, run)` sets and fails with status 1 when candidate pass rate or
+complete `(case, run)` sets and fails with status 1 when any previously passing
+matching `(case, run)` fails in the candidate, when candidate pass rate or
 safety pass rate regresses, or when complete safety evidence is unavailable. A
 process interruption returns status 130 without writing a completed comparison.
 Safety is the eight harness checks
