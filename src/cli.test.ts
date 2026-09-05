@@ -2249,10 +2249,21 @@ expect:
 `,
     )
     let selectedModel: string | undefined
+    let buildIdentityLoads = 0
+    const buildIdentity = {
+      schema_version: '1.0' as const,
+      source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
+      source_dirty: false,
+      artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+    }
     const projectDependencies: CliDependencies = {
       ...dependencies(),
       projectEval: {
         configRoot,
+        loadBuildIdentity: async () => {
+          buildIdentityLoads += 1
+          return buildIdentity
+        },
         runtimeFactory: {
           identify: async (options) => ({
             providerId: 'test-provider',
@@ -2280,6 +2291,7 @@ expect:
         ),
       ).resolves.toBe(0)
       expect(selectedModel).toBe('prefixed-model')
+      expect(buildIdentityLoads).toBe(1)
       const aggregate = JSON.parse(capture.stdout.join('')) as {
         output_dir: string
         model: string
@@ -2294,6 +2306,13 @@ expect:
       expect(capture.stderr).toEqual([])
 
       const aggregatePath = join(aggregate.output_dir, 'aggregate-result.json')
+      const routedIdentity = JSON.parse(
+        await readFile(
+          join(aggregate.output_dir, 'basic', 'run-1', 'identity.json'),
+          'utf8',
+        ),
+      ) as { runtime: { build: unknown } }
+      expect(routedIdentity.runtime.build).toEqual(buildIdentity)
       const compareCapture = captureIO()
       await expect(
         run(
@@ -2314,6 +2333,7 @@ expect:
           projectDependencies,
         ),
       ).resolves.toBe(0)
+      expect(buildIdentityLoads).toBe(1)
       expect(JSON.parse(compareCapture.stdout.join(''))).toMatchObject({
         passed: true,
         comparable_run_count: 1,

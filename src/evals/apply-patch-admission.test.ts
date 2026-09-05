@@ -26,6 +26,13 @@ const APPLY_PATCH_ADMISSION_ROOT = join(
 const roots: string[] = []
 const keptWorkspaceRoots: string[] = []
 const externalEscapeFiles: string[] = []
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+const loadTestBuildIdentity = async () => TEST_BUILD_IDENTITY
 
 interface RequestCapture {
   requests: ModelRequest[]
@@ -304,6 +311,7 @@ async function runEval(variant: 'baseline' | 'candidate', outputDir: string) {
     { stdout: (message) => output.push(message), stderr: () => undefined },
     {
       configRoot: join(outputDir, 'config'),
+      loadBuildIdentity: loadTestBuildIdentity,
       runtimeFactory: createFactory(variant),
       version: 'apply-patch-admission-test',
     },
@@ -676,6 +684,7 @@ describe('ApplyPatch admission eval', () => {
       },
       {
         configRoot: join(root, 'unused-config'),
+        loadBuildIdentity: loadTestBuildIdentity,
         runtimeFactory: createFactory('candidate'),
         version: 'apply-patch-admission-test',
       },

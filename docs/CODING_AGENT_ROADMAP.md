@@ -437,7 +437,13 @@ reject legacy aggregate `1.0` inputs, while identity data stays deterministic,
 path-independent, and free of raw endpoints, secrets, prompts, and host
 environment values.
 
-### Task 6.5: Verifier strengthening and risk-tier coverage [depends: Task 6.4]
+### Task 6.4a: Build provenance [implemented by #688; depends: Task 6.4]
+
+Record validated source revision, dirty state, and emitted-artifact digest for
+each built CLI; bump identity sidecars to schema `1.1` while keeping candidate
+builds comparable on existing dimensions.
+
+### Task 6.5: Verifier strengthening and risk-tier coverage [depends: Task 6.4a]
 
 Strengthen deterministic verifiers and expand risk-tier coverage. Acceptance:
 verifier and risk-tier failures fail closed before later qualification work.

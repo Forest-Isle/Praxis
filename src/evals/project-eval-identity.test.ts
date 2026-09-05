@@ -12,6 +12,13 @@ import {
 } from './project-eval-identity.js'
 import type { ProjectEvalCase } from './project-eval-schema.js'
 
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: ('git:' + 'a'.repeat(40)) as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+
 function makeCase(overrides: Partial<ProjectEvalCase> = {}): ProjectEvalCase {
   return {
     schemaVersion: '1.0',
@@ -58,6 +65,7 @@ function makeIdentity(
     },
     effectiveTools: ['Read'],
     runVerification: false,
+    buildIdentity: TEST_BUILD_IDENTITY,
     praxisVersion: '0.1.0',
     nodeVersion: 'node-test',
     platform: 'test-platform',
@@ -291,6 +299,33 @@ describe('project eval identity', () => {
         'runtime.runtime_sha256',
       ],
       [
+        'source revision',
+        makeIdentity({
+          buildIdentity: {
+            ...TEST_BUILD_IDENTITY,
+            source_revision: `git:${'c'.repeat(40)}`,
+          },
+        }),
+        'runtime.runtime_sha256',
+      ],
+      [
+        'source dirty state',
+        makeIdentity({
+          buildIdentity: { ...TEST_BUILD_IDENTITY, source_dirty: true },
+        }),
+        'runtime.runtime_sha256',
+      ],
+      [
+        'emitted artifact',
+        makeIdentity({
+          buildIdentity: {
+            ...TEST_BUILD_IDENTITY,
+            artifact_sha256: `sha256:${'d'.repeat(64)}`,
+          },
+        }),
+        'runtime.runtime_sha256',
+      ],
+      [
         'Node version',
         makeIdentity({ nodeVersion: 'node-other' }),
         'runtime.runtime_sha256',
@@ -447,6 +482,14 @@ describe('project eval identity', () => {
     expect(() =>
       validateProjectEvalIdentity({ ...identity, schema_version: '0.9' }),
     ).toThrow('schema_version')
+    expect(() =>
+      makeIdentity({
+        buildIdentity: {
+          ...TEST_BUILD_IDENTITY,
+          artifact_sha256: 'sha256:invalid',
+        },
+      }),
+    ).toThrow('Invalid Praxis build identity')
     expect(() =>
       validateProjectEvalIdentity({
         ...identity,

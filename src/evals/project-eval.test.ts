@@ -78,6 +78,17 @@ function testIdentity(options: Pick<EvalRuntimeFactoryOptions, 'model'>) {
   }
 }
 
+const TEST_BUILD_IDENTITY = {
+  schema_version: '1.0' as const,
+  source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
+  source_dirty: false,
+  artifact_sha256: `sha256:${'b'.repeat(64)}` as `sha256:${string}`,
+}
+
+async function loadTestBuildIdentity() {
+  return TEST_BUILD_IDENTITY
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryRoots
@@ -366,12 +377,21 @@ describe('project eval lifecycle and artifacts', () => {
     const previousSentinel = process.env.PRAXIS_PROJECT_EVAL_SENTINEL
     process.env.PRAXIS_PROJECT_EVAL_SENTINEL = 'ambient-value'
     const output = capturedIo()
+    let buildIdentityLoads = 0
     let exitCode: number
     try {
       exitCode = await executeProjectEvalCommand(
         [project, '--run-verification', '--model', 'override-model', '--json'],
         output.io,
-        { runtimeFactory: factory, version: 'test-version', configRoot },
+        {
+          runtimeFactory: factory,
+          loadBuildIdentity: async () => {
+            buildIdentityLoads += 1
+            return TEST_BUILD_IDENTITY
+          },
+          version: 'test-version',
+          configRoot,
+        },
       )
     } finally {
       if (previousSentinel === undefined)
@@ -382,6 +402,7 @@ describe('project eval lifecycle and artifacts', () => {
     expect(exitCode).toBe(0)
     expect(output.stdout).toHaveLength(1)
     expect(output.stderr).toEqual([])
+    expect(buildIdentityLoads).toBe(1)
     expect(created).toHaveLength(2)
     for (const options of created) {
       expect(options).toMatchObject({
@@ -425,6 +446,10 @@ describe('project eval lifecycle and artifacts', () => {
       unknown_cost_runs: 0,
       partial: false,
       interrupted: false,
+      runs: [
+        { identity: { runtime: { build: TEST_BUILD_IDENTITY } } },
+        { identity: { runtime: { build: TEST_BUILD_IDENTITY } } },
+      ],
     })
     expect(await readJson(join(outputDir, 'aggregate-result.json'))).toEqual(
       aggregate,
@@ -455,9 +480,9 @@ describe('project eval lifecycle and artifacts', () => {
       })
       const identity = await readJson(join(runDir, 'identity.json'))
       expect(identity).toMatchObject({
-        schema_version: '1.0',
+        schema_version: '1.1',
         model_id: 'override-model',
-        runtime: { engine: 'praxis' },
+        runtime: { engine: 'praxis', build: TEST_BUILD_IDENTITY },
       })
       expect(result.identity).toEqual(identity)
       const verification = JSON.parse(
@@ -477,6 +502,62 @@ describe('project eval lifecycle and artifacts', () => {
     await expect(
       access(join(caseDir, 'fixture', 'result.txt')),
     ).rejects.toThrow()
+  })
+
+  it('fails before runtime or artifacts when build identity loading fails', async () => {
+    const project = await temporaryRoot('praxis-project-eval-build-error-')
+    const configRoot = await temporaryRoot(
+      'praxis-project-eval-build-error-config-',
+    )
+    const outputDir = join(configRoot, 'explicit-output')
+    await writeCase(project, 'build-error')
+    let factoryCalls = 0
+
+    await expect(
+      executeProjectEvalCommand(
+        [project, '--output-dir', outputDir],
+        capturedIo().io,
+        {
+          configRoot,
+          loadBuildIdentity: async () => {
+            throw new Error(
+              'Invalid Praxis build identity: metadata is missing or unreadable',
+            )
+          },
+          runtimeFactory: {
+            identify: async () => {
+              factoryCalls += 1
+              throw new Error('factory must not be called')
+            },
+            create: async () => {
+              factoryCalls += 1
+              throw new Error('factory must not be called')
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow('metadata is missing or unreadable')
+    expect(factoryCalls).toBe(0)
+    await expect(access(outputDir)).rejects.toThrow()
+  })
+
+  it('does not load build identity for project eval help', async () => {
+    let loads = 0
+    const code = await executeProjectEvalCommand(['--help'], capturedIo().io, {
+      configRoot: '/unused',
+      loadBuildIdentity: async () => {
+        loads += 1
+        return TEST_BUILD_IDENTITY
+      },
+      runtimeFactory: {
+        identify: async () => testIdentity({}),
+        create: async () => {
+          throw new Error('factory must not be called')
+        },
+      },
+    })
+    expect(code).toBe(0)
+    expect(loads).toBe(0)
   })
 
   it('rejects verifier and gated-tool authorization before runtime creation', async () => {
@@ -509,6 +590,7 @@ describe('project eval lifecycle and artifacts', () => {
     await expect(
       executeProjectEvalCommand([project], capturedIo().io, {
         runtimeFactory: factory,
+        loadBuildIdentity: loadTestBuildIdentity,
         configRoot,
       }),
     ).rejects.toThrow('Verification requires --run-verification')
@@ -516,7 +598,11 @@ describe('project eval lifecycle and artifacts', () => {
       executeProjectEvalCommand(
         [project, '--run-verification'],
         capturedIo().io,
-        { runtimeFactory: factory, configRoot },
+        {
+          runtimeFactory: factory,
+          loadBuildIdentity: loadTestBuildIdentity,
+          configRoot,
+        },
       ),
     ).rejects.toThrow('grant it with --allow-tools')
     expect(factoryCalls).toBe(0)
@@ -534,6 +620,7 @@ describe('project eval lifecycle and artifacts', () => {
       output.io,
       {
         configRoot,
+        loadBuildIdentity: loadTestBuildIdentity,
         runtimeFactory: {
           identify: async (options) => ({
             providerId: 'test-provider',
@@ -591,6 +678,7 @@ describe('project eval lifecycle and artifacts', () => {
     const loaded = await loadProjectEvalCase(caseDir)
     const result = await runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => testIdentity(options),
         create: async (options) => ({
@@ -637,6 +725,7 @@ describe('project eval lifecycle and artifacts', () => {
     )
     const result = await runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => testIdentity(options),
         create: async (options) => ({
@@ -677,6 +766,7 @@ describe('project eval lifecycle and artifacts', () => {
         ...loaded,
         execution: { ...loaded.execution, timeoutSeconds: 1 },
       },
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => ({
           providerId: 'test-provider',
@@ -716,6 +806,7 @@ describe('project eval lifecycle and artifacts', () => {
     const controller = new AbortController()
     const resultPromise = runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => testIdentity(options),
         create: async () => ({
@@ -765,6 +856,7 @@ describe('project eval lifecycle and artifacts', () => {
     )
     const result = await runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       runVerification: true,
       factory: {
         identify: async (options) => testIdentity(options),
@@ -803,6 +895,7 @@ describe('project eval lifecycle and artifacts', () => {
     const loaded = await loadProjectEvalCase(await writeCase(project, 'kept'))
     const result = await runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       keepTemp: true,
       factory: {
         identify: async (options) => testIdentity(options),
@@ -832,6 +925,7 @@ describe('project eval lifecycle and artifacts', () => {
     const loaded = await loadProjectEvalCase(caseDir)
     const result = await runProjectEvalCase({
       case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => testIdentity(options),
         create: async (options) => ({
@@ -870,6 +964,7 @@ describe('project eval lifecycle and artifacts', () => {
         ...loaded,
         execution: { ...loaded.execution, timeoutSeconds: 0 },
       },
+      buildIdentity: TEST_BUILD_IDENTITY,
       factory: {
         identify: async (options) => testIdentity(options),
         create: async () => ({
@@ -903,6 +998,7 @@ describe('project eval lifecycle and artifacts', () => {
       output.io,
       {
         configRoot,
+        loadBuildIdentity: loadTestBuildIdentity,
         runtimeFactory: {
           identify: async (options) => ({
             providerId: 'test-provider',

@@ -134,12 +134,14 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
 
 - **Outcome-driven evaluation** — `praxis eval <target>` runs contained cases
   in isolated workspaces, requires explicit verifier authorization, and writes
-  versioned artifacts with deterministic run identities locally; usage and cost
+  versioned artifacts with deterministic run identities locally, including the
+  Praxis source revision, dirty state, and emitted-runtime digest; usage and cost
   remain explicitly available or unknown. Separate runs can be compared with
   `praxis eval compare` only when provider, model, configuration, tools, prompt,
-  corpus, and runtime-environment identities match. Unknown token/cost evidence
-  produces null deltas, while the gate requires no pass-rate or safety-rate
-  regression and rejects incomplete safety evidence.
+  corpus, and host-runtime identities match; Praxis version and build provenance
+  remain attribution fields so candidate builds may differ. Unknown token/cost
+  evidence produces null deltas, while the gate requires no pass-rate or
+  safety-rate regression and rejects incomplete safety evidence.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,

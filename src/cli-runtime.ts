@@ -284,6 +284,7 @@ import type {
   IdentifiedEvalRuntimeFactory,
 } from './evals/eval-contract.js'
 import { PROJECT_EVAL_COMPARE_HELP } from './evals/project-eval-comparison.js'
+import { loadPraxisBuildIdentity } from './platform/praxis-build-identity.js'
 import {
   CLAUDE_PLUGIN_PRUNE_HELP,
   CLAUDE_PLUGIN_TAG_HELP,
@@ -3531,6 +3532,7 @@ export function createDefaultDependencies(
     },
     projectEval: {
       runtimeFactory: defaultProjectEvalRuntimeFactory,
+      loadBuildIdentity: () => loadPraxisBuildIdentity(),
       version: VERSION,
       configRoot: resolveDataPlaneRoot(),
     },
