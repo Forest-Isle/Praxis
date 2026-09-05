@@ -73,7 +73,7 @@
     "provenance": true
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.73",
+    "@anthropic-ai/sandbox-runtime": "^0.0.75",
     "@anthropic-ai/tokenizer": "^0.0.4",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "acorn": "^8.18.0",
@@ -86,7 +86,7 @@
     "ipaddr.js": "^2.2.0",
     "minimatch": "^10.2.6",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "6.2.108",
+    "pdfjs-dist": "6.3.289",
     "quickjs-emscripten": "^0.32.0",
     "quickjs-emscripten-core": "^0.32.0",
     "react": "^19.2.8",
