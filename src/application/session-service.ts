@@ -118,7 +118,10 @@ import {
   isPromptTooLongError,
 } from '../core/context-budget.js'
 import { ContextEngine } from './context-engine.js'
-import { ContextPreparation } from './context-preparation.js'
+import {
+  ContextPreparation,
+  StaleContextGenerationError,
+} from './context-preparation.js'
 import { TurnMemoryCoordinator } from './turn-memory-coordinator.js'
 import {
   injectFirstUserMessageContext,
@@ -163,6 +166,9 @@ import {
 } from './native-session-transcript.js'
 import { TurnPersistence } from './turn-persistence.js'
 import { TurnAccounting } from './turn-accounting.js'
+import { CompactionAccounting } from './compaction-accounting.js'
+import { classifyCompactionError } from './compaction-errors.js'
+import { NativeCompactionReceiptFileStore } from '../persistence/native-compaction-receipt-store.js'
 import type { ClaudeCostStateStore } from '../persistence/claude-cost-state-store.js'
 import { SubagentLifecycleStore } from '../persistence/subagent-lifecycle-store.js'
 import { ModelCompactor } from './model-compactor.js'
@@ -192,7 +198,6 @@ import type {
 import {
   ClaudeSessionCostTracker,
   type ClaudeSessionCostSnapshot,
-  type ClaudeSessionTurnInput,
 } from './session-cost-tracker.js'
 import { ClaudeWorktreeToolRegistry } from '../tools/claude-worktree-tools.js'
 import { completeMeteredModelRequest } from './metered-model-completion.js'
@@ -1295,6 +1300,10 @@ export class ClaudeSessionService {
     string,
     ClaudeSessionCostTracker
   >()
+  private readonly compactionAccountings = new Map<
+    string,
+    CompactionAccounting
+  >()
   private activeCostSessionId: string | undefined
   private closeCostSavePromise: Promise<void> | undefined
   private closeMetadataSavePromise: Promise<void> | undefined
@@ -1649,6 +1658,7 @@ export class ClaudeSessionService {
     await this.closeMetadataSavePromise
     this.closeCostSavePromise ??= this.persistActiveSessionCost()
     await this.closeCostSavePromise
+    this.compactionAccountings.clear()
     this.mcpClosePromise ??= this.options.mcp?.close?.() ?? Promise.resolve()
     await this.mcpClosePromise
     await this.leadOperations?.close()
@@ -3083,12 +3093,28 @@ export class ClaudeSessionService {
       this.assertSessionPersistence()
       const provider = this.provider()
       const sessionPaths = this.paths(sessionId)
+      const nativeStore = new NativeTranscriptStore({
+        transcriptFile: sessionPaths.sessionFile,
+        lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
+      })
+      const existingTranscript = await nativeStore.load()
+      if (existingTranscript.records.length === 0)
+        throw new Error('native transcript session is missing or empty')
+      if (
+        existingTranscript.records.some(
+          (record) => record.event.sessionId !== sessionId,
+        )
+      )
+        throw new Error('native transcript sessionId does not match')
+      await this.activateSessionCostTracker(sessionId)
+      const compactionAccounting = this.compactionAccounting(
+        sessionId,
+        nativeStore,
+      )
+      await compactionAccounting.recover()
       const nativeTranscript = new NativeSessionTranscript({
         sessionId,
-        store: new NativeTranscriptStore({
-          transcriptFile: sessionPaths.sessionFile,
-          lockFile: join(sessionPaths.praxisRoot, 'locks', `${sessionId}.lock`),
-        }),
+        store: nativeStore,
       })
       return nativeTranscript.withLease(
         {
@@ -3105,8 +3131,16 @@ export class ClaudeSessionService {
               (event: TranscriptEvent) => event.id === selection.messageId,
             )
             if (targetIndex < 0)
-              throw new Error(
-                `No native rewind point found with event.id: ${selection.messageId}`,
+              throw classifyCompactionError(
+                new Error(
+                  `No native rewind point found with event.id: ${selection.messageId}`,
+                ),
+                {
+                  trigger: 'manual',
+                  phase: 'validation',
+                  durableState: 'not_committed',
+                  recoveryDisposition: 'none',
+                },
               )
             const selectedEvents =
               selection.direction === 'from'
@@ -3128,10 +3162,19 @@ export class ClaudeSessionService {
                 : branchEvents[targetIndex - 1]
             )?.id
           } else {
-            memorySelection = await this.selectMemoryPreservedCompact(
-              sessionId,
-              projectNativeSessionEntries(branchEvents),
-            )
+            try {
+              memorySelection = await this.selectMemoryPreservedCompact(
+                sessionId,
+                projectNativeSessionEntries(branchEvents),
+              )
+            } catch (error) {
+              throw classifyCompactionError(error, {
+                trigger: 'manual',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              })
+            }
             if (memorySelection) {
               messages = [
                 memorySelection.memoryMessage,
@@ -3144,150 +3187,218 @@ export class ClaudeSessionService {
             }
           }
           if (messages.length === 0)
-            throw new Error('Cannot compact an empty native transcript')
-          // Do not create cost-state sidecars until the transcript has been
-          // validated and a compactable message set exists.
-          await this.activateSessionCostTracker(sessionId)
+            throw classifyCompactionError(
+              new Error('Cannot compact an empty native transcript'),
+              {
+                trigger: 'manual',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              },
+            )
           const preTokens = estimateModelRequestTokens(messages)
           this.options.eventSink?.({ type: 'state', state: 'compacting' })
           const contextWindowTokens =
             this.contextBudget(provider)?.contextWindowTokens ??
             provider.capabilities.contextWindowTokens ??
             200_000
-          const preCompact = await this.runAdvisoryHook(
-            sessionId,
-            'PreCompact',
-            {
+          let preCompact: ClaudeHookOutcome | undefined
+          try {
+            preCompact = await this.runAdvisoryHook(
+              sessionId,
+              'PreCompact',
+              {
+                trigger: 'manual',
+                custom_instructions: selection?.context ?? null,
+              },
+              'manual',
+              signal,
+            )
+          } catch (error) {
+            throw classifyCompactionError(error, {
               trigger: 'manual',
-              custom_instructions: selection?.context ?? null,
-            },
-            'manual',
-            signal,
-          )
-          const compacted = await (
-            this.options.compactor ?? new ModelCompactor(provider)
-          ).compact({
-            messages: [
-              ...messages,
-              ...(selection?.context
-                ? [
-                    {
-                      role: 'user' as const,
-                      content: `Additional summarization context: ${selection.context}`,
-                    },
-                  ]
-                : []),
-              ...successfulHookOutput(preCompact).map((content) => ({
-                role: 'user' as const,
-                content: `Additional summarization context: ${content}`,
-              })),
-            ],
-            targetTokens: Math.min(
-              8192,
-              Math.max(1, Math.floor(contextWindowTokens / 4)),
-            ),
-            contextWindowTokens,
-            ...(signal ? { signal } : {}),
-          })
+              phase: 'generation',
+              durableState: 'not_committed',
+              recoveryDisposition: 'none',
+            })
+          }
+          let compacted: CompactionResult
+          try {
+            compacted = await (
+              this.options.compactor ?? new ModelCompactor(provider)
+            ).compact({
+              messages: [
+                ...messages,
+                ...(selection?.context
+                  ? [
+                      {
+                        role: 'user' as const,
+                        content: `Additional summarization context: ${selection.context}`,
+                      },
+                    ]
+                  : []),
+                ...successfulHookOutput(preCompact).map((content) => ({
+                  role: 'user' as const,
+                  content: `Additional summarization context: ${content}`,
+                })),
+              ],
+              targetTokens: Math.min(
+                8192,
+                Math.max(1, Math.floor(contextWindowTokens / 4)),
+              ),
+              contextWindowTokens,
+              ...(signal ? { signal } : {}),
+            })
+          } catch (error) {
+            throw classifyCompactionError(error, {
+              trigger: 'manual',
+              phase: 'generation',
+              durableState: 'not_committed',
+              recoveryDisposition: 'none',
+            })
+          }
           if (signal?.aborted) throw new AgentRunCancelledError()
-          const { durationMs, durationWithoutRetriesMs } =
-            requireCompactionDurations(compacted)
-          requireManualCompactUsage(compacted.usage)
+          let durationMs: number
+          let durationWithoutRetriesMs: number
+          try {
+            const durations = requireCompactionDurations(compacted)
+            durationMs = durations.durationMs
+            durationWithoutRetriesMs = durations.durationWithoutRetriesMs
+            requireManualCompactUsage(compacted.usage)
+          } catch (error) {
+            throw classifyCompactionError(error, {
+              trigger: 'manual',
+              phase: 'validation',
+              durableState: 'not_committed',
+              recoveryDisposition: 'none',
+            })
+          }
           const compactModel =
             compacted.model !== undefined && compacted.model.trim() !== ''
               ? compacted.model
               : provider.model
           const meaningfulMetering =
             compacted.summary.trim().length > 0 &&
-            (hasNonZeroUsage(compacted.usage) || durationMs > 0)
+            hasNonZeroUsage(compacted.usage)
+          if (compacted.summary.trim().length === 0)
+            throw classifyCompactionError(
+              new Error('Native compact summary must not be blank'),
+              {
+                trigger: 'manual',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              },
+            )
           if (
             meaningfulMetering &&
             (compactModel === undefined || compactModel.trim() === '')
           )
-            throw new Error(
-              'Manual compact usage requires a nonblank model identity',
+            throw classifyCompactionError(
+              new Error(
+                'Manual compact usage requires a nonblank model identity',
+              ),
+              {
+                trigger: 'manual',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              },
             )
-          const tracker = this.sessionCostTrackers.get(sessionId)
-          if (!tracker)
-            throw new Error(
-              `Session cost tracker is not active for session ${sessionId}`,
-            )
-          let meteringTurnInput: ClaudeSessionTurnInput | undefined
-          if (
-            meaningfulMetering &&
-            compactModel !== undefined &&
-            compactModel.trim() !== ''
-          ) {
-            const pricing = this.options.pricing?.resolve(compactModel)
-            const costUsd = pricing
-              ? usageCostUsd(compacted.usage, pricing)
-              : undefined
-            meteringTurnInput = {
-              model: compactModel,
+          const preparedTransaction = await compactionAccounting.prepare({
+            trigger: 'manual',
+            metric: {
               usage: compacted.usage,
-              ...(costUsd === undefined ? {} : { costUsd }),
-              ...(compacted.usage.webSearchRequests === undefined
-                ? {}
-                : { webSearchRequests: compacted.usage.webSearchRequests }),
-              apiDurationMs: durationMs,
-              apiDurationWithoutRetriesMs: durationWithoutRetriesMs,
-            }
-            const preflight = new ClaudeSessionCostTracker({
-              sessionId,
-              restored: tracker.snapshot(),
-            })
-            preflight.recordTurn(meteringTurnInput)
-          }
+              ...(hasNonZeroUsage(compacted.usage) && compactModel !== undefined
+                ? { model: compactModel }
+                : {}),
+              durationApiMs: durationMs,
+              durationApiWithoutRetriesMs: durationWithoutRetriesMs,
+            },
+          })
           const postTokens = estimateModelRequestTokens([
             { role: 'user', content: compacted.summary },
           ])
           if (signal?.aborted) throw new AgentRunCancelledError()
-          const ids = await lease.appendCompaction({
-            summary: compacted.summary,
-            trigger: 'manual',
-            preTokens,
-            postTokens,
-            durationMs,
-            ...(preservedMessages.length > 0 ? { preservedMessages } : {}),
-            ...(logicalParentId === undefined ? {} : { logicalParentId }),
-            ...(selection
-              ? {
-                  direction:
-                    selection.direction === 'to'
-                      ? ('up_to' as const)
-                      : ('from' as const),
-                  messagesSummarized: messages.length,
-                  preservePrefix:
-                    selection.direction === 'from' &&
-                    branchEvents.findIndex(
-                      (event: TranscriptEvent) =>
-                        event.id === selection.messageId,
-                    ) > 0,
-                }
-              : {}),
-            ...(memorySelection
-              ? {
-                  direction: 'from' as const,
-                  messagesSummarized: messages.length,
-                  preservePrefix: false,
-                }
-              : {}),
+          let ids: { boundaryId: string; summaryId: string }
+          try {
+            ids = await lease.appendCompaction({
+              summary: compacted.summary,
+              trigger: 'manual',
+              preTokens,
+              postTokens,
+              durationMs,
+              boundaryId: preparedTransaction.boundaryId,
+              summaryId: preparedTransaction.summaryId,
+              ...(preservedMessages.length > 0 ? { preservedMessages } : {}),
+              ...(logicalParentId === undefined ? {} : { logicalParentId }),
+              ...(selection
+                ? {
+                    direction:
+                      selection.direction === 'to'
+                        ? ('up_to' as const)
+                        : ('from' as const),
+                    messagesSummarized: messages.length,
+                    preservePrefix:
+                      selection.direction === 'from' &&
+                      branchEvents.findIndex(
+                        (event: TranscriptEvent) =>
+                          event.id === selection.messageId,
+                      ) > 0,
+                  }
+                : {}),
+              ...(memorySelection
+                ? {
+                    direction: 'from' as const,
+                    messagesSummarized: messages.length,
+                    preservePrefix: false,
+                  }
+                : {}),
+            })
+          } catch (error) {
+            throw classifyCompactionError(error, {
+              trigger: 'manual',
+              phase: 'transcript_commit',
+              durableState: 'indeterminate',
+              recoveryDisposition: 'reconcile',
+            })
+          }
+          await preparedTransaction.commit({
+            kind: 'compaction',
+            boundaryId: ids.boundaryId,
+            summaryId: ids.summaryId,
           })
-          if (meteringTurnInput !== undefined)
-            tracker.recordTurn(meteringTurnInput)
-          await this.runAdvisoryHook(
-            sessionId,
-            'PostCompact',
-            { trigger: 'manual', compact_summary: compacted.summary },
-            'manual',
-            signal,
-          )
-          this.options.eventSink?.({
-            type: 'compact-boundary',
-            trigger: 'manual',
-            preTokens,
-            uuid: ids.boundaryId,
-          })
+          try {
+            await this.runAdvisoryHook(
+              sessionId,
+              'PostCompact',
+              { trigger: 'manual', compact_summary: compacted.summary },
+              'manual',
+              signal,
+            )
+          } catch (error) {
+            throw classifyCompactionError(error, {
+              trigger: 'manual',
+              phase: 'post_commit',
+              durableState: 'committed',
+              recoveryDisposition: 'reconcile',
+            })
+          }
+          try {
+            this.options.eventSink?.({
+              type: 'compact-boundary',
+              trigger: 'manual',
+              preTokens,
+              uuid: ids.boundaryId,
+            })
+          } catch (error) {
+            throw classifyCompactionError(error, {
+              trigger: 'manual',
+              phase: 'post_commit',
+              durableState: 'committed',
+              recoveryDisposition: 'reconcile',
+            })
+          }
           return {
             summary: compacted.summary,
             usage: compacted.usage,
@@ -3515,7 +3626,10 @@ export class ClaudeSessionService {
     await this.options.interactiveTools?.setMode(sessionId, permissionMode)
   }
 
-  private async activateSessionCostTracker(sessionId: string): Promise<void> {
+  private async activateSessionCostTracker(
+    sessionId: string,
+    persistPrevious = true,
+  ): Promise<void> {
     if (this.activeCostSessionId === sessionId) return
     const store = this.options.costStateStore
     if (store) {
@@ -3523,7 +3637,7 @@ export class ClaudeSessionService {
       // Native state slot is not overwritten before it is read.
       const loaded = await store.load(sessionId)
       const currentId = this.activeCostSessionId
-      if (currentId !== undefined) {
+      if (persistPrevious && currentId !== undefined) {
         const current = this.sessionCostTrackers.get(currentId)
         if (current) await store.save(current.snapshot())
       }
@@ -3595,17 +3709,22 @@ export class ClaudeSessionService {
   }
 
   async costSnapshot(sessionId: string): Promise<ClaudeSessionCostSnapshot> {
-    const existing = this.sessionCostTrackers.get(sessionId)
-    if (existing) {
-      return this.withDetachedSubagentUsage(sessionId, existing.snapshot())
-    }
-    const store = this.options.costStateStore
-    const loaded = store ? await store.load(sessionId) : null
-    const tracker = new ClaudeSessionCostTracker({
+    const priorActiveCostSessionId = this.activeCostSessionId
+    await this.activateSessionCostTracker(sessionId, false)
+    // Snapshots are observational and must not change which session close()
+    // persists. A subsequent turn/compact activation will perform the normal
+    // target-load-before-current-save transition.
+    this.activeCostSessionId = priorActiveCostSessionId
+    const tracker = this.sessionCostTrackers.get(sessionId)
+    if (!tracker)
+      throw new Error(
+        `Session cost tracker is not active for session ${sessionId}`,
+      )
+    const accounting = this.compactionAccounting(
       sessionId,
-      ...(loaded ? { restored: loaded } : {}),
-    })
-    this.sessionCostTrackers.set(sessionId, tracker)
+      this.nativeStore(sessionId),
+    )
+    await accounting.recover()
     return this.withDetachedSubagentUsage(sessionId, tracker.snapshot())
   }
 
@@ -3744,6 +3863,7 @@ export class ClaudeSessionService {
       )
       const runUnderLease = async (
         persistence: TurnPersistence,
+        compactionAccounting: CompactionAccounting,
       ): Promise<SessionRunResult> => {
         const activeTracker = this.sessionCostTrackers.get(sessionId)
         if (!activeTracker) {
@@ -4911,8 +5031,30 @@ export class ClaudeSessionService {
             ...(budget ? { budget } : {}),
             autoCompact: this.options.autoCompact !== false,
             memory: {
-              beforeCompact: () => turnMemory.beforeCompact(),
-              afterCompact: () => turnMemory.afterCompact(),
+              beforeCompact: async () => {
+                try {
+                  await turnMemory.beforeCompact()
+                } catch (error) {
+                  throw classifyCompactionError(error, {
+                    trigger: 'auto',
+                    phase: 'validation',
+                    durableState: 'not_committed',
+                    recoveryDisposition: 'none',
+                  })
+                }
+              },
+              afterCompact: async () => {
+                try {
+                  await turnMemory.afterCompact()
+                } catch (error) {
+                  throw classifyCompactionError(error, {
+                    trigger: 'auto',
+                    phase: 'post_commit',
+                    durableState: 'committed',
+                    recoveryDisposition: 'reconcile',
+                  })
+                }
+              },
             },
           })
           observeModelRequestUsage = ({ usage, messages, tools }) => {
@@ -4971,26 +5113,56 @@ export class ClaudeSessionService {
                 ],
               }).envelope,
             propose: async () => {
-              if (!budget) throw new Error('Context budget is unavailable')
-              const definitions = contextPreparation.project().envelope.tools
-              const historyMessages = activeTurnMessages()
-              if (historyMessages.length === 0)
-                throw new Error('Cannot compact an empty native transcript')
-              if (unresolvedActiveToolCallIds(historyMessages).length > 0)
-                throw new Error(
-                  'Cannot compact a native transcript with unresolved tool calls',
+              if (!budget)
+                throw classifyCompactionError(
+                  new Error('Context budget is unavailable'),
+                  {
+                    trigger: 'auto',
+                    phase: 'validation',
+                    durableState: 'not_committed',
+                    recoveryDisposition: 'none',
+                  },
                 )
-              const irreducibleMessages = contextPreparation.project({
-                includeHistory: false,
-                includeMemory: false,
-                pendingMessages: [
-                  ...pendingMessages,
-                  ...preservedUserMessages.map((content) => ({
-                    role: 'user' as const,
-                    content,
-                  })),
-                ],
-              }).envelope.messages
+              const definitions = await autoValidation(
+                () => contextPreparation.project().envelope.tools,
+              )
+              const historyMessages = await autoValidation(activeTurnMessages)
+              if (historyMessages.length === 0)
+                throw classifyCompactionError(
+                  new Error('Cannot compact an empty native transcript'),
+                  {
+                    trigger: 'auto',
+                    phase: 'validation',
+                    durableState: 'not_committed',
+                    recoveryDisposition: 'none',
+                  },
+                )
+              if (unresolvedActiveToolCallIds(historyMessages).length > 0)
+                throw classifyCompactionError(
+                  new Error(
+                    'Cannot compact a native transcript with unresolved tool calls',
+                  ),
+                  {
+                    trigger: 'auto',
+                    phase: 'validation',
+                    durableState: 'not_committed',
+                    recoveryDisposition: 'none',
+                  },
+                )
+              const irreducibleMessages = await autoValidation(
+                () =>
+                  contextPreparation.project({
+                    includeHistory: false,
+                    includeMemory: false,
+                    pendingMessages: [
+                      ...pendingMessages,
+                      ...preservedUserMessages.map((content) => ({
+                        role: 'user' as const,
+                        content,
+                      })),
+                    ],
+                  }).envelope.messages,
+              )
               let compactableMessages = historyMessages
               let preservedMessages: ModelMessage[] = []
               let compactionLogicalParentId: string | undefined
@@ -5015,8 +5187,16 @@ export class ClaudeSessionService {
                     }
                   }
                   if (found < 0)
-                    throw new Error(
-                      'Native automatic compaction could not match the current-turn suffix',
+                    throw classifyCompactionError(
+                      new Error(
+                        'Native automatic compaction could not match the current-turn suffix',
+                      ),
+                      {
+                        trigger: 'auto',
+                        phase: 'validation',
+                        durableState: 'not_committed',
+                        recoveryDisposition: 'none',
+                      },
                     )
                   matchedIndexes.push(found)
                   searchFrom = found
@@ -5052,9 +5232,11 @@ export class ClaudeSessionService {
                 }
               }
               const memorySelection = sessionMemory
-                ? await this.selectMemoryPreservedCompact(
-                    sessionId,
-                    persistence.view().projectionEntries,
+                ? await autoValidation(() =>
+                    this.selectMemoryPreservedCompact(
+                      sessionId,
+                      persistence.view().projectionEntries,
+                    ),
                   )
                 : null
               if (memorySelection) {
@@ -5095,67 +5277,128 @@ export class ClaudeSessionService {
                     )?.id
                 }
               }
-              this.options.eventSink?.({ type: 'state', state: 'compacting' })
-              const preTokens = estimateModelRequestTokens(compactableMessages)
-              const compactEnvelope = budget.evaluate(
-                [
-                  ...irreducibleMessages,
-                  {
-                    role: 'user' as const,
-                    content: formatClaudeCompactSummary(''),
-                  },
-                ],
-                definitions,
-              )
-              budget.assertFits(compactEnvelope)
-              const compacted = await (
-                this.options.compactor ?? new ModelCompactor(provider)
-              ).compact({
-                messages: [
-                  ...compactableMessages,
-                  ...successfulHookOutput(
-                    await this.runAdvisoryHook(
-                      sessionId,
-                      'PreCompact',
-                      {
-                        trigger: 'auto',
-                        custom_instructions: null,
-                      },
-                      'auto',
-                      signal,
-                    ),
-                  ).map((content) => ({
-                    role: 'user' as const,
-                    content: `Additional summarization context: ${content}`,
-                  })),
-                ],
-                targetTokens: Math.min(
-                  8192,
-                  Math.max(
-                    1,
-                    compactEnvelope.availableTokens -
-                      compactEnvelope.estimatedTokens,
-                  ),
-                ),
-                contextWindowTokens: budget.contextWindowTokens,
-                ...(signal ? { signal } : {}),
+              await autoValidation(() => {
+                this.options.eventSink?.({
+                  type: 'state',
+                  state: 'compacting',
+                })
               })
-              const { durationMs, durationWithoutRetriesMs } =
-                requireCompactionDurations(compacted)
+              const preTokens = await autoValidation(() =>
+                estimateModelRequestTokens(compactableMessages),
+              )
+              const compactEnvelope = await autoValidation(() => {
+                const envelope = budget.evaluate(
+                  [
+                    ...irreducibleMessages,
+                    {
+                      role: 'user' as const,
+                      content: formatClaudeCompactSummary(''),
+                    },
+                  ],
+                  definitions,
+                )
+                budget.assertFits(envelope)
+                return envelope
+              })
+              let compacted: CompactionResult
+              try {
+                compacted = await (
+                  this.options.compactor ?? new ModelCompactor(provider)
+                ).compact({
+                  messages: [
+                    ...compactableMessages,
+                    ...successfulHookOutput(
+                      await this.runAdvisoryHook(
+                        sessionId,
+                        'PreCompact',
+                        {
+                          trigger: 'auto',
+                          custom_instructions: null,
+                        },
+                        'auto',
+                        signal,
+                      ),
+                    ).map((content) => ({
+                      role: 'user' as const,
+                      content: `Additional summarization context: ${content}`,
+                    })),
+                  ],
+                  targetTokens: Math.min(
+                    8192,
+                    Math.max(
+                      1,
+                      compactEnvelope.availableTokens -
+                        compactEnvelope.estimatedTokens,
+                    ),
+                  ),
+                  contextWindowTokens: budget.contextWindowTokens,
+                  ...(signal ? { signal } : {}),
+                })
+              } catch (error) {
+                throw classifyCompactionError(error, {
+                  trigger: 'auto',
+                  phase: 'generation',
+                  durableState: 'not_committed',
+                  recoveryDisposition: 'none',
+                })
+              }
+              let durationMs: number
+              let durationWithoutRetriesMs: number
+              try {
+                const durations = requireCompactionDurations(compacted)
+                durationMs = durations.durationMs
+                durationWithoutRetriesMs = durations.durationWithoutRetriesMs
+              } catch (error) {
+                throw classifyCompactionError(error, {
+                  trigger: 'auto',
+                  phase: 'validation',
+                  durableState: 'not_committed',
+                  recoveryDisposition: 'none',
+                })
+              }
               if (signal?.aborted) throw new AgentRunCancelledError()
-              const postTokens = estimateModelRequestTokens([
-                { role: 'user', content: compacted.summary },
-                ...preservedMessages,
-              ])
+              const postTokens = await autoValidation(() =>
+                estimateModelRequestTokens([
+                  { role: 'user', content: compacted.summary },
+                  ...preservedMessages,
+                ]),
+              )
               const compactModel =
                 compacted.model !== undefined && compacted.model.trim() !== ''
                   ? compacted.model
                   : provider.model
-              const preparedCompaction = turnAccounting.prepareCompaction({
-                usage: compacted.usage,
-                ...(compactModel === undefined ? {} : { model: compactModel }),
-                durationApiMs: durationMs,
-                durationApiWithoutRetriesMs: durationWithoutRetriesMs,
+              if (compacted.summary.trim().length === 0)
+                throw classifyCompactionError(
+                  new Error('Native compact summary must not be blank'),
+                  {
+                    trigger: 'auto',
+                    phase: 'validation',
+                    durableState: 'not_committed',
+                    recoveryDisposition: 'none',
+                  },
+                )
+              const preparedCompaction = await autoValidation(() =>
+                turnAccounting.prepareCompaction({
+                  usage: compacted.usage,
+                  ...(!hasNonZeroUsage(compacted.usage) ||
+                  compactModel === undefined
+                    ? {}
+                    : { model: compactModel }),
+                  durationApiMs: durationMs,
+                  durationApiWithoutRetriesMs: durationWithoutRetriesMs,
+                }),
+              )
+              const preparedTransaction = await compactionAccounting.prepare({
+                trigger: 'auto',
+                metric: {
+                  usage: compacted.usage,
+                  ...(!hasNonZeroUsage(compacted.usage) ||
+                  compactModel === undefined
+                    ? {}
+                    : { model: compactModel }),
+                  durationApiMs: durationMs,
+                  durationApiWithoutRetriesMs: durationWithoutRetriesMs,
+                },
               })
               const summaryMessage = {
                 role: 'user' as const,
@@ -5195,70 +5438,148 @@ export class ClaudeSessionService {
                 envelope: replacement.envelope,
                 commit: async () => {
                   if (signal?.aborted) throw new AgentRunCancelledError()
-                  const committed = await replacement.commit(() =>
-                    persistence.commit({
-                      kind: 'compaction',
-                      input: {
-                        summary: compacted.summary,
+                  const committed = await replacement.commit(async () => {
+                    try {
+                      return await persistence.commit({
+                        kind: 'compaction',
+                        input: {
+                          summary: compacted.summary,
+                          trigger: 'auto',
+                          preTokens,
+                          postTokens,
+                          durationMs,
+                          boundaryId: preparedTransaction.boundaryId,
+                          summaryId: preparedTransaction.summaryId,
+                          preservedMessages: replayMessages,
+                          ...(compactionLogicalParentId === undefined
+                            ? {}
+                            : { logicalParentId: compactionLogicalParentId }),
+                          ...(memorySelection
+                            ? {
+                                direction: 'from' as const,
+                                messagesSummarized: compactableMessages.length,
+                                preservePrefix: false,
+                              }
+                            : {}),
+                        },
+                      })
+                    } catch (error) {
+                      throw classifyCompactionError(error, {
                         trigger: 'auto',
-                        preTokens,
-                        postTokens,
-                        durationMs,
-                        preservedMessages: replayMessages,
-                        ...(compactionLogicalParentId === undefined
-                          ? {}
-                          : { logicalParentId: compactionLogicalParentId }),
-                        ...(memorySelection
-                          ? {
-                              direction: 'from' as const,
-                              messagesSummarized: compactableMessages.length,
-                              preservePrefix: false,
-                            }
-                          : {}),
-                      },
-                    }),
-                  )
+                        phase: 'transcript_commit',
+                        durableState: 'indeterminate',
+                        recoveryDisposition: 'reconcile',
+                      })
+                    }
+                  })
                   const ids = committed.value
                   if (ids.kind !== 'compaction')
-                    throw new Error(
-                      'Turn persistence returned an invalid compaction receipt',
+                    throw classifyCompactionError(
+                      new Error(
+                        'Turn persistence returned an invalid compaction receipt',
+                      ),
+                      {
+                        trigger: 'auto',
+                        phase: 'transcript_commit',
+                        durableState: 'indeterminate',
+                        recoveryDisposition: 'reconcile',
+                      },
                     )
-                  await this.runAdvisoryHook(
-                    sessionId,
-                    'PostCompact',
-                    { trigger: 'auto', compact_summary: compacted.summary },
-                    'auto',
-                    signal,
-                  )
-                  if (this.options.hooks) {
-                    const outcome = await this.hookLifecycle.refresh(
+                  try {
+                    preparedCompaction.commit()
+                    await preparedTransaction.commit({
+                      kind: 'compaction',
+                      boundaryId: ids.boundaryId,
+                      summaryId: ids.summaryId,
+                    })
+                  } catch (error) {
+                    throw classifyCompactionError(error, {
+                      trigger: 'auto',
+                      phase: 'accounting_commit',
+                      durableState: 'committed',
+                      recoveryDisposition: 'reconcile',
+                    })
+                  }
+                  try {
+                    await this.runAdvisoryHook(
                       sessionId,
-                      hookSession,
+                      'PostCompact',
+                      { trigger: 'auto', compact_summary: compacted.summary },
+                      'auto',
                       signal,
                     )
-                    if (outcome) await recordHookOutcome(outcome)
+                  } catch (error) {
+                    throw classifyCompactionError(error, {
+                      trigger: 'auto',
+                      phase: 'post_commit',
+                      durableState: 'committed',
+                      recoveryDisposition: 'reconcile',
+                    })
                   }
-                  this.options.contextAssembler?.invalidate?.({
-                    lifecycleId: sessionId,
-                    reason: 'compact',
-                  })
-                  await refreshRuntimeContext?.()
-                  this.options.eventSink?.({
-                    type: 'compact-boundary',
-                    trigger: 'auto',
-                    preTokens,
-                    uuid: ids.boundaryId,
-                  })
-                  preparedCompaction.commit()
+                  try {
+                    if (this.options.hooks) {
+                      const outcome = await this.hookLifecycle.refresh(
+                        sessionId,
+                        hookSession,
+                        signal,
+                      )
+                      if (outcome) await recordHookOutcome(outcome)
+                    }
+                    this.options.contextAssembler?.invalidate?.({
+                      lifecycleId: sessionId,
+                      reason: 'compact',
+                    })
+                    await refreshRuntimeContext?.()
+                    this.options.eventSink?.({
+                      type: 'compact-boundary',
+                      trigger: 'auto',
+                      preTokens,
+                      uuid: ids.boundaryId,
+                    })
+                  } catch (error) {
+                    throw classifyCompactionError(error, {
+                      trigger: 'auto',
+                      phase: 'post_commit',
+                      durableState: 'committed',
+                      recoveryDisposition: 'reconcile',
+                    })
+                  }
                 },
               }
             },
           })
+          const autoValidation = async <T>(
+            operation: () => T | Promise<T>,
+          ): Promise<T> => {
+            try {
+              return await operation()
+            } catch (error) {
+              if (error instanceof StaleContextGenerationError) throw error
+              throw classifyCompactionError(error, {
+                trigger: 'auto',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              })
+            }
+          }
+          const prepareContext = async (
+            port: ReturnType<typeof contextTransitionPort>,
+          ): Promise<void> => {
+            try {
+              await contextEngine.prepare(port, signal)
+            } catch (error) {
+              if (error instanceof StaleContextGenerationError) throw error
+              throw classifyCompactionError(error, {
+                trigger: 'auto',
+                phase: 'validation',
+                durableState: 'not_committed',
+                recoveryDisposition: 'none',
+              })
+            }
+          }
           if (shellCommand === undefined) {
-            await contextEngine.prepare(
-              contextTransitionPort(pendingUserMessages),
-              signal,
-            )
+            await prepareContext(contextTransitionPort(pendingUserMessages))
           }
 
           for (const [index, message] of expandedMessages.entries()) {
@@ -5467,9 +5788,8 @@ export class ClaudeSessionService {
             }
           }
           if (shellCommand === undefined && budget) {
-            await contextEngine.prepare(
+            await prepareContext(
               contextTransitionPort([], currentTurnUserMessages ?? []),
-              signal,
             )
             const projection = contextPreparation.project({
               includeMemory: false,
@@ -5517,9 +5837,8 @@ export class ClaudeSessionService {
               }
               await refreshRuntimeContext?.()
               if (shellCommand === undefined) {
-                await contextEngine.prepare(
+                await prepareContext(
                   contextTransitionPort([], currentTurnUserMessages ?? []),
-                  signal,
                 )
               }
               const projection = contextPreparation.project()
@@ -5715,11 +6034,23 @@ export class ClaudeSessionService {
               result = await attemptMainTurn()
             } catch (error) {
               if (!budget || !isPromptTooLongError(error)) throw error
-              const recovery = await contextEngine.recover(
-                error,
-                contextTransitionPort([], currentTurnUserMessages ?? []),
-                signal,
-              )
+              let recovery: Awaited<ReturnType<ContextEngine['recover']>>
+              try {
+                recovery = await contextEngine.recover(
+                  error,
+                  contextTransitionPort([], currentTurnUserMessages ?? []),
+                  signal,
+                )
+              } catch (recoveryError) {
+                if (recoveryError instanceof StaleContextGenerationError)
+                  throw recoveryError
+                throw classifyCompactionError(recoveryError, {
+                  trigger: 'auto',
+                  phase: 'validation',
+                  durableState: 'not_committed',
+                  recoveryDisposition: 'none',
+                })
+              }
               if (recovery.kind !== 'retry') {
                 surfaceExhaustedRecovery(error)
                 throw error
@@ -5880,6 +6211,11 @@ export class ClaudeSessionService {
           sessionId,
           store: nativeStore,
         })
+        const compactionAccounting = this.compactionAccounting(
+          sessionId,
+          nativeStore,
+        )
+        await compactionAccounting.recover()
         const activationKind = requireExisting
           ? resumeSessionAt === undefined
             ? { kind: 'resume' as const }
@@ -5889,7 +6225,7 @@ export class ClaudeSessionService {
           activationKind,
           async (nativeLease) => {
             const persistence = new TurnPersistence({ native: nativeLease })
-            return runUnderLease(persistence)
+            return runUnderLease(persistence, compactionAccounting)
           },
         )
       }
@@ -6473,6 +6809,43 @@ export class ClaudeSessionService {
       return created
     }
     return this.store(sessionId)
+  }
+
+  private compactionAccounting(
+    sessionId: string,
+    nativeStore: NativeSessionTranscriptStore,
+  ): CompactionAccounting {
+    const existing = this.compactionAccountings.get(sessionId)
+    if (existing) return existing
+    const tracker = this.sessionCostTrackers.get(sessionId)
+    if (!tracker)
+      throw new Error(
+        `Session cost tracker is not active for session ${sessionId}`,
+      )
+    const sessionPaths = this.paths(sessionId)
+    const accounting = new CompactionAccounting({
+      sessionId,
+      tracker,
+      ...(this.options.pricing ? { pricing: this.options.pricing } : {}),
+      ...(this.options.sessionPersistence === false
+        ? {}
+        : {
+            receiptStore: new NativeCompactionReceiptFileStore({
+              sidecarRoot: sessionPaths.praxisRoot,
+            }),
+          }),
+      ...(this.options.costStateStore
+        ? { costStateStore: this.options.costStateStore }
+        : {}),
+      readTranscript: async () => {
+        const loaded = await nativeStore.withLease((lease) => lease.load())
+        if (loaded.status === 'conflict')
+          throw new Error(`native transcript lease conflict: ${loaded.reason}`)
+        return loaded.value.records.map((record) => record.event)
+      },
+    })
+    this.compactionAccountings.set(sessionId, accounting)
+    return accounting
   }
 
   private assertSessionPersistence(): void {

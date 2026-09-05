@@ -2,6 +2,7 @@ export type NativeDataResource =
   | 'agents'
   | 'auto-memory'
   | 'commands'
+  | 'compaction-accounting'
   | 'durable-task-graph'
   | 'file-history'
   | 'hooks'
@@ -31,6 +32,12 @@ export const NATIVE_DATA_OWNERSHIP = [
     plane: 'shared',
     praxisAccess: 'append-only',
     location: 'sessions/<project-key>/<session-id>.jsonl',
+  },
+  {
+    resource: 'compaction-accounting',
+    plane: 'praxis-sidecar',
+    praxisAccess: 'read-write',
+    location: 'compaction-receipts/<session-id>/',
   },
   {
     resource: 'auto-memory',

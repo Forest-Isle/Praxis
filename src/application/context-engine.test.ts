@@ -7,6 +7,7 @@ import {
   type ContextTransitionPort,
 } from './context-engine.js'
 import { StaleContextGenerationError } from './context-preparation.js'
+import { CompactionTransactionError } from './compaction-errors.js'
 
 const message = (content: string): ModelMessage => ({ role: 'user', content })
 const portFor = (
@@ -21,6 +22,141 @@ const portFor = (
 })
 
 describe('ContextEngine', () => {
+  it.each(['recovery', 'validation'] as const)(
+    'rethrows a classified compaction %s failure',
+    async (phase) => {
+      const failure = new CompactionTransactionError('receipt failed', {
+        trigger: 'auto',
+        phase,
+        durableState: phase === 'recovery' ? 'indeterminate' : 'not_committed',
+        recoveryDisposition: 'blocked',
+      })
+      const engine = new ContextEngine({
+        budget: new ContextBudget({
+          contextWindowTokens: 30,
+          reserveTokens: 5,
+        }),
+      })
+      const current = { messages: [message('x'.repeat(200))], tools: [] }
+      await expect(
+        engine.recover(
+          new ModelProviderError('prompt too long', {
+            retryable: false,
+            kind: 'prompt_too_long',
+          }),
+          {
+            current: () => current,
+            irreducible: () => ({ messages: [message('small')], tools: [] }),
+            propose: async () => ({
+              envelope: { messages: [message('small')], tools: [] },
+              commit: async () => {
+                throw failure
+              },
+            }),
+          },
+        ),
+      ).rejects.toBe(failure)
+    },
+  )
+
+  it('fails closed for an unclassified proposal failure', async () => {
+    const failure = new Error('invalid compact proposal')
+    const engine = new ContextEngine({
+      budget: new ContextBudget({ contextWindowTokens: 30, reserveTokens: 5 }),
+    })
+    const current = { messages: [message('x'.repeat(200))], tools: [] }
+    await expect(
+      engine.recover(
+        new ModelProviderError('prompt too long', {
+          retryable: false,
+          kind: 'prompt_too_long',
+        }),
+        {
+          current: () => current,
+          irreducible: () => ({ messages: [message('small')], tools: [] }),
+          propose: async () => ({
+            envelope: { messages: [message('small')], tools: [] },
+            commit: async () => {
+              throw failure
+            },
+          }),
+        },
+      ),
+    ).rejects.toBe(failure)
+  })
+  it('only exhausts for an auto generation failure that never committed', async () => {
+    const failure = new CompactionTransactionError('model compactor failed', {
+      trigger: 'auto',
+      phase: 'generation',
+      durableState: 'not_committed',
+      recoveryDisposition: 'none',
+    })
+    const engine = new ContextEngine({
+      budget: new ContextBudget({ contextWindowTokens: 30, reserveTokens: 5 }),
+    })
+    const result = await engine.recover(
+      new ModelProviderError('prompt too long', {
+        retryable: false,
+        kind: 'prompt_too_long',
+      }),
+      {
+        current: () => ({ messages: [message('x'.repeat(200))], tools: [] }),
+        irreducible: () => ({ messages: [message('small')], tools: [] }),
+        propose: async () => ({
+          envelope: { messages: [message('small')], tools: [] },
+          commit: async () => {
+            throw failure
+          },
+        }),
+      },
+    )
+    expect(result).toEqual({
+      kind: 'exhausted',
+      error: expect.objectContaining({ kind: 'prompt_too_long' }),
+    })
+  })
+
+  it.each([
+    ['manual generation', 'manual', 'not_committed'],
+    ['committed generation', 'auto', 'committed'],
+  ] as const)(
+    'rethrows %s instead of masking it as prompt-too-long',
+    async (_label, trigger, durableState) => {
+      const failure = new CompactionTransactionError('generation failed', {
+        trigger,
+        phase: 'generation',
+        durableState,
+        recoveryDisposition: 'blocked',
+      })
+      const engine = new ContextEngine({
+        budget: new ContextBudget({
+          contextWindowTokens: 30,
+          reserveTokens: 5,
+        }),
+      })
+      await expect(
+        engine.recover(
+          new ModelProviderError('prompt too long', {
+            retryable: false,
+            kind: 'prompt_too_long',
+          }),
+          {
+            current: () => ({
+              messages: [message('x'.repeat(200))],
+              tools: [],
+            }),
+            irreducible: () => ({ messages: [message('small')], tools: [] }),
+            propose: async () => ({
+              envelope: { messages: [message('small')], tools: [] },
+              commit: async () => {
+                throw failure
+              },
+            }),
+          },
+        ),
+      ).rejects.toBe(failure)
+    },
+  )
   it('does nothing when the current envelope fits', async () => {
     const commit = vi.fn(async () => undefined)
     const envelope = { messages: [message('ok')], tools: [] }

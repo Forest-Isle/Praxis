@@ -12,6 +12,7 @@ import {
   type ContextBudgetReport,
 } from '../core/context-budget.js'
 import { StaleContextGenerationError } from './context-preparation.js'
+import { CompactionTransactionError } from './compaction-errors.js'
 
 export interface ContextEnvelope {
   readonly messages: readonly ModelMessage[]
@@ -166,7 +167,17 @@ export class ContextEngine {
         cause instanceof StaleContextGenerationError
       )
         throw cause
-      return { kind: 'exhausted', error }
+      if (cause instanceof CompactionTransactionError) {
+        const metadata = cause.metadata
+        if (
+          metadata.trigger !== 'auto' ||
+          metadata.phase !== 'generation' ||
+          metadata.durableState !== 'not_committed'
+        )
+          throw cause
+        return { kind: 'exhausted', error }
+      }
+      throw cause
     }
   }
 

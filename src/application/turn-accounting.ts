@@ -424,10 +424,6 @@ export class TurnAccounting {
         consumed = true
         try {
           const latestState = this.compactionStateAfter(snapshot)
-          const latestPlan = this.compactionPlan(snapshot)
-          const latestPreflight = cloneTracker(this.tracker)
-          applyPlan(latestPreflight, latestPlan)
-          applyPlan(this.tracker, latestPlan)
           this.compactionUsage = clone(latestState.usage)
           this.compactionModelUsage = clone(latestState.modelUsage)
           this.compactionDurationMs = latestState.durationApiMs

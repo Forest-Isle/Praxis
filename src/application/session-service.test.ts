@@ -1235,7 +1235,17 @@ describe('ClaudeSessionService', () => {
 
     await expect(
       service.compact(sessionId, undefined, {} as never),
-    ).rejects.toThrow(/No native rewind point found/u)
+    ).rejects.toMatchObject({
+      metadata: {
+        trigger: 'manual',
+        phase: 'validation',
+        durableState: 'not_committed',
+        recoveryDisposition: 'none',
+      },
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/No native rewind point found/u),
+      }),
+    })
     const aborted = new AbortController()
     aborted.abort()
     await expect(
@@ -1251,9 +1261,15 @@ describe('ClaudeSessionService', () => {
         },
       },
     })
-    await expect(thrown.compact(sessionId)).rejects.toThrow(
-      'native compactor failed',
-    )
+    await expect(thrown.compact(sessionId)).rejects.toMatchObject({
+      metadata: {
+        trigger: 'manual',
+        phase: 'generation',
+        durableState: 'not_committed',
+        recoveryDisposition: 'none',
+      },
+      cause: expect.objectContaining({ message: 'native compactor failed' }),
+    })
     expect(await readFile(sessionFile, 'utf8')).toBe(before)
     await Promise.all([service.close(), thrown.close()])
   })
@@ -5224,9 +5240,12 @@ describe('ClaudeSessionService', () => {
               compactCalls === 1
                 ? `REACTIVE_RETRY_SUMMARY_1 ${'first '.repeat(300)}`
                 : 'REACTIVE_RETRY_SUMMARY_2',
-            usage: { inputTokens: 0, outputTokens: 0 },
+            usage: {
+              inputTokens: compactCalls === 1 ? 11 : 13,
+              outputTokens: compactCalls === 1 ? 3 : 5,
+            },
             durationMs: 1,
-            model: 'reactive-model',
+            model: 'reactive-compactor-model',
           }
         },
       },
@@ -5236,7 +5255,7 @@ describe('ClaudeSessionService', () => {
     const result = await service.resume(first.sessionId, 'continue')
 
     expect(result.text).toBe('recovered answer')
-    expect(result.usage).toEqual({ inputTokens: 4, outputTokens: 2 })
+    expect(result.usage).toEqual({ inputTokens: 28, outputTokens: 10 })
     expect(agentMentionMessages).toHaveBeenCalledTimes(2)
     expect(agentMentionMessages.mock.calls.map(([prompt]) => prompt)).toEqual([
       'seed old context',
@@ -5253,11 +5272,21 @@ describe('ClaudeSessionService', () => {
     expect(JSON.stringify(requests[2]?.messages)).toContain(
       'REACTIVE_RETRY_SUMMARY_2',
     )
-    expect(
-      (await service.costSnapshot(result.sessionId)).modelUsage[
-        'reactive-model'
-      ],
-    ).toMatchObject({ inputTokens: 4, outputTokens: 2 })
+    const snapshot = await service.costSnapshot(result.sessionId)
+    expect(snapshot.modelUsage['reactive-model']).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+    })
+    expect(snapshot.modelUsage['reactive-compactor-model']).toMatchObject({
+      inputTokens: 24,
+      outputTokens: 8,
+    })
+    expect(Object.keys(snapshot.modelUsage)).toHaveLength(2)
+    const repeatedSnapshot = await service.costSnapshot(result.sessionId)
+    expect({
+      ...repeatedSnapshot,
+      wallDurationMs: snapshot.wallDurationMs,
+    }).toEqual(snapshot)
     expect(
       (await service.export(result.sessionId))
         .toString('utf8')
@@ -6255,8 +6284,8 @@ describe('ClaudeSessionService', () => {
     expect(after.hasUnknownModelCost).toBe(false)
 
     await service.close()
-    expect(saves).toHaveLength(1)
-    const saved = saves[0]
+    expect(saves).toHaveLength(2)
+    const saved = saves.at(-1)
     if (!saved) throw new Error('expected one persisted cost snapshot')
     expect(saved).toMatchObject({
       sessionId,
@@ -6420,6 +6449,357 @@ describe('ClaudeSessionService', () => {
       26 / 1_000_000,
     )
     expect(afterTurn.apiDurationMs).toBe(9)
+  })
+
+  it('recovers one no-store manual compaction in a fresh service without replay', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-fresh-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '69696969-6969-4696-8696-696969696969'
+    const make = (responses: string[]) =>
+      new ClaudeSessionService({
+        configRoot,
+        cwd,
+        claudeVersion: '2.1.208',
+        provider: {
+          ...queuedProvider(responses),
+          model: 'fresh-main-model',
+        },
+        compactor: {
+          async compact() {
+            return {
+              summary: 'fresh recovery summary',
+              usage: { inputTokens: 7, outputTokens: 4 },
+              durationMs: 9,
+              model: 'fresh-compact-model',
+            }
+          },
+        },
+      })
+    const service = make(['first answer'])
+    await service.run('first prompt', undefined, sessionId)
+    await service.compact(sessionId)
+    const receiptDirectory = join(
+      configRoot,
+      'state',
+      'compaction-receipts',
+      sessionId,
+    )
+    await expect(readdir(receiptDirectory)).resolves.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.ack$/u)]),
+    )
+
+    const fresh = make(['second answer'])
+    const recovered = await fresh.costSnapshot(sessionId)
+    expect(recovered.modelUsage['fresh-compact-model']).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 4,
+    })
+    await expect(fresh.costSnapshot(sessionId)).resolves.toMatchObject({
+      modelUsage: recovered.modelUsage,
+      apiDurationMs: recovered.apiDurationMs,
+    })
+    await fresh.resume(sessionId, 'second prompt')
+    const after = await fresh.costSnapshot(sessionId)
+    expect(after.modelUsage['fresh-compact-model']).toMatchObject({
+      inputTokens: 7,
+      outputTokens: 4,
+    })
+    expect(after.modelUsage['fresh-main-model']).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 2,
+    })
+    await service.close()
+    await fresh.close()
+  })
+
+  it('recovers exactly once after a committed manual cost save failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-save-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '69696969-6969-4696-8696-696969696970'
+    const before: ClaudeSessionCostState = {
+      sessionId,
+      totalCostUsd: 0,
+      apiDurationMs: 0,
+      apiDurationWithoutRetriesMs: 0,
+      toolDurationMs: 0,
+      wallDurationMs: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+      modelUsage: {},
+    }
+    let persisted = before
+    let failSave = true
+    const costStateStore = {
+      load: async () => persisted,
+      save: async (state: ClaudeSessionCostState) => {
+        if (failSave) {
+          failSave = false
+          throw new Error('manual cost save failed')
+        }
+        persisted = state
+      },
+    }
+    const options = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: {
+        model: 'save-main-model',
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta' as const, delta: 'answer' }
+        },
+      },
+      compactor: {
+        async compact() {
+          return {
+            summary: 'save recovery summary',
+            usage: { inputTokens: 5, outputTokens: 3 },
+            durationMs: 11,
+            model: 'save-compact-model',
+          }
+        },
+      },
+      costStateStore,
+    }
+    const service = new ClaudeSessionService(options)
+    await service.run('first prompt', undefined, sessionId)
+    const beforeImage = await service.costSnapshot(sessionId)
+    persisted = beforeImage
+    await expect(service.compact(sessionId)).rejects.toMatchObject({
+      metadata: {
+        trigger: 'manual',
+        phase: 'accounting_commit',
+        durableState: 'committed',
+        recoveryDisposition: 'reconcile',
+      },
+      cause: expect.objectContaining({ message: 'manual cost save failed' }),
+    })
+    expect(persisted).toEqual(beforeImage)
+    const fresh = new ClaudeSessionService(options)
+    const recovered = await fresh.costSnapshot(sessionId)
+    expect(recovered.modelUsage['save-compact-model']).toMatchObject({
+      inputTokens: 5,
+      outputTokens: 3,
+    })
+    expect(persisted.modelUsage['save-compact-model']).toMatchObject({
+      inputTokens: 5,
+      outputTokens: 3,
+    })
+    await expect(fresh.costSnapshot(sessionId)).resolves.toMatchObject({
+      modelUsage: recovered.modelUsage,
+    })
+    await fresh.resume(sessionId, 'second prompt')
+    expect(
+      (await fresh.costSnapshot(sessionId)).modelUsage['save-compact-model'],
+    ).toMatchObject({ inputTokens: 5, outputTokens: 3 })
+    await service.close()
+    await fresh.close()
+  })
+
+  it('acknowledges a saved manual compaction after an acknowledgement crash without replay', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-manual-ack-recovery-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '69696969-6969-4696-8696-696969696971'
+    let persisted: ClaudeSessionCostState | null = null
+    let obstructAck = true
+    let obstruction: string | undefined
+    const receiptDirectory = join(
+      configRoot,
+      'state',
+      'compaction-receipts',
+      sessionId,
+    )
+    const costStateStore = {
+      load: async () => persisted,
+      save: async (state: ClaudeSessionCostState) => {
+        persisted = state
+        if (obstructAck) {
+          obstructAck = false
+          const receipt = (await readdir(receiptDirectory)).find((file) =>
+            file.endsWith('.json'),
+          )
+          if (!receipt) throw new Error('manual receipt was not prepared')
+          obstruction = join(receiptDirectory, `${receipt.slice(0, -5)}.ack`)
+          await mkdir(obstruction)
+        }
+      },
+    }
+    const options = {
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['first answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'ack recovery summary',
+            usage: { inputTokens: 6, outputTokens: 2 },
+            durationMs: 12,
+            model: 'ack-compact-model',
+          }
+        },
+      },
+      costStateStore,
+    }
+    const service = new ClaudeSessionService(options)
+    await service.run('first prompt', undefined, sessionId)
+    await expect(service.compact(sessionId)).rejects.toMatchObject({
+      metadata: {
+        trigger: 'manual',
+        phase: 'accounting_commit',
+        durableState: 'committed',
+        recoveryDisposition: 'reconcile',
+      },
+    })
+    if (!obstruction) throw new Error('ack obstruction was not created')
+    await rm(obstruction, { recursive: true, force: true })
+    const fresh = new ClaudeSessionService(options)
+    const recovered = await fresh.costSnapshot(sessionId)
+    expect(recovered.modelUsage['ack-compact-model']).toMatchObject({
+      inputTokens: 6,
+      outputTokens: 2,
+    })
+    await expect(readdir(receiptDirectory)).resolves.toEqual(
+      expect.arrayContaining([expect.stringMatching(/\.ack$/u)]),
+    )
+    await expect(fresh.costSnapshot(sessionId)).resolves.toMatchObject({
+      modelUsage: recovered.modelUsage,
+    })
+    await service.close()
+    await fresh.close()
+  })
+
+  it('classifies automatic validation failure without prompt-too-long masking', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-validation-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    let compactCalls = 0
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 500,
+        reserveTokens: 100,
+      }),
+      provider: queuedProvider(['old '.repeat(1200), 'answer']),
+      compactor: {
+        async compact() {
+          compactCalls += 1
+          return {
+            summary: 'must not compact',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            durationMs: 1,
+            model: 'auto-model',
+          }
+        },
+      },
+      eventSink: (event) => {
+        if (event.type === 'state' && event.state === 'compacting')
+          throw new Error('automatic state sink failed')
+      },
+    })
+    const first = await service.run('seed')
+    await expect(
+      service.resume(first.sessionId, 'continue'),
+    ).rejects.toMatchObject({
+      metadata: {
+        trigger: 'auto',
+        phase: 'validation',
+        durableState: 'not_committed',
+        recoveryDisposition: 'none',
+      },
+      cause: expect.objectContaining({
+        message: 'automatic state sink failed',
+      }),
+    })
+    expect(compactCalls).toBe(0)
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
+    )
+    expect(
+      events.filter((event) => event.kind === 'context-boundary'),
+    ).toHaveLength(0)
+    await service.close()
+  })
+
+  it('preserves committed accounting when automatic post-commit context refresh fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-auto-post-commit-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      contextBudget: new ContextBudget({
+        contextWindowTokens: 500,
+        reserveTokens: 100,
+      }),
+      provider: queuedProvider(['old '.repeat(1200), 'answer']),
+      compactor: {
+        async compact() {
+          return {
+            summary: 'post commit summary',
+            usage: { inputTokens: 4, outputTokens: 2 },
+            durationMs: 8,
+            model: 'post-commit-model',
+          }
+        },
+      },
+      contextAssembler: {
+        assemble: async () => contextSnapshot(),
+        invalidate: ({ reason }) => {
+          if (reason === 'compact') throw new Error('context refresh failed')
+        },
+      },
+    })
+    const first = await service.run('seed')
+    await expect(
+      service.resume(first.sessionId, 'continue'),
+    ).rejects.toMatchObject({
+      metadata: {
+        trigger: 'auto',
+        phase: 'post_commit',
+        durableState: 'committed',
+        recoveryDisposition: 'reconcile',
+      },
+    })
+    const events = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, first.sessionId),
+    )
+    expect(
+      events.filter((event) => event.kind === 'context-boundary'),
+    ).toHaveLength(1)
+    expect(
+      events.filter((event) => event.kind === 'context-summary'),
+    ).toHaveLength(1)
+
+    const fresh = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider([]),
+      contextAssembler: { assemble: async () => contextSnapshot() },
+    })
+    const recovered = await fresh.costSnapshot(first.sessionId)
+    expect(recovered.modelUsage['post-commit-model']).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+    })
+    await expect(fresh.costSnapshot(first.sessionId)).resolves.toMatchObject({
+      modelUsage: recovered.modelUsage,
+    })
+    await service.close()
+    await fresh.close()
   })
 
   it('does not mutate transcript or tracker totals when the manual compactor fails', async () => {
@@ -6643,13 +7023,11 @@ describe('ClaudeSessionService', () => {
     await expect(service.compact(missingId)).rejects.toThrow(
       'native transcript session is missing or empty',
     )
-    load.mockClear()
-    save.mockClear()
     expect(load).not.toHaveBeenCalled()
     expect(save).not.toHaveBeenCalled()
   })
 
-  it('fails before append when a zero-usage compact has positive duration but no model identity', async () => {
+  it('records zero-usage duration-only manual compaction without a model identity', async () => {
     const root = await mkdtemp(
       join(tmpdir(), 'praxis-manual-compact-duration-model-'),
     )
@@ -6660,7 +7038,13 @@ describe('ClaudeSessionService', () => {
       configRoot,
       cwd,
       claudeVersion: '2.1.208',
-      provider: queuedProvider(['original answer']),
+      provider: {
+        capabilities: { streaming: true, usage: true, tools: false },
+        async *complete() {
+          yield { type: 'text-delta', delta: 'original answer' }
+          yield { type: 'terminal', reason: 'end_turn' }
+        },
+      },
       compactor: {
         async compact() {
           return {
@@ -6679,6 +7063,7 @@ describe('ClaudeSessionService', () => {
     const after = await service.costSnapshot(run.sessionId)
     expect(after.apiDurationMs).toBe(7)
     expect(after.apiDurationWithoutRetriesMs).toBe(7)
+    expect(after.modelUsage).toEqual({})
 
     const transcript = await readNativeEvents(
       nativeSessionFile(configRoot, cwd, run.sessionId),

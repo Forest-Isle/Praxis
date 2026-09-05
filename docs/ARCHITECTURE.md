@@ -371,15 +371,24 @@ only after that append succeeds. Explicit refresh rebuilds the projection from
 the active native branch without changing its logical tail. Hooks, context
 generation and invalidation, runtime events, memory, and accounting remain
 caller policy and run only after a successful receipt; the projection is never
-a second Transcript.
+a second Transcript. Compaction additionally prepares a private native receipt
+before the boundary. `TurnPersistence` and `NativeSessionTranscript` perform the
+atomic canonical boundary/summary append with reserved IDs; accounting and
+transaction fields never enter the authoritative Transcript JSONL.
 
 `TurnAccounting` is constructed alongside `TurnPersistence` with the active
 session cost tracker. Its compaction plan is preflighted against a cloned
-tracker before persistence and committed synchronously only after the durable
-boundary, hook refresh, context invalidation, runtime refresh, and boundary
-event. Runtime and shell completion then apply one atomic tracker plan while
-returning inclusive public usage/cost/duration rows; explicit unrecorded
-metrics prevent summary double counting without changing public result shape.
+tracker and contributes only to the inclusive current-turn result. The
+`SessionService` orchestrates compaction as prepare, canonical append,
+current-Turn publication, Session accounting save/acknowledgement, and then
+post-boundary effects. The `CompactionAccounting` seam owns per-Session receipt
+preparation, Session tracker application, configured cost save, acknowledgement,
+and activation recovery. Recovery reads the complete native Transcript, orders
+pending configured-store receipts by stable fingerprints, uses Transcript order
+for fresh no-store reconstruction, treats immutable acknowledgements as completed
+configured-store saves, and fails closed on partial, duplicate, mismatched, or ambiguous evidence.
+Runtime and shell completion then apply one atomic tracker plan while returning
+inclusive public usage/cost/duration rows.
 
 Native context keeps environment and memory stable for a lifecycle and resolved
 cwd, while recomputing Git status for every assembly from the caller-resolved
