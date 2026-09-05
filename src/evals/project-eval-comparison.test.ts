@@ -20,6 +20,7 @@ import {
   createProjectEvalIdentity,
 } from './project-eval-identity.js'
 import type { ProjectEvalCase } from './project-eval-schema.js'
+import { PROJECT_EVAL_MAX_ITEMS } from './project-eval-schema.js'
 import type { FileManifest } from './project-eval-workspace.js'
 
 const TEST_BUILD_IDENTITY = {
@@ -46,8 +47,9 @@ function aggregate(passed: boolean, safety = true) {
       modelId: 'scripted',
     },
     case: {
-      schemaVersion: '1.0',
+      schemaVersion: '1.1',
       name: 'case',
+      risk: 'low',
       dir: 'case-dir',
       fixture: 'fixture-dir',
       tags: [],
@@ -77,7 +79,7 @@ function aggregate(passed: boolean, safety = true) {
     architecture: 'test-arch',
   })
   return {
-    schema_version: '1.1',
+    schema_version: '1.2',
     version: 'test',
     start: new Date(0).toISOString(),
     duration_ms: 10,
@@ -114,9 +116,24 @@ function aggregate(passed: boolean, safety = true) {
     permission_decisions: { allow: 1, ask: 0, deny: 0 },
     tool_errors: 0,
     retries: 0,
+    verification_totals: {
+      declared: 0,
+      passed: 0,
+      failed: 0,
+      not_run: 0,
+      satisfied_runs: 1,
+      unsatisfied_runs: 0,
+    },
+    risk_tiers: {
+      low: { runs: 1, passed: passed ? 1 : 0, failed: passed ? 0 : 1 },
+      medium: { runs: 0, passed: 0, failed: 0 },
+      high: { runs: 0, passed: 0, failed: 0 },
+      release: { runs: 0, passed: 0, failed: 0 },
+    },
     terminations: { completed: 1, timeout: 0, interrupted: 0 },
     runs: [
       {
+        schema_version: '1.2',
         case: 'case',
         run: 1,
         model: 'scripted',
@@ -129,10 +146,25 @@ function aggregate(passed: boolean, safety = true) {
         cost_known: false,
         duration_ms: 10,
         termination: null,
+        risk: 'low',
         safety_passed: safety,
         permission_decisions: { allow: 1, ask: 0, deny: 0 },
         tool_errors: 0,
         retries: 0,
+        verification: { outcomes: [], satisfied: true },
+        checks: [
+          { name: 'runtime', passed },
+          { name: 'termination', passed: true },
+          { name: 'trace-bounds', passed: true },
+          { name: 'runtime-close', passed: true },
+          { name: 'workspace-manifest', passed: true },
+          { name: 'source-unchanged', passed: true },
+          { name: 'allowed-paths', passed: true },
+          { name: 'expected-paths', passed: true },
+          { name: 'forbidden-paths', passed: true },
+          { name: 'artifact-write', passed: true },
+          { name: 'temp-cleanup', passed: true },
+        ],
         error: null,
         artifact_dir: 'case/run-1',
       },
@@ -147,6 +179,9 @@ function aggregateForCases(outcomes: readonly [string, boolean][]) {
     case: caseName,
     passed,
     score: passed ? 1 : 0,
+    checks: template.checks.map((check) =>
+      check.name === 'runtime' ? { ...check, passed } : check,
+    ),
     artifact_dir: `${caseName}/run-1`,
   }))
   const passed = runs.filter((run) => run.passed).length
@@ -175,6 +210,24 @@ function aggregateForCases(outcomes: readonly [string, boolean][]) {
     safety_failed: 0,
     permission_decisions: { allow: runs.length, ask: 0, deny: 0 },
     terminations: { completed: runs.length, timeout: 0, interrupted: 0 },
+    verification_totals: {
+      declared: 0,
+      passed: 0,
+      failed: 0,
+      not_run: 0,
+      satisfied_runs: runs.length,
+      unsatisfied_runs: 0,
+    },
+    risk_tiers: {
+      low: {
+        runs: runs.length,
+        passed,
+        failed: runs.length - passed,
+      },
+      medium: { runs: 0, passed: 0, failed: 0 },
+      high: { runs: 0, passed: 0, failed: 0 },
+      release: { runs: 0, passed: 0, failed: 0 },
+    },
     identity_sha256: computeProjectEvalAggregateIdentity(
       runs.map((run) => ({
         case: run.case,
@@ -184,6 +237,91 @@ function aggregateForCases(outcomes: readonly [string, boolean][]) {
     ),
     runs,
   }
+}
+
+function failedVerifierAggregate() {
+  const value = aggregate(true) as unknown as {
+    passed: number
+    failed: number
+    pass_rate: number
+    verification_totals: Record<string, number>
+    risk_tiers: Record<string, { runs: number; passed: number; failed: number }>
+    runs: Array<{
+      passed: boolean
+      score: 0 | 1
+      verification: {
+        outcomes: Array<{
+          name: string
+          required: true
+          expect: 'pass'
+          status: 'passed' | 'failed' | 'not_run'
+        }>
+        satisfied: boolean
+      }
+      checks: Array<{ name: string; passed: boolean }>
+    }>
+  }
+  const run = onlyRun(value.runs)
+  run.passed = false
+  run.score = 0
+  run.verification = {
+    outcomes: [
+      {
+        name: 'shared-check',
+        required: true,
+        expect: 'pass',
+        status: 'failed',
+      },
+    ],
+    satisfied: false,
+  }
+  run.checks = [...run.checks, { name: 'verifier:shared-check', passed: false }]
+  value.passed = 0
+  value.failed = 1
+  value.pass_rate = 0
+  value.verification_totals = {
+    declared: 1,
+    passed: 0,
+    failed: 1,
+    not_run: 0,
+    satisfied_runs: 0,
+    unsatisfied_runs: 1,
+  }
+  value.risk_tiers.low = { runs: 1, passed: 0, failed: 1 }
+  return value
+}
+
+function failedRiskAggregate(risk: 'high' | 'release') {
+  const value = aggregate(true) as unknown as {
+    passed: number
+    failed: number
+    pass_rate: number
+    risk_tiers: Record<string, { runs: number; passed: number; failed: number }>
+    runs: Array<{
+      risk: string
+      passed: boolean
+      score: 0 | 1
+      checks: Array<{ name: string; passed: boolean }>
+    }>
+  }
+  const run = onlyRun(value.runs)
+  run.risk = risk
+  run.passed = false
+  run.score = 0
+  run.checks = run.checks.map((check) =>
+    check.name === 'runtime' ? { ...check, passed: false } : check,
+  )
+  value.passed = 0
+  value.failed = 1
+  value.pass_rate = 0
+  value.risk_tiers = {
+    low: { runs: 0, passed: 0, failed: 0 },
+    medium: { runs: 0, passed: 0, failed: 0 },
+    high: { runs: 0, passed: 0, failed: 0 },
+    release: { runs: 0, passed: 0, failed: 0 },
+    [risk]: { runs: 1, passed: 0, failed: 1 },
+  }
+  return value
 }
 
 function aggregateWithIdentity(
@@ -227,8 +365,9 @@ function comparisonIdentity(
 
 function comparisonIdentityCase(): ProjectEvalCase {
   return {
-    schemaVersion: '1.0',
+    schemaVersion: '1.1',
     name: 'case',
+    risk: 'low',
     dir: 'case-dir',
     fixture: 'fixture-dir',
     tags: [],
@@ -390,7 +529,121 @@ describe('project eval comparison', () => {
         ],
         { stdout: () => undefined, stderr: () => undefined },
       ),
+    ).rejects.toThrow('safety_passed')
+  })
+
+  it('loads the schema-derived maximum compact evidence capacity', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-eval-compare-capacity-'))
+    roots.push(root)
+    const value = aggregate(true) as unknown as {
+      verification_totals: Record<string, number>
+      runs: Array<{
+        checks: Array<{ name: string; passed: boolean }>
+        verification: {
+          outcomes: Array<{
+            name: string
+            required: true
+            expect: 'pass'
+            status: 'passed' | 'failed' | 'not_run'
+          }>
+          satisfied: boolean
+        }
+      }>
+    }
+    const run = onlyRun(value.runs)
+    const verifierOutcomes = Array.from(
+      { length: PROJECT_EVAL_MAX_ITEMS },
+      (_, index) => ({
+        name: `verifier-${index}`,
+        required: true as const,
+        expect: 'pass' as const,
+        status: 'passed' as const,
+      }),
+    )
+    const graderChecks = Array.from(
+      { length: PROJECT_EVAL_MAX_ITEMS },
+      (_, index) => ({ name: `grader:grader-${index}`, passed: true }),
+    )
+    run.verification = { outcomes: verifierOutcomes, satisfied: true }
+    run.checks = [
+      ...run.checks,
+      ...verifierOutcomes.map(({ name }: { name: string }) => ({
+        name: `verifier:${name}`,
+        passed: true,
+      })),
+      ...graderChecks,
+    ]
+    value.verification_totals = {
+      declared: PROJECT_EVAL_MAX_ITEMS,
+      passed: PROJECT_EVAL_MAX_ITEMS,
+      failed: 0,
+      not_run: 0,
+      satisfied_runs: 1,
+      unsatisfied_runs: 0,
+    }
+    const path = join(root, 'capacity.json')
+    await writeFile(path, JSON.stringify(value))
+    await expect(loadProjectEvalAggregate(path)).resolves.toBeDefined()
+  })
+
+  it('returns a failed comparison for the same failed verifier on both sides', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-eval-compare-verifier-gate-'),
+    )
+    roots.push(root)
+    const baseline = join(root, 'baseline.json')
+    const candidate = join(root, 'candidate.json')
+    await writeFile(baseline, JSON.stringify(failedVerifierAggregate()))
+    await writeFile(candidate, JSON.stringify(failedVerifierAggregate()))
+    const output: string[] = []
+    await expect(
+      executeProjectEvalCompareCommand(
+        [
+          '--baseline',
+          baseline,
+          '--baseline-name',
+          'base',
+          '--candidate',
+          candidate,
+          '--candidate-name',
+          'candidate',
+          '--json',
+        ],
+        { stdout: (value) => output.push(value), stderr: () => undefined },
+      ),
     ).resolves.toBe(1)
+    expect(JSON.parse(output[0] ?? '{}')).toMatchObject({ passed: false })
+  })
+
+  it('returns a failed comparison for the same failed high and release task', async () => {
+    for (const risk of ['high', 'release'] as const) {
+      const root = await mkdtemp(
+        join(tmpdir(), `praxis-eval-compare-${risk}-gate-`),
+      )
+      roots.push(root)
+      const baseline = join(root, 'baseline.json')
+      const candidate = join(root, 'candidate.json')
+      await writeFile(baseline, JSON.stringify(failedRiskAggregate(risk)))
+      await writeFile(candidate, JSON.stringify(failedRiskAggregate(risk)))
+      const output: string[] = []
+      await expect(
+        executeProjectEvalCompareCommand(
+          [
+            '--baseline',
+            baseline,
+            '--baseline-name',
+            'base',
+            '--candidate',
+            candidate,
+            '--candidate-name',
+            'candidate',
+            '--json',
+          ],
+          { stdout: (value) => output.push(value), stderr: () => undefined },
+        ),
+      ).resolves.toBe(1)
+      expect(JSON.parse(output[0] ?? '{}')).toMatchObject({ passed: false })
+    }
   })
 
   it('rejects non-equivalent identity dimensions without writing comparison output', async () => {
@@ -573,7 +826,7 @@ describe('project eval comparison', () => {
       ),
     ).resolves.toBe(0)
     expect(JSON.parse(output[0] ?? '{}')).toMatchObject({
-      schema_version: '1.1',
+      schema_version: '1.2',
       passed: true,
       baseline: {
         version: 'baseline-version',
@@ -615,18 +868,7 @@ describe('project eval comparison', () => {
           stderr: () => undefined,
         },
       ),
-    ).resolves.toBe(1)
-    expect(JSON.parse(output[0] ?? '{}')).toMatchObject({
-      passed: false,
-      metrics: {
-        safety_pass_rate: { baseline: null, candidate: null, delta: null },
-        permission_decisions: {
-          allow: { baseline: null, candidate: null, delta: null },
-        },
-        tool_errors: { baseline: null, candidate: null, delta: null },
-        retries: { baseline: null, candidate: null, delta: null },
-      },
-    })
+    ).rejects.toThrow('safety_passed')
   })
 
   it('fails when a matching run regresses despite aggregate pass-rate parity', async () => {
@@ -748,6 +990,61 @@ describe('project eval comparison', () => {
       'does not match run outcomes',
     )
 
+    const compactMismatchPath = join(root, 'compact-check-mismatch.json')
+    const compactMismatch = aggregate(true) as unknown as {
+      runs: Array<{ checks: Array<{ name: string; passed: boolean }> }>
+    }
+    onlyRun(compactMismatch.runs).checks = onlyRun(
+      compactMismatch.runs,
+    ).checks.map((check) =>
+      check.name === 'runtime' ? { ...check, passed: false } : check,
+    )
+    await writeFile(compactMismatchPath, JSON.stringify(compactMismatch))
+    await expect(loadProjectEvalAggregate(compactMismatchPath)).rejects.toThrow(
+      'does not match compact checks',
+    )
+
+    const verifierMismatchPath = join(root, 'verifier-check-mismatch.json')
+    const verifierMismatch = aggregate(true) as unknown as {
+      runs: Array<{
+        verification: {
+          outcomes: Array<{
+            name: string
+            required: true
+            expect: 'pass'
+            status: 'passed' | 'failed' | 'not_run'
+          }>
+          satisfied: boolean
+        }
+        checks: Array<{ name: string; passed: boolean }>
+      }>
+    }
+    const verifierRun = onlyRun(verifierMismatch.runs)
+    verifierRun.verification = {
+      outcomes: [
+        { name: 'tampered', required: true, expect: 'pass', status: 'passed' },
+      ],
+      satisfied: true,
+    }
+    verifierRun.checks.push({ name: 'verifier:tampered', passed: false })
+    await writeFile(verifierMismatchPath, JSON.stringify(verifierMismatch))
+    await expect(
+      loadProjectEvalAggregate(verifierMismatchPath),
+    ).rejects.toThrow('verifier check does not match status')
+
+    const riskMismatchPath = join(root, 'risk-total-mismatch.json')
+    const riskMismatch = aggregate(true) as unknown as {
+      risk_tiers: Record<
+        string,
+        { runs: number; passed: number; failed: number }
+      >
+    }
+    riskMismatch.risk_tiers.low = { runs: 0, passed: 0, failed: 0 }
+    await writeFile(riskMismatchPath, JSON.stringify(riskMismatch))
+    await expect(loadProjectEvalAggregate(riskMismatchPath)).rejects.toThrow(
+      'does not match run risk evidence',
+    )
+
     const duplicatePath = join(root, 'duplicate.json')
     await writeFile(
       duplicatePath,
@@ -818,7 +1115,7 @@ describe('project eval comparison', () => {
     legacy.schema_version = '1.0'
     await writeFile(legacyPath, JSON.stringify(legacy))
     await expect(loadProjectEvalAggregate(legacyPath)).rejects.toThrow(
-      'legacy "1.0" aggregates are unsupported',
+      'legacy "1.1" aggregates are unsupported',
     )
 
     const missingIdentityPath = join(root, 'missing-identity.json')

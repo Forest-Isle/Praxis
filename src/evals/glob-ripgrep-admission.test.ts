@@ -521,7 +521,7 @@ function createFactory(
 }
 
 interface Aggregate {
-  schema_version: '1.0'
+  schema_version: '1.2'
   output_dir: string
   run_count: number
   passed: number
@@ -532,6 +532,15 @@ interface Aggregate {
   tool_errors: number
   retries: number
   terminations: { completed: number; timeout: number; interrupted: number }
+  verification_totals: {
+    declared: number
+    passed: number
+    failed: number
+    not_run: number
+    satisfied_runs: number
+    unsatisfied_runs: number
+  }
+  risk_tiers: Record<string, { runs: number; passed: number; failed: number }>
   runs: { case: string; run: number; turns: number; artifact_dir: string }[]
 }
 
@@ -600,7 +609,7 @@ async function inspectAggregate(
     }>
     expect(verifications).toHaveLength(1)
     expect(verifications[0]).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       passed: true,
       exit_code: 0,
       timed_out: false,
@@ -1162,6 +1171,18 @@ describe('Glob ripgrep admission eval', () => {
       tool_errors: 3,
       retries: 0,
       terminations: { completed: 4, timeout: 0, interrupted: 0 },
+      verification_totals: {
+        declared: 4,
+        passed: 4,
+        failed: 0,
+        not_run: 0,
+        satisfied_runs: 4,
+        unsatisfied_runs: 0,
+      },
+      risk_tiers: {
+        low: { runs: 3, passed: 3, failed: 0 },
+        high: { runs: 1, passed: 1, failed: 0 },
+      },
     })
     expect(candidate.aggregate).toMatchObject({
       run_count: 4,
@@ -1210,7 +1231,7 @@ describe('Glob ripgrep admission eval', () => {
       ),
     ).resolves.toBe(0)
     expect(JSON.parse(compareOutput[0] ?? '{}')).toMatchObject({
-      schema_version: '1.1',
+      schema_version: '1.2',
       passed: true,
       comparable_run_count: 4,
       regressions: [],

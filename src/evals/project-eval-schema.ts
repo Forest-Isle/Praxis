@@ -8,9 +8,11 @@ import type {
   EvalToolMatch,
 } from './eval-contract.js'
 
-export const PROJECT_EVAL_SCHEMA_VERSION = '1.0'
+export const PROJECT_EVAL_SCHEMA_VERSION = '1.1'
+export const PROJECT_EVAL_RISKS = ['low', 'medium', 'high', 'release'] as const
+export type ProjectEvalRisk = (typeof PROJECT_EVAL_RISKS)[number]
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
-const MAX_ITEMS = 256
+export const PROJECT_EVAL_MAX_ITEMS = 256
 const MAX_STRING = 16 * 1024
 const MAX_BYTES = 1024 * 1024
 const DEFAULT_PROJECT_EVAL_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep'] as const
@@ -26,12 +28,12 @@ function validateBounds(
   if (typeof value === 'string' && value.length > MAX_STRING)
     throw new Error(`${label} contains oversized string`)
   if (Array.isArray(value)) {
-    if (value.length > MAX_ITEMS)
+    if (value.length > PROJECT_EVAL_MAX_ITEMS)
       throw new Error(`${label} contains oversized array`)
     for (const item of value) validateBounds(item, label, depth + 1, state)
   } else if (value && typeof value === 'object') {
     const entries = Object.entries(value)
-    if (entries.length > MAX_ITEMS)
+    if (entries.length > PROJECT_EVAL_MAX_ITEMS)
       throw new Error(`${label} contains oversized object`)
     for (const [key, item] of entries) {
       if (key.length > 256) throw new Error(`${label} contains oversized key`)
@@ -40,8 +42,9 @@ function validateBounds(
   }
 }
 export interface ProjectEvalCase {
-  schemaVersion: '1.0'
+  schemaVersion: '1.1'
   name: string
+  risk: ProjectEvalRisk
   dir: string
   fixture: string
   tags: readonly string[]
@@ -60,6 +63,8 @@ export interface ProjectEvalCase {
     command: string
     args: readonly string[]
     timeoutSeconds: number
+    required: true
+    expect: 'pass'
   }[]
   graders: readonly EvalDeterministicGrader[]
   expect: {
@@ -103,7 +108,7 @@ function list(v: unknown, label: string): string[] {
   if (v === undefined) return []
   if (
     !Array.isArray(v) ||
-    v.length > MAX_ITEMS ||
+    v.length > PROJECT_EVAL_MAX_ITEMS ||
     v.some((x) => typeof x !== 'string' || !x || x.length > MAX_STRING)
   )
     throw new Error(`${label} must be a bounded string array`)
@@ -274,6 +279,7 @@ export function parseProjectEvalCase(
     [
       'schema_version',
       'name',
+      'risk',
       'tags',
       'runs',
       'fixture',
@@ -284,10 +290,12 @@ export function parseProjectEvalCase(
     ],
     'case',
   )
-  if (r.schema_version !== '1.0')
+  if (r.schema_version !== '1.1')
     throw new Error(`Unsupported schema_version: ${String(r.schema_version)}`)
   const name = str(r.name, 'name')
   if (!NAME.test(name)) throw new Error('name must be a safe eval identifier')
+  if (!PROJECT_EVAL_RISKS.includes(r.risk as ProjectEvalRisk))
+    throw new Error('risk must be one of: low, medium, high, release')
   const ex = obj(r.execution, 'execution')
   strict(
     ex,
@@ -322,17 +330,24 @@ export function parseProjectEvalCase(
     if (!/^EVAL_[A-Z0-9_]+$/u.test(k) || typeof v !== 'string')
       throw new Error(`Invalid eval environment variable: ${k}`)
   const vr = r.verification === undefined ? [] : r.verification
-  if (!Array.isArray(vr) || vr.length > MAX_ITEMS)
+  if (!Array.isArray(vr) || vr.length > PROJECT_EVAL_MAX_ITEMS)
     throw new Error('verification must be a bounded array')
   const verification = vr.map((x, i) => {
     const q = obj(x, `verification[${i}]`)
     strict(
       q,
-      ['name', 'command', 'args', 'timeout_seconds'],
+      ['name', 'command', 'args', 'timeout_seconds', 'required', 'expect'],
       `verification[${i}]`,
     )
+    const verifierName = str(q.name, `verification[${i}].name`)
+    if (!NAME.test(verifierName))
+      throw new Error(`verification[${i}].name must be a safe eval identifier`)
+    if (q.required !== true)
+      throw new Error(`verification[${i}].required must be true`)
+    if (q.expect !== 'pass')
+      throw new Error(`verification[${i}].expect must be pass`)
     return {
-      name: str(q.name, `verification[${i}].name`),
+      name: verifierName,
       command: str(q.command, `verification[${i}].command`),
       args: list(q.args, `verification[${i}].args`),
       timeoutSeconds: integer(
@@ -342,17 +357,24 @@ export function parseProjectEvalCase(
         1,
         3600,
       ),
+      required: true as const,
+      expect: 'pass' as const,
     }
   })
+  if (
+    new Set(verification.map((item) => item.name)).size !== verification.length
+  )
+    throw new Error('Project eval verifier names must be unique')
   const gradersRaw = r.graders === undefined ? [] : r.graders
-  if (!Array.isArray(gradersRaw) || gradersRaw.length > MAX_ITEMS)
+  if (!Array.isArray(gradersRaw) || gradersRaw.length > PROJECT_EVAL_MAX_ITEMS)
     throw new Error('graders must be a bounded array')
   const graders = gradersRaw.map(projectGrader)
   if (new Set(graders.map((item) => item.name)).size !== graders.length)
     throw new Error('Project grader names must be unique')
   return {
-    schemaVersion: '1.0',
+    schemaVersion: '1.1',
     name,
+    risk: r.risk as ProjectEvalRisk,
     dir,
     fixture,
     tags: list(r.tags, 'tags'),

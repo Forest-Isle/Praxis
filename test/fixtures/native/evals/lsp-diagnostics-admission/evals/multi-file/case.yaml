@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: multi-file
+risk: high
 fixture: fixture
 execution:
   prompt: Repair alpha.cjs and beta.cjs after the batch edit and finish.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: multi-file
 verification:
   - name: files-check
+    required: true
+    expect: pass
     command: node
     args:
       - -e

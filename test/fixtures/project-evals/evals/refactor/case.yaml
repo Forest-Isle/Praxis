@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: refactor
+risk: medium
 fixture: fixture
 execution:
   prompt: Refactor user.cjs to use the display name.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: refactor
 verification:
   - name: user-check
+    required: true
+    expect: pass
     command: node
     args:
       [

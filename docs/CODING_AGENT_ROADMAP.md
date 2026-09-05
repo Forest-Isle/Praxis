@@ -443,10 +443,14 @@ Record validated source revision, dirty state, and emitted-artifact digest for
 each built CLI; bump identity sidecars to schema `1.1` while keeping candidate
 builds comparable on existing dimensions.
 
-### Task 6.5: Verifier strengthening and risk-tier coverage [depends: Task 6.4a]
+### Task 6.5: Verifier strengthening and risk-tier coverage [implemented by #691 and #694; depends: Task 6.4a]
 
 Strengthen deterministic verifiers and expand risk-tier coverage. Acceptance:
 verifier and risk-tier failures fail closed before later qualification work.
+Implemented: case schema 1.1 requires explicit risk and verifier success
+contracts; run, aggregate, and comparison evidence is schema 1.2 with
+terminal verifier outcomes, compact self-contained checks, recomputed totals,
+and risk-aware comparison gates.
 
 ## Phase 7 — Turn reliability
 

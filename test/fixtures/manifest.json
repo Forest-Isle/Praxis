@@ -1838,7 +1838,7 @@
     {
       "id": "eval.coding.baseline",
       "seam": "Project eval baseline comparison",
-      "contract": "Hermetic coding scenarios execute through the native session and tool lifecycle, and complete aggregate artifacts compare with fail-closed outcome and safety gates.",
+      "contract": "Hermetic coding scenarios execute through the native session and tool lifecycle, and complete schema-1.2 aggregate evidence compares with fail-closed outcome, verifier, risk, and safety gates.",
       "status": "qualified",
       "modules": [
         "src/evals/project-eval.ts",
@@ -1849,7 +1849,7 @@
       ],
       "outcomes": [
         "Eight bounded coding scenarios exercise bug fixing, feature work, refactoring, navigation, resume, permission denial, malformed input recovery, and active-turn steering without changing source fixtures.",
-        "Named complete aggregate artifacts report deterministic pass, safety, efficiency, permission, error, retry, and termination deltas and fail closed when safety evidence is unavailable.",
+        "Named complete aggregate artifacts report deterministic pass, safety, verifier, risk, efficiency, permission, error, retry, and termination deltas and fail closed when evidence is inconsistent.",
         "The four-case bounded ApplyPatch admission comparison preserves pass, safety, and error outcomes while measuring a turn reduction.",
         "The four-case eval-only current-file diagnostics candidate preserves task and safety outcomes while reducing explicit checker turns without changing production LSP behavior.",
         "The four-case eval-only ripgrep candidate preserves bounded Glob semantics and scope/process safety while reducing candidate turns without changing production Glob behavior."

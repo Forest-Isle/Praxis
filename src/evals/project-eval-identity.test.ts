@@ -21,8 +21,9 @@ const TEST_BUILD_IDENTITY = {
 
 function makeCase(overrides: Partial<ProjectEvalCase> = {}): ProjectEvalCase {
   return {
-    schemaVersion: '1.0',
+    schemaVersion: '1.1',
     name: 'identity-case',
+    risk: 'low',
     dir: '/absolute/case',
     fixture: '/absolute/case/fixture',
     tags: [],
@@ -179,6 +180,8 @@ describe('project eval identity', () => {
             verification: [
               {
                 name: 'check',
+                required: true,
+                expect: 'pass',
                 command: 'node',
                 args: ['check.js'],
                 timeoutSeconds: 1,
@@ -352,6 +355,25 @@ describe('project eval identity', () => {
           : identity[dimension as keyof typeof identity]
       expect(read(variation)).not.toBe(read(base))
     }
+    expect(
+      makeIdentity({ case: makeCase({ risk: 'high' }) }).configuration_sha256,
+    ).not.toBe(base.configuration_sha256)
+    expect(
+      makeIdentity({
+        case: makeCase({
+          verification: [
+            {
+              name: 'required-check',
+              command: 'node',
+              args: ['check.js'],
+              timeoutSeconds: 5,
+              required: true,
+              expect: 'pass',
+            },
+          ],
+        }),
+      }).configuration_sha256,
+    ).not.toBe(base.configuration_sha256)
   })
 
   it('normalizes absolute roots independently of platform and path spelling', () => {
@@ -366,6 +388,8 @@ describe('project eval identity', () => {
         verification: [
           {
             name: 'check',
+            required: true,
+            expect: 'pass',
             command: '/one/root/check-secret-one',
             args: ['C:\\one\\root\\value'],
             timeoutSeconds: 1,
@@ -384,6 +408,8 @@ describe('project eval identity', () => {
         verification: [
           {
             name: 'check',
+            required: true,
+            expect: 'pass',
             command: 'C:\\two\\root\\check-value',
             args: ['/two/root/value'],
             timeoutSeconds: 1,
@@ -404,6 +430,8 @@ describe('project eval identity', () => {
         verification: [
           {
             name: 'check',
+            required: true,
+            expect: 'pass',
             command: 'check-secret-one',
             args: ['secret-one'],
             timeoutSeconds: 1,
@@ -420,6 +448,8 @@ describe('project eval identity', () => {
         verification: [
           {
             name: 'check',
+            required: true,
+            expect: 'pass',
             command: 'check-secret-two',
             args: ['secret-two'],
             timeoutSeconds: 1,
