@@ -11,6 +11,7 @@ import {
 } from './codex-oauth.js'
 import {
   resolveProviderTarget,
+  type ResolveProviderTargetOptions,
   type ProviderProtocol,
   type ProviderTarget,
 } from './provider-settings.js'
@@ -88,6 +89,34 @@ export interface ResolveProviderRegistryOptions {
 }
 
 export type ProviderRegistrySourceMetadata = ProviderCredentialSourceMetadata
+
+function effectiveProviderTarget(
+  target: ProviderTarget,
+  overrides?: AnthropicModelAliasOverrides,
+): ProviderTarget {
+  if (
+    target.providerId !== 'anthropic' ||
+    target.protocol !== 'anthropic-messages'
+  )
+    return target
+  return {
+    ...target,
+    modelId: resolveAnthropicModelAlias(target.modelId, overrides),
+  }
+}
+
+export async function resolveProviderRuntimeTarget(
+  options: ResolveProviderTargetOptions,
+): Promise<ProviderTarget> {
+  const environment = options.environment ?? process.env
+  const target = await resolveProviderTarget({ ...options, environment })
+  const aliases =
+    target.providerId === 'anthropic' &&
+    target.protocol === 'anthropic-messages'
+      ? anthropicModelAliasOverridesFromEnvironment(environment)
+      : undefined
+  return effectiveProviderTarget(target, aliases)
+}
 
 export interface ProviderRegistry {
   readonly target: ProviderTarget
@@ -220,8 +249,11 @@ class NativeProviderRegistry implements ProviderRegistry {
     }
   }
 
-  create(modelId = this.target.modelId): ModelProvider {
-    const target = this.resolveTarget({ ...this.target, modelId })
+  create(modelId?: string): ModelProvider {
+    const target =
+      modelId === undefined
+        ? this.target
+        : this.resolveTarget({ ...this.target, modelId })
     if (target.protocol === 'codex-subscription') {
       if (!this.codexManager)
         throw new ProviderAuthenticationError(
@@ -377,18 +409,10 @@ class NativeProviderRegistry implements ProviderRegistry {
   }
 
   private resolveTarget(target: ProviderTarget): ProviderTarget {
-    if (
-      target.providerId !== 'anthropic' ||
-      target.protocol !== 'anthropic-messages'
+    return effectiveProviderTarget(
+      target,
+      this.options.anthropicModelAliasOverrides,
     )
-      return target
-    return {
-      ...target,
-      modelId: resolveAnthropicModelAlias(
-        target.modelId,
-        this.options.anthropicModelAliasOverrides,
-      ),
-    }
   }
 
   private withDeadline(provider: ModelProvider): ModelProvider {

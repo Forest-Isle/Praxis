@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createProviderRegistry,
   resolveProviderContextWindowTokens,
+  resolveProviderRuntimeTarget,
   resolveProviderRegistry,
 } from './provider-registry.js'
 import { FallbackModelProvider } from './fallback-provider.js'
@@ -791,6 +792,69 @@ describe('ProviderRegistry', () => {
         vault,
       })
       expect(fallback.target.modelId).toBe('claude-sonnet-5')
+
+      const aliasToAlias = await resolveProviderRegistry({
+        configRoot: root,
+        cwd: root,
+        environment: {
+          PRAXIS_PROVIDER: 'anthropic',
+          PRAXIS_MODEL: 'sonnet',
+          ANTHROPIC_API_KEY: 'secret',
+          ANTHROPIC_DEFAULT_SONNET_MODEL: 'haiku',
+        },
+        vault,
+      })
+      expect(aliasToAlias.target.modelId).toBe('haiku')
+      expect(aliasToAlias.create().model).toBe('haiku')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves runtime targets without credentials and preserves custom aliases', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-provider-runtime-target-'),
+    )
+    try {
+      await writeFile(
+        join(root, 'settings.json'),
+        JSON.stringify({
+          provider: 'relay',
+          model: 'sonnet',
+          providers: {
+            relay: {
+              protocol: 'anthropic-messages',
+              profiles: {
+                default: {
+                  baseUrl: 'https://relay.example/v1',
+                  credential: { source: 'env', name: 'RELAY_KEY' },
+                },
+              },
+            },
+          },
+        }),
+      )
+      await expect(
+        resolveProviderRuntimeTarget({
+          configRoot: root,
+          cwd: root,
+          environment: { RELAY_KEY: 'secret' },
+        }),
+      ).resolves.toMatchObject({ providerId: 'relay', modelId: 'sonnet' })
+      await expect(
+        resolveProviderRuntimeTarget({
+          configRoot: root,
+          cwd: root,
+          environment: {
+            PRAXIS_PROVIDER: 'anthropic',
+            PRAXIS_MODEL: 'sonnet',
+            ANTHROPIC_DEFAULT_SONNET_MODEL: 'override-sonnet',
+          },
+        }),
+      ).resolves.toMatchObject({
+        providerId: 'anthropic',
+        modelId: 'override-sonnet',
+      })
     } finally {
       await rm(root, { recursive: true, force: true })
     }

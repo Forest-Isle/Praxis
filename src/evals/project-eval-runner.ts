@@ -11,9 +11,14 @@ import {
   normalizeEvalTraceEvent,
   resolveEvalAllowedTools,
   type EvalGraderResult,
-  type EvalRuntimeFactory,
+  type EvalRuntimeFactoryIdentityOptions,
+  type IdentifiedEvalRuntimeFactory,
   type EvalTraceEvent,
 } from './eval-contract.js'
+import {
+  createProjectEvalIdentity,
+  type ProjectEvalIdentity,
+} from './project-eval-identity.js'
 import type { ProjectEvalCase } from './project-eval-schema.js'
 import {
   cleanupProjectEvalWorkspace,
@@ -41,11 +46,12 @@ export interface ProjectEvalVerificationResult {
 }
 
 export interface ProjectEvalRunResult {
-  schema_version: '1.0'
+  schema_version: '1.1'
   case: string
   run: number
   version: string
-  model: string | null
+  model: string
+  identity: ProjectEvalIdentity
   passed: boolean
   score: 0 | 1
   turns: number
@@ -64,6 +70,7 @@ export interface ProjectEvalRunResult {
     trace: 'trace.jsonl'
     workspace_diff: 'workspace-diff.json'
     verification: 'verification.json'
+    identity: 'identity.json'
     result: 'result.json'
   }
   error: string | null
@@ -113,7 +120,7 @@ function runEvidence(
 
 interface ProjectEvalRunOptions {
   case: ProjectEvalCase
-  factory: EvalRuntimeFactory
+  factory: IdentifiedEvalRuntimeFactory
   run: number
   allowTools?: readonly string[]
   model?: string
@@ -217,7 +224,8 @@ export async function runProjectEvalCase(
   const verifierChecks: EvalGraderResult[] = []
   const cleanupErrors: string[] = []
   const started = Date.now()
-  let runtime: Awaited<ReturnType<EvalRuntimeFactory['create']>> | undefined
+  let runtime:
+    Awaited<ReturnType<IdentifiedEvalRuntimeFactory['create']>> | undefined
   let runtimeCompleted = false
   let runtimeError: string | null = null
   let runtimeCloseError: string | null = null
@@ -228,6 +236,38 @@ export async function runProjectEvalCase(
   let lastMessage = ''
   let graderError: string | null = null
   let graders: EvalGraderResult[] = []
+
+  const effectiveModel = options.model ?? options.case.execution.model
+  const factoryOptions: EvalRuntimeFactoryIdentityOptions = {
+    dataPlane: 'native',
+    cwd: workspace.cwd,
+    configRoot: workspace.config,
+    home: workspace.home,
+    maxTurns: options.case.execution.maxTurns,
+    pluginDirectories: [],
+    allowedTools,
+    ...(effectiveModel ? { model: effectiveModel } : {}),
+    ...(options.case.execution.appendSystemPrompt
+      ? { appendSystemPrompt: options.case.execution.appendSystemPrompt }
+      : {}),
+    addDirs: [],
+    env: options.case.execution.env,
+  }
+  let identity: ProjectEvalIdentity
+  try {
+    const descriptor = await options.factory.identify(factoryOptions)
+    identity = createProjectEvalIdentity({
+      provider: descriptor,
+      case: options.case,
+      sourceBefore: workspace.sourceBefore,
+      effectiveTools: allowedTools,
+      runVerification: options.runVerification ?? false,
+      praxisVersion: options.version,
+    })
+  } catch (error) {
+    await cleanupProjectEvalWorkspace(workspace.root).catch(() => undefined)
+    throw error
+  }
 
   const runtimeController = new AbortController()
   let deadlineReached = false
@@ -243,21 +283,7 @@ export async function runProjectEvalCase(
 
   try {
     runtime = await options.factory.create({
-      dataPlane: 'native',
-      cwd: workspace.cwd,
-      configRoot: workspace.config,
-      home: workspace.home,
-      maxTurns: options.case.execution.maxTurns,
-      pluginDirectories: [],
-      allowedTools,
-      ...((options.model ?? options.case.execution.model)
-        ? { model: options.model ?? options.case.execution.model }
-        : {}),
-      ...(options.case.execution.appendSystemPrompt
-        ? { appendSystemPrompt: options.case.execution.appendSystemPrompt }
-        : {}),
-      addDirs: [],
-      env: options.case.execution.env,
+      ...factoryOptions,
       eventSink: (event) => {
         if (traceOverflow) return
         try {
@@ -526,6 +552,10 @@ export async function runProjectEvalCase(
       join(runDirectory, 'verification.json'),
       JSON.stringify(verifications, null, 2),
     )
+    await writeFileAtomically(
+      join(runDirectory, 'identity.json'),
+      JSON.stringify(identity, null, 2),
+    )
   } catch (error) {
     artifactError = errorText(error)
   }
@@ -568,11 +598,12 @@ export async function runProjectEvalCase(
     checks.find((item) => !item.passed)?.explanation ??
     null
   const result: ProjectEvalRunResult = {
-    schema_version: '1.0',
+    schema_version: '1.1',
     case: options.case.name,
     run: options.run,
     version: options.version,
-    model: options.model ?? options.case.execution.model ?? null,
+    model: identity.model_id,
+    identity,
     passed,
     score: passed ? 1 : 0,
     turns,
@@ -588,6 +619,7 @@ export async function runProjectEvalCase(
       trace: 'trace.jsonl',
       workspace_diff: 'workspace-diff.json',
       verification: 'verification.json',
+      identity: 'identity.json',
       result: 'result.json',
     },
     error: primaryError,

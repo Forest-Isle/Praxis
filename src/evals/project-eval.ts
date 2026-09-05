@@ -2,11 +2,15 @@ import { join, relative, resolve } from 'node:path'
 
 import { writeFileAtomically } from '../platform/atomic-write.js'
 import type { ModelUsage } from '../core/runtime.js'
-import type { EvalRuntimeFactory } from './eval-contract.js'
+import type { IdentifiedEvalRuntimeFactory } from './eval-contract.js'
 import {
   runProjectEvalCase,
   type ProjectEvalRunResult,
 } from './project-eval-runner.js'
+import {
+  computeProjectEvalAggregateIdentity,
+  type ProjectEvalIdentity,
+} from './project-eval-identity.js'
 import { executeProjectEvalCompareCommand } from './project-eval-comparison.js'
 import { discoverProjectEvalCases } from './project-eval-schema.js'
 
@@ -30,7 +34,7 @@ Options:
 Use praxis eval compare --help to compare two completed aggregate artifacts.`
 
 export interface ProjectEvalDependencies {
-  runtimeFactory: EvalRuntimeFactory
+  runtimeFactory: IdentifiedEvalRuntimeFactory
   version?: string
   configRoot: string
 }
@@ -61,7 +65,7 @@ export interface ProjectEvalUsageTotals {
 export interface ProjectEvalRunSummary {
   case: string
   run: number
-  model: string | null
+  model: string
   passed: boolean
   score: 0 | 1
   turns: number
@@ -76,10 +80,11 @@ export interface ProjectEvalRunSummary {
   retries: number
   error: string | null
   artifact_dir: string
+  identity: ProjectEvalIdentity
 }
 
 export interface ProjectEvalAggregate {
-  schema_version: '1.0'
+  schema_version: '1.1'
   version: string
   start: string
   duration_ms: number
@@ -108,6 +113,7 @@ export interface ProjectEvalAggregate {
   terminations: { completed: number; timeout: number; interrupted: number }
   partial: boolean
   interrupted: boolean
+  identity_sha256: `sha256:${string}`
   runs: readonly ProjectEvalRunSummary[]
 }
 
@@ -228,6 +234,7 @@ function runSummary(
       outputDirectory,
       join(outputDirectory, result.case, `run-${result.run}`),
     ).replaceAll('\\', '/'),
+    identity: result.identity,
   }
 }
 
@@ -310,14 +317,19 @@ export async function executeProjectEvalCommand(
 
   const passed = results.filter((result) => result.passed).length
   const knownCostResults = results.filter((result) => result.cost_known)
+  const summaries = results.map((result) => runSummary(result, outputDirectory))
   const aggregate: ProjectEvalAggregate = {
-    schema_version: '1.0',
+    schema_version: '1.1',
     version: dependencies.version ?? 'unknown',
     start: new Date(started).toISOString(),
     duration_ms: Date.now() - started,
     target,
     output_dir: outputDirectory,
-    model: options.model ?? null,
+    model:
+      summaries.length > 0 &&
+      summaries.every((summary) => summary.model === summaries[0]?.model)
+        ? (summaries[0]?.model ?? null)
+        : null,
     case_count: cases.length,
     planned_run_count: plannedRunCount,
     completed_run_count: results.length,
@@ -370,7 +382,14 @@ export async function executeProjectEvalCommand(
     },
     partial: interrupted || results.length < plannedRunCount,
     interrupted,
-    runs: results.map((result) => runSummary(result, outputDirectory)),
+    identity_sha256: computeProjectEvalAggregateIdentity(
+      summaries.map((summary) => ({
+        case: summary.case,
+        run: summary.run,
+        identity_sha256: summary.identity.identity_sha256,
+      })),
+    ),
+    runs: summaries,
   }
   await writeFileAtomically(
     join(outputDirectory, 'aggregate-result.json'),

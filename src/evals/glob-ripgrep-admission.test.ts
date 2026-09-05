@@ -41,7 +41,7 @@ import {
 } from '../tools/glob.js'
 import type { LocalToolRegistryOptions } from '../tools/local-tools.js'
 import type {
-  EvalRuntimeFactory,
+  IdentifiedEvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import { executeProjectEvalCommand } from './project-eval.js'
@@ -414,8 +414,17 @@ async function setupDynamic(
   }
 }
 
-function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
+function createFactory(
+  variant: 'baseline' | 'candidate',
+): IdentifiedEvalRuntimeFactory {
   return {
+    identify: async (options) => ({
+      providerId: 'test-provider',
+      profileId: 'default',
+      protocol: 'openai-compatible',
+      endpoint: 'https://eval.test/v1',
+      modelId: options.model ?? 'glob-ripgrep-admission-model',
+    }),
     create: async (options) => {
       const cleanup = await setupDynamic(options)
       const scripted = scriptedProvider(options)
@@ -1192,7 +1201,7 @@ describe('Glob ripgrep admission eval', () => {
       ),
     ).resolves.toBe(0)
     expect(JSON.parse(compareOutput[0] ?? '{}')).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       passed: true,
       comparable_run_count: 4,
       regressions: [],

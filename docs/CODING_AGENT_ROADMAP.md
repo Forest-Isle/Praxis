@@ -426,11 +426,16 @@ Make aggregate comparisons fail when any previously passing individual case
 regresses. Acceptance: a case-level regression cannot be masked by another
 case improving.
 
-### Task 6.4: Artifact identity digests [depends: Task 6.3]
+### Task 6.4: Artifact identity digests [depends: Task 6.3] [implemented by #685]
 
 Record provider, model, configuration, tool, prompt, corpus, and runtime
 identities in each local artifact. Acceptance: every artifact is attributable
-to a reproducible identity set.
+to a reproducible identity set. Project Eval run-result, aggregate, and
+comparison envelopes use schema `1.1`; identity sidecars use schema `1.0`, and
+trace, workspace-diff, and verification formats remain unchanged. Comparisons
+reject legacy aggregate `1.0` inputs, while identity data stays deterministic,
+path-independent, and free of raw endpoints, secrets, prompts, and host
+environment values.
 
 ### Task 6.5: Verifier strengthening and risk-tier coverage [depends: Task 6.4]
 

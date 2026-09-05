@@ -14,7 +14,7 @@ import { FilteredToolRegistry } from '../tools/filtered-tool-registry.js'
 import { LocalToolRegistry } from '../tools/local-tools.js'
 import type { ApplyPatchEdit } from '../tools/apply-patch.js'
 import type {
-  EvalRuntimeFactory,
+  IdentifiedEvalRuntimeFactory,
   EvalRuntimeFactoryOptions,
 } from './eval-contract.js'
 import { executeProjectEvalCommand } from './project-eval.js'
@@ -207,8 +207,17 @@ function scriptedProvider(
   return { provider, capture: { requests } }
 }
 
-function createFactory(variant: 'baseline' | 'candidate'): EvalRuntimeFactory {
+function createFactory(
+  variant: 'baseline' | 'candidate',
+): IdentifiedEvalRuntimeFactory {
   return {
+    identify: async (options) => ({
+      providerId: 'test-provider',
+      profileId: 'default',
+      protocol: 'openai-compatible',
+      endpoint: 'https://eval.test/v1',
+      modelId: options.model ?? 'apply-patch-admission-model',
+    }),
     create: async (options) => {
       const scripted = scriptedProvider(options, variant)
       if (options.env.EVAL_SCENARIO === 'path-escape') {
@@ -687,7 +696,7 @@ describe('ApplyPatch admission eval', () => {
       }
     }
     expect(comparison).toMatchObject({
-      schema_version: '1.0',
+      schema_version: '1.1',
       passed: true,
       regressions: [],
       metrics: {

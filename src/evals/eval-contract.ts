@@ -33,6 +33,25 @@ export interface EvalRuntimeFactory {
   create(options: EvalRuntimeFactoryOptions): Promise<EvalRuntime>
 }
 
+export type EvalRuntimeFactoryIdentityOptions = Omit<
+  EvalRuntimeFactoryOptions,
+  'eventSink'
+>
+
+export interface EvalRuntimeIdentityDescriptor {
+  providerId: string
+  profileId: string
+  protocol: string
+  endpoint: string
+  modelId: string
+}
+
+export interface IdentifiedEvalRuntimeFactory extends EvalRuntimeFactory {
+  identify(
+    options: EvalRuntimeFactoryIdentityOptions,
+  ): Promise<EvalRuntimeIdentityDescriptor>
+}
+
 export interface EvalTraceEvent {
   type: string
   tool?: string
