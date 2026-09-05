@@ -46,6 +46,7 @@ describe('resolveProviderCredential', () => {
     await expect(
       resolveProviderCredential({
         target: target({ source: 'command', command: ['helper', '--token'] }),
+        environment: {},
         vault: vault(undefined),
         commandRunner: async (argv, options) => {
           commandOptions = options
@@ -67,6 +68,7 @@ describe('resolveProviderCredential', () => {
     await expect(
       resolveProviderCredential({
         target: target({ source: 'command', command: ['helper'] }),
+        environment: {},
         vault: vault(undefined),
         commandRunner: async () => {
           throw new Error(`helper failed with ${secret}`)
@@ -76,6 +78,7 @@ describe('resolveProviderCredential', () => {
     await expect(
       resolveProviderCredential({
         target: target({ source: 'command', command: ['helper'] }),
+        environment: {},
         vault: vault(undefined),
         commandRunner: async () => ({
           stdout: `${secret}\nother`,
@@ -86,6 +89,7 @@ describe('resolveProviderCredential', () => {
     await expect(
       resolveProviderCredential({
         target: target({ source: 'command', command: ['helper'] }),
+        environment: {},
         vault: vault(undefined),
         commandRunner: async () => ({ stdout: secret, exitCode: 1 }),
       }),
@@ -118,6 +122,7 @@ describe('resolveProviderCredential', () => {
     await expect(
       resolveProviderCredential({
         target: codex,
+        environment: {},
         vault: vault({
           type: 'oauth',
           accessToken: 'access',

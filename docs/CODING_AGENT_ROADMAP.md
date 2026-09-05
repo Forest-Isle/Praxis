@@ -408,14 +408,14 @@ cover timer cleanup and the multi-task pending-message race.
 
 ## Phase 6 — Evidence integrity
 
-### Task 6.1: Truth/source-of-truth reset [current: #676]
+### Task 6.1: Truth/source-of-truth reset [implemented by #676]
 
 Align repository guidance and current-state reporting with the supported
 native-only product and active collaboration workflow. Acceptance: merged
 documentation contains no contradictory compatibility or implementation
 status claims.
 
-### Task 6.2: Hermetic provider test environment [depends: Task 6.1]
+### Task 6.2: Hermetic provider test environment [depends: Task 6.1] [implemented by #678]
 
 Isolate provider/model/configuration overrides from the host environment.
 Acceptance: provider tests select and report only their declared configuration.
