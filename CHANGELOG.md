@@ -50,6 +50,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.67.0](https://github.com/Forest-Isle/Praxis/compare/v0.66.0...v0.67.0) (2026-09-05)
+
+
+### Features
+
+* make compaction accounting durable and recoverable ([#697](https://github.com/Forest-Isle/Praxis/issues/697)) ([aa49705](https://github.com/Forest-Isle/Praxis/commit/aa4970579286f7fb1f3b38f2b5406a959070aea9)), closes [#696](https://github.com/Forest-Isle/Praxis/issues/696)
+
 ## [0.66.0](https://github.com/Forest-Isle/Praxis/compare/v0.65.0...v0.66.0) (2026-09-05)
 
 
