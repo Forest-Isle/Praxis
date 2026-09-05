@@ -2,14 +2,25 @@ import { describe, expect, it } from 'vitest'
 
 import {
   anthropicModelAliasOverridesFromEnvironment,
+  resolveAnthropicModelAliasFamily,
   resolveAnthropicModelAlias,
 } from './anthropic-model-alias.js'
 
 describe('Anthropic model aliases', () => {
+  it('recognizes only exact unsuffixed alias families', () => {
+    expect(resolveAnthropicModelAliasFamily('sonnet')).toBe('sonnet')
+    expect(resolveAnthropicModelAliasFamily('best')).toBe('opus')
+    expect(resolveAnthropicModelAliasFamily('default')).toBe('opus')
+    expect(resolveAnthropicModelAliasFamily('best[1m]')).toBeUndefined()
+    expect(resolveAnthropicModelAliasFamily('default[1m]')).toBeUndefined()
+    expect(resolveAnthropicModelAliasFamily('Sonnet')).toBeUndefined()
+  })
+
   it('resolves the built-in family aliases', () => {
     expect(resolveAnthropicModelAlias('sonnet')).toBe('claude-sonnet-5')
     expect(resolveAnthropicModelAlias('opus')).toBe('claude-opus-5')
     expect(resolveAnthropicModelAlias('best')).toBe('claude-opus-5')
+    expect(resolveAnthropicModelAlias('default')).toBe('claude-opus-5[1m]')
     expect(resolveAnthropicModelAlias('haiku')).toBe(
       'claude-haiku-4-5-20251001',
     )
@@ -34,6 +45,12 @@ describe('Anthropic model aliases', () => {
     expect(resolveAnthropicModelAlias('best', { opus: 'custom-opus' })).toBe(
       'custom-opus',
     )
+    expect(resolveAnthropicModelAlias('default', { opus: 'custom-opus' })).toBe(
+      'custom-opus[1m]',
+    )
+    expect(
+      resolveAnthropicModelAlias('default', { opus: 'custom-opus[1m]' }),
+    ).toBe('custom-opus[1m]')
     expect(resolveAnthropicModelAlias('haiku', overrides)).toBe(
       'custom-haiku[1m]',
     )
@@ -59,7 +76,7 @@ describe('Anthropic model aliases', () => {
       'sonnet[1m][1m]',
       'haiku[1m]',
       'best[1m]',
-      'default',
+      'default[1m]',
       'opusplan',
     ]) {
       expect(resolveAnthropicModelAlias(model)).toBe(model)

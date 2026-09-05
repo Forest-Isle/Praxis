@@ -154,7 +154,7 @@ describe('resolveProviderTarget', () => {
       }),
     )
     await expect(
-      resolveProviderTarget({ configRoot: root, cwd }),
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
     ).resolves.toMatchObject({
       providerId: 'openai',
       modelId: 'global-model',
@@ -164,6 +164,7 @@ describe('resolveProviderTarget', () => {
         configRoot: root,
         cwd,
         includeProjectSettings: true,
+        environment: {},
       }),
     ).resolves.toMatchObject({
       providerId: 'vendor',
@@ -216,7 +217,12 @@ describe('resolveProviderTarget', () => {
       }),
     )
     await expect(
-      resolveProviderTarget({ configRoot: root, cwd, model: 'm' }),
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        model: 'm',
+        environment: {},
+      }),
     ).rejects.toThrow(/plaintext secret/)
     await writeFile(join(root, 'settings.json'), '{}')
     await expect(
@@ -334,14 +340,19 @@ describe('resolveProviderTarget', () => {
       JSON.stringify({ unrelated: 'allowed', providers: {} }),
     )
     await expect(
-      resolveProviderTarget({ configRoot: root, cwd, model: 'm' }),
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        model: 'm',
+        environment: {},
+      }),
     ).resolves.toMatchObject({ providerId: 'openai', modelId: 'm' })
   })
 
   it('requires a model and rejects endpoint overrides for Codex', async () => {
     const { root, cwd } = await fixture()
     await expect(
-      resolveProviderTarget({ configRoot: root, cwd }),
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
     ).rejects.toThrow(/model is required/)
     await expect(
       resolveProviderTarget({
@@ -373,5 +384,83 @@ describe('resolveProviderTarget', () => {
         },
       }),
     ).rejects.toThrow(/cannot override/)
+  })
+
+  it('defaults only the built-in Anthropic provider to the default model alias', async () => {
+    const { root, cwd } = await fixture()
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'anthropic',
+        environment: {},
+      }),
+    ).resolves.toMatchObject({ providerId: 'anthropic', modelId: 'default' })
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'openai',
+        environment: {},
+      }),
+    ).rejects.toMatchObject({ code: 'model_required' })
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'openai-responses',
+        environment: {},
+      }),
+    ).rejects.toMatchObject({ code: 'model_required' })
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({ experimental: { codexSubscription: true } }),
+    )
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'openai-codex',
+        environment: {},
+      }),
+    ).rejects.toMatchObject({ code: 'model_required' })
+
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        provider: 'vendor',
+        providers: {
+          anthropic: {
+            protocol: 'anthropic-messages',
+            profiles: {
+              default: {
+                baseUrl: 'https://custom-anthropic.example/v1',
+                credential: { source: 'env', name: 'CUSTOM_ANTHROPIC_KEY' },
+              },
+            },
+          },
+          vendor: {
+            protocol: 'openai-compatible',
+            profiles: {
+              default: {
+                baseUrl: 'https://vendor.example/v1',
+                credential: { source: 'env', name: 'VENDOR_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
+    ).rejects.toMatchObject({ code: 'model_required' })
+    await expect(
+      resolveProviderTarget({
+        configRoot: root,
+        cwd,
+        provider: 'anthropic',
+        environment: {},
+      }),
+    ).rejects.toMatchObject({ code: 'model_required' })
   })
 })

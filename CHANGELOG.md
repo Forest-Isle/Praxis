@@ -7,6 +7,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Features
 
+* default the built-in Anthropic provider to the current long-context Opus model ([#673](https://github.com/Forest-Isle/Praxis/issues/673))
 * route automatic session-name suggestions through an explicit Anthropic Haiku model override ([#667](https://github.com/Forest-Isle/Praxis/issues/667))
 * add bounded native managed-worktree lifecycle diagnostics to doctor and Team observability ([#629](https://github.com/Forest-Isle/Praxis/issues/629))
 * migrate foreground and background Agent isolation to ownership-recorded repo-local managed worktrees with strict restore compatibility ([#627](https://github.com/Forest-Isle/Praxis/issues/627))

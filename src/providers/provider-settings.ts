@@ -55,6 +55,7 @@ interface ProfileDefinition {
 interface ProviderDefinition {
   protocol: ProviderProtocol
   profiles: Record<string, ProfileDefinition>
+  defaultModel?: string
 }
 
 interface Selection {
@@ -84,6 +85,7 @@ const BUILT_INS: Record<string, ProviderDefinition> = {
   },
   anthropic: {
     protocol: 'anthropic-messages',
+    defaultModel: 'default',
     profiles: {
       default: {
         baseUrl: 'https://api.anthropic.com/v1',
@@ -438,7 +440,7 @@ export async function resolveProviderTarget(
       'unknown_profile',
       `Invalid provider settings: unknown profile ${profileId} for provider ${providerId}`,
     )
-  const modelId = selected.model
+  const modelId = selected.model ?? definition.defaultModel
   if (!modelId)
     throw new ProviderSettingsError(
       'model_required',

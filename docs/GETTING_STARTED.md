@@ -7,8 +7,9 @@ Praxis supports macOS and Linux and requires:
 - Node.js 24 or newer;
 - npm (included with supported Node.js releases);
 - `ripgrep` (`rg`) for the Grep and Glob tools;
-- an API key and model ID for a stable Anthropic or OpenAI-compatible provider,
-  or (experimentally) the Codex OAuth path with its explicit switch and model.
+- an API key for the built-in Anthropic provider (which can omit its model), or
+  an API key and model ID for another stable provider, or (experimentally) the
+  Codex OAuth path with its explicit switch and model.
 
 Praxis does not authenticate with a Claude subscription. Claude Code is used
 only as a clean-room behavioral reference; Praxis owns and stores all runtime
@@ -69,11 +70,18 @@ secret manager, not in settings files or command arguments.
 ```sh
 export PRAXIS_PROVIDER="anthropic"
 export PRAXIS_API_KEY="your-api-key"
+# Optional; omit it or use "default" for current Opus long context.
 export PRAXIS_MODEL="claude-sonnet-4-6"
 ```
 
 The default endpoint is `https://api.anthropic.com/v1`. Set
 `PRAXIS_BASE_URL` only when using a compatible gateway.
+
+For the uncustomized built-in provider, omitting `PRAXIS_MODEL` or setting the
+exact `default` alias selects `claude-opus-5[1m]` (1,000,000-token context).
+`ANTHROPIC_DEFAULT_OPUS_MODEL` replaces the Opus identity while retaining one
+terminal `[1m]` suffix. Other built-in providers and custom providers,
+including custom profiles named `anthropic`, still require an explicit model.
 
 Prompt caching uses Anthropic's five-minute cache on the official endpoint.
 Compatible gateways default to caching off because support varies. Set
@@ -140,7 +148,8 @@ Custom protocols are `openai-compatible`, `openai-responses`, and
 may reference an environment variable, an argv `command`, or a native Vault
 profile; these are alternative credential sources. Select a target per session
 with `--provider`, `--provider-profile`, and `--model` (or `PRAXIS_PROVIDER`,
-`PRAXIS_PROVIDER_PROFILE`, and `PRAXIS_MODEL`). Precedence is explicit CLI >
+`PRAXIS_PROVIDER_PROFILE`, and `PRAXIS_MODEL`). The model is optional only for
+the uncustomized built-in Anthropic provider. Precedence is explicit CLI >
 environment > trusted local selection > trusted project selection > user
 settings > native defaults. Project `.praxis/settings.json` and
 `.praxis/settings.local.json` can select only a provider/profile/model after
