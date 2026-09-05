@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: denied-permission-recovery
+risk: high
 fixture: fixture
 execution:
   prompt: Read the protected file, try the protected write, then recover without changing files.

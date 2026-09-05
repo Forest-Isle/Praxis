@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: bug-fix
+risk: medium
 fixture: fixture
 execution:
   prompt: Fix the subtraction bug in math.cjs.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: bug-fix
 verification:
   - name: math-check
+    required: true
+    expect: pass
     command: node
     args: ['-e', "const m=require('./math.cjs');if(m(2,3)!==5)process.exit(1)"]
     timeout_seconds: 10

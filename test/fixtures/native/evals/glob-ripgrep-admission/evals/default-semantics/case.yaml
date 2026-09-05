@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: default-semantics
+risk: low
 fixture: fixture
 execution:
   prompt: Enumerate the TypeScript files and finish.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: default-semantics
 verification:
   - name: readme-check
+    required: true
+    expect: pass
     command: node
     args:
       - -e

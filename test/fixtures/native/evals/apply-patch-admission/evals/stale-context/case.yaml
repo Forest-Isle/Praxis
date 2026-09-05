@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: stale-context
+risk: high
 fixture: fixture
 execution:
   prompt: Attempt the requested stale edit and then finish.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: stale-context
 verification:
   - name: unchanged-check
+    required: true
+    expect: pass
     command: node
     args:
       - -e

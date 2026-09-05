@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: small-feature
+risk: medium
 fixture: fixture
 execution:
   prompt: Add a greeting output file.
@@ -10,6 +11,8 @@ execution:
     EVAL_SCENARIO: small-feature
 verification:
   - name: greeting-check
+    required: true
+    expect: pass
     command: node
     args:
       [

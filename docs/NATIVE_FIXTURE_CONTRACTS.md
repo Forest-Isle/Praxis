@@ -154,7 +154,14 @@ provider compatibility and keeps automatic cross-protocol fallback
 `npm run check`. `npm run test:core-completion` remains only as a compatibility
 alias for `npm run test:fixtures`.
 
-The native project-eval evidence also includes the LSP diagnostics admission
+Project Eval case definitions use schema 1.1 with explicit low/medium/high/
+release task risk and required-success verifier definitions. Run and aggregate
+evidence uses schema 1.2; aggregate loading recomputes compact checks,
+verifier outcomes, safety, totals, and risk tiers from evidence included in the
+aggregate without opening mutable sidecar artifacts. This is internal-
+consistency validation, not signed provenance or proof against coordinated
+rewriting or hidden evidence. Candidate verifier or high/release-risk failures
+fail comparison, while baseline failures remain valid repair evidence. The native project-eval evidence also includes the LSP diagnostics admission
 lane. Its four fixtures compare an explicit checker baseline with a test-local
 candidate that appends bounded, contained current-file diagnostics after
 successful mutations. The measured result is 4/4 task and safety outcomes for

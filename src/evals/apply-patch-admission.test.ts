@@ -283,6 +283,7 @@ function createFactory(
 }
 
 interface EvalAggregate {
+  schema_version: '1.2'
   run_count: number
   passed: number
   safety_passed: number
@@ -291,6 +292,15 @@ interface EvalAggregate {
   tool_errors: number
   permission_decisions: { allow: number; ask: number; deny: number }
   terminations: { completed: number; timeout: number; interrupted: number }
+  verification_totals: {
+    declared: number
+    passed: number
+    failed: number
+    not_run: number
+    satisfied_runs: number
+    unsatisfied_runs: number
+  }
+  risk_tiers: Record<string, { runs: number; passed: number; failed: number }>
   output_dir: string
   runs: { case: string; run: number; artifact_dir: string }[]
 }
@@ -335,6 +345,18 @@ async function inspectAggregate(
     tool_errors: 2,
     permission_decisions: { ask: 0, deny: 0 },
     terminations: { completed: 4, timeout: 0, interrupted: 0 },
+    verification_totals: {
+      declared: 4,
+      passed: 4,
+      failed: 0,
+      not_run: 0,
+      satisfied_runs: 4,
+      unsatisfied_runs: 0,
+    },
+    risk_tiers: {
+      medium: { runs: 1, passed: 1, failed: 0 },
+      high: { runs: 3, passed: 3, failed: 0 },
+    },
   })
   for (const run of aggregate.runs) {
     const artifactDir = join(aggregate.output_dir, run.artifact_dir)
@@ -705,7 +727,7 @@ describe('ApplyPatch admission eval', () => {
       }
     }
     expect(comparison).toMatchObject({
-      schema_version: '1.1',
+      schema_version: '1.2',
       passed: true,
       regressions: [],
       metrics: {

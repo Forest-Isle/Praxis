@@ -11,6 +11,12 @@ import type {
   ProjectEvalAggregate,
   ProjectEvalRunSummary,
 } from './project-eval.js'
+import { PROJECT_EVAL_SAFETY_CHECKS } from './project-eval-runner.js'
+import {
+  PROJECT_EVAL_MAX_ITEMS,
+  PROJECT_EVAL_RISKS,
+  type ProjectEvalRisk,
+} from './project-eval-schema.js'
 
 const MAX_AGGREGATE_BYTES = 8 * 1024 * 1024
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u
@@ -51,7 +57,7 @@ export interface ProjectEvalComparisonMetric<T = number | null> {
 }
 
 export interface ProjectEvalComparisonResult {
-  schema_version: '1.1'
+  schema_version: '1.2'
   baseline: {
     name: string
     source_path: string
@@ -76,6 +82,11 @@ export interface ProjectEvalComparisonResult {
   }[]
   metrics: {
     pass_rate: ProjectEvalComparisonMetric<number>
+    verification_pass_rate: ProjectEvalComparisonMetric<number | null>
+    task_risk_pass_rate: Record<
+      ProjectEvalRisk,
+      ProjectEvalComparisonMetric<number | null>
+    >
     safety_pass_rate: ProjectEvalComparisonMetric<number | null>
     average_turns: ProjectEvalComparisonMetric<number>
     input_tokens: ProjectEvalComparisonMetric<number | null>
@@ -159,6 +170,12 @@ function fail(path: string, message: string): never {
   throw new Error(`Invalid aggregate ${path}: ${message}`)
 }
 
+function stringField(value: unknown, path: string): string
+function stringField(
+  value: unknown,
+  path: string,
+  nullable: true,
+): string | null
 function stringField(
   value: unknown,
   path: string,
@@ -197,17 +214,6 @@ function objectField(value: unknown, path: string): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function optionalGroup(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): boolean {
-  const present = keys.filter((key) => value[key] !== undefined)
-  if (present.length !== 0 && present.length !== keys.length)
-    fail(path, `fields must be all present or all absent: ${keys.join(', ')}`)
-  return present.length === keys.length
-}
-
 function usageField(
   value: unknown,
   path: string,
@@ -229,9 +235,92 @@ function usageField(
   return usage as unknown as ProjectEvalRunSummary['usage']
 }
 
+const FIXED_CHECKS = [
+  'runtime',
+  'termination',
+  ...PROJECT_EVAL_SAFETY_CHECKS,
+  'expected-paths',
+] as const
+const MAX_COMPACT_CHECKS = FIXED_CHECKS.length + 2 * PROJECT_EVAL_MAX_ITEMS
+
+function checkEvidence(value: unknown, path: string) {
+  if (!Array.isArray(value) || value.length > MAX_COMPACT_CHECKS)
+    fail(path, 'expected a bounded array')
+  const names = new Set<string>()
+  const checks = value.map((item, index) => {
+    const check = objectField(item, `${path}[${index}]`)
+    const unknown = Object.keys(check).find(
+      (key) => !['name', 'passed'].includes(key),
+    )
+    if (unknown) fail(`${path}[${index}]`, `unknown field: ${unknown}`)
+    const name = stringField(check.name, `${path}[${index}].name`)
+    boolField(check.passed, `${path}[${index}].passed`)
+    if (names.has(name)) fail(path, 'check names must be unique')
+    names.add(name)
+    const fixed = (FIXED_CHECKS as readonly string[]).includes(name)
+    const dynamic =
+      name === 'graders' ||
+      /^verifier:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name) ||
+      /^grader:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)
+    if (!fixed && !dynamic) fail(`${path}[${index}].name`, 'unsupported check')
+    return { name, passed: check.passed as boolean }
+  })
+  for (const name of FIXED_CHECKS)
+    if (!names.has(name)) fail(path, `missing required check: ${name}`)
+  return checks
+}
+
+function verificationEvidence(value: unknown, path: string) {
+  const evidence = objectField(value, path)
+  const unknownEvidence = Object.keys(evidence).find(
+    (key) => !['outcomes', 'satisfied'].includes(key),
+  )
+  if (unknownEvidence) fail(path, `unknown field: ${unknownEvidence}`)
+  const raw = evidence.outcomes
+  if (!Array.isArray(raw) || raw.length > 256)
+    fail(`${path}.outcomes`, 'expected a bounded array')
+  const names = new Set<string>()
+  const outcomes = raw.map((item, index) => {
+    const outcome = objectField(item, `${path}.outcomes[${index}]`)
+    const unknown = Object.keys(outcome).find(
+      (key) => !['name', 'required', 'expect', 'status'].includes(key),
+    )
+    if (unknown) fail(`${path}.outcomes[${index}]`, `unknown field: ${unknown}`)
+    const name = stringField(outcome.name, `${path}.outcomes[${index}].name`)
+    if (!IDENTIFIER.test(name))
+      fail(`${path}.outcomes[${index}].name`, 'unsafe verifier name')
+    if (names.has(name))
+      fail(`${path}.outcomes`, 'verifier names must be unique')
+    names.add(name)
+    if (outcome.required !== true)
+      fail(`${path}.outcomes[${index}].required`, 'must be true')
+    if (outcome.expect !== 'pass')
+      fail(`${path}.outcomes[${index}].expect`, 'must be pass')
+    if (
+      outcome.status !== 'passed' &&
+      outcome.status !== 'failed' &&
+      outcome.status !== 'not_run'
+    )
+      fail(`${path}.outcomes[${index}].status`, 'invalid verifier status')
+    return {
+      name,
+      required: true as const,
+      expect: 'pass' as const,
+      status: outcome.status as 'passed' | 'failed' | 'not_run',
+    }
+  })
+  boolField(evidence.satisfied, `${path}.satisfied`)
+  const satisfied = outcomes.every((outcome) => outcome.status === 'passed')
+  if (evidence.satisfied !== satisfied)
+    fail(`${path}.satisfied`, 'does not match verifier statuses')
+  return { outcomes, satisfied }
+}
+
 function validateRun(value: unknown, index: number): ProjectEvalRunSummary {
   const path = `runs[${index}]`
   const run = objectField(value, path)
+  if (run.schema_version !== '1.2')
+    fail(`${path}.schema_version`, 'must be "1.2"')
   stringField(run.case, `${path}.case`)
   if (!IDENTIFIER.test(run.case as string))
     fail(`${path}.case`, 'unsafe case name')
@@ -241,7 +330,34 @@ function validateRun(value: unknown, index: number): ProjectEvalRunSummary {
   const identity = validateProjectEvalIdentity(run.identity)
   if (model !== identity.model_id)
     fail(`${path}.model`, 'does not match identity.model_id')
+  if (!PROJECT_EVAL_RISKS.includes(run.risk as ProjectEvalRisk))
+    fail(`${path}.risk`, 'invalid risk')
+  const checks = checkEvidence(run.checks, `${path}.checks`)
+  const verification = verificationEvidence(
+    run.verification,
+    `${path}.verification`,
+  )
+  const verifierChecks = new Map(
+    checks
+      .filter(({ name }) => name.startsWith('verifier:'))
+      .map((check) => [check.name.slice('verifier:'.length), check.passed]),
+  )
+  if (verifierChecks.size !== verification.outcomes.length)
+    fail(`${path}.checks`, 'verifier checks do not match outcomes')
+  for (const outcome of verification.outcomes) {
+    const checkPassed = verifierChecks.get(outcome.name)
+    if (checkPassed === undefined)
+      fail(`${path}.verification`, 'missing verifier check')
+    if (checkPassed !== (outcome.status === 'passed'))
+      fail(`${path}.verification`, 'verifier check does not match status')
+  }
+  const recomputedPassed = checks.every((check) => check.passed)
+  const safetyPassed = PROJECT_EVAL_SAFETY_CHECKS.every(
+    (name) => checks.find((check) => check.name === name)?.passed === true,
+  )
   boolField(run.passed, `${path}.passed`)
+  if (run.passed !== recomputedPassed)
+    fail(`${path}.passed`, 'does not match compact checks')
   if (run.score !== 0 && run.score !== 1)
     fail(`${path}.score`, 'must be 0 or 1')
   if (run.score !== (run.passed ? 1 : 0))
@@ -261,23 +377,27 @@ function validateRun(value: unknown, index: number): ProjectEvalRunSummary {
     fail(`${path}.termination`, 'invalid termination')
   stringField(run.error, `${path}.error`, true)
   stringField(run.artifact_dir, `${path}.artifact_dir`)
-  const evidenceKnown = optionalGroup(
-    run,
-    ['safety_passed', 'permission_decisions', 'tool_errors', 'retries'],
-    path,
+  boolField(run.safety_passed, `${path}.safety_passed`)
+  if (run.safety_passed !== safetyPassed)
+    fail(`${path}.safety_passed`, 'does not match safety checks')
+  const permissions = objectField(
+    run.permission_decisions,
+    `${path}.permission_decisions`,
   )
-  if (evidenceKnown) {
-    boolField(run.safety_passed, `${path}.safety_passed`)
-    const permissions = objectField(
-      run.permission_decisions,
-      `${path}.permission_decisions`,
-    )
-    for (const key of ['allow', 'ask', 'deny'])
-      numberField(permissions[key], `${path}.permission_decisions.${key}`, true)
-    numberField(run.tool_errors, `${path}.tool_errors`, true)
-    numberField(run.retries, `${path}.retries`, true)
-  }
-  return { ...run, model, identity } as unknown as ProjectEvalRunSummary
+  for (const key of ['allow', 'ask', 'deny'])
+    numberField(permissions[key], `${path}.permission_decisions.${key}`, true)
+  numberField(run.tool_errors, `${path}.tool_errors`, true)
+  numberField(run.retries, `${path}.retries`, true)
+  const terminationCheck = checks.find((check) => check.name === 'termination')
+  if (terminationCheck?.passed !== (run.termination === null))
+    fail(`${path}.checks`, 'termination check does not match termination')
+  return {
+    ...run,
+    model,
+    identity,
+    checks,
+    verification,
+  } as unknown as ProjectEvalRunSummary
 }
 
 export async function loadProjectEvalAggregate(
@@ -303,10 +423,10 @@ export async function loadProjectEvalAggregate(
   }
   const aggregate = objectField(value, 'root')
   const data = aggregate as unknown as ProjectEvalAggregate
-  if (aggregate.schema_version !== '1.1')
+  if (aggregate.schema_version !== '1.2')
     fail(
       'schema_version',
-      'must be "1.1"; legacy "1.0" aggregates are unsupported',
+      'must be "1.2"; legacy "1.1" aggregates are unsupported',
     )
   stringField(aggregate.version, 'version')
   stringField(aggregate.start, 'start')
@@ -454,93 +574,140 @@ export async function loadProjectEvalAggregate(
   )
     fail('partial', 'does not match interrupted/completed run state')
 
-  const aggregateEvidenceKnown = optionalGroup(
-    aggregate,
-    [
-      'safety_passed',
-      'safety_failed',
-      'permission_decisions',
-      'tool_errors',
-      'retries',
-      'terminations',
-    ],
-    'root evidence',
+  const safetyKnown = true
+  numberField(aggregate.safety_passed, 'safety_passed', true)
+  numberField(aggregate.safety_failed, 'safety_failed', true)
+  const permissions = objectField(
+    aggregate.permission_decisions,
+    'permission_decisions',
   )
-  const runEvidenceKnown = runs.every(
-    (run) =>
-      typeof run.safety_passed === 'boolean' &&
-      typeof run.tool_errors === 'number' &&
-      typeof run.retries === 'number' &&
-      run.permission_decisions !== undefined,
-  )
-  const runEvidenceAbsent = runs.every(
-    (run) =>
-      run.safety_passed === undefined &&
-      run.tool_errors === undefined &&
-      run.retries === undefined &&
-      run.permission_decisions === undefined,
-  )
+  for (const key of ['allow', 'ask', 'deny'])
+    numberField(permissions[key], `permission_decisions.${key}`, true)
+  numberField(aggregate.tool_errors, 'tool_errors', true)
+  numberField(aggregate.retries, 'retries', true)
   if (
-    (aggregateEvidenceKnown && !runEvidenceKnown) ||
-    (!aggregateEvidenceKnown && !runEvidenceAbsent)
+    aggregate.safety_passed !==
+      runs.filter((run) => run.safety_passed).length ||
+    aggregate.safety_failed !== runs.filter((run) => !run.safety_passed).length
   )
-    fail('runs', 'run evidence must match aggregate evidence availability')
-  const safetyKnown = aggregateEvidenceKnown && runEvidenceKnown
-  if (aggregateEvidenceKnown) {
-    numberField(aggregate.safety_passed, 'safety_passed', true)
-    numberField(aggregate.safety_failed, 'safety_failed', true)
-    const permissions = objectField(
-      aggregate.permission_decisions,
-      'permission_decisions',
+    fail('safety_passed', 'does not match run safety evidence')
+  const expectedPermissions = {
+    allow: runs.reduce(
+      (total, run) => total + run.permission_decisions.allow,
+      0,
+    ),
+    ask: runs.reduce((total, run) => total + run.permission_decisions.ask, 0),
+    deny: runs.reduce((total, run) => total + run.permission_decisions.deny, 0),
+  }
+  if (
+    permissions.allow !== expectedPermissions.allow ||
+    permissions.ask !== expectedPermissions.ask ||
+    permissions.deny !== expectedPermissions.deny
+  )
+    fail('permission_decisions', 'does not match run evidence')
+  if (
+    aggregate.tool_errors !==
+      runs.reduce((total, run) => total + run.tool_errors, 0) ||
+    aggregate.retries !== runs.reduce((total, run) => total + run.retries, 0)
+  )
+    fail('tool_errors', 'does not match run evidence')
+  const terminations = objectField(aggregate.terminations, 'terminations')
+  for (const key of ['completed', 'timeout', 'interrupted'])
+    numberField(terminations[key], `terminations.${key}`, true)
+  const expectedTerminations = {
+    completed: runs.filter((run) => run.termination === null).length,
+    timeout: runs.filter((run) => run.termination === 'timeout').length,
+    interrupted: runs.filter((run) => run.termination === 'interrupted').length,
+  }
+  for (const key of Object.keys(
+    expectedTerminations,
+  ) as (keyof typeof expectedTerminations)[])
+    if (terminations[key] !== expectedTerminations[key])
+      fail(`terminations.${key}`, 'does not match runs')
+
+  const verificationTotals = objectField(
+    aggregate.verification_totals,
+    'verification_totals',
+  )
+  const unknownVerificationTotal = Object.keys(verificationTotals).find(
+    (key) =>
+      ![
+        'declared',
+        'passed',
+        'failed',
+        'not_run',
+        'satisfied_runs',
+        'unsatisfied_runs',
+      ].includes(key),
+  )
+  if (unknownVerificationTotal)
+    fail('verification_totals', `unknown field: ${unknownVerificationTotal}`)
+  for (const key of [
+    'declared',
+    'passed',
+    'failed',
+    'not_run',
+    'satisfied_runs',
+    'unsatisfied_runs',
+  ])
+    numberField(verificationTotals[key], `verification_totals.${key}`, true)
+  const expectedVerificationTotals = {
+    declared: runs.reduce(
+      (total, run) => total + run.verification.outcomes.length,
+      0,
+    ),
+    passed: runs.reduce(
+      (total, run) =>
+        total +
+        run.verification.outcomes.filter(({ status }) => status === 'passed')
+          .length,
+      0,
+    ),
+    failed: runs.reduce(
+      (total, run) =>
+        total +
+        run.verification.outcomes.filter(({ status }) => status === 'failed')
+          .length,
+      0,
+    ),
+    not_run: runs.reduce(
+      (total, run) =>
+        total +
+        run.verification.outcomes.filter(({ status }) => status === 'not_run')
+          .length,
+      0,
+    ),
+    satisfied_runs: runs.filter((run) => run.verification.satisfied).length,
+    unsatisfied_runs: runs.filter((run) => !run.verification.satisfied).length,
+  }
+  for (const key of Object.keys(
+    expectedVerificationTotals,
+  ) as (keyof typeof expectedVerificationTotals)[])
+    if (verificationTotals[key] !== expectedVerificationTotals[key])
+      fail(
+        `verification_totals.${key}`,
+        'does not match run verification evidence',
+      )
+  const riskTiers = objectField(aggregate.risk_tiers, 'risk_tiers')
+  const unknownRisk = Object.keys(riskTiers).find(
+    (key) => !(PROJECT_EVAL_RISKS as readonly string[]).includes(key),
+  )
+  if (unknownRisk) fail('risk_tiers', `unknown field: ${unknownRisk}`)
+  for (const risk of PROJECT_EVAL_RISKS) {
+    const tier = objectField(riskTiers[risk], `risk_tiers.${risk}`)
+    const unknownTier = Object.keys(tier).find(
+      (key) => !['runs', 'passed', 'failed'].includes(key),
     )
-    for (const key of ['allow', 'ask', 'deny'])
-      numberField(permissions[key], `permission_decisions.${key}`, true)
-    numberField(aggregate.tool_errors, 'tool_errors', true)
-    numberField(aggregate.retries, 'retries', true)
+    if (unknownTier) fail(`risk_tiers.${risk}`, `unknown field: ${unknownTier}`)
+    for (const key of ['runs', 'passed', 'failed'])
+      numberField(tier[key], `risk_tiers.${risk}.${key}`, true)
+    const riskRuns = runs.filter((run) => run.risk === risk)
     if (
-      aggregate.safety_passed !==
-        runs.filter((run) => run.safety_passed).length ||
-      aggregate.safety_failed !==
-        runs.filter((run) => !run.safety_passed).length
+      tier.runs !== riskRuns.length ||
+      tier.passed !== riskRuns.filter((run) => run.passed).length ||
+      tier.failed !== riskRuns.filter((run) => !run.passed).length
     )
-      fail('safety_passed', 'does not match run safety evidence')
-    const expectedPermissions = {
-      allow: runs.reduce(
-        (total, run) => total + run.permission_decisions.allow,
-        0,
-      ),
-      ask: runs.reduce((total, run) => total + run.permission_decisions.ask, 0),
-      deny: runs.reduce(
-        (total, run) => total + run.permission_decisions.deny,
-        0,
-      ),
-    }
-    if (
-      permissions.allow !== expectedPermissions.allow ||
-      permissions.ask !== expectedPermissions.ask ||
-      permissions.deny !== expectedPermissions.deny
-    )
-      fail('permission_decisions', 'does not match run evidence')
-    if (
-      aggregate.tool_errors !==
-        runs.reduce((total, run) => total + run.tool_errors, 0) ||
-      aggregate.retries !== runs.reduce((total, run) => total + run.retries, 0)
-    )
-      fail('tool_errors', 'does not match run evidence')
-    const terminations = objectField(aggregate.terminations, 'terminations')
-    for (const key of ['completed', 'timeout', 'interrupted'])
-      numberField(terminations[key], `terminations.${key}`, true)
-    const expectedTerminations = {
-      completed: runs.filter((run) => run.termination === null).length,
-      timeout: runs.filter((run) => run.termination === 'timeout').length,
-      interrupted: runs.filter((run) => run.termination === 'interrupted')
-        .length,
-    }
-    for (const key of Object.keys(
-      expectedTerminations,
-    ) as (keyof typeof expectedTerminations)[])
-      if (terminations[key] !== expectedTerminations[key])
-        fail(`terminations.${key}`, 'does not match runs')
+      fail(`risk_tiers.${risk}`, 'does not match run risk evidence')
   }
   return {
     aggregate: { ...aggregate, runs } as unknown as ProjectEvalAggregate,
@@ -635,6 +802,32 @@ export function compareProjectEvalAggregates(
   const rightSafety = safetyKnown
     ? rightRuns.filter((run) => run.safety_passed).length / rightRuns.length
     : null
+  const verificationRate = (
+    runs: readonly ProjectEvalRunSummary[],
+  ): number | null => {
+    const declared = runs.reduce(
+      (total, run) => total + run.verification.outcomes.length,
+      0,
+    )
+    if (declared === 0) return null
+    const passed = runs.reduce(
+      (total, run) =>
+        total +
+        run.verification.outcomes.filter(({ status }) => status === 'passed')
+          .length,
+      0,
+    )
+    return passed / declared
+  }
+  const taskRiskRate = (
+    runs: readonly ProjectEvalRunSummary[],
+    risk: ProjectEvalRisk,
+  ): number | null => {
+    const selected = runs.filter((run) => run.risk === risk)
+    return selected.length === 0
+      ? null
+      : selected.filter((run) => run.passed).length / selected.length
+  }
   const terms = (
     runs: readonly ProjectEvalRunSummary[],
     kind: 'completed' | 'timeout' | 'interrupted',
@@ -657,7 +850,7 @@ export function compareProjectEvalAggregates(
         )
       : nullableMetric(null, null)
   const result: ProjectEvalComparisonResult = {
-    schema_version: '1.1',
+    schema_version: '1.2',
     baseline: {
       name: baselineName,
       source_path: baseline.sourcePath,
@@ -677,10 +870,27 @@ export function compareProjectEvalAggregates(
       regressions.length === 0 &&
       right.pass_rate >= left.pass_rate &&
       safetyKnown &&
-      (rightSafety ?? 0) >= (leftSafety ?? 0),
+      (rightSafety ?? 0) >= (leftSafety ?? 0) &&
+      rightRuns.every((run) => run.verification.satisfied) &&
+      rightRuns
+        .filter((run) => run.risk === 'high' || run.risk === 'release')
+        .every((run) => run.passed),
     regressions,
     metrics: {
       pass_rate: metric(left.pass_rate, right.pass_rate),
+      verification_pass_rate: nullableMetric(
+        verificationRate(leftRuns),
+        verificationRate(rightRuns),
+      ),
+      task_risk_pass_rate: Object.fromEntries(
+        PROJECT_EVAL_RISKS.map((risk) => [
+          risk,
+          nullableMetric(
+            taskRiskRate(leftRuns, risk),
+            taskRiskRate(rightRuns, risk),
+          ),
+        ]),
+      ) as Record<ProjectEvalRisk, ProjectEvalComparisonMetric<number | null>>,
       safety_pass_rate: nullableMetric(leftSafety, rightSafety),
       average_turns: metric(
         avg(leftRuns.map((r) => r.turns)),

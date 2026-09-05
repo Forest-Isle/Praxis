@@ -2239,8 +2239,9 @@ process.stdin.on('data', chunk => {
     await mkdir(join(caseDir, 'fixture'), { recursive: true })
     await writeFile(
       join(caseDir, 'case.yaml'),
-      `schema_version: "1.0"
+      `schema_version: "1.1"
 name: basic
+risk: low
 fixture: fixture
 execution:
   prompt: Inspect the fixture.

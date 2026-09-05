@@ -202,6 +202,7 @@ function configurationSource(input: CreateProjectEvalIdentityInput): unknown {
     case: {
       name: c.name,
       schema_version: c.schemaVersion,
+      risk: c.risk,
     },
     execution: {
       max_turns: c.execution.maxTurns,

@@ -32,8 +32,11 @@ import { join } from 'node:path'
 export type ProjectEvalTermination = 'timeout' | 'interrupted' | null
 
 export interface ProjectEvalVerificationResult {
-  schema_version: '1.0'
+  schema_version: '1.1'
   name: string
+  required: true
+  expect: 'pass'
+  status: 'passed' | 'failed' | 'not_run'
   command: string
   argv: readonly string[]
   exit_code: number | null
@@ -47,8 +50,9 @@ export interface ProjectEvalVerificationResult {
 }
 
 export interface ProjectEvalRunResult {
-  schema_version: '1.1'
+  schema_version: '1.2'
   case: string
+  risk: ProjectEvalCase['risk']
   run: number
   version: string
   model: string
@@ -67,6 +71,7 @@ export interface ProjectEvalRunResult {
   retries: number
   graders: readonly EvalGraderResult[]
   checks: readonly EvalGraderResult[]
+  verification: ProjectEvalVerificationEvidence
   artifacts: {
     trace: 'trace.jsonl'
     workspace_diff: 'workspace-diff.json'
@@ -79,7 +84,24 @@ export interface ProjectEvalRunResult {
   temp_root: string | null
 }
 
-const SAFETY_CHECKS = [
+export interface ProjectEvalCheckSummary {
+  name: string
+  passed: boolean
+}
+
+export interface ProjectEvalVerifierOutcome {
+  name: string
+  required: true
+  expect: 'pass'
+  status: 'passed' | 'failed' | 'not_run'
+}
+
+export interface ProjectEvalVerificationEvidence {
+  outcomes: readonly ProjectEvalVerifierOutcome[]
+  satisfied: boolean
+}
+
+export const PROJECT_EVAL_SAFETY_CHECKS = [
   'trace-bounds',
   'runtime-close',
   'workspace-manifest',
@@ -110,7 +132,7 @@ function runEvidence(
     else if (event.type === 'api-retry') retries += 1
   }
   return {
-    safety_passed: SAFETY_CHECKS.every(
+    safety_passed: PROJECT_EVAL_SAFETY_CHECKS.every(
       (name) => checks.find((check) => check.name === name)?.passed === true,
     ),
     permission_decisions,
@@ -347,74 +369,138 @@ export async function runProjectEvalCase(
     }
   }
 
-  if (runtimeCompleted && !runtimeCloseError && !termination) {
-    for (const verifier of options.case.verification) {
-      const verifierStarted = Date.now()
-      try {
-        const result = await new BoundedProcessRunner({
-          cwd: workspace.cwd,
-          maxOutputBytes: 64 * 1024,
-        }).run({
-          command: verifier.command,
-          args: [...verifier.args],
-          cwd: workspace.cwd,
-          timeoutMs: verifier.timeoutSeconds * 1000,
-          ...(options.signal === undefined ? {} : { signal: options.signal }),
-          env: verifierEnvironment(
-            options.case.execution.env,
-            workspace.home,
-            workspace.root,
-          ),
-          inheritEnvironment: false,
-          redactExplicitEnvironment: true,
-        })
-        const passed = result.code === 0 && !result.timedOut
-        const verifierError = result.timedOut
+  const addNotRunVerifier = (
+    verifier: ProjectEvalCase['verification'][number],
+    reason: string,
+  ) => {
+    verifications.push({
+      schema_version: '1.1',
+      name: verifier.name,
+      required: true,
+      expect: 'pass',
+      status: 'not_run',
+      command: verifier.command,
+      argv: [...verifier.args],
+      exit_code: null,
+      timed_out: false,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      duration_ms: 0,
+      passed: false,
+      error: reason,
+    })
+    verifierChecks.push(check(`verifier:${verifier.name}`, false, reason))
+  }
+
+  let verifierInterrupted = false
+  for (const verifier of options.case.verification) {
+    if (
+      verifierInterrupted ||
+      !runtimeCompleted ||
+      runtimeCloseError ||
+      termination
+    ) {
+      addNotRunVerifier(
+        verifier,
+        verifierInterrupted
+          ? 'Verifier not run: previous verifier interrupted'
+          : runtimeCloseError
+            ? 'Verifier not run: runtime cleanup failed'
+            : termination
+              ? `Verifier not run: runtime ${termination}`
+              : 'Verifier not run: runtime did not complete',
+      )
+      continue
+    }
+    const verifierStarted = Date.now()
+    try {
+      const result = await new BoundedProcessRunner({
+        cwd: workspace.cwd,
+        maxOutputBytes: 64 * 1024,
+      }).run({
+        command: verifier.command,
+        args: [...verifier.args],
+        cwd: workspace.cwd,
+        timeoutMs: verifier.timeoutSeconds * 1000,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        env: verifierEnvironment(
+          options.case.execution.env,
+          workspace.home,
+          workspace.root,
+        ),
+        inheritEnvironment: false,
+        redactExplicitEnvironment: true,
+      })
+      const interrupted = options.signal?.aborted === true
+      if (interrupted) {
+        termination = 'interrupted'
+        verifierInterrupted = true
+      }
+      const passed = result.code === 0 && !result.timedOut && !interrupted
+      const verifierError = interrupted
+        ? 'Verifier interrupted'
+        : result.timedOut
           ? 'Verifier timed out'
           : result.code === 0
             ? null
             : `Verifier exited with code ${result.code}`
-        verifications.push({
-          schema_version: '1.0',
-          name: verifier.name,
-          command: verifier.command,
-          argv: [...verifier.args],
-          exit_code: result.code,
-          timed_out: result.timedOut,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          truncated: result.truncated,
-          duration_ms: Date.now() - verifierStarted,
+      const status = passed ? 'passed' : 'failed'
+      verifications.push({
+        schema_version: '1.1',
+        name: verifier.name,
+        required: true,
+        expect: 'pass',
+        status,
+        command: verifier.command,
+        argv: [...verifier.args],
+        exit_code: result.code,
+        timed_out: result.timedOut,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        truncated: result.truncated,
+        duration_ms: Date.now() - verifierStarted,
+        passed,
+        error: verifierError,
+      })
+      verifierChecks.push(
+        check(
+          `verifier:${verifier.name}`,
           passed,
-          error: verifierError,
-        })
-        verifierChecks.push(
-          check(
-            `verifier:${verifier.name}`,
-            passed,
-            passed ? 'Verifier passed' : (verifierError ?? 'Verifier failed'),
-          ),
-        )
-      } catch (error) {
-        const message = errorText(error)
-        if (options.signal?.aborted) termination = 'interrupted'
-        verifications.push({
-          schema_version: '1.0',
-          name: verifier.name,
-          command: verifier.command,
-          argv: [...verifier.args],
-          exit_code: null,
-          timed_out: false,
-          stdout: '',
-          stderr: '',
-          truncated: false,
-          duration_ms: Date.now() - verifierStarted,
-          passed: false,
-          error: message,
-        })
-        verifierChecks.push(check(`verifier:${verifier.name}`, false, message))
-        if (termination === 'interrupted') break
+          passed ? 'Verifier passed' : (verifierError ?? 'Verifier failed'),
+        ),
+      )
+    } catch (error) {
+      const message = errorText(error)
+      const interrupted = options.signal?.aborted === true
+      if (interrupted) {
+        termination = 'interrupted'
+        verifierInterrupted = true
       }
+      verifications.push({
+        schema_version: '1.1',
+        name: verifier.name,
+        required: true,
+        expect: 'pass',
+        status: 'failed',
+        command: verifier.command,
+        argv: [...verifier.args],
+        exit_code: null,
+        timed_out: false,
+        stdout: '',
+        stderr: '',
+        truncated: false,
+        duration_ms: Date.now() - verifierStarted,
+        passed: false,
+        error: interrupted ? 'Verifier interrupted' : message,
+      })
+      verifierChecks.push(
+        check(
+          `verifier:${verifier.name}`,
+          false,
+          interrupted ? 'Verifier interrupted' : message,
+        ),
+      )
     }
   }
 
@@ -593,6 +679,17 @@ export async function runProjectEvalCase(
 
   const passed = checks.every((item) => item.passed)
   const evidence = runEvidence(trace, checks)
+  const verification: ProjectEvalVerificationEvidence = {
+    outcomes: verifications.map(({ name, status }) => ({
+      name,
+      required: true,
+      expect: 'pass',
+      status,
+    })),
+    satisfied: verifications.every(
+      (verification) => verification.status === 'passed',
+    ),
+  }
   const primaryError =
     runtimeError ??
     graderError ??
@@ -601,8 +698,9 @@ export async function runProjectEvalCase(
     checks.find((item) => !item.passed)?.explanation ??
     null
   const result: ProjectEvalRunResult = {
-    schema_version: '1.1',
+    schema_version: '1.2',
     case: options.case.name,
+    risk: options.case.risk,
     run: options.run,
     version: options.version,
     model: identity.model_id,
@@ -618,6 +716,7 @@ export async function runProjectEvalCase(
     ...evidence,
     graders,
     checks,
+    verification,
     artifacts: {
       trace: 'trace.jsonl',
       workspace_diff: 'workspace-diff.json',

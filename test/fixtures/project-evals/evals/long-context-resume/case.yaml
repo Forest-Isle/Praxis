@@ -1,5 +1,6 @@
-schema_version: '1.0'
+schema_version: '1.1'
 name: long-context-resume
+risk: high
 fixture: fixture
 execution:
   prompt: Read the notes and summarize the seed.

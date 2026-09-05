@@ -5,7 +5,14 @@ import type { ModelUsage } from '../core/runtime.js'
 import type { IdentifiedEvalRuntimeFactory } from './eval-contract.js'
 import {
   runProjectEvalCase,
+  type ProjectEvalCheckSummary,
+  type ProjectEvalVerificationEvidence,
   type ProjectEvalRunResult,
+} from './project-eval-runner.js'
+export type {
+  ProjectEvalCheckSummary,
+  ProjectEvalVerifierOutcome,
+  ProjectEvalVerificationEvidence,
 } from './project-eval-runner.js'
 import {
   computeProjectEvalAggregateIdentity,
@@ -65,8 +72,10 @@ export interface ProjectEvalUsageTotals {
 }
 
 export interface ProjectEvalRunSummary {
+  schema_version: '1.2'
   case: string
   run: number
+  risk: ProjectEvalRunResult['risk']
   model: string
   passed: boolean
   score: 0 | 1
@@ -83,10 +92,12 @@ export interface ProjectEvalRunSummary {
   error: string | null
   artifact_dir: string
   identity: ProjectEvalIdentity
+  verification: ProjectEvalVerificationEvidence
+  checks: readonly ProjectEvalCheckSummary[]
 }
 
 export interface ProjectEvalAggregate {
-  schema_version: '1.1'
+  schema_version: '1.2'
   version: string
   start: string
   duration_ms: number
@@ -112,6 +123,18 @@ export interface ProjectEvalAggregate {
   permission_decisions: { allow: number; ask: number; deny: number }
   tool_errors: number
   retries: number
+  verification_totals: {
+    declared: number
+    passed: number
+    failed: number
+    not_run: number
+    satisfied_runs: number
+    unsatisfied_runs: number
+  }
+  risk_tiers: Record<
+    ProjectEvalRunResult['risk'],
+    { runs: number; passed: number; failed: number }
+  >
   terminations: { completed: number; timeout: number; interrupted: number }
   partial: boolean
   interrupted: boolean
@@ -216,8 +239,10 @@ function runSummary(
   outputDirectory: string,
 ): ProjectEvalRunSummary {
   return {
+    schema_version: '1.2',
     case: result.case,
     run: result.run,
+    risk: result.risk,
     model: result.model,
     passed: result.passed,
     score: result.score,
@@ -237,6 +262,8 @@ function runSummary(
       join(outputDirectory, result.case, `run-${result.run}`),
     ).replaceAll('\\', '/'),
     identity: result.identity,
+    verification: result.verification,
+    checks: result.checks.map(({ name, passed }) => ({ name, passed })),
   }
 }
 
@@ -322,8 +349,56 @@ export async function executeProjectEvalCommand(
   const passed = results.filter((result) => result.passed).length
   const knownCostResults = results.filter((result) => result.cost_known)
   const summaries = results.map((result) => runSummary(result, outputDirectory))
+  const verificationTotals = {
+    declared: summaries.reduce(
+      (total, summary) => total + summary.verification.outcomes.length,
+      0,
+    ),
+    passed: summaries.reduce(
+      (total, summary) =>
+        total +
+        summary.verification.outcomes.filter(
+          ({ status }) => status === 'passed',
+        ).length,
+      0,
+    ),
+    failed: summaries.reduce(
+      (total, summary) =>
+        total +
+        summary.verification.outcomes.filter(
+          ({ status }) => status === 'failed',
+        ).length,
+      0,
+    ),
+    not_run: summaries.reduce(
+      (total, summary) =>
+        total +
+        summary.verification.outcomes.filter(
+          ({ status }) => status === 'not_run',
+        ).length,
+      0,
+    ),
+    satisfied_runs: summaries.filter(
+      (summary) => summary.verification.satisfied,
+    ).length,
+    unsatisfied_runs: summaries.filter(
+      (summary) => !summary.verification.satisfied,
+    ).length,
+  }
+  const riskTiers: ProjectEvalAggregate['risk_tiers'] = {
+    low: { runs: 0, passed: 0, failed: 0 },
+    medium: { runs: 0, passed: 0, failed: 0 },
+    high: { runs: 0, passed: 0, failed: 0 },
+    release: { runs: 0, passed: 0, failed: 0 },
+  }
+  for (const summary of summaries) {
+    const tier = riskTiers[summary.risk]
+    tier.runs += 1
+    if (summary.passed) tier.passed += 1
+    else tier.failed += 1
+  }
   const aggregate: ProjectEvalAggregate = {
-    schema_version: '1.1',
+    schema_version: '1.2',
     version: dependencies.version ?? 'unknown',
     start: new Date(started).toISOString(),
     duration_ms: Date.now() - started,
@@ -376,6 +451,8 @@ export async function executeProjectEvalCommand(
       0,
     ),
     retries: results.reduce((total, result) => total + result.retries, 0),
+    verification_totals: verificationTotals,
+    risk_tiers: riskTiers,
     terminations: {
       completed: results.filter((result) => result.termination === null).length,
       timeout: results.filter((result) => result.termination === 'timeout')

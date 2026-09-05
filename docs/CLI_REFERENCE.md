@@ -158,13 +158,16 @@ praxis eval --json ./my-project
 Cases are discovered under `<target>/evals/**/case.yaml`. A minimal case is:
 
 ```yaml
-schema_version: '1.0'
+schema_version: '1.1'
 name: writes-result
+risk: medium
 fixture: fixture
 execution:
   prompt: 'Update the result file.'
 verification:
   - name: result-check
+    required: true
+    expect: pass
     command: node
     args: ['-e', "process.exit(require('fs').existsSync('result.txt') ? 0 : 1)"]
 expect:
@@ -176,18 +179,30 @@ expect:
 Fixtures and paths must be contained, bounded, and free of symlinks, special
 files, `.git`, and `node_modules`. Defaults are one run, ten turns, 120 seconds,
 and `Read`, `Glob`, and `Grep` tools. Gated tools require `--allow-tools`.
-`expect.allowed_changed_paths` is optional; when omitted (or empty), no
+`risk` is required and is one of `low`, `medium`, `high`, or `release`: low
+denotes deterministic read-only/query work with no workspace mutation; medium
+denotes contained, reversible ordinary code/file mutation; high denotes
+recovery, safety, or failure-sensitive work; and release denotes deployable or
+rollback-sensitive work. `expect.allowed_changed_paths` is optional; when omitted (or empty), no
 workspace mutation is allowed. Cases may also define deterministic `graders`
 using `regex`, `tool_used`, `tool_order`, and `file_exists` checks.
-Verifiers require `--run-verification`; they run sequentially by executable and
+Verifiers require `--run-verification`; each definition must declare
+`required: true` and `expect: pass`. They run sequentially by executable and
 argv without a shell, with bounded output/time and a minimal environment.
+Every definition produces one terminal `passed`, `failed`, or `not_run` record;
+an ordinary verifier failure does not skip later definitions, while runtime,
+cleanup, and interruption failures make prevented definitions `not_run`.
 
 Artifacts default to `$PRAXIS_HOME/evals/results/<timestamp>` (or the configured
 native config root), with `aggregate-result.json` and per-case/run
 `trace.jsonl`, `workspace-diff.json`, `verification.json`, `identity.json`, and
-`result.json`. `result.json`, `aggregate-result.json`, and
-`comparison-result.json` use schema `1.1`; `identity.json` uses schema `1.1`,
-while trace, workspace-diff, and verification formats are unchanged. Each run
+`result.json`. `result.json` and `aggregate-result.json` use schema `1.2`;
+comparison output uses schema `1.2`; per-verifier `verification.json` uses
+schema `1.1`; and `identity.json` uses schema `1.1`, while trace and
+workspace-diff retain their existing formats. Compact run evidence contains
+`{ name, passed }` checks and `{ name, required, expect, status }` verifier
+outcomes; aggregate verification totals and all four risk tiers are recomputed
+from that evidence. Each run
 embeds a deterministic, path-independent identity covering the effective
 provider, profile, protocol, endpoint digest, alias-resolved model,
 configuration, tools, prompt, fixture corpus, and runtime. The runtime build
@@ -206,8 +221,8 @@ praxis eval compare --baseline ./baseline/aggregate-result.json \
 ```
 
 The command writes `comparison-result.json` beside the candidate artifact (or
-under `--output-dir`). Each input must be an internally consistent v1.1 JSON
-regular file of at most 8 MiB, not a symlink; legacy v1.0 aggregates are
+under `--output-dir`). Each input must be an internally consistent v1.2 JSON
+regular file of at most 8 MiB, not a symlink; legacy v1.1 aggregates are
 rejected explicitly. The command requires matching,
 complete `(case, run)` sets and fails with status 1 when any previously passing
 matching `(case, run)` fails in the candidate, when candidate pass rate or
@@ -221,7 +236,13 @@ comparison.
 Safety is the eight harness checks
 (`trace-bounds`, `runtime-close`, `workspace-manifest`, `source-unchanged`,
 `allowed-paths`, `forbidden-paths`, `artifact-write`, and `temp-cleanup`).
-The comparison reports pass/safety rates, average turns and duration, token and
+Candidate verifier failures and candidate high/release-risk failures block
+comparison; baseline failures remain valid inputs for measuring a repair. The
+loader recomputes pass, safety, verifier correspondence, and aggregate totals
+from evidence included in the aggregate without following mutable sidecars;
+this is internal-consistency validation, not signed provenance or proof against
+coordinated rewriting or hidden evidence. The comparison reports pass/safety/verifier rates and per-risk-tier pass rates,
+average turns and duration, token and
 cost totals, permission decisions, tool errors, retries, and terminations.
 Metrics whose evidence is unavailable are reported as `null` (including token
 deltas when either run has unknown usage and cost deltas when either total is

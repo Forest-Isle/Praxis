@@ -49,8 +49,9 @@ async function temporaryRoot(prefix: string): Promise<string> {
 
 function caseDefinition(name: string): Record<string, unknown> {
   return {
-    schema_version: '1.0',
+    schema_version: '1.1',
     name,
+    risk: 'low',
     fixture: 'fixture',
     execution: { prompt: 'Update the fixture.' },
     expect: { allowed_changed_paths: [] },
@@ -223,6 +224,56 @@ describe('project eval schema and discovery', () => {
       ),
     ).toThrow('pattern or flags are invalid')
   })
+
+  it('requires explicit task risk and verifier success contracts', () => {
+    expect(() =>
+      parseProjectEvalCase(caseDefinition('missing-risk'), '/case'),
+    ).not.toThrow()
+    const missingRisk = { ...caseDefinition('missing-risk') }
+    delete missingRisk.risk
+    expect(() => parseProjectEvalCase(missingRisk, '/case')).toThrow('risk')
+    expect(() =>
+      parseProjectEvalCase(
+        {
+          ...caseDefinition('invalid-risk'),
+          risk: 'none',
+        },
+        '/case',
+      ),
+    ).toThrow('risk')
+    const verifier: Record<string, unknown> = {
+      name: 'check',
+      command: 'node',
+      args: [],
+      required: true,
+      expect: 'pass',
+    }
+    const parseVerifier = (verification: unknown[]) =>
+      parseProjectEvalCase(
+        { ...caseDefinition('invalid-verifier'), verification },
+        '/case',
+      )
+    expect(() => {
+      const missing = { ...verifier }
+      delete missing.required
+      parseVerifier([missing])
+    }).toThrow('required')
+    expect(() => parseVerifier([{ ...verifier, required: false }])).toThrow(
+      'required',
+    )
+    expect(() => {
+      const missing = { ...verifier }
+      delete missing.expect
+      parseVerifier([missing])
+    }).toThrow('expect')
+    expect(() => parseVerifier([{ ...verifier, expect: 'fail' }])).toThrow(
+      'expect',
+    )
+    expect(() => parseVerifier([{ ...verifier, name: '../unsafe' }])).toThrow(
+      'safe eval identifier',
+    )
+    expect(() => parseVerifier([verifier, verifier])).toThrow('unique')
+  })
 })
 
 describe('project eval workspace', () => {
@@ -329,6 +380,8 @@ describe('project eval lifecycle and artifacts', () => {
     definition.verification = [
       {
         name: 'result-check',
+        required: true,
+        expect: 'pass',
         command: process.execPath,
         args: [
           '-e',
@@ -423,7 +476,7 @@ describe('project eval lifecycle and artifacts', () => {
     expect(outputDir).toContain(join(configRoot, 'evals', 'results'))
     expect(outputDir).not.toContain(project)
     expect(aggregate).toMatchObject({
-      schema_version: '1.1',
+      schema_version: '1.2',
       version: 'test-version',
       model: 'override-model',
       case_count: 1,
@@ -569,7 +622,13 @@ describe('project eval lifecycle and artifacts', () => {
       allowed_tools: ['Bash'],
     }
     definition.verification = [
-      { name: 'verify', command: process.execPath, args: ['--version'] },
+      {
+        name: 'verify',
+        required: true,
+        expect: 'pass',
+        command: process.execPath,
+        args: ['--version'],
+      },
     ]
     await writeCase(project, 'authorization', definition)
     let factoryCalls = 0
@@ -841,11 +900,15 @@ describe('project eval lifecycle and artifacts', () => {
     definition.verification = [
       {
         name: 'nonzero',
+        required: true,
+        expect: 'pass',
         command: process.execPath,
         args: ['-e', 'process.exit(3)'],
       },
       {
         name: 'timeout',
+        required: true,
+        expect: 'pass',
         command: process.execPath,
         args: ['-e', 'setTimeout(() => {}, 5000)'],
         timeout_seconds: 1,
@@ -885,6 +948,62 @@ describe('project eval lifecycle and artifacts', () => {
       expect.arrayContaining([
         expect.objectContaining({ name: 'nonzero', exit_code: 3 }),
         expect.objectContaining({ name: 'timeout', timed_out: true }),
+      ]),
+    )
+  })
+
+  it('emits terminal not_run evidence when runtime prevents verification', async () => {
+    const project = await temporaryRoot('praxis-project-eval-verifier-not-run-')
+    const outputDir = await temporaryRoot(
+      'praxis-project-eval-verifier-not-run-out-',
+    )
+    const definition = caseDefinition('verifier-not-run')
+    definition.verification = [
+      {
+        name: 'first',
+        required: true,
+        expect: 'pass',
+        command: process.execPath,
+        args: ['--version'],
+      },
+      {
+        name: 'second',
+        required: true,
+        expect: 'pass',
+        command: process.execPath,
+        args: ['--version'],
+      },
+    ]
+    const loaded = await loadProjectEvalCase(
+      await writeCase(project, 'verifier-not-run', definition),
+    )
+    const result = await runProjectEvalCase({
+      case: loaded,
+      buildIdentity: TEST_BUILD_IDENTITY,
+      runVerification: true,
+      factory: {
+        identify: async (options) => testIdentity(options),
+        create: async () => ({
+          run: async () => {
+            throw new Error('runtime failed')
+          },
+        }),
+      },
+      run: 1,
+      outputDir,
+      version: 'test',
+    })
+    expect(result.verification).toEqual({
+      outcomes: [
+        { name: 'first', required: true, expect: 'pass', status: 'not_run' },
+        { name: 'second', required: true, expect: 'pass', status: 'not_run' },
+      ],
+      satisfied: false,
+    })
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'verifier:first', passed: false }),
+        expect.objectContaining({ name: 'verifier:second', passed: false }),
       ]),
     )
   })

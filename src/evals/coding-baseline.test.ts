@@ -422,6 +422,7 @@ async function runEval(variant: 'baseline' | 'candidate', outputDir: string) {
   return {
     code,
     aggregate: JSON.parse(output.at(-1) ?? '{}') as {
+      schema_version: '1.2'
       passed: number
       run_count: number
       output_dir: string
@@ -429,6 +430,18 @@ async function runEval(variant: 'baseline' | 'candidate', outputDir: string) {
       safety_failed: number
       permission_decisions: { allow: number; ask: number; deny: number }
       tool_errors: number
+      verification_totals: {
+        declared: number
+        passed: number
+        failed: number
+        not_run: number
+        satisfied_runs: number
+        unsatisfied_runs: number
+      }
+      risk_tiers: Record<
+        string,
+        { runs: number; passed: number; failed: number }
+      >
     },
   }
 }
