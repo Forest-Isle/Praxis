@@ -37,6 +37,17 @@ Outcome evidence
   -> measured coding optimizations
 ```
 
+## Audited current state
+
+Phases 0–5 record implemented deterministic harness, runtime, tool, context,
+provider, turn-kernel, and measured-optimization behavior backed by the listed
+fixtures and evaluations. The current harness strongly qualifies deterministic
+runtime, tool, and safety contracts, but does not yet fail every individual
+case regression, enforce provider/model/configuration/corpus identity, or
+establish real-model coding quality. Real-provider coding remains an opt-in
+qualification frontier with pinned configuration, held-out tasks, and
+local-only artifacts.
+
 ## Target architecture
 
 ```text
@@ -334,10 +345,11 @@ permission, retry, timeout, interruption, pass, and safety metrics do not
 regress. Diagnostics are limited to contained changed files, replace stale
 per-file state, and are bounded to eight records and 4096 UTF-8 bytes.
 
-This evidence admits a separate production LSP diagnostics issue only when
-these assertions pass. It is a simulated workflow/value probe: it does not
-implement live LSP diagnostics, change the production LSP registry, or prove
-Claude/external parity.
+The eval admitted automatic post-mutation diagnostics feedback as a measured
+candidate. A configured production LSP tool subsequently shipped for eligible
+interactive plugin resources. Automatic post-Edit/ApplyPatch diagnostics
+injection remains a separate measured-policy question; this evidence does not
+qualify that policy or prove Claude/external parity.
 
 ### Task 5.4: Glob ripgrep admission evidence — implemented by #610 and #612 [depends: Tasks 0.2, 4.3b]
 
@@ -393,6 +405,110 @@ non-prompt output stays quiet. The warning is one-shot, leaves the task and
 process running, and does not alter later terminal delivery. Watchdog timers,
 flags, and pending messages are transient and are not persisted. Focused tests
 cover timer cleanup and the multi-task pending-message race.
+
+## Phase 6 — Evidence integrity
+
+### Task 6.1: Truth/source-of-truth reset [current: #676]
+
+Align repository guidance and current-state reporting with the supported
+native-only product and active collaboration workflow. Acceptance: merged
+documentation contains no contradictory compatibility or implementation
+status claims.
+
+### Task 6.2: Hermetic provider test environment [depends: Task 6.1]
+
+Isolate provider/model/configuration overrides from the host environment.
+Acceptance: provider tests select and report only their declared configuration.
+
+### Task 6.3: Per-case regression gate [depends: Task 6.2]
+
+Make aggregate comparisons fail when any previously passing individual case
+regresses. Acceptance: a case-level regression cannot be masked by another
+case improving.
+
+### Task 6.4: Artifact identity digests [depends: Task 6.3]
+
+Record provider, model, configuration, tool, prompt, corpus, and runtime
+identities in each local artifact. Acceptance: every artifact is attributable
+to a reproducible identity set.
+
+### Task 6.5: Verifier strengthening and risk-tier coverage [depends: Task 6.4]
+
+Strengthen deterministic verifiers and expand risk-tier coverage. Acceptance:
+verifier and risk-tier failures fail closed before later qualification work.
+
+## Phase 7 — Turn reliability
+
+### Task 7.1: Compaction transaction/error semantics [depends: Task 6.5]
+
+Classify compaction errors and add a durable accounting receipt at the
+compaction boundary. Acceptance: compaction preserves exact-once accounting,
+durable ordering, cancellation, and recovery across classified failures.
+
+### Task 7.2: Projection cursor continuity [depends: Task 7.1]
+
+Make projection cursor ownership explicit after the compaction contract.
+Acceptance: projection refresh and recovery resume from the correct cursor
+without duplicate or skipped durable state.
+
+### Task 7.3: Foreground shutdown ownership [depends: Task 7.1]
+
+Make foreground shutdown ownership explicit at the turn boundary.
+Acceptance: cancellation and shutdown settle one terminal outcome without
+leaking work or losing its durable receipt.
+
+## Phase 8 — Controlled real coding qualification
+
+### Task 8.1: Held-out coding corpus [depends: Tasks 6.5, 7.1]
+
+Assemble at least three fixture repositories and twelve held-out coding tasks
+with three repetitions each. Acceptance: the corpus is versioned locally and
+the tasks remain held out from tuning.
+
+### Task 8.2: Real-model qualification [depends: Task 8.1]
+
+Run one pinned, opt-in provider/model configuration with local-only artifacts.
+Acceptance: safety is 100%, zero newly failing cases occur, pass rate does not
+regress, and median/p95 turns and duration are recorded; unknown usage or cost
+blocks optimization claims.
+
+## Phase 9 — Measured coding policy
+
+### Task 9.1: Measured coding policy [depends: Task 8.2]
+
+Measure the exploration, plan, edit, diagnose, test, review, and repair loop.
+Acceptance: every policy change predeclares effect thresholds and reports
+pass, safety, reliability, and latency outcomes.
+
+### Task 9.2: Diagnostics/cache/context experiments [depends: Task 9.1]
+
+Run controlled experiments for automatic diagnostics, cache and route
+stability, and long-context behavior. Acceptance: no policy is adopted
+without its predeclared threshold and local evidence.
+
+### Task 9.3: Local multi-agent experiment [depends: Task 8.2]
+
+Measure the value and safety of local multi-agent coding workflows.
+Acceptance: adoption requires predeclared effect thresholds and no safety or
+pass-rate regression.
+
+## Phase 10 — Kernel deepening and stabilization
+
+### Task 10.1: Usage/accounting deepening [depends: Task 7.1]
+
+Consolidate usage and accounting after the compaction boundary, and deepen
+only seams proven by preceding evidence. Acceptance: accounting remains
+exact-once and unknown usage/cost stays explicitly unavailable.
+
+### Task 10.2: Product/backlog/release stabilization [depends: Tasks 8.2, 9.1]
+
+Unify the coding-first product position, establish an issue-ready frontier,
+update or remove stale health reporting, and batch releases into a stable
+train. Acceptance: the backlog and release train contain no stale status or
+unsupported product claims.
+
+Surface parity, IDE/remote/control-plane work, and big-bang `SessionService`
+rewrites remain out of scope.
 
 ## Release gates
 
