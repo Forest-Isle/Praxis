@@ -28,8 +28,9 @@ sessions, configuration, or compatibility directories.
 - macOS or Linux
 - Node.js 24 or newer
 - [`ripgrep`](https://github.com/BurntSushi/ripgrep) (`rg`) for the Grep and Glob tools
-- an API key and model ID for an Anthropic, OpenAI-compatible, or OpenAI
-  Responses provider (the stable setup), or the explicitly enabled experimental
+- an API key for the uncustomized built-in Anthropic provider (which can select
+  its default model), or an API key and model ID for any other stable provider,
+  or the explicitly enabled experimental
   ChatGPT-backed Codex subscription integration
 
 Praxis does not use Claude subscription authentication. Claude-shaped message,
@@ -92,13 +93,18 @@ For Anthropic Messages:
 ```sh
 export PRAXIS_PROVIDER="anthropic"
 export PRAXIS_API_KEY="your-api-key"
+# Optional: omit it, or use the exact value "default", for current Opus [1m]
 export PRAXIS_MODEL="claude-sonnet-4-6"
 
 cd /path/to/project
 praxis
 ```
 
-Anthropic models use a 200,000-token context window by default, including
+For the uncustomized built-in `anthropic` provider, omitting `PRAXIS_MODEL` (or
+setting it to the exact `default` alias) selects the current Opus model with a
+1,000,000-token context window (`claude-opus-5[1m]`). Other built-in providers
+and custom providers still require an explicit model ID. Anthropic models use a
+200,000-token context window by default, including
 unknown model IDs. Add the exact terminal `[1m]` suffix (for example,
 `claude-sonnet-4-6[1m]`) to request a 1,000,000-token context window;
 Praxis keeps that selected model public, removes the suffix on the wire, and
@@ -306,7 +312,9 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   route, whether primary or fallback, stays sticky only through that logical
   Turn's tool continuations; incompatible routes fail closed, and the next
   independent Turn starts from primary. Recovery may persist only an optional
-  selected model, never provider route or wire state. Anthropic uses a
+  selected model, never provider route or wire state. Only the uncustomized
+  built-in Anthropic provider may omit a model, defaulting to
+  `claude-opus-5[1m]`; all other providers require an explicit model. Anthropic uses a
   200,000-token default or exact terminal `[1m]` model syntax for 1,000,000
   tokens; `PRAXIS_CONTEXT_WINDOW_TOKENS` overrides the advertised window.
 - **Transactional self-update** — `praxis update` verifies the package before

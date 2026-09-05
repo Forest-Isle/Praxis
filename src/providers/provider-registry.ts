@@ -17,6 +17,7 @@ import {
 import { resolveAnthropicModelSpec } from './anthropic-model-spec.js'
 import {
   anthropicModelAliasOverridesFromEnvironment,
+  resolveAnthropicModelAliasFamily,
   resolveAnthropicModelAlias,
   type AnthropicModelAliasOverrides,
 } from './anthropic-model-alias.js'
@@ -369,9 +370,8 @@ class NativeProviderRegistry implements ProviderRegistry {
       this.target.protocol !== 'anthropic-messages'
     )
       return false
-    const family = modelId === 'best' ? 'opus' : modelId
-    if (family !== 'sonnet' && family !== 'opus' && family !== 'haiku')
-      return false
+    const family = resolveAnthropicModelAliasFamily(modelId)
+    if (family === undefined) return false
     const override = this.options.anthropicModelAliasOverrides?.[family]
     return override !== undefined && override.trim().length > 0
   }

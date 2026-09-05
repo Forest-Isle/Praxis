@@ -1,8 +1,10 @@
+export type AnthropicModelFamily = 'sonnet' | 'opus' | 'haiku'
+
 export type AnthropicModelAliasOverrides = Readonly<
-  Partial<Record<'sonnet' | 'opus' | 'haiku', string>>
+  Partial<Record<AnthropicModelFamily, string>>
 >
 
-const DEFAULTS: Readonly<Record<'sonnet' | 'opus' | 'haiku', string>> = {
+const DEFAULTS: Readonly<Record<AnthropicModelFamily, string>> = {
   sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-5',
   haiku: 'claude-haiku-4-5-20251001',
@@ -13,6 +15,14 @@ const ENVIRONMENT_KEYS = {
   opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
 } as const
+
+export function resolveAnthropicModelAliasFamily(
+  model: string,
+): AnthropicModelFamily | undefined {
+  if (model === 'best' || model === 'default') return 'opus'
+  if (model === 'sonnet' || model === 'opus' || model === 'haiku') return model
+  return undefined
+}
 
 export function anthropicModelAliasOverridesFromEnvironment(
   environment: Readonly<Record<string, string | undefined>>,
@@ -36,17 +46,17 @@ export function resolveAnthropicModelAlias(
   overrides: AnthropicModelAliasOverrides = {},
 ): string {
   const longContext = model.endsWith('[1m]')
-  const family =
-    model === 'best'
-      ? 'opus'
-      : longContext
-        ? model.slice(0, -'[1m]'.length)
-        : model
-  if (family !== 'sonnet' && family !== 'opus' && family !== 'haiku') {
-    return model
+  const forcedLongContext = model === 'default'
+  let family = resolveAnthropicModelAliasFamily(model)
+  if (family === undefined && longContext) {
+    const baseModel = model.slice(0, -'[1m]'.length)
+    if (baseModel !== 'best' && baseModel !== 'default')
+      family = resolveAnthropicModelAliasFamily(baseModel)
   }
+  if (family === undefined) return model
   if (longContext && family === 'haiku') return model
   const resolved = overrides[family] ?? DEFAULTS[family]
-  if (!longContext || resolved.endsWith('[1m]')) return resolved
+  if ((!longContext && !forcedLongContext) || resolved.endsWith('[1m]'))
+    return resolved
   return `${resolved}[1m]`
 }

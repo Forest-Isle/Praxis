@@ -118,10 +118,12 @@ describe('ProviderRegistry', () => {
     expect(registry.target.modelId).toBe('claude-sonnet-5')
     expect(registry.hasExplicitModelAlias('opus')).toBe(true)
     expect(registry.hasExplicitModelAlias('best')).toBe(true)
+    expect(registry.hasExplicitModelAlias('default')).toBe(true)
     expect(registry.hasExplicitModelAlias('best[1m]')).toBe(false)
     expect(registry.hasExplicitModelAlias('haiku')).toBe(false)
     expect(registry.create('opus').model).toBe('custom-opus')
     expect(registry.create('best').model).toBe('custom-opus')
+    expect(registry.create('default').model).toBe('custom-opus[1m]')
     expect(registry.create('opus[1m]').model).toBe('custom-opus[1m]')
     expect(registry.create('haiku').model).toBe('claude-haiku-4-5-20251001')
 
@@ -150,6 +152,7 @@ describe('ProviderRegistry', () => {
     })
     expect(builtInWithoutOverride.hasExplicitModelAlias('haiku')).toBe(false)
     expect(builtInWithoutOverride.hasExplicitModelAlias('best')).toBe(false)
+    expect(builtInWithoutOverride.hasExplicitModelAlias('default')).toBe(false)
     expect(builtInWithoutOverride.hasExplicitModelAlias('unknown')).toBe(false)
 
     const nonAnthropic = createProviderRegistry({
@@ -318,26 +321,26 @@ describe('ProviderRegistry', () => {
       target: {
         ...target('anthropic-messages'),
         providerId: 'anthropic',
-        modelId: 'sonnet',
+        modelId: 'default',
       },
       credential: {
         type: 'api-key',
         secret: 'secret',
         source: { source: 'env', name: 'ANTHROPIC_API_KEY' },
       },
-      anthropicModelAliasOverrides: { sonnet: 'fixture-sonnet' },
+      anthropicModelAliasOverrides: { opus: 'fixture-opus' },
       fetchImplementation,
     })
-    const provider = registry.create('sonnet[1m]')
+    const provider = registry.create('default')
     for await (const event of provider.complete({ messages: [] })) {
       expect(event).toBeDefined()
     }
 
-    expect(provider.model).toBe('fixture-sonnet[1m]')
+    expect(provider.model).toBe('fixture-opus[1m]')
     expect(provider.capabilities.contextWindowTokens).toBe(1_000_000)
     expect(requestBodies.map((body) => body.model)).toEqual([
-      'fixture-sonnet',
-      'fixture-sonnet',
+      'fixture-opus',
+      'fixture-opus',
     ])
     expect(
       requestBetas.every((value) => value.includes('context-1m-2025-08-07')),

@@ -3738,6 +3738,19 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         await settingsOnly.close?.()
       }
 
+      await writeFile(
+        join(configRoot, 'settings.json'),
+        JSON.stringify({ model: 'default' }),
+      )
+      const implicitAnthropicDefault = await createService({})
+      try {
+        expect(implicitAnthropicDefault.runtimeInfo?.().model).toBe(
+          'claude-opus-5[1m]',
+        )
+      } finally {
+        await implicitAnthropicDefault.close?.()
+      }
+
       const envWins = await createService({ PRAXIS_MODEL: 'env-model' })
       try {
         expect(envWins.runtimeInfo?.().model).toBe('env-model')
@@ -3770,6 +3783,25 @@ await writeFile(${JSON.stringify(outputPath)}, JSON.stringify({
         expect(anthropicBestOverride.runtimeInfo?.().model).toBe('fixture-opus')
       } finally {
         await anthropicBestOverride.close?.()
+      }
+
+      const anthropicDefault = await createService({ PRAXIS_MODEL: 'default' })
+      try {
+        expect(anthropicDefault.runtimeInfo?.().model).toBe('claude-opus-5[1m]')
+      } finally {
+        await anthropicDefault.close?.()
+      }
+
+      const anthropicDefaultOverride = await createService({
+        PRAXIS_MODEL: 'default',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'fixture-opus[1m]',
+      })
+      try {
+        expect(anthropicDefaultOverride.runtimeInfo?.().model).toBe(
+          'fixture-opus[1m]',
+        )
+      } finally {
+        await anthropicDefaultOverride.close?.()
       }
 
       const cliWins = await createService(
