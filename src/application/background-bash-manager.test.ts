@@ -209,10 +209,10 @@ describe('BackgroundBashManager', () => {
   })
 
   it('resets the idle window on output activity and cancels on ordinary output', async () => {
-    const { manager } = await createManager({ stallWatchdogMs: 500 })
+    const { manager } = await createManager({ stallWatchdogMs: 1200 })
     const launch = await manager.launch({
       command:
-        "printf 'Continue? [y/N]'; sleep 0.2; printf ' Proceed? [y/N]'; sleep 0.4; printf ' ordinary'; sleep 0.05",
+        "printf 'Continue? [y/N]'; sleep 0.8; printf ' Proceed? [y/N]'; sleep 0.8; printf ' ordinary'; sleep 0.05",
       description: 'reset window',
       toolUseId: 'call_reset',
       timeout: 30_000,
