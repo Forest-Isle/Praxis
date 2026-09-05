@@ -20,8 +20,16 @@ export async function verifyFixtureContracts(
       behavior.evidence.filter((entry) => entry.kind === 'fixture').length,
     0,
   )
+  const riskTotals = result.manifest.behaviors.reduce(
+    (totals, behavior) => {
+      if (behavior.risk !== 'none') totals[behavior.risk] += 1
+      totals.exemptions += behavior.evidenceRequirements.exemptions.length
+      return totals
+    },
+    { low: 0, medium: 0, high: 0, release: 0, exemptions: 0 },
+  )
   console.log(
-    `Fixture contract is valid: ${behaviors} behaviors, ${evidence} evidence entries, ${fixtures} fixtures, ${result.manifest.gates.length} gates`,
+    `Fixture contract is valid: schema v${result.manifest.schemaVersion}; ${behaviors} behaviors, ${evidence} evidence entries, ${fixtures} fixtures, ${result.manifest.gates.length} gates; risk tiers low=${riskTotals.low}, medium=${riskTotals.medium}, high=${riskTotals.high}, release=${riskTotals.release}; exemptions=${riskTotals.exemptions}`,
   )
   return true
 }

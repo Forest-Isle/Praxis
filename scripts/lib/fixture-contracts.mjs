@@ -7,11 +7,36 @@ const BEHAVIOR_KEYS = [
   'seam',
   'contract',
   'status',
+  'risk',
+  'evidenceRequirements',
   'modules',
   'outcomes',
   'evidence',
 ]
 const STATUS = new Set(['qualified', 'blocked', 'excluded'])
+const RISK = new Set(['none', 'low', 'medium', 'high', 'release'])
+const DIMENSIONS = [
+  'success',
+  'negative',
+  'recovery',
+  'persistence',
+  'rollback',
+  'operations',
+]
+const DIMENSION_SET = new Set(DIMENSIONS)
+const RISK_FLOORS = {
+  low: ['success'],
+  medium: ['success', 'negative'],
+  high: ['success', 'negative', 'recovery', 'persistence'],
+  release: [
+    'success',
+    'negative',
+    'recovery',
+    'persistence',
+    'rollback',
+    'operations',
+  ],
+}
 const ID = /^[a-z0-9]+(?:\.[a-z0-9]+)+$/
 const FIXTURE_ROOT = 'test/fixtures'
 const EVIDENCE_ROOTS = [
@@ -138,6 +163,39 @@ function evidenceLabel(id, index) {
   return `behavior '${id}' evidence ${index + 1}`
 }
 
+function validateExecutableCoverage({
+  evidence,
+  label,
+  requiredSet,
+  exemptionSet,
+  coveredDimensions,
+  diagnostics,
+}) {
+  if (!Array.isArray(evidence.covers) || evidence.covers.length === 0)
+    diagnostics.push(`${label} covers must be a non-empty array`)
+  else {
+    const covers = new Set()
+    for (const [coverIndex, dimension] of evidence.covers.entries()) {
+      if (typeof dimension !== 'string' || !DIMENSION_SET.has(dimension))
+        diagnostics.push(
+          `${label} covers ${coverIndex + 1} must be an allowed dimension`,
+        )
+      else {
+        if (covers.has(dimension))
+          diagnostics.push(`${label} covers has duplicate '${dimension}'`)
+        covers.add(dimension)
+        coveredDimensions.add(dimension)
+        if (!requiredSet.has(dimension))
+          diagnostics.push(
+            `${label} covers undeclared dimension '${dimension}'`,
+          )
+        if (exemptionSet.has(dimension))
+          diagnostics.push(`${label} covers exempted dimension '${dimension}'`)
+      }
+    }
+  }
+}
+
 function isExecutableQualificationCommand(body, script) {
   if (typeof body !== 'string') return false
   const normalized = body.trim().replace(/\s+/gu, ' ')
@@ -165,8 +223,8 @@ export async function fixtureContractDiagnostics({
     return ['manifest must be an object']
   }
   exactKeys(manifest, MANIFEST_KEYS, 'manifest', diagnostics)
-  if (manifest.schemaVersion !== 1)
-    diagnostics.push('manifest schemaVersion must be numeric 1')
+  if (manifest.schemaVersion !== 2)
+    diagnostics.push('manifest schemaVersion must be numeric 2')
   if (!Array.isArray(manifest.behaviors))
     diagnostics.push('manifest behaviors must be an array')
   else if (manifest.behaviors.length === 0)
@@ -206,6 +264,93 @@ export async function fixtureContractDiagnostics({
       diagnostics.push(
         `behavior '${id}' has unknown status '${behavior?.status}'`,
       )
+    if (!RISK.has(behavior?.risk))
+      diagnostics.push(
+        `behavior '${id}' risk must be one of none, low, medium, high, or release`,
+      )
+    else if (
+      ['blocked', 'excluded'].includes(behavior?.status) &&
+      behavior.risk !== 'none'
+    )
+      diagnostics.push(
+        `behavior '${id}' with status ${behavior.status} requires risk 'none'`,
+      )
+    else if (behavior?.status === 'qualified' && behavior.risk === 'none')
+      diagnostics.push(`qualified behavior '${id}' requires a non-none risk`)
+
+    const requirementsLabel = `behavior '${id}' evidenceRequirements`
+    exactKeys(
+      behavior?.evidenceRequirements,
+      ['required', 'exemptions'],
+      requirementsLabel,
+      diagnostics,
+    )
+    const requirements = behavior?.evidenceRequirements
+    const required = Array.isArray(requirements?.required)
+      ? requirements.required
+      : []
+    const exemptions = Array.isArray(requirements?.exemptions)
+      ? requirements.exemptions
+      : []
+    if (!Array.isArray(requirements?.required))
+      diagnostics.push(`${requirementsLabel} required must be an array`)
+    if (!Array.isArray(requirements?.exemptions))
+      diagnostics.push(`${requirementsLabel} exemptions must be an array`)
+    const requiredSet = new Set()
+    for (const [requirementIndex, dimension] of required.entries()) {
+      const label = `${requirementsLabel} required ${requirementIndex + 1}`
+      if (typeof dimension !== 'string' || !DIMENSION_SET.has(dimension)) {
+        diagnostics.push(`${label} must be an allowed dimension`)
+        continue
+      }
+      if (requiredSet.has(dimension))
+        diagnostics.push(
+          `${requirementsLabel} required has duplicate '${dimension}'`,
+        )
+      requiredSet.add(dimension)
+    }
+    const exemptionSet = new Set()
+    const floor = RISK_FLOORS[behavior?.risk] ?? []
+    for (const [exemptionIndex, exemption] of exemptions.entries()) {
+      const label = `${requirementsLabel} exemption ${exemptionIndex + 1}`
+      exactKeys(exemption, ['dimension', 'reason'], label, diagnostics)
+      const dimension = exemption?.dimension
+      if (typeof dimension !== 'string' || !DIMENSION_SET.has(dimension))
+        diagnostics.push(`${label} dimension must be an allowed dimension`)
+      else {
+        if (exemptionSet.has(dimension))
+          diagnostics.push(
+            `${requirementsLabel} exemptions has duplicate '${dimension}'`,
+          )
+        exemptionSet.add(dimension)
+        if (requiredSet.has(dimension))
+          diagnostics.push(
+            `${requirementsLabel} dimension '${dimension}' may not be both required and exempted`,
+          )
+        if (!floor.includes(dimension))
+          diagnostics.push(
+            `${requirementsLabel} exemption dimension '${dimension}' must be within the '${behavior.risk}' risk floor`,
+          )
+      }
+      if (typeof exemption?.reason !== 'string' || !exemption.reason.trim())
+        diagnostics.push(`${label} reason must be non-empty`)
+    }
+    if (['blocked', 'excluded'].includes(behavior?.status)) {
+      if (required.length > 0 || exemptions.length > 0)
+        diagnostics.push(
+          `behavior '${id}' with status ${behavior.status} requires empty evidenceRequirements`,
+        )
+    } else {
+      if (behavior?.status === 'qualified' && !requiredSet.has('success'))
+        diagnostics.push(`qualified behavior '${id}' must require success`)
+      if (behavior?.status === 'qualified' && exemptionSet.has('success'))
+        diagnostics.push(`qualified behavior '${id}' may not exempt success`)
+      for (const dimension of floor)
+        if (!requiredSet.has(dimension) && !exemptionSet.has(dimension))
+          diagnostics.push(
+            `behavior '${id}' risk '${behavior.risk}' must account for '${dimension}' in required or exemptions`,
+          )
+    }
     if (!Array.isArray(behavior?.modules))
       diagnostics.push(`behavior '${id}' modules must be an array`)
     else if (
@@ -257,6 +402,7 @@ export async function fixtureContractDiagnostics({
     const entries = Array.isArray(behavior?.evidence) ? behavior.evidence : []
     let vitestCount = 0
     let gateCount = 0
+    const coveredDimensions = new Set()
     for (const [evidenceIndex, evidence] of entries.entries()) {
       const label = evidenceLabel(id, evidenceIndex)
       if (
@@ -269,7 +415,20 @@ export async function fixtureContractDiagnostics({
       }
       const kind = evidence.kind
       if (kind === 'vitest') {
-        exactKeys(evidence, ['kind', 'file', 'testName'], label, diagnostics)
+        exactKeys(
+          evidence,
+          ['kind', 'file', 'testName', 'covers'],
+          label,
+          diagnostics,
+        )
+        validateExecutableCoverage({
+          evidence,
+          label,
+          requiredSet,
+          exemptionSet,
+          coveredDimensions,
+          diagnostics,
+        })
         const file = repoPath(root, evidence.file, `${label} file`, diagnostics)
         if (file) {
           await regularFile(root, file, `${label} file`, diagnostics)
@@ -306,7 +465,15 @@ export async function fixtureContractDiagnostics({
         }
       } else if (kind === 'gate') {
         gateCount += 1
-        exactKeys(evidence, ['kind', 'gate'], label, diagnostics)
+        exactKeys(evidence, ['kind', 'gate', 'covers'], label, diagnostics)
+        validateExecutableCoverage({
+          evidence,
+          label,
+          requiredSet,
+          exemptionSet,
+          coveredDimensions,
+          diagnostics,
+        })
         if (typeof evidence.gate !== 'string' || !evidence.gate)
           diagnostics.push(`${label} gate must be non-empty`)
       } else {
@@ -335,6 +502,12 @@ export async function fixtureContractDiagnostics({
       diagnostics.push(
         `behavior '${id}' with status ${behavior.status} may not pretend to pass with Vitest evidence`,
       )
+    if (behavior?.status === 'qualified')
+      for (const dimension of requiredSet)
+        if (!coveredDimensions.has(dimension))
+          diagnostics.push(
+            `qualified behavior '${id}' required dimension '${dimension}' has no executable coverage`,
+          )
   }
 
   const gateIds = new Set()

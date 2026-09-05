@@ -38,16 +38,36 @@ or retained clean-room observations, never values recomputed by production code.
 
 ## Manifest
 
-`test/fixtures/manifest.json` has schema version 1 and contains:
+`test/fixtures/manifest.json` has schema version 2 and contains:
 
 - `behaviors`: unique stable IDs, seam, observable contract, supported status,
-  production modules, required outcomes, and executable evidence.
+  risk tier, evidence requirements, production modules, required outcomes, and
+  executable evidence.
 - `gates`: package-script evidence that is required for qualification and the
   CI job that executes it.
 - Evidence kinds:
   - `vitest`: exact repository-relative test file and exact test title.
   - `fixture`: repository-relative fixture path owned by the behavior.
-  - `gate`: a package script declared in the manifest's gate table.
+  - `gate`: a package script declared in the manifest's gate table, with the
+    dimensions it proves.
+
+Each qualified behavior declares `risk` as `low`, `medium`, `high`, or
+`release`, and each blocked or excluded behavior declares `risk: "none"` with
+empty evidence requirements. `evidenceRequirements.required` is a unique list
+of dimensions from `success`, `negative`, `recovery`, `persistence`, `rollback`,
+and `operations`. An exemption is an exact `{ dimension, reason }` object for a
+semantically inapplicable dimension; it cannot overlap a required dimension.
+Exemptions are limited to dimensions in the selected risk tier's floor; a
+dimension outside that floor needs no exemption. `success` is always required
+for qualified behavior and can never be exempted.
+
+Risk tiers impose these minimum dimensions: low requires success; medium adds
+negative; high adds recovery and persistence; release adds rollback and
+operations. Every required dimension must be covered by at least one Vitest or
+gate entry. Such entries carry a non-empty unique `covers` list, and every
+covered dimension must be required. Fixture evidence remains ownership-only and
+cannot claim coverage. Missing requirements, invalid or duplicate dimensions,
+exempted coverage, and uncovered requirements fail closed.
 
 Supported behaviors must include passing evidence. A qualified behavior may
 not reference a skipped, missing, or failing test. Each production module named
@@ -116,8 +136,10 @@ ownership and repository search proved them unowned.
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
 are the active qualification source. The manifest declares 74 behaviors: 66
-are qualified and 8 are explicitly excluded. It contains 168 evidence entries:
-110 Vitest entries, 52 fixture entries, and 6 gate entries.
+are qualified and 8 are explicitly excluded. Risk tiers are 13 low, 12 medium,
+40 high, and 1 release; the manifest records 49 semantically justified
+tier-floor exemptions for non-applicable evidence. It contains 172 evidence entries:
+114 Vitest entries, 52 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain

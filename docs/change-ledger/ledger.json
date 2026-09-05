@@ -1,0 +1,132 @@
+{
+  "entries": {
+    "issue-691-ledger-prettier-compat": {
+      "architecture_link": {
+        "evidence": "Canonical architecture model and checkpoint remain absent; bootstrap is tracked by GitHub Issue #692. This formatter-boundary configuration does not alter product architecture.",
+        "verdict": "MODEL_REBUILD_REQUIRED"
+      },
+      "base_revision": "git:95bd52a154922b667988f4474b5026992cec85b4",
+      "capsule_path": "docs/change-ledger/entries/2026/09/issue-691-ledger-prettier-compat.md",
+      "change_kind": "configuration",
+      "changed_files": [
+        ".prettierignore"
+      ],
+      "created_at": "2026-09-05T09:41:27Z",
+      "effective_fingerprints": {
+        ".prettierignore": "sha256:08d4d04064fd82143e1e8e54b0ad728e7f92fee75b90f0e91886c64fc94a68cf",
+        "README.md": "sha256:b9449864178b9014e41595bca22f1199618b912398793a48bb215e91285ba9c5",
+        "README_zh.md": "sha256:a2b44df099862d41640a8147a35cdcec7c0da5d7a248a48309388538eda530a4",
+        "docs/NATIVE_FIXTURE_CONTRACTS.md": "sha256:e987e4f382b8bd5c9c1fb349d90ff1db713d153c204d84092ef68667c0116bc4",
+        "scripts/fixture-contracts.test.mjs": "sha256:529c5f91131b22b0a477be42cc01d91aab8ce5893e59914f7f56c621686b263b",
+        "scripts/lib/fixture-contracts.mjs": "sha256:a26723b7fb4bee6671430e78b9a39c18e7f7adc43d6225c2a457722b3cf23a3a",
+        "scripts/verify-fixture-contracts.mjs": "sha256:8ec663012d7bdaa504bbb6aa14957e1ac1037bca7b710daded3ec786e85e5dd0",
+        "test/fixtures/manifest.json": "sha256:b3bd84b9aee41da2e674e99a2729e02ec6076d63323423fe9f1ce9dd652c470b"
+      },
+      "excluded_preexisting_files": [
+        ".claude",
+        "docs/CLAUDE_EXPERIMENTAL_CAPABILITIES.md",
+        "docs/research"
+      ],
+      "implementation_status": "verified",
+      "observed_revision": "git:13f9ac08a1a7d5b1a17ca3c9253195399829069f",
+      "own_fingerprints": {
+        ".prettierignore": "sha256:08d4d04064fd82143e1e8e54b0ad728e7f92fee75b90f0e91886c64fc94a68cf"
+      },
+      "parents": [
+        "issue-691-risk-tier-evidence"
+      ],
+      "project_root": "/Users/wuqisen/dev/Praxis",
+      "repair_of": [],
+      "requirement_ids": [
+        "F1",
+        "F2"
+      ],
+      "review_status": "pending",
+      "risk": "low",
+      "schema_version": "2",
+      "scopes": [
+        "project",
+        "change-ledger"
+      ],
+      "supersedes": [],
+      "title": "Exclude deterministic review-ledger output from Prettier"
+    },
+    "issue-691-risk-tier-evidence": {
+      "architecture_link": {
+        "evidence": "Canonical architecture model and checkpoint are absent; bootstrap is tracked by GitHub Issue #692. The reviewed seven-file diff changes no runtime or native data-plane boundary.",
+        "verdict": "MODEL_REBUILD_REQUIRED"
+      },
+      "base_revision": "git:7bf8ee5ed06fd5d2a4eb3feefdfd43a33e2c5f79",
+      "capsule_path": "docs/change-ledger/entries/2026/09/issue-691-risk-tier-evidence.md",
+      "change_kind": "schema",
+      "changed_files": [
+        "README.md",
+        "README_zh.md",
+        "docs/NATIVE_FIXTURE_CONTRACTS.md",
+        "scripts/fixture-contracts.test.mjs",
+        "scripts/lib/fixture-contracts.mjs",
+        "scripts/verify-fixture-contracts.mjs",
+        "test/fixtures/manifest.json"
+      ],
+      "created_at": "2026-09-05T09:34:03Z",
+      "effective_fingerprints": {
+        "README.md": "sha256:b9449864178b9014e41595bca22f1199618b912398793a48bb215e91285ba9c5",
+        "README_zh.md": "sha256:a2b44df099862d41640a8147a35cdcec7c0da5d7a248a48309388538eda530a4",
+        "docs/NATIVE_FIXTURE_CONTRACTS.md": "sha256:e987e4f382b8bd5c9c1fb349d90ff1db713d153c204d84092ef68667c0116bc4",
+        "scripts/fixture-contracts.test.mjs": "sha256:529c5f91131b22b0a477be42cc01d91aab8ce5893e59914f7f56c621686b263b",
+        "scripts/lib/fixture-contracts.mjs": "sha256:a26723b7fb4bee6671430e78b9a39c18e7f7adc43d6225c2a457722b3cf23a3a",
+        "scripts/verify-fixture-contracts.mjs": "sha256:8ec663012d7bdaa504bbb6aa14957e1ac1037bca7b710daded3ec786e85e5dd0",
+        "test/fixtures/manifest.json": "sha256:b3bd84b9aee41da2e674e99a2729e02ec6076d63323423fe9f1ce9dd652c470b"
+      },
+      "excluded_preexisting_files": [
+        ".claude",
+        "docs/CLAUDE_EXPERIMENTAL_CAPABILITIES.md",
+        "docs/research"
+      ],
+      "implementation_status": "verified",
+      "observed_revision": "git:8c760a89a9d4ad54279ea43f70ce24cb45d83798",
+      "own_fingerprints": {
+        "README.md": "sha256:b9449864178b9014e41595bca22f1199618b912398793a48bb215e91285ba9c5",
+        "README_zh.md": "sha256:a2b44df099862d41640a8147a35cdcec7c0da5d7a248a48309388538eda530a4",
+        "docs/NATIVE_FIXTURE_CONTRACTS.md": "sha256:e987e4f382b8bd5c9c1fb349d90ff1db713d153c204d84092ef68667c0116bc4",
+        "scripts/fixture-contracts.test.mjs": "sha256:529c5f91131b22b0a477be42cc01d91aab8ce5893e59914f7f56c621686b263b",
+        "scripts/lib/fixture-contracts.mjs": "sha256:a26723b7fb4bee6671430e78b9a39c18e7f7adc43d6225c2a457722b3cf23a3a",
+        "scripts/verify-fixture-contracts.mjs": "sha256:8ec663012d7bdaa504bbb6aa14957e1ac1037bca7b710daded3ec786e85e5dd0",
+        "test/fixtures/manifest.json": "sha256:b3bd84b9aee41da2e674e99a2729e02ec6076d63323423fe9f1ce9dd652c470b"
+      },
+      "parents": [],
+      "project_root": "/Users/wuqisen/dev/Praxis",
+      "repair_of": [],
+      "requirement_ids": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ],
+      "review_status": "pending",
+      "risk": "high",
+      "schema_version": "2",
+      "scopes": [
+        "project",
+        "fixture-contracts"
+      ],
+      "supersedes": [],
+      "title": "Risk-tiered native fixture evidence"
+    }
+  },
+  "heads_by_scope": {
+    "change-ledger": [
+      "issue-691-ledger-prettier-compat"
+    ],
+    "fixture-contracts": [
+      "issue-691-risk-tier-evidence"
+    ],
+    "project": [
+      "issue-691-ledger-prettier-compat"
+    ]
+  },
+  "schema_version": "1"
+}

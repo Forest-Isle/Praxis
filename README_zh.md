@@ -209,7 +209,8 @@ npm run check
 `npm run check` 还会强制执行对应的源代码依赖方向。
 `npm run test:coverage` 使用 V8 覆盖 `src/**` 下的全部生产代码，并强制执行全局最低标准：
 语句 79%、分支 70%、函数 85%、行 81%；同时拒绝存在语句但完全未覆盖的生产运行时模块（仅类型模块可以为零语句）。
-`npm run test:fixtures` 会执行包含 71 条行为的 native contract，其中 63 条为 qualified、8 条明确 excluded。
+`npm run test:fixtures` 会执行包含 74 条行为的 native contract，其中 66 条为 qualified、8 条明确 excluded。
+Schema v2 会以 fail-closed 方式强制校验风险等级与可执行证据维度。
 `npm run verify:fixture-contracts` 执行结构校验，并包含在 `npm run check` 中。
 `npm run test:core-completion` 保留为兼容别名，实际执行 `npm run test:fixtures`。
 
