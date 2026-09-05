@@ -13,13 +13,15 @@ import {
 const clone = (value) => JSON.parse(JSON.stringify(value))
 
 const baseManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   behaviors: [
     {
       id: 'core.runtime.turn.limit',
       seam: 'AgentRuntime',
       contract: 'A run enforces its per-run maximum model turn limit.',
       status: 'qualified',
+      risk: 'low',
+      evidenceRequirements: { required: ['success'], exemptions: [] },
       modules: ['src/core/runtime.ts'],
       outcomes: ['The run stops at the configured maximum.'],
       evidence: [
@@ -27,6 +29,7 @@ const baseManifest = {
           kind: 'vitest',
           file: 'src/core/runtime.test.ts',
           testName: 'AgentRuntime > honors a per-run maximum model turn limit',
+          covers: ['success'],
         },
       ],
     },
@@ -114,11 +117,265 @@ describe('fixture contract verifier', () => {
   it('accepts a gate-only qualified behavior when the gate is wired', async () => {
     const root = await createRepository()
     const manifest = clone(baseManifest)
-    manifest.behaviors[0].evidence = [{ kind: 'gate', gate: 'fixtures' }]
+    manifest.behaviors[0].evidence = [
+      { kind: 'gate', gate: 'fixtures', covers: ['success'] },
+    ]
     await expect(
       fixtureContractDiagnostics(context(root, manifest)),
     ).resolves.toEqual([])
   })
+
+  it.each([
+    [
+      'schema mismatch',
+      (manifest) => (manifest.schemaVersion = 1),
+      'numeric 2',
+    ],
+    ['missing risk', (manifest) => delete manifest.behaviors[0].risk, 'risk'],
+    [
+      'unknown risk',
+      (manifest) => (manifest.behaviors[0].risk = 'critical'),
+      'risk',
+    ],
+    [
+      'qualified none risk',
+      (manifest) => (manifest.behaviors[0].risk = 'none'),
+      'requires a non-none risk',
+    ],
+    [
+      'status-invalid risk',
+      (manifest) => {
+        manifest.behaviors[0].status = 'excluded'
+        manifest.behaviors[0].risk = 'low'
+        manifest.behaviors[0].reason = 'No longer supported.'
+        manifest.behaviors[0].evidence = []
+        manifest.behaviors[0].evidenceRequirements = {
+          required: [],
+          exemptions: [],
+        }
+      },
+      "requires risk 'none'",
+    ],
+    [
+      'excluded behavior with requirements',
+      (manifest) => {
+        manifest.behaviors[0].status = 'excluded'
+        manifest.behaviors[0].risk = 'none'
+        manifest.behaviors[0].reason = 'No longer supported.'
+        manifest.behaviors[0].evidence = []
+      },
+      'requires empty evidenceRequirements',
+    ],
+    [
+      'unknown requirements field',
+      (manifest) => (manifest.behaviors[0].evidenceRequirements.extra = true),
+      "has unknown key 'extra'",
+    ],
+    [
+      'malformed requirements',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.required = 'success'),
+      'required must be an array',
+    ],
+    [
+      'non-array exemptions',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.exemptions = 'none'),
+      'exemptions must be an array',
+    ],
+    [
+      'unknown requirement',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.required = [
+          'success',
+          'audit',
+        ]),
+      'allowed dimension',
+    ],
+    [
+      'duplicate requirement',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.required = [
+          'success',
+          'success',
+        ]),
+      'duplicate',
+    ],
+    [
+      'malformed exemption',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.exemptions = [null]),
+      'exemption 1 must be an object',
+    ],
+    [
+      'unknown exemption dimension',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'audit', reason: 'Invalid vocabulary.' },
+        ]),
+      'dimension must be an allowed dimension',
+    ],
+    [
+      'duplicate exemption',
+      (manifest) => {
+        manifest.behaviors[0].risk = 'medium'
+        manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'negative', reason: 'No invalid-input branch.' },
+          { dimension: 'negative', reason: 'Still no invalid-input branch.' },
+        ]
+      },
+      "exemptions has duplicate 'negative'",
+    ],
+    [
+      'empty exemption reason',
+      (manifest) => {
+        manifest.behaviors[0].risk = 'medium'
+        manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'negative', reason: '  ' },
+        ]
+      },
+      'reason must be non-empty',
+    ],
+    [
+      'overlapping requirement exemption',
+      (manifest) =>
+        (manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'success', reason: 'Incorrectly exempted.' },
+        ]),
+      'both required and exempted',
+    ],
+    [
+      'missing floor accounting',
+      (manifest) => {
+        manifest.behaviors[0].risk = 'medium'
+        manifest.behaviors[0].evidenceRequirements = {
+          required: ['success'],
+          exemptions: [],
+        }
+      },
+      "must account for 'negative'",
+    ],
+    [
+      'exempted success',
+      (manifest) => {
+        manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'success', reason: 'Incorrectly exempted.' },
+        ]
+      },
+      'may not exempt success',
+    ],
+    [
+      'missing covers',
+      (manifest) => delete manifest.behaviors[0].evidence[0].covers,
+      'covers',
+    ],
+    [
+      'non-array covers',
+      (manifest) => (manifest.behaviors[0].evidence[0].covers = 'success'),
+      'covers must be a non-empty array',
+    ],
+    [
+      'empty covers',
+      (manifest) => (manifest.behaviors[0].evidence[0].covers = []),
+      'covers must be a non-empty array',
+    ],
+    [
+      'invalid covers',
+      (manifest) => (manifest.behaviors[0].evidence[0].covers = ['audit']),
+      'allowed dimension',
+    ],
+    [
+      'duplicate covers',
+      (manifest) =>
+        (manifest.behaviors[0].evidence[0].covers = ['success', 'success']),
+      'duplicate',
+    ],
+    [
+      'undeclared covers',
+      (manifest) => {
+        manifest.behaviors[0].evidenceRequirements.exemptions = [
+          { dimension: 'negative', reason: 'Not applicable.' },
+        ]
+        manifest.behaviors[0].evidence[0].covers = ['negative']
+      },
+      'undeclared dimension',
+    ],
+    [
+      'uncovered requirement',
+      (manifest) => {
+        manifest.behaviors[0].risk = 'medium'
+        manifest.behaviors[0].evidenceRequirements = {
+          required: ['success', 'negative'],
+          exemptions: [],
+        }
+      },
+      'has no executable coverage',
+    ],
+  ])('fails closed for %s', async (_name, mutate, expected) => {
+    const root = await createRepository()
+    const manifest = clone(baseManifest)
+    mutate(manifest)
+    const diagnostics = await fixtureContractDiagnostics(
+      context(root, manifest),
+    )
+    expect(diagnostics.join('\n')).toContain(expected)
+  })
+
+  it('rejects coverage metadata on fixture evidence', async () => {
+    const root = await createRepository({
+      fixtures: ['test/fixtures/native/a.json'],
+    })
+    const manifest = clone(baseManifest)
+    manifest.behaviors[0].evidence = [
+      {
+        kind: 'fixture',
+        path: 'test/fixtures/native/a.json',
+        covers: ['success'],
+      },
+    ]
+    const diagnostics = await fixtureContractDiagnostics(
+      context(root, manifest),
+    )
+    expect(diagnostics.join('\n')).toContain("has unknown key 'covers'")
+  })
+
+  it('rejects an exemption outside the selected risk floor', async () => {
+    const root = await createRepository()
+    const manifest = clone(baseManifest)
+    manifest.behaviors[0].evidenceRequirements.exemptions = [
+      { dimension: 'negative', reason: 'No invalid-input transition.' },
+    ]
+    const diagnostics = await fixtureContractDiagnostics(
+      context(root, manifest),
+    )
+    expect(diagnostics.join('\n')).toContain('must be within the')
+  })
+
+  it.each(['vitest', 'gate'])(
+    'applies the same coverage validation to %s evidence',
+    async (kind) => {
+      const root = await createRepository()
+      const manifest = clone(baseManifest)
+      manifest.behaviors[0].evidence =
+        kind === 'vitest'
+          ? [
+              {
+                kind,
+                file: 'src/core/runtime.test.ts',
+                testName:
+                  'AgentRuntime > honors a per-run maximum model turn limit',
+                covers: ['negative'],
+              },
+            ]
+          : [{ kind, gate: 'fixtures', covers: ['negative'] }]
+      const diagnostics = await fixtureContractDiagnostics(
+        context(root, manifest),
+      )
+      expect(diagnostics).toContain(
+        "behavior 'core.runtime.turn.limit' evidence 1 covers undeclared dimension 'negative'",
+      )
+    },
+  )
 
   it.each([
     ['empty', ''],
@@ -198,6 +455,8 @@ describe('fixture contract verifier', () => {
       modules: [],
       outcomes: ['The surface is unavailable.'],
       evidence: [],
+      risk: 'none',
+      evidenceRequirements: { required: [], exemptions: [] },
       reason: 'Removed by ADR 0002.',
     }
     await expect(

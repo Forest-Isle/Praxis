@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "behaviors": [
     {
       "id": "core.malformed.tool.input.recovery",
@@ -22,39 +22,51 @@
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > settles malformed tool input without crossing tool or permission interfaces"
+          "testName": "AgentRuntime > settles malformed tool input without crossing tool or permission interfaces",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/core/transcript-event.test.ts",
-          "testName": "TranscriptEvent > accepts only the canonical malformed tool input diagnostic"
+          "testName": "TranscriptEvent > accepts only the canonical malformed tool input diagnostic",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/providers/anthropic-compatible.test.ts",
-          "testName": "AnthropicCompatibleProvider > recovers malformed and rejects oversized streamed tool input"
+          "testName": "AnthropicCompatibleProvider > recovers malformed and rejects oversized streamed tool input",
+          "covers": ["success", "recovery"]
         },
         {
           "kind": "vitest",
           "file": "src/providers/openai-compatible.test.ts",
-          "testName": "OpenAICompatibleProvider > recovers malformed streamed tool arguments and emits tool_use terminal"
+          "testName": "OpenAICompatibleProvider > recovers malformed streamed tool arguments and emits tool_use terminal",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/providers/codex-subscription.test.ts",
-          "testName": "CodexSubscriptionProvider > recovers malformed function arguments and emits tool_use terminal"
+          "testName": "CodexSubscriptionProvider > recovers malformed function arguments and emits tool_use terminal",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > recovers canonical malformed native input without execution and rejects mixed recovery"
+          "testName": "ClaudeSessionService > recovers canonical malformed native input without execution and rejects mixed recovery",
+          "covers": ["success", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/coding-baseline.test.ts",
-          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline"
+          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.agent.loop",
@@ -70,14 +82,30 @@
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > runs an allowed tool call and returns its result to the provider"
+          "testName": "AgentRuntime > runs an allowed tool call and returns its result to the provider",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > honors a per-run maximum model turn limit"
+          "testName": "AgentRuntime > honors a per-run maximum model turn limit",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The AgentRuntime has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The AgentRuntime is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "tools.deferred.mcp.catalog",
@@ -102,74 +130,93 @@
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > refreshes deferred tool definitions for each provider request"
+          "testName": "AgentRuntime > refreshes deferred tool definitions for each provider request",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > scopes deferred MCP activation to one user turn and accounts for active definitions"
+          "testName": "ClaudeSessionService > scopes deferred MCP activation to one user turn and accounts for active definitions",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > recovers an approved native tool exactly once before provider continuation"
+          "testName": "ClaudeSessionService > recovers an approved native tool exactly once before provider continuation",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/subagent-service.test.ts",
-          "testName": "foreground Claude Agent execution > defers MCP schemas for default subagent turns and supports direct loading opt-out"
+          "testName": "foreground Claude Agent execution > defers MCP schemas for default subagent turns and supports direct loading opt-out",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli.test.ts",
-          "testName": "Praxis CLI > wires deferred MCP selection through the default service"
+          "testName": "Praxis CLI > wires deferred MCP selection through the default service",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > matches names and descriptions in deterministic rank and base order"
+          "testName": "DeferredToolCatalog > matches names and descriptions in deterministic rank and base order",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > activates at most eight matches and keeps repeated searches idempotent"
+          "testName": "DeferredToolCatalog > activates at most eight matches and keeps repeated searches idempotent",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > bounds Unicode queries, summaries, and total search output by code point"
+          "testName": "DeferredToolCatalog > bounds Unicode queries, summaries, and total search output by code point",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > rejects invalid searches without activation"
+          "testName": "DeferredToolCatalog > rejects invalid searches without activation",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > fails closed before activation and delegates every interface afterward"
+          "testName": "DeferredToolCatalog > fails closed before activation and delegates every interface afterward",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > restores known MCP tools and isolates activation between turns"
+          "testName": "DeferredToolCatalog > restores known MCP tools and isolates activation between turns",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/deferred-tool-catalog.test.ts",
-          "testName": "DeferredToolCatalog > preserves the base registry when disabled or when no MCP tools exist"
+          "testName": "DeferredToolCatalog > preserves the base registry when disabled or when no MCP tools exist",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/hooks/claude-hook-tools.test.ts",
-          "testName": "ClaudeHookToolCoordinator > preserves wrapped cancellation and error flags while enforcing hook scheduling"
+          "testName": "ClaudeHookToolCoordinator > preserves wrapped cancellation and error flags while enforcing hook scheduling",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/permissions/permission-runtime.test.ts",
-          "testName": "permission update runtime integration > allows ToolSearch by default without approval"
+          "testName": "permission update runtime integration > allows ToolSearch by default without approval",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "persistence.native.sessions",
@@ -184,9 +231,20 @@
         {
           "kind": "vitest",
           "file": "src/persistence/data-plane.test.ts",
-          "testName": "data plane paths > honours PRAXIS_HOME without reading a legacy config sentinel in native mode"
+          "testName": "data plane paths > honours PRAXIS_HOME without reading a legacy config sentinel in native mode",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Native session resolution selects an owned path and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "persistence.native.storage",
@@ -199,9 +257,20 @@
         {
           "kind": "vitest",
           "file": "src/persistence/data-plane.test.ts",
-          "testName": "data plane paths > uses an isolated Praxis home by default"
+          "testName": "data plane paths > uses an isolated Praxis home by default",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Native storage-root selection establishes an owned path and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "compatibility.claude.explicit.mode",
@@ -213,7 +282,12 @@
         "No executable fixture claims a removed Claude compatibility mode."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed the Claude data plane and compatibility mode."
+      "reason": "ADR 0002 removed the Claude data plane and compatibility mode.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "persistence.session.inspect",
@@ -229,9 +303,20 @@
         {
           "kind": "vitest",
           "file": "src/persistence/native-transcript-reader.test.ts",
-          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions"
+          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The transcript reader returns or rejects a document and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "migration.native.dry.run",
@@ -243,7 +328,12 @@
         "A removed migration surface is not represented as qualified behavior."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed native/Claude migration writes rather than exposing a dry-run surface."
+      "reason": "ADR 0002 removed native/Claude migration writes rather than exposing a dry-run surface.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "migration.native.source.retention",
@@ -255,7 +345,12 @@
         "Source-retention guarantees are not claimed for a removed migration."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed migration publication and cleanup."
+      "reason": "ADR 0002 removed migration publication and cleanup.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "persistence.transcript.schema",
@@ -274,9 +369,20 @@
         {
           "kind": "vitest",
           "file": "src/persistence/native-transcript-reader.test.ts",
-          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions"
+          "testName": "native transcript reader > reads full documents, preserves export bytes, and reports unknown versions",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Transcript schema decoding returns or rejects a document and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "persistence.transcript.append.only",
@@ -291,9 +397,20 @@
         {
           "kind": "vitest",
           "file": "src/persistence/native-transcript-store.test.ts",
-          "testName": "NativeTranscriptStore > rejects invalid batches before creation and preserves existing bytes"
+          "testName": "NativeTranscriptStore > rejects invalid batches before creation and preserves existing bytes",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Batch validation rejects before mutation and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "application.context.compaction",
@@ -308,9 +425,26 @@
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > manually compacts the native active branch into canonical events"
+          "testName": "ClaudeSessionService > manually compacts the native active branch into canonical events",
+          "covers": ["success", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > keeps native transcript bytes unchanged across manual compaction preflight failures",
+          "covers": ["negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "One atomic compaction attempt either appends the replacement or leaves native bytes unchanged; it has no resumable intermediate state."
+          }
+        ]
+      }
     },
     {
       "id": "application.context.preparation",
@@ -328,9 +462,20 @@
         {
           "kind": "vitest",
           "file": "src/application/context-preparation.test.ts",
-          "testName": "ContextPreparation > guards monotonic replacements and preserves failed proposals"
+          "testName": "ContextPreparation > guards monotonic replacements and preserves failed proposals",
+          "covers": ["success", "negative", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery"],
+        "exemptions": [
+          {
+            "dimension": "persistence",
+            "reason": "ContextPreparation owns an in-memory generation guard and neither reads nor writes durable state."
+          }
+        ]
+      }
     },
     {
       "id": "application.turn.persistence",
@@ -348,19 +493,32 @@
         {
           "kind": "vitest",
           "file": "src/application/turn-persistence.test.ts",
-          "testName": "TurnPersistence > commits staged projection only after the authoritative message append"
+          "testName": "TurnPersistence > commits staged projection only after the authoritative message append",
+          "covers": ["success", "negative", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once"
+          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > automatically compacts native history while preserving the complete current-turn suffix and metering"
+          "testName": "ClaudeSessionService > automatically compacts native history while preserving the complete current-turn suffix and metering",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The persistence seam commits or rejects a turn and has no retry or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "application.turn.accounting",
@@ -378,9 +536,24 @@
         {
           "kind": "vitest",
           "file": "src/application/turn-accounting.test.ts",
-          "testName": "TurnAccounting > keeps inclusive runtime output separate from unrecorded tracker metrics"
+          "testName": "TurnAccounting > keeps inclusive runtime output separate from unrecorded tracker metrics",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The TurnAccounting has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The TurnAccounting is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "core.context.recovery",
@@ -395,9 +568,15 @@
         {
           "kind": "vitest",
           "file": "src/application/context-engine.test.ts",
-          "testName": "ContextEngine > exhausts a no-progress recovery without committing or looping"
+          "testName": "ContextEngine > exhausts a no-progress recovery without committing or looping",
+          "covers": ["success", "negative", "recovery", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.context.usage.anchor",
@@ -412,9 +591,15 @@
         {
           "kind": "vitest",
           "file": "src/application/context-engine.test.ts",
-          "testName": "ContextEngine > anchors later occupancy to observed provider usage"
+          "testName": "ContextEngine > anchors later occupancy to observed provider usage",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.prompt.sections",
@@ -429,9 +614,15 @@
         {
           "kind": "vitest",
           "file": "src/core/prompt-composer.test.ts",
-          "testName": "PromptComposer > owns identities, placement, and lifetime for every turn context input"
+          "testName": "PromptComposer > owns identities, placement, and lifetime for every turn context input",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.context.snapshot",
@@ -446,9 +637,15 @@
         {
           "kind": "vitest",
           "file": "src/core/context.test.ts",
-          "testName": "canonical context snapshots > projects ordered system, first-user, and stable-prefix data"
+          "testName": "canonical context snapshots > projects ordered system, first-user, and stable-prefix data",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.turn.lifecycle",
@@ -463,9 +660,15 @@
         {
           "kind": "vitest",
           "file": "src/application/turn-lifecycle.test.ts",
-          "testName": "TurnCoordinator > filters inner terminal states and emits one outer terminal state"
+          "testName": "TurnCoordinator > filters inner terminal states and emits one outer terminal state",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.session.memory.async",
@@ -481,9 +684,27 @@
         {
           "kind": "vitest",
           "file": "src/application/session-memory.test.ts",
-          "testName": "SessionMemoryController > returns from a context observation before a slow extraction and lets compact wait"
+          "testName": "SessionMemoryController > returns from a context observation before a slow extraction and lets compact wait",
+          "covers": ["success", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-memory.test.ts",
+          "testName": "SessionMemoryController > waits softly for compact when extraction fails",
+          "covers": ["negative"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-memory.test.ts",
+          "testName": "SessionMemoryController > retries a failed extraction only after context growth",
+          "covers": ["negative", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.project.memory.bounds",
@@ -498,9 +719,15 @@
         {
           "kind": "vitest",
           "file": "src/application/project-memory.test.ts",
-          "testName": "Project memory > bounds the injected index by both lines and UTF-8 bytes"
+          "testName": "Project memory > bounds the injected index by both lines and UTF-8 bytes",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.project.memory.extraction",
@@ -516,9 +743,15 @@
         {
           "kind": "vitest",
           "file": "src/application/project-memory.test.ts",
-          "testName": "Project memory > extracts only after the durable cursor and advances it only on success"
+          "testName": "Project memory > extracts only after the durable cursor and advances it only on success",
+          "covers": ["success", "negative", "recovery", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.project.memory.recall",
@@ -533,9 +766,15 @@
         {
           "kind": "vitest",
           "file": "src/application/project-memory.test.ts",
-          "testName": "Project memory > enforces per-file, per-turn, and per-session recall budgets"
+          "testName": "Project memory > enforces per-file, per-turn, and per-session recall budgets",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.memory.isolation",
@@ -550,9 +789,15 @@
         {
           "kind": "vitest",
           "file": "src/application/turn-memory-coordinator.test.ts",
-          "testName": "TurnMemoryCoordinator > isolates optional memory failures"
+          "testName": "TurnMemoryCoordinator > isolates optional memory failures",
+          "covers": ["success", "negative", "persistence", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.tools.safe.overlap",
@@ -568,9 +813,28 @@
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > starts completed concurrent tool calls before the provider stream ends and exposes results in completion order"
+          "testName": "AgentRuntime > starts completed concurrent tool calls before the provider stream ends and exposes results in completion order",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": [
+          {
+            "dimension": "negative",
+            "reason": "Only calls already classified safe enter this seam, so rejection and conflict decisions belong to tool admission."
+          },
+          {
+            "dimension": "recovery",
+            "reason": "This seam ends at concurrent completion ordering; retry and continuation recovery belong to the surrounding turn lifecycle."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "Durable event writes belong to native tool settlement, while this seam only orders in-memory completion."
+          }
+        ]
+      }
     },
     {
       "id": "core.tools.exclusive.scheduling",
@@ -586,14 +850,30 @@
         {
           "kind": "vitest",
           "file": "src/core/tool-scheduling-policy.test.ts",
-          "testName": "resolveToolSchedulingPolicy > fails closed for missing, throwing, and malformed classifiers"
+          "testName": "resolveToolSchedulingPolicy > fails closed for missing, throwing, and malformed classifiers",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/core/runtime.test.ts",
-          "testName": "AgentRuntime > treats exclusive tools as FIFO barriers between concurrent groups"
+          "testName": "AgentRuntime > treats exclusive tools as FIFO barriers between concurrent groups",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Tool scheduling policy has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Tool scheduling policy is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "core.tools.exact.settlement",
@@ -611,9 +891,15 @@
         {
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
-          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once"
+          "testName": "ClaudeSessionService > persists native tool calls, results, and follow-up messages exactly once",
+          "covers": ["success", "negative", "recovery", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "application.subagent.permissions",
@@ -628,9 +914,24 @@
         {
           "kind": "vitest",
           "file": "src/application/subagent-service.test.ts",
-          "testName": "foreground Claude Agent execution > keeps a parent ask ceiling when the child mode would allow execution"
+          "testName": "foreground Claude Agent execution > keeps a parent ask ceiling when the child mode would allow execution",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Foreground Agent permissions has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Foreground Agent permissions is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "team.permission.decision.surface",
@@ -646,9 +947,20 @@
         {
           "kind": "vitest",
           "file": "src/application/team-lead-decision-surface.test.ts",
-          "testName": "SerializedTeamLeadDecisionSurface > runs requests FIFO, without overlap, and recovers after rejection"
+          "testName": "SerializedTeamLeadDecisionSurface > runs requests FIFO, without overlap, and recovers after rejection",
+          "covers": ["success", "negative", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery"],
+        "exemptions": [
+          {
+            "dimension": "persistence",
+            "reason": "The SerializedTeamLeadDecisionSurface is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "providers.adapter.optimizations",
@@ -663,9 +975,15 @@
         {
           "kind": "vitest",
           "file": "src/providers/anthropic-compatible.test.ts",
-          "testName": "AnthropicCompatibleProvider > renders official Anthropic cache breakpoints at stable prompt boundaries"
+          "testName": "AnthropicCompatibleProvider > renders official Anthropic cache breakpoints at stable prompt boundaries",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "providers.capability.fail.closed",
@@ -680,9 +998,24 @@
         {
           "kind": "vitest",
           "file": "src/providers/openai-compatible.test.ts",
-          "testName": "OpenAICompatibleProvider > rejects thinking modes without a lossless provider mapping"
+          "testName": "OpenAICompatibleProvider > rejects thinking modes without a lossless provider mapping",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The OpenAI-compatible capabilities has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The OpenAI-compatible capabilities is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "providers.openai.protocol.portability",
@@ -703,18 +1036,25 @@
         {
           "kind": "vitest",
           "file": "src/providers/openai-protocol-comparison.test.ts",
-          "testName": "OpenAI protocol comparison > matches the versioned request and continuation artifact"
+          "testName": "OpenAI protocol comparison > matches the versioned request and continuation artifact",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/providers/openai-protocol-comparison.test.ts",
-          "testName": "OpenAI protocol comparison > matches terminal, usage, and fail-closed capability evidence"
+          "testName": "OpenAI protocol comparison > matches terminal, usage, and fail-closed capability evidence",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/native/providers/openai-chat-responses-v1.json"
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "providers.fallback.commit.boundary",
@@ -734,14 +1074,26 @@
         {
           "kind": "vitest",
           "file": "src/providers/fallback-provider.test.ts",
-          "testName": "FallbackModelProvider > commits successful content and usage once after discarding a partial attempt"
+          "testName": "FallbackModelProvider > commits successful content and usage once after discarding a partial attempt",
+          "covers": ["success", "negative", "recovery"]
         },
         {
           "kind": "vitest",
           "file": "src/providers/non-streaming-fallback-provider.test.ts",
-          "testName": "NonStreamingFallbackModelProvider > commits only fallback text usage and tool effects in AgentRuntime"
+          "testName": "NonStreamingFallbackModelProvider > commits only fallback text usage and tool effects in AgentRuntime",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery"],
+        "exemptions": [
+          {
+            "dimension": "persistence",
+            "reason": "The FallbackModelProvider is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "team.capability.explicit.enable",
@@ -760,14 +1112,21 @@
         {
           "kind": "vitest",
           "file": "src/tools/claude-capabilities.test.ts",
-          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off"
+          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-capability.test.ts",
-          "testName": "LocalTeamCapability > has no construction side effects and shares one successful open"
+          "testName": "LocalTeamCapability > has no construction side effects and shares one successful open",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.durable.tasks.messages",
@@ -787,14 +1146,27 @@
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > passes the assigned scoped mailbox endpoint to every launched runtime"
+          "testName": "LocalTeamManager > passes the assigned scoped mailbox endpoint to every launched runtime",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/core/team-mailbox.test.ts",
-          "testName": "Team mailbox core contract > round-trips all typed payload variants and preserves request correlation"
+          "testName": "Team mailbox core contract > round-trips all typed payload variants and preserves request correlation",
+          "covers": ["success"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/team-mailbox.test.ts",
+          "testName": "TeamMailboxService > persists before metadata-only wake and warns on advisory failure",
+          "covers": ["success", "negative", "persistence", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.swarm.independent.only",
@@ -810,14 +1182,30 @@
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > runs independent Swarm tasks concurrently behind a real barrier"
+          "testName": "LocalTeamManager > runs independent Swarm tasks concurrently behind a real barrier",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > keeps conflicting and dependency-blocked work out of a Swarm launch batch"
+          "testName": "LocalTeamManager > keeps conflicting and dependency-blocked work out of a Swarm launch batch",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Swarm admission has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Swarm admission is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "team.workspace.write.isolation",
@@ -832,9 +1220,20 @@
         {
           "kind": "vitest",
           "file": "src/application/team-workspace.test.ts",
-          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees"
+          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The NativeTeamWorkspaceProvider has no retry, resumable continuation, or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "team.workspace.read.only.shared",
@@ -849,9 +1248,15 @@
         {
           "kind": "vitest",
           "file": "src/application/team-workspace.test.ts",
-          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees"
+          "testName": "NativeTeamWorkspaceProvider > shares read-only roots and retains deterministic write worktrees",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.lead.review.acceptance",
@@ -870,14 +1275,21 @@
         {
           "kind": "vitest",
           "file": "src/core/team-ownership.test.ts",
-          "testName": "team ownership contract > requires explicit lead acceptance after completion"
+          "testName": "team ownership contract > requires explicit lead acceptance after completion",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > resumes after detach and admits a dependent task only after Lead acceptance"
+          "testName": "LocalTeamManager > resumes after detach and admits a dependent task only after Lead acceptance",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.orphan.retained.worktree",
@@ -897,14 +1309,21 @@
         {
           "kind": "vitest",
           "file": "src/application/team-agent-runtime.test.ts",
-          "testName": "ClaudeTeamAgentRuntime > proves guarded read-only tools and retained writer isolation through LocalTeamManager"
+          "testName": "ClaudeTeamAgentRuntime > proves guarded read-only tools and retained writer isolation through LocalTeamManager",
+          "covers": ["success", "negative", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > cancels drained runtimes and orphans only the still-active sibling"
+          "testName": "LocalTeamManager > cancels drained runtimes and orphans only the still-active sibling",
+          "covers": ["success", "recovery"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.budgets.bounded",
@@ -923,14 +1342,26 @@
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > persists token exhaustion, aborts active Swarm work, and never launches pending work"
+          "testName": "LocalTeamManager > persists token exhaustion, aborts active Swarm work, and never launches pending work",
+          "covers": ["success", "negative", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-manager.test.ts",
-          "testName": "LocalTeamManager > enforces the durable wall deadline with fake time and returns from idle"
+          "testName": "LocalTeamManager > enforces the durable wall deadline with fake time and returns from idle",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Team budgets has no retry, resumable continuation, or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "team.lead.hybrid.ordinary.work",
@@ -945,9 +1376,15 @@
         {
           "kind": "vitest",
           "file": "src/tools/team-lead-tools.test.ts",
-          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary"
+          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.lead.coordinator.policy",
@@ -966,14 +1403,21 @@
         {
           "kind": "vitest",
           "file": "src/tools/team-lead-tools.test.ts",
-          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary"
+          "testName": "TeamLeadToolRegistry > filters Hybrid and Coordinator Lead capabilities at every registry boundary",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-lead-operations.test.ts",
-          "testName": "TeamLeadOperations > tracks durable coordinator policy across owned Teams"
+          "testName": "TeamLeadOperations > tracks durable coordinator policy across owned Teams",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "agent.worker.temporary.lifecycle",
@@ -988,9 +1432,20 @@
         {
           "kind": "vitest",
           "file": "src/application/subagent-service.test.ts",
-          "testName": "foreground Claude Agent execution > keeps foreground Agent transcripts in memory without disk sidechains"
+          "testName": "foreground Claude Agent execution > keeps foreground Agent transcripts in memory without disk sidechains",
+          "covers": ["success", "negative", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Foreground Agent lifecycle has no retry, resumable continuation, or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "team.mailbox.idempotent",
@@ -1009,14 +1464,21 @@
         {
           "kind": "vitest",
           "file": "src/application/team-mailbox.test.ts",
-          "testName": "TeamMailboxService > persists before metadata-only wake and warns on advisory failure"
+          "testName": "TeamMailboxService > persists before metadata-only wake and warns on advisory failure",
+          "covers": ["success", "negative", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-mailbox.test.ts",
-          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly"
+          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly",
+          "covers": ["success", "recovery", "persistence"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.mailbox.bounded.context",
@@ -1031,9 +1493,15 @@
         {
           "kind": "vitest",
           "file": "src/application/team-mailbox.test.ts",
-          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly"
+          "testName": "TeamMailboxService > deduplicates directed targets, projects bounded UTF-8 attachments, and acknowledges exactly",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.observability.concise.summary",
@@ -1051,9 +1519,15 @@
         {
           "kind": "vitest",
           "file": "src/cli.test.ts",
-          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider"
+          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.observability.dashboard",
@@ -1068,9 +1542,15 @@
         {
           "kind": "vitest",
           "file": "src/application/team-observability.test.ts",
-          "testName": "Team observability > projects policy, dependencies, claims, usage and bounded events"
+          "testName": "Team observability > projects policy, dependencies, claims, usage and bounded events",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.observability.audit.events",
@@ -1086,14 +1566,21 @@
         {
           "kind": "vitest",
           "file": "src/application/team-observability.test.ts",
-          "testName": "Team observability > renders mailbox events"
+          "testName": "Team observability > renders mailbox events",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/application/team-observability.test.ts",
-          "testName": "Team observability > retains only the bounded mailbox tail while counting pending records"
+          "testName": "Team observability > retains only the bounded mailbox tail while counting pending records",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.attach.tmux.optional",
@@ -1105,7 +1592,12 @@
         "No fixture upgrades optional tmux presentation into a required Team contract."
       ],
       "evidence": [],
-      "reason": "Current supported Team attach is durable-local; tmux-specific teammate presentation is optional and not claimed as a Team contract."
+      "reason": "Current supported Team attach is durable-local; tmux-specific teammate presentation is optional and not claimed as a Team contract.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "team.cli.status.logs.headless",
@@ -1120,9 +1612,15 @@
         {
           "kind": "vitest",
           "file": "src/cli.test.ts",
-          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider"
+          "testName": "Praxis CLI > projects Team status, logs, and durable-local attach without a provider",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "core.lifecycle.shared.vocabulary",
@@ -1137,9 +1635,24 @@
         {
           "kind": "vitest",
           "file": "src/core/agent-orchestration.test.ts",
-          "testName": "agent orchestration lifecycle > checks every ordinary state pair against the declared matrix"
+          "testName": "agent orchestration lifecycle > checks every ordinary state pair against the declared matrix",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Agent orchestration lifecycle has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Agent orchestration lifecycle is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "team.orphan.new.ownership.token",
@@ -1158,14 +1671,26 @@
         {
           "kind": "vitest",
           "file": "src/core/team-ownership.test.ts",
-          "testName": "team ownership contract > replaces execution, enforces current generation, and preserves future timestamps"
+          "testName": "team ownership contract > replaces execution, enforces current generation, and preserves future timestamps",
+          "covers": ["success", "negative", "recovery"]
         },
         {
           "kind": "vitest",
           "file": "src/core/agent-orchestration.test.ts",
-          "testName": "agent orchestration lifecycle > supports cancellation, owner-loss, fresh generations, and acceptance independently"
+          "testName": "agent orchestration lifecycle > supports cancellation, owner-loss, fresh generations, and acceptance independently",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery"],
+        "exemptions": [
+          {
+            "dimension": "persistence",
+            "reason": "The Team ownership generation is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "team.prompt.outcome.behavior",
@@ -1180,9 +1705,15 @@
         {
           "kind": "vitest",
           "file": "src/application/team-agent-runtime.test.ts",
-          "testName": "ClaudeTeamAgentRuntime > builds Team worker guidance from observable assignment outcomes"
+          "testName": "ClaudeTeamAgentRuntime > builds Team worker guidance from observable assignment outcomes",
+          "covers": ["success"]
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "team.disabled.absent.tool.pool",
@@ -1198,14 +1729,30 @@
         {
           "kind": "vitest",
           "file": "src/tools/claude-capabilities.test.ts",
-          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off"
+          "testName": "resolveClaudeToolCapabilities > resolves the Team gate from explicit input before environment and defaults off",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/tools/claude-capabilities.test.ts",
-          "testName": "resolveClaudeToolCapabilities > suppresses Teams for simple and worker runtimes and only filters enabled names"
+          "testName": "resolveClaudeToolCapabilities > suppresses Teams for simple and worker runtimes and only filters enabled names",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Team tool capability resolution has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Team tool capability resolution is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "fixtures.hermetic.environment",
@@ -1220,9 +1767,24 @@
         {
           "kind": "vitest",
           "file": "scripts/fixture-contracts.test.mjs",
-          "testName": "fixture contract verifier > sanitizes provider, Claude, Praxis, and Codex state while retaining PATH"
+          "testName": "fixture contract verifier > sanitizes provider, Claude, Praxis, and Codex state while retaining PATH",
+          "covers": ["success", "negative"]
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Fixture contract runner has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Fixture contract runner is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "compatibility.live.zero.skips",
@@ -1234,7 +1796,12 @@
         "Native qualification does not report a removed external lane as passed or skipped."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed live Claude compatibility lanes and binaries from the supported runtime qualification surface."
+      "reason": "ADR 0002 removed live Claude compatibility lanes and binaries from the supported runtime qualification surface.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "compatibility.external.blocked.reporting",
@@ -1246,7 +1813,12 @@
         "No absent external credential or binary is represented as a product blocker."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed external Claude qualification as a product gate, so no external environment is claimed."
+      "reason": "ADR 0002 removed external Claude qualification as a product gate, so no external environment is claimed.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "qualification.implemented.distinction",
@@ -1256,7 +1828,12 @@
       "modules": [],
       "outcomes": ["Only executable qualified evidence remains authoritative."],
       "evidence": [],
-      "reason": "The prose-only implemented/qualified audit is replaced by this executable contract, which never treats implementation claims as qualification evidence."
+      "reason": "The prose-only implemented/qualified audit is replaced by this executable contract, which never treats implementation claims as qualification evidence.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "eval.coding.baseline",
@@ -1281,47 +1858,56 @@
         {
           "kind": "vitest",
           "file": "src/evals/coding-baseline.test.ts",
-          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline"
+          "testName": "coding baseline suite > runs all eight cases through native SessionService and compares candidate to baseline",
+          "covers": ["success", "recovery", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/project-eval-comparison.test.ts",
-          "testName": "project eval comparison > rejects internally inconsistent, partial, and mismatched aggregates"
+          "testName": "project eval comparison > rejects internally inconsistent, partial, and mismatched aggregates",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/apply-patch-admission.test.ts",
-          "testName": "ApplyPatch admission eval > validates the bounded production tool and its safety boundaries"
+          "testName": "ApplyPatch admission eval > validates the bounded production tool and its safety boundaries",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/apply-patch-admission.test.ts",
-          "testName": "ApplyPatch admission eval > compares Edit baseline and ApplyPatch candidate across four project eval cases"
+          "testName": "ApplyPatch admission eval > compares Edit baseline and ApplyPatch candidate across four project eval cases",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/lsp-diagnostics-admission.test.ts",
-          "testName": "LSP diagnostics admission eval > enforces current, contained, deterministic, bounded diagnostics at the mutation seam"
+          "testName": "LSP diagnostics admission eval > enforces current, contained, deterministic, bounded diagnostics at the mutation seam",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/lsp-diagnostics-admission.test.ts",
-          "testName": "LSP diagnostics admission eval > compares explicit checker baseline with eval-only diagnostics candidate across four cases"
+          "testName": "LSP diagnostics admission eval > compares explicit checker baseline with eval-only diagnostics candidate across four cases",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/glob-ripgrep-admission.test.ts",
-          "testName": "Glob ripgrep admission eval > preserves Glob semantics and fails closed across process and scope boundaries"
+          "testName": "Glob ripgrep admission eval > preserves Glob semantics and fails closed across process and scope boundaries",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/glob-ripgrep-admission.test.ts",
-          "testName": "Glob ripgrep admission eval > records a faster ripgrep median on a deterministic large tree"
+          "testName": "Glob ripgrep admission eval > records a faster ripgrep median on a deterministic large tree",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/glob-ripgrep-admission.test.ts",
-          "testName": "Glob ripgrep admission eval > compares the production baseline with the eval-only ripgrep candidate across four cases"
+          "testName": "Glob ripgrep admission eval > compares the production baseline with the eval-only ripgrep candidate across four cases",
+          "covers": ["success"]
         },
         {
           "kind": "fixture",
@@ -1499,7 +2085,12 @@
           "kind": "fixture",
           "path": "test/fixtures/native/evals/glob-ripgrep-admission/evals/scope-safety/fixture/README.md"
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "recovery", "persistence"],
+        "exemptions": []
+      }
     },
     {
       "id": "native.deletion.gate",
@@ -1511,7 +2102,27 @@
         "The native deletion gate executes as required CI evidence.",
         "Fork-only projection helpers remain absent from emitted runtime artifacts."
       ],
-      "evidence": [{ "kind": "gate", "gate": "native-deletion" }]
+      "evidence": [
+        {
+          "kind": "gate",
+          "gate": "native-deletion",
+          "covers": ["success", "negative"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Native deletion verification has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Native deletion verification is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "migration.independent.slices",
@@ -1523,7 +2134,12 @@
         "Removed migration slices are not represented as independently qualified capabilities."
       ],
       "evidence": [],
-      "reason": "ADR 0002 removed the native/Claude migration feature and its rollout slices."
+      "reason": "ADR 0002 removed the native/Claude migration feature and its rollout slices.",
+      "risk": "none",
+      "evidenceRequirements": {
+        "required": [],
+        "exemptions": []
+      }
     },
     {
       "id": "tui.mcp.panel.native",
@@ -1543,13 +2159,19 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/mcp-panel.test.tsx",
-          "testName": "McpPanel native fixture > projects, navigates, and renders every MCP panel state"
+          "testName": "McpPanel native fixture > projects, navigates, and renders every MCP panel state",
+          "covers": ["success"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/native/tui/mcp-panel.json"
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "tui.open.url.native",
@@ -1565,13 +2187,28 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/open-url.test.ts",
-          "testName": "openTuiUrl native fixture > validates URLs and invokes each platform opener without a shell"
+          "testName": "openTuiUrl native fixture > validates URLs and invokes each platform opener without a shell",
+          "covers": ["success", "negative"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/native/tui/open-url.json"
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Opening a URL is one validated launch request; retry policy belongs to the caller rather than this opener seam."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "URL opening neither reads nor writes authoritative Praxis state."
+          }
+        ]
+      }
     },
     {
       "id": "tui.sandbox.settings.native",
@@ -1590,13 +2227,24 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/sandbox-settings.test.ts",
-          "testName": "TUI sandbox settings native fixture > persists bounded mutations and fails closed without replacing malformed settings"
+          "testName": "TUI sandbox settings native fixture > persists bounded mutations and fails closed without replacing malformed settings",
+          "covers": ["success", "negative", "persistence"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/native/tui/sandbox-settings.json"
         }
-      ]
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The TuiSandboxStore has no retry, resumable continuation, or recovery transition."
+          }
+        ]
+      }
     },
     {
       "id": "package.release.native",
@@ -1608,7 +2256,31 @@
         "The packed-file boundary contains the expected release contents.",
         "The installed release CLI completes the native smoke verification."
       ],
-      "evidence": [{ "kind": "gate", "gate": "package" }]
+      "evidence": [
+        {
+          "kind": "gate",
+          "gate": "package",
+          "covers": ["success", "negative", "operations"]
+        }
+      ],
+      "risk": "release",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "operations"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The package smoke builds and installs immutable temporary artifacts without a retry or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The package smoke validates installed artifacts and does not exercise authoritative runtime persistence."
+          },
+          {
+            "dimension": "rollback",
+            "reason": "The Installed native package creates no mutable deployment state that could be reversed."
+          }
+        ]
+      }
     },
     {
       "id": "tui.pty.presentation",
@@ -1623,7 +2295,18 @@
         "Fullscreen lifecycle, resize, and ANSI rendering remain correct.",
         "Fallback and screen-reader semantic behavior remain accessible."
       ],
-      "evidence": [{ "kind": "gate", "gate": "tui-pty" }]
+      "evidence": [
+        {
+          "kind": "gate",
+          "gate": "tui-pty",
+          "covers": ["success", "negative"]
+        }
+      ],
+      "risk": "medium",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": []
+      }
     },
     {
       "id": "performance.native.budgets",
@@ -1639,7 +2322,27 @@
         "Projection scaling, absolute, and injected regression budgets remain within bounds.",
         "Quiet-frame p95 performance remains within its budget."
       ],
-      "evidence": [{ "kind": "gate", "gate": "performance" }]
+      "evidence": [
+        {
+          "kind": "gate",
+          "gate": "performance",
+          "covers": ["success", "negative"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Budget qualification classifies a completed isolated measurement and has no recoverable intermediate state."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "Performance measurements are verification output, not authoritative Praxis state."
+          }
+        ]
+      }
     },
     {
       "id": "security.production.dependencies",
@@ -1650,7 +2353,27 @@
       "outcomes": [
         "The production dependency audit reports zero known vulnerabilities."
       ],
-      "evidence": [{ "kind": "gate", "gate": "security" }]
+      "evidence": [
+        {
+          "kind": "gate",
+          "gate": "security",
+          "covers": ["success", "negative"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The Production dependency audit has no retry, resumable continuation, or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The Production dependency audit is runtime-local and owns no authoritative or durable state."
+          }
+        ]
+      }
     },
     {
       "id": "reference.config.settings",
@@ -1665,18 +2388,25 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/config-settings.test.ts",
-          "testName": "Claude 2.1.208 config settings contract > matches the fixed provider-free PTY catalog and exclusions"
+          "testName": "Claude 2.1.208 config settings contract > matches the fixed provider-free PTY catalog and exclusions",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli/tui/config-settings.test.ts",
-          "testName": "Claude 2.1.208 config settings contract > matches every captured label, scope, path, domain, and default"
+          "testName": "Claude 2.1.208 config settings contract > matches every captured label, scope, path, domain, and default",
+          "covers": ["success"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/reference/claude-code/2.1.208/config-dashboard.json"
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "reference.hook.settings",
@@ -1689,18 +2419,25 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/hook-settings.test.ts",
-          "testName": "TUI hook settings projection > matches the fixed Claude Code 2.1.208 event and detail fixture"
+          "testName": "TUI hook settings projection > matches the fixed Claude Code 2.1.208 event and detail fixture",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli/tui/hook-settings.test.ts",
-          "testName": "TUI hook settings projection > matches observed scopes and hook types from the 2.1.208 fixture"
+          "testName": "TUI hook settings projection > matches observed scopes and hook types from the 2.1.208 fixture",
+          "covers": ["success"]
         },
         {
           "kind": "fixture",
           "path": "test/fixtures/reference/claude-code/2.1.208/hooks-tui.json"
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "reference.task.surface",
@@ -1718,22 +2455,26 @@
         {
           "kind": "vitest",
           "file": "src/cli/tui/task-panel.test.tsx",
-          "testName": "TaskPanel > binds every observed fixture section to an immutable 2.1.208 capture"
+          "testName": "TaskPanel > binds every observed fixture section to an immutable 2.1.208 capture",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli/tui/task-panel.test.tsx",
-          "testName": "TaskPanel > matches the observed empty task surface"
+          "testName": "TaskPanel > matches the observed empty task surface",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli/tui/task-panel.test.tsx",
-          "testName": "TaskPanel > sorts multiple running shells newest-first and semantically selects"
+          "testName": "TaskPanel > sorts multiple running shells newest-first and semantically selects",
+          "covers": ["success"]
         },
         {
           "kind": "vitest",
           "file": "src/cli/tui/task-panel.test.tsx",
-          "testName": "TaskPanel > opens one running shell directly with the captured detail contract"
+          "testName": "TaskPanel > opens one running shell directly with the captured detail contract",
+          "covers": ["success"]
         },
         {
           "kind": "fixture",
@@ -1743,7 +2484,12 @@
           "kind": "fixture",
           "path": "test/fixtures/reference/claude-code/2.1.208/tasks-tui.capture.txt"
         }
-      ]
+      ],
+      "risk": "low",
+      "evidenceRequirements": {
+        "required": ["success"],
+        "exemptions": []
+      }
     },
     {
       "id": "coverage.runtime.nonzero",
@@ -1762,10 +2508,29 @@
         {
           "kind": "vitest",
           "file": "scripts/verify-nonzero-runtime-coverage.test.mjs",
-          "testName": "nonzero runtime coverage gate > rejects zero-covered runtime modules while allowing covered and type-only modules"
+          "testName": "nonzero runtime coverage gate > rejects zero-covered runtime modules while allowing covered and type-only modules",
+          "covers": ["success", "negative"]
         },
-        { "kind": "gate", "gate": "coverage" }
-      ]
+        {
+          "kind": "gate",
+          "gate": "coverage",
+          "covers": ["success"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The coverage checks classify measured output and have no retry or recovery transition."
+          },
+          {
+            "dimension": "persistence",
+            "reason": "The coverage checks inspect reports and do not inspect authoritative state."
+          }
+        ]
+      }
     }
   ],
   "gates": [
