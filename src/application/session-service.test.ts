@@ -3277,6 +3277,20 @@ describe('ClaudeSessionService', () => {
     await expect(turn).rejects.toBeInstanceOf(AgentRunCancelledError)
     await closing
 
+    const resumedService = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['resumed answer']),
+    })
+    try {
+      const resumed = await resumedService.resume(sessionId, 'continuation')
+      expect(resumed.text).toBe('resumed answer')
+      expect(resumed.sessionId).toBe(sessionId)
+    } finally {
+      await resumedService.close()
+    }
+
     const entries = await readNativeEvents(
       nativeSessionFile(configRoot, cwd, sessionId),
     )

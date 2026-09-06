@@ -718,7 +718,7 @@
           "kind": "vitest",
           "file": "src/application/turn-lifecycle.test.ts",
           "testName": "TurnCoordinator > seals pending steering on close and keeps shell records until their work exits",
-          "covers": ["negative", "recovery", "persistence"]
+          "covers": ["negative", "recovery"]
         },
         {
           "kind": "vitest",
