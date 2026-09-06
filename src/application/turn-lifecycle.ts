@@ -39,6 +39,7 @@ export interface TurnRequest {
 
 export interface TurnScope {
   readonly emit: RuntimeEventSink
+  readonly signal: AbortSignal
   readonly steering?: ActiveTurnInputPort
 }
 
@@ -49,12 +50,17 @@ export interface TurnCoordinatorOptions {
 
 interface ActiveTurnRecord {
   readonly mailbox?: ActiveTurnInputMailbox
+  readonly controller: AbortController
+  readonly settled: Promise<void>
+  readonly settle: () => void
   terminal: boolean
 }
 
 /** Owns the lifecycle and active-turn coordination for one session service. */
 export class TurnCoordinator {
   private readonly activeTurns = new Map<string, ActiveTurnRecord>()
+  private closing = false
+  private closePromise: Promise<void> | undefined
 
   constructor(private readonly options: TurnCoordinatorOptions) {}
 
@@ -67,14 +73,24 @@ export class TurnCoordinator {
       request.submission.kind === 'shell'
         ? undefined
         : new ActiveTurnInputMailbox(this.options.createSteeringId)
+    let settle!: () => void
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve
+    })
+    const controller = new AbortController()
     const record: ActiveTurnRecord = {
       ...(mailbox ? { mailbox } : {}),
+      controller,
+      settled,
+      settle,
       terminal: false,
     }
     let terminalState: 'completed' | 'failed' | 'cancelled' = 'failed'
     let pendingFailure: { readonly error: unknown } | undefined
+    let callerAbort: (() => void) | undefined
 
     const scope: TurnScope = {
+      signal: controller.signal,
       emit: (event) => {
         if (
           event.type === 'state' &&
@@ -90,20 +106,27 @@ export class TurnCoordinator {
     }
 
     try {
+      if (request.signal?.aborted) controller.abort(request.signal.reason)
       this.validateRequest(request)
       if (this.activeTurns.has(sessionId)) {
         throw new Error(
           `conflict: locked (session ${sessionId} already has an active turn)`,
         )
       }
+      if (this.closing) throw new Error('turn coordinator is closed')
       this.activeTurns.set(sessionId, record)
+      if (request.signal && !request.signal.aborted) {
+        callerAbort = () => controller.abort(request.signal?.reason)
+        request.signal.addEventListener('abort', callerAbort, { once: true })
+      }
       const result = await work(scope)
+      if (controller.signal.aborted) throw new AgentRunCancelledError()
       terminalState = 'completed'
       this.transition(record, 'completed')
       return result
     } catch (error) {
       if (!record.terminal) {
-        terminalState = this.terminalState(error, request.signal)
+        terminalState = this.terminalState(error, controller.signal)
         this.transition(record, terminalState)
       }
       throw error
@@ -116,10 +139,14 @@ export class TurnCoordinator {
           )
         }
       } finally {
+        if (callerAbort && request.signal) {
+          request.signal.removeEventListener('abort', callerAbort)
+        }
         if (this.activeTurns.get(sessionId) === record) {
           this.activeTurns.delete(sessionId)
         }
       }
+      record.settle()
       if (pendingFailure) {
         // A rejected-input sink failure intentionally retains its prior precedence.
         // eslint-disable-next-line no-unsafe-finally -- compatibility is covered by the sink-error regression
@@ -148,14 +175,30 @@ export class TurnCoordinator {
     return result.kind === 'withdrawn' ? result : { kind: 'not-pending' }
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    if (this.closePromise) return this.closePromise
+    this.closing = true
+    const snapshot = [...this.activeTurns.values()]
     let firstFailure: { readonly error: unknown } | undefined
-    for (const active of this.activeTurns.values()) {
-      if (!active.mailbox) continue
-      const failure = this.rejectPending(active.mailbox.close(), 'closed')
-      firstFailure ??= failure
-    }
-    if (firstFailure) throw firstFailure.error
+    let resolveClose!: () => void
+    let rejectClose!: (error: unknown) => void
+    this.closePromise = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve
+      rejectClose = reject
+    })
+    void (async () => {
+      for (const active of snapshot) {
+        if (active.mailbox) {
+          const failure = this.rejectPending(active.mailbox.close(), 'closed')
+          firstFailure ??= failure
+        }
+        active.controller.abort()
+      }
+      await Promise.allSettled(snapshot.map((active) => active.settled))
+      if (firstFailure) rejectClose(firstFailure.error)
+      else resolveClose()
+    })()
+    return this.closePromise
   }
 
   private validateRequest(request: TurnRequest): void {

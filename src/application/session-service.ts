@@ -1632,7 +1632,7 @@ export class ClaudeSessionService {
 
   async close(): Promise<void> {
     this.closing = true
-    this.turnCoordinator.close()
+    await this.turnCoordinator.close()
     await this.fileChangeWatcher?.close(5_000)
     await this.hookLifecycle.close()
     await this.drainDetachedHookRuns(5_000)
@@ -3816,7 +3816,7 @@ export class ClaudeSessionService {
   }
 
   private async executeTurn(request: TurnRequest): Promise<SessionRunResult> {
-    const { activation, submission, signal } = request
+    const { activation, submission } = request
     const sessionId = activation.sessionId
     const requireExisting = activation.kind === 'resume'
     const name = activation.name
@@ -3834,7 +3834,8 @@ export class ClaudeSessionService {
     const shellCommand =
       submission.kind === 'shell' ? submission.command : undefined
     const skipUserPrompt = submission.kind === 'retry'
-    return this.turnCoordinator.run(request, async ({ emit, steering }) => {
+    return this.turnCoordinator.run(request, async (scope) => {
+      const { emit, signal, steering } = scope
       this.assertTurnWritable()
 
       await this.activateSessionCostTracker(sessionId)

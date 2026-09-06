@@ -3214,6 +3214,109 @@ describe('ClaudeSessionService', () => {
     expect(close).toHaveBeenCalledOnce()
   })
 
+  it('settles foreground cancellation before teardown and preserves its native prompt receipt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-foreground-shutdown-'))
+    roots.push(root)
+    const configRoot = join(root, 'config')
+    const cwd = join(root, 'project')
+    const sessionId = '70707070-7070-4070-8070-707070707070'
+    const events: RuntimeEvent[] = []
+    let providerSignal: AbortSignal | undefined
+    let markProviderStarted!: () => void
+    const providerStarted = new Promise<void>((resolve) => {
+      markProviderStarted = resolve
+    })
+    let releaseUnwind!: () => void
+    const unwind = new Promise<void>((resolve) => {
+      releaseUnwind = resolve
+    })
+    const provider: ModelProvider = {
+      model: 'shutdown-model',
+      capabilities: { streaming: true, usage: true, tools: false },
+      async *complete(input: ModelRequest) {
+        const signal = input.signal
+        if (!signal) throw new Error('provider signal missing')
+        providerSignal = signal
+        markProviderStarted()
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve()
+          else
+            signal.addEventListener('abort', () => resolve(), {
+              once: true,
+            })
+        })
+        await unwind
+        yield* []
+        throw new AgentRunCancelledError()
+      },
+    }
+    const downstreamClose = vi.fn(async () => undefined)
+    const service = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider,
+      eventSink: (event) => events.push(event),
+      mcp: {
+        inspect: async () => [],
+        reconnect: async () => undefined,
+        authenticate: async () => undefined,
+        reload: async () => undefined,
+        tools: async () => [],
+        close: downstreamClose,
+      },
+    })
+
+    const turn = service.run('shutdown prompt', undefined, sessionId)
+    await providerStarted
+    const closing = service.close()
+    await Promise.resolve()
+    expect(providerSignal?.aborted).toBe(true)
+    expect(downstreamClose).not.toHaveBeenCalled()
+    releaseUnwind()
+    await expect(turn).rejects.toBeInstanceOf(AgentRunCancelledError)
+    await closing
+
+    const resumedService = new ClaudeSessionService({
+      configRoot,
+      cwd,
+      claudeVersion: '2.1.208',
+      provider: queuedProvider(['resumed answer']),
+    })
+    try {
+      const resumed = await resumedService.resume(sessionId, 'continuation')
+      expect(resumed.text).toBe('resumed answer')
+      expect(resumed.sessionId).toBe(sessionId)
+    } finally {
+      await resumedService.close()
+    }
+
+    const entries = await readNativeEvents(
+      nativeSessionFile(configRoot, cwd, sessionId),
+    )
+    expect(
+      nativeMessages(entries).filter(
+        (message) => message.content === 'shutdown prompt',
+      ),
+    ).toHaveLength(1)
+    expect(
+      events.filter(
+        (event) => event.type === 'state' && event.state === 'cancelled',
+      ),
+    ).toHaveLength(1)
+    expect(
+      events.some(
+        (event) => event.type === 'state' && event.state === 'completed',
+      ),
+    ).toBe(false)
+    expect(
+      events.some(
+        (event) => event.type === 'state' && event.state === 'failed',
+      ),
+    ).toBe(false)
+    expect(downstreamClose).toHaveBeenCalledOnce()
+  })
+
   it('switches cost trackers with target-load-before-current-save and idempotent close persistence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'praxis-cost-tracker-lifecycle-'))
     roots.push(root)

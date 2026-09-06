@@ -13,7 +13,7 @@ Praxis 的交互式 TUI 在普通 agent turn 运行期间保持 composer 可编�
 
 ## 方案选择 & 理由
 
-采用“分离队列 + turn 生命周期边界”：TurnCoordinator 持有 active steering mailbox 和 turn 生命周期，交互层持有 follow-up FIFO。
+采用“分离队列 + turn 生命周期边界”：TurnCoordinator 持有 active steering mailbox、turn-owned cancellation signal 和 settlement barrier，交互层持有 follow-up FIFO。
 
 - Steering 必须进入正在运行的 `AgentRuntime`，所以 mailbox 由 `TurnCoordinator` 注册，并通过 runtime request port 在安全点读取；session service 只负责把 coordinator 的 scope 接入 runtime。
 - Follow-up 是一个新的用户 turn，需要独立的 turn terminal state、hook lifecycle、用量和成本记录，所以由 TUI 在前一 turn 成功完成后调用下一次 `resume()`；它不在同一个 runtime run 内伪装成 tool follow-up。
@@ -81,7 +81,7 @@ Withdraw：Up on empty busy composer → newest local pending item → mailbox w
 - A withdrawal race leaves delivered history unchanged and renders a warning.
 - Cancellation/failure emits rejection events for undelivered steering; text remains visible to the user.
 - A service without active-turn commands reports the feature as unavailable instead of falling back to concurrent `resume()`.
-- Closing the interactive service rejects pending steering before resources are disposed.
+- Closing the interactive service seals and rejects pending steering, aborts active turns, and waits for their settlement before resources are disposed.
 
 ## 测试策略
 

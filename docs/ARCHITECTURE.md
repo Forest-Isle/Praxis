@@ -393,6 +393,11 @@ configured-store saves, and fails closed on partial, duplicate, mismatched, or a
 Runtime and shell completion then apply one atomic tracker plan while returning
 inclusive public usage/cost/duration rows.
 
+`TurnCoordinator` owns each foreground turn's cancellation and settlement
+boundary. `SessionService.close()` waits for that boundary before disposing
+hooks, memory, subagents, background work, MCP, or lead resources, preserving
+native receipts committed before cancellation.
+
 Native context keeps environment and memory stable for a lifecycle and resolved
 cwd, while recomputing Git status for every assembly from the caller-resolved
 cwd (including isolated subagent worktrees). Default Git status is a volatile

@@ -477,11 +477,13 @@ state; failed commits leave both unchanged. `SessionService` consumes the cursor
 for translation and recovery hook continuation, preserving the selected native
 branch without duplicate or skipped durable state.
 
-### Task 7.3: Foreground shutdown ownership [depends: Task 7.1]
+### Task 7.3: Foreground shutdown ownership — implemented by #702 [depends: Task 7.1]
 
 Make foreground shutdown ownership explicit at the turn boundary.
 Acceptance: cancellation and shutdown settle one terminal outcome without
-leaking work or losing its durable receipt.
+leaking work or losing its durable receipt. `TurnCoordinator` owns cancellation
+and settlement, and `SessionService.close()` waits at that boundary before
+dependent teardown.
 
 ## Phase 8 — Controlled real coding qualification
 
