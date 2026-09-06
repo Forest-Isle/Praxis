@@ -157,14 +157,17 @@ import { InMemoryTranscriptStore } from '../persistence/in-memory-transcript-sto
 import {
   NativeTranscriptStore,
   type NativeTranscriptLease,
-  type NativeTranscriptTail,
 } from '../persistence/native-transcript-store.js'
 import {
   NativeSessionTranscript,
   type NativeSessionTranscriptStore,
   type NativeSessionTranscriptLease,
 } from './native-session-transcript.js'
-import { TurnPersistence } from './turn-persistence.js'
+import {
+  deriveTurnProjectionCursor,
+  TurnPersistence,
+  type TurnProjectionCursor,
+} from './turn-persistence.js'
 import { TurnAccounting } from './turn-accounting.js'
 import { CompactionAccounting } from './compaction-accounting.js'
 import { classifyCompactionError } from './compaction-errors.js'
@@ -244,8 +247,6 @@ type TeamLeadToolRegistryFactory = (
   sessionId: string,
   enabledTools: readonly string[],
 ) => ToolRegistry
-
-type SessionTail = NativeTranscriptTail
 
 export interface ClaudeSessionServiceOptions {
   configRoot: string
@@ -3879,7 +3880,7 @@ export class ClaudeSessionService {
           const view = persistence.view()
           return {
             entries: [...view.projectionEntries],
-            tail: view.projectionTail,
+            cursor: view.projectionCursor,
           }
         }
         const commitProjection = async (
@@ -4088,7 +4089,7 @@ export class ClaudeSessionService {
         const flushRecoveryHookOutcomes = async () => {
           const entries: NativeTranscriptEntry[] = []
           let history = projectionSnapshot().entries
-          let parentUuid = this.logicalTailUuid(projectionSnapshot().tail)
+          let parentUuid = projectionSnapshot().cursor.lastEntryId
           for (const outcome of pendingRecoveryHookOutcomes) {
             const outcomeEntries = createClaudeHookAttachmentEntries(outcome, {
               ...this.translationContext(sessionId, projectionSnapshot()),
@@ -4097,8 +4098,8 @@ export class ClaudeSessionService {
             })
             entries.push(...outcomeEntries)
             history = [...history, ...outcomeEntries]
-            const lastEntry = outcomeEntries.at(-1)
-            if (typeof lastEntry?.uuid === 'string') parentUuid = lastEntry.uuid
+            const batchCursor = deriveTurnProjectionCursor(outcomeEntries)
+            parentUuid = batchCursor.lastEntryId ?? parentUuid
           }
           if (entries.length === 0) {
             pendingRecoveryHookOutcomes.length = 0
@@ -6268,13 +6269,13 @@ export class ClaudeSessionService {
   private translationContext(
     sessionId: string,
     snapshot: {
-      tail: NativeTranscriptTail
+      cursor: TurnProjectionCursor
       entries: readonly NativeTranscriptEntry[]
     },
   ) {
     return {
       sessionId,
-      parentUuid: this.logicalTailUuid(snapshot.tail),
+      parentUuid: snapshot.cursor.lastEntryId,
       cwd: this.activeCwd(),
       claudeVersion: this.options.claudeVersion,
       gitBranch: null,
@@ -7230,9 +7231,5 @@ export class ClaudeSessionService {
       )
     }
     return factory(base, operations, sessionId, enabledTools)
-  }
-
-  private logicalTailUuid(tail: SessionTail): string | null {
-    return tail.branchParentId ?? tail.lastEventId
   }
 }

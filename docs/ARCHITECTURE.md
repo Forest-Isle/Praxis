@@ -368,13 +368,16 @@ and the ephemeral Claude-shaped compatibility projection. Commits are
 serialized in invocation order. A combined message/projection commit stages
 the projection, durably appends the native event, and publishes the staged view
 only after that append succeeds. Explicit refresh rebuilds the projection from
-the active native branch without changing its logical tail. Hooks, context
-generation and invalidation, runtime events, memory, and accounting remain
-caller policy and run only after a successful receipt; the projection is never
-a second Transcript. Compaction additionally prepares a private native receipt
-before the boundary. `TurnPersistence` and `NativeSessionTranscript` perform the
-atomic canonical boundary/summary append with reserved IDs; accounting and
-transaction fields never enter the authoritative Transcript JSONL.
+the active native branch and replaces its explicit projection cursor. The
+cursor records the last addressable projected entry and total projected count;
+it remains continuous across selected-branch resume, successful commits, and
+the established post-compaction refresh. Hooks, context generation and
+invalidation, runtime events, memory, and accounting remain caller policy and
+run only after a successful receipt; the projection is never a second
+Transcript. Compaction additionally prepares a private native receipt before
+the boundary. `TurnPersistence` and `NativeSessionTranscript` perform the atomic
+canonical boundary/summary append with reserved IDs; accounting and transaction
+fields never enter the authoritative Transcript JSONL.
 
 `TurnAccounting` is constructed alongside `TurnPersistence` with the active
 session cost tracker. Its compaction plan is preflighted against a cloned
