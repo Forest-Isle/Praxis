@@ -701,11 +701,11 @@
     {
       "id": "application.turn.lifecycle",
       "seam": "TurnCoordinator",
-      "contract": "The coordinator owns active-turn registration, steering, cleanup, and exactly one outer terminal state.",
+      "contract": "The coordinator owns active-turn registration, owned cancellation, steering, settlement, cleanup, and exactly one outer terminal state.",
       "status": "qualified",
       "modules": ["src/application/turn-lifecycle.ts"],
       "outcomes": [
-        "A turn exposes filtered runtime events, safe steering, pending-input rejection, and one terminal transition."
+        "A turn exposes an owned cancellation signal, filtered runtime events, safe steering, pending-input rejection, and one terminal transition; shutdown waits for all active turn settlement."
       ],
       "evidence": [
         {
@@ -713,11 +713,23 @@
           "file": "src/application/turn-lifecycle.test.ts",
           "testName": "TurnCoordinator > filters inner terminal states and emits one outer terminal state",
           "covers": ["success", "negative"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-lifecycle.test.ts",
+          "testName": "TurnCoordinator > seals pending steering on close and keeps shell records until their work exits",
+          "covers": ["negative", "recovery", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > settles foreground cancellation before teardown and preserves its native prompt receipt",
+          "covers": ["success", "negative", "recovery", "persistence"]
         }
       ],
-      "risk": "medium",
+      "risk": "high",
       "evidenceRequirements": {
-        "required": ["success", "negative"],
+        "required": ["success", "negative", "recovery", "persistence"],
         "exemptions": []
       }
     },

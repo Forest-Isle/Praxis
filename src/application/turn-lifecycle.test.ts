@@ -294,14 +294,35 @@ describe('TurnCoordinator', () => {
     const events: RuntimeEvent[] = []
     const coordinator = createCoordinator(events)
     const promptGate = deferred()
-    const promptRun = coordinator.run(request('prompt'), async () => {
+    let promptSignal: AbortSignal | undefined
+    const promptRun = coordinator.run(request('prompt'), async (scope) => {
+      promptSignal = scope.signal
       expect(coordinator.steer('prompt', 'pending')).toMatchObject({
         kind: 'accepted',
       })
       await promptGate.promise
     })
-    coordinator.close()
-    coordinator.close()
+    const shellGate = deferred()
+    let shellSignal: AbortSignal | undefined
+    const shellRun = coordinator.run(
+      request('shell', { kind: 'shell', command: 'printf hi' }),
+      async (scope) => {
+        shellSignal = scope.signal
+        await shellGate.promise
+      },
+    )
+    const closing = coordinator.close()
+    const closingAgain = coordinator.close()
+    let closeSettled = false
+    void closing.then(() => {
+      closeSettled = true
+    })
+    const promptOutcome = expect(promptRun).rejects.toBeInstanceOf(
+      AgentRunCancelledError,
+    )
+    const shellOutcome = expect(shellRun).rejects.toBeInstanceOf(
+      AgentRunCancelledError,
+    )
     expect(events).toContainEqual(
       expect.objectContaining({
         type: 'user-input-rejected',
@@ -312,16 +333,35 @@ describe('TurnCoordinator', () => {
       kind: 'turn-completing',
     })
 
-    const shellGate = deferred()
-    const shellRun = coordinator.run(
-      request('shell', { kind: 'shell', command: 'printf hi' }),
-      async () => shellGate.promise,
-    )
-    coordinator.close()
     expect(coordinator.steer('shell', 'no')).toEqual({ kind: 'not-steerable' })
+    expect(promptSignal?.aborted).toBe(true)
+    expect(shellSignal?.aborted).toBe(true)
+    await Promise.resolve()
+    expect(closeSettled).toBe(false)
     shellGate.resolve()
     promptGate.resolve()
-    await Promise.all([promptRun, shellRun])
+    await Promise.all([promptOutcome, shellOutcome, closing, closingAgain])
+    expect(
+      events.filter(
+        (event) => event.type === 'state' && event.state === 'cancelled',
+      ),
+    ).toHaveLength(2)
+    expect(
+      events.filter(
+        (event) =>
+          event.type === 'state' &&
+          (event.state === 'completed' || event.state === 'failed'),
+      ),
+    ).toHaveLength(0)
+    expect(coordinator.steer('prompt', 'after settle')).toEqual({
+      kind: 'no-active-turn',
+    })
+    expect(coordinator.steer('shell', 'after settle')).toEqual({
+      kind: 'no-active-turn',
+    })
+    await expect(
+      coordinator.run(request('post-close'), async () => 'unreachable'),
+    ).rejects.toThrow('turn coordinator is closed')
   })
 
   it('seals before a terminal sink error and unregisters the run', async () => {
@@ -376,7 +416,7 @@ describe('TurnCoordinator', () => {
       kind: 'accepted',
     })
 
-    expect(() => coordinator.close()).toThrow(firstError)
+    const closing = coordinator.close()
     expect(coordinator.steer('one', 'sealed')).toEqual({
       kind: 'turn-completing',
     })
@@ -395,6 +435,7 @@ describe('TurnCoordinator', () => {
     )
     one.resolve()
     two.resolve()
-    await Promise.all([runOne, runTwo])
+    await Promise.allSettled([runOne, runTwo])
+    await expect(closing).rejects.toBe(firstError)
   })
 })
