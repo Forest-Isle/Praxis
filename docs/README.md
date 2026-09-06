@@ -36,6 +36,8 @@ authoritative CLI surface.
 ## Architecture and security
 
 - [Architecture](ARCHITECTURE.md) — module boundaries and main data flows.
+- [Living Architecture Model](architecture/index.md) — evidence-backed context,
+  module, data, deployment, and critical-flow views.
 - [Threat Model](THREAT_MODEL.md) — trust assumptions, threats, and required
   controls.
 - [Native-only ADR](adr/0002-native-only-removal.md) — why Praxis uses an
