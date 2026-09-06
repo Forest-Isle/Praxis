@@ -50,6 +50,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.67.1](https://github.com/Forest-Isle/Praxis/compare/v0.67.0...v0.67.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* preserve projection cursor continuity ([#700](https://github.com/Forest-Isle/Praxis/issues/700)) ([2cf43d4](https://github.com/Forest-Isle/Praxis/commit/2cf43d4b0076066503c32014fe45cf13e26e007f)), closes [#699](https://github.com/Forest-Isle/Praxis/issues/699)
+
 ## [0.67.0](https://github.com/Forest-Isle/Praxis/compare/v0.66.0...v0.67.0) (2026-09-05)
 
 
