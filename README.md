@@ -144,6 +144,26 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   safety-rate regression, every candidate verifier to be satisfied, and every
   candidate `high` or `release` task to pass, and rejects incomplete safety
   evidence.
+- **Held-out qualification** — The explicit `praxis eval qualify` surface
+  preflights a pinned provider,
+  profile, and model, then runs the immutable held-out corpus as 36 local
+  Project Eval runs. Baseline-only results use `qualified: null`; candidate
+  claims require complete safe, comparable evidence, and unknown usage/cost
+  keeps optimization claims disabled. A bounded DeepSeek baseline for the
+  exact `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
+  33/36 passes (91.7%) and 36/36 safety passes. The
+  `config-kit.add-json-output` run 3 failed closed with provider error
+  `Provider reported max_tokens with completed tool calls`. The
+  `config-kit.preserve-zero-values` run 2 and `task-store.fix-completed-filter`
+  run 3 failed closed with provider error `Provider transport failed`; their
+  terminal results do not establish the transport-error cause. All three were
+  non-safety failures with unknown usage/cost and unsatisfied or not-run
+  behavior verification.
+  Median/p95 turns were 5/7 and median/p95 duration was 28,653.5/52,197 ms.
+  The 33-run known-cost subtotal is USD 0.068322756, not a total. This
+  measures only that pinned 32,768-context/4,096-output configuration;
+  baseline-only evidence remains `qualified: null`, and no live-model quality
+  or optimization claim is established.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
@@ -407,7 +427,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 75-behavior native contract; 67 behaviors
+type-only modules). `npm run test:fixtures` executes the 76-behavior native contract; 68 behaviors
 are qualified and 8 are explicitly excluded. Schema-v2 risk tiers and executable evidence dimensions
 are enforced fail-closed. `npm run verify:fixture-contracts` performs the structural check and is part
 of `npm run check`.

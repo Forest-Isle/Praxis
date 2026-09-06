@@ -117,6 +117,7 @@ praxis doctor
 ## Praxis 提供什么
 
 - **结果驱动的评估** — `praxis eval <target>` 会在隔离工作区中运行受控用例，要求显式授权验证器，并在本地写入带确定性运行身份的版本化产物，其中包含 Praxis 源码 revision、dirty 状态和已生成 runtime 的摘要；用量和成本会明确标记为可用或未知。只有提供商、模型、配置、工具、提示、语料库和宿主运行环境身份一致时，`praxis eval compare` 才会比较两次独立运行；Praxis 版本和构建出处仅用于归因，因此候选构建可以不同。未知令牌/成本证据会产生 `null` 差值，门禁要求通过率和安全率均不回退、每个候选验证器都满足要求、每个候选 `high` 或 `release` 风险任务都通过，并在安全证据不完整时失败关闭。
+- **Held-out qualification** — 显式的 `praxis eval qualify` 会先固定并预检 provider、profile、model，再通过 Project Eval 在本地运行不可变 held-out 语料库的 36 次任务。仅基线结果使用 `qualified: null`；候选结果必须具备完整、安全、可比较的证据，未知用量/成本会禁止 optimization claim。针对确切 `anthropic/default/deepseek-v4-flash` pin 的有界 DeepSeek 基线完成了 36/36 次运行，其中 33/36 通过（91.7%），36/36 次安全检查通过。`config-kit.add-json-output` 第 3 次因 provider 错误 `Provider reported max_tokens with completed tool calls` 在工具调用完成后失败关闭；`config-kit.preserve-zero-values` 第 2 次和 `task-store.fix-completed-filter` 第 3 次因 provider 错误 `Provider transport failed` 失败关闭，终端结果未确定传输错误的原因。三次均非安全失败，用量/成本未知，行为验证未满足或未运行。中位数/p95 回合数为 5/7，中位数/p95 时长为 28,653.5/52,197 毫秒；33 次已知成本小计为 0.068322756 美元，并非总成本。这只测量固定的 32,768 context/4,096 output 配置；基线结果仍为 `qualified: null`，不构成 live-model 质量或 optimization claim。
 - **本地 Agent 运行时** — C+ Quiet Operator 响应式 TUI，采用线性的
   `❯` 用户 / `⏺` 助手对话、`✻` 思考活动和 `!` Shell 输入语法，以及紧凑稳定的工具行、自适应密度、终端原生背景和精简的输入框/状态行。
   对于保持不变超过 50 秒的类提示符后台 Bash 输出，会发出一次警告和 model follow-up，但不会停止或重新分类运行中的任务；静默和普通输出保持安静。
@@ -209,7 +210,7 @@ npm run check
 `npm run check` 还会强制执行对应的源代码依赖方向。
 `npm run test:coverage` 使用 V8 覆盖 `src/**` 下的全部生产代码，并强制执行全局最低标准：
 语句 79%、分支 70%、函数 85%、行 81%；同时拒绝存在语句但完全未覆盖的生产运行时模块（仅类型模块可以为零语句）。
-`npm run test:fixtures` 会执行包含 75 条行为的 native contract，其中 67 条为 qualified、8 条明确 excluded。
+`npm run test:fixtures` 会执行包含 76 条行为的 native contract，其中 68 条为 qualified、8 条明确 excluded。
 Schema v2 会以 fail-closed 方式强制校验风险等级与可执行证据维度。
 `npm run verify:fixture-contracts` 执行结构校验，并包含在 `npm run check` 中。
 `npm run test:core-completion` 保留为兼容别名，实际执行 `npm run test:fixtures`。

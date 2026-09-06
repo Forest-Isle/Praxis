@@ -2191,6 +2191,54 @@
       }
     },
     {
+      "id": "eval.coding.heldout.qualification",
+      "seam": "Held-out Project Eval qualification",
+      "contract": "An explicitly pinned held-out qualification preflights identity and safety, executes all fixed runs through Project Eval, and emits local evidence without making unsupported optimization claims.",
+      "status": "qualified",
+      "modules": ["src/evals/held-out-qualification.ts"],
+      "outcomes": [
+        "Help and preflight failures do not create a provider runtime, while the pinned identity is reported before execution.",
+        "All twelve held-out cases execute three repetitions and unsafe or incomplete evidence fails closed.",
+        "Baseline comparison only qualifies complete safe comparable evidence and requires known usage and cost for optimization claims."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-qualification.test.ts",
+          "testName": "held-out qualification command > help is side-effect free and preflight reports the pin before runtime creation",
+          "covers": ["success", "negative"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-qualification.test.ts",
+          "testName": "held-out qualification command > runs all twelve held-out cases three times through Project Eval without provider execution",
+          "covers": ["success", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-qualification.test.ts",
+          "testName": "held-out qualification command > rejects incomplete or unsafe qualification evidence before comparison",
+          "covers": ["negative"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-qualification.test.ts",
+          "testName": "held-out qualification command > qualifies comparable cross-build evidence, detects regressions, and blocks unknown optimization claims",
+          "covers": ["success", "negative"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Qualification is a finite local evidence command with cancellation but no resumable state transition."
+          }
+        ]
+      }
+    },
+    {
       "id": "native.deletion.gate",
       "seam": "Native deletion verification",
       "contract": "Removed compatibility and migration surfaces remain absent from source, build, and package output.",

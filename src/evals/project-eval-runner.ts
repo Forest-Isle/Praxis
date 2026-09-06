@@ -146,6 +146,8 @@ interface ProjectEvalRunOptions {
   factory: IdentifiedEvalRuntimeFactory
   run: number
   allowTools?: readonly string[]
+  provider?: string
+  profile?: string
   model?: string
   keepTemp?: boolean
   runVerification?: boolean
@@ -267,6 +269,10 @@ export async function runProjectEvalCase(
     cwd: workspace.cwd,
     configRoot: workspace.config,
     home: workspace.home,
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
+    ...(options.profile === undefined
+      ? {}
+      : { providerProfile: options.profile }),
     maxTurns: options.case.execution.maxTurns,
     pluginDirectories: [],
     allowedTools,

@@ -230,6 +230,19 @@ Version `praxis-held-out-v1` contains three repositories, twelve tasks, and 36
 planned three-repeat runs. Real runs are explicit opt-in and local-only; any
 result-informed Praxis change requires a new corpus version.
 
+Held-out qualification is an orchestration boundary around Project Eval. The
+qualification command owns option parsing, corpus/tool/build/provider
+preflight, identity pinning, aggregate-bound evidence validation, comparison,
+and the local result envelope. Project Eval remains the sole execution owner:
+it creates each isolated workspace, runs the model and verifiers, and writes
+the per-run and aggregate artifacts. Provider and profile selection stays at
+the CLI composition root and is passed explicitly into both identity and
+creation; qualification does not add a second evaluator. The result binds
+each repository aggregate by an exact relative path and SHA-256, and any
+missing, tampered, partial, unsafe, or non-comparable evidence fails closed.
+Qualification changes no native transcript or data-plane contract; all output
+is local evaluation evidence.
+
 Release artifacts contain compiled `dist` output plus npm-required manifest,
 README, and license files only. The package gate installs that tarball in an
 empty project and exercises the real npm bin, preventing source-tree resolution

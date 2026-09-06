@@ -56,9 +56,16 @@ The held-out Project Eval corpus under
 not fixture evidence. Its checked-in tasks are not secret; held-out means
 results cannot tune the same corpus version. CI structurally parses and hashes
 it only. Real execution is explicit opt-in and local-only, using
-`praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`;
-the corpus plans 36 runs across three repositories and twelve tasks. A
-result-informed Praxis change requires a new corpus version.
+`praxis eval qualify` with an explicit provider, profile, model, verifier
+authorization, output directory, and the exact confirmation token
+`praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`;
+the command plans 36 runs across three repositories and twelve tasks. It
+preflights identity before provider creation and writes only local
+`qualification-result.json` plus Project Eval aggregates and sidecars. A
+baseline-only result has `qualified: null`; a candidate requires complete
+100%-safe, non-regressing, verifier-satisfied evidence. Unknown usage or cost
+never becomes zero and blocks optimization claims. A result-informed Praxis
+change requires a new corpus version.
 
 Each qualified behavior declares `risk` as `low`, `medium`, `high`, or
 `release`, and each blocked or excluded behavior declares `risk: "none"` with
@@ -144,11 +151,11 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 74 behaviors: 66
-are qualified and 8 are explicitly excluded. Risk tiers are 13 low, 12 medium,
-40 high, and 1 release; the manifest records 49 semantically justified
-tier-floor exemptions for non-applicable evidence. It contains 172 evidence entries:
-114 Vitest entries, 52 fixture entries, and 6 gate entries.
+are the active qualification source. The manifest declares 76 behaviors: 68
+are qualified and 8 are explicitly excluded. Risk tiers are 13 low, 11 medium,
+43 high, and 1 release; the manifest records 49 semantically justified
+tier-floor exemptions for non-applicable evidence. It contains 189 evidence
+entries: 131 Vitest entries, 52 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain
@@ -182,7 +189,22 @@ Claude/external parity.
 
 The held-out corpus contract is implemented by #705; unsafe, incomplete,
 contaminated, and content-drifted repositories fail closed before model
-execution.
+execution. The local qualification mechanism is implemented by #708 and is
+covered by hermetic scripted evidence. A bounded baseline for the exact
+`anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with 33/36
+passes (91.7%) and 36/36 safety passes. The `config-kit.add-json-output` run 3
+failed closed with provider error
+`Provider reported max_tokens with completed tool calls` after completed tool
+calls; `config-kit.preserve-zero-values` run 2 and
+`task-store.fix-completed-filter` run 3 failed closed with provider error
+`Provider transport failed`, whose causes are not established by the terminal
+results. All three were non-safety failures with unknown usage/cost and
+unsatisfied or not-run behavior verification; they are not successful behavior
+checks. Thirty-three runs had known cost,
+with a USD 0.068322756 known subtotal and three unknown usage/cost runs. This
+does not establish a candidate qualification or optimization claim; the
+evidence is limited to the pinned 32,768-context/4,096-output/no-fallback
+configuration.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
@@ -209,3 +231,7 @@ parity or external qualification.
 - All required local and protected CI gates pass.
 - The held-out corpus contract reports three repositories, twelve tasks, and
   36 planned runs without creating a runtime or executing prompts.
+- The qualification implementation and hermetic evidence are complete, and a
+  bounded DeepSeek baseline is recorded; candidate comparison and full Task
+  8.2 acceptance remain open. Fixture tests and this baseline must not be
+  interpreted as universal live-model quality or an optimization claim.

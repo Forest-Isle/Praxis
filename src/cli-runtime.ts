@@ -3207,6 +3207,10 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
           tools: [...options.allowedTools],
           permissionMode: 'dontAsk',
           ...(options.model ? { model: options.model } : {}),
+          ...(options.provider ? { provider: options.provider } : {}),
+          ...(options.providerProfile
+            ? { providerProfile: options.providerProfile }
+            : {}),
           ...(options.appendSystemPrompt
             ? { appendSystemPrompt: options.appendSystemPrompt }
             : {}),
@@ -3244,6 +3248,10 @@ const defaultProjectEvalRuntimeFactory: IdentifiedEvalRuntimeFactory = {
       cwd: options.cwd,
       environment,
       ...(options.model === undefined ? {} : { model: options.model }),
+      ...(options.provider === undefined ? {} : { provider: options.provider }),
+      ...(options.providerProfile === undefined
+        ? {}
+        : { profile: options.providerProfile }),
       includeSettings: true,
       includeProjectSettings: false,
     })
@@ -6549,6 +6557,17 @@ async function execute(
       return 0
     }
     if (
+      special.args[1] === 'qualify' &&
+      special.args
+        .slice(2)
+        .some((value) => value === '-h' || value === '--help')
+    ) {
+      const { HELD_OUT_QUALIFICATION_HELP } =
+        await import('./evals/held-out-qualification.js')
+      io.stdout(HELD_OUT_QUALIFICATION_HELP)
+      return 0
+    }
+    if (
       special.args
         .slice(1)
         .some((value) => value === '-h' || value === '--help')
@@ -6557,13 +6576,29 @@ async function execute(
       return 0
     }
     if (!dependencies.projectEval) throw new Error('Project eval unavailable')
+    const prefixFlags = [
+      ...(specialPrefix?.model === undefined
+        ? []
+        : ['--model', specialPrefix.model]),
+      ...(specialPrefix?.provider === undefined
+        ? []
+        : ['--provider', specialPrefix.provider]),
+      ...(specialPrefix?.providerProfile === undefined
+        ? []
+        : ['--profile', specialPrefix.providerProfile]),
+    ]
+    if (special.args[1] === 'compare' && prefixFlags.length > 0)
+      throw new Error(
+        'eval compare does not accept global provider, profile, or model options',
+      )
+    const evalArgs =
+      special.args[1] === 'qualify'
+        ? ['qualify', ...prefixFlags, ...special.args.slice(2)]
+        : special.args[1] === 'compare'
+          ? ['compare', ...special.args.slice(2)]
+          : [...prefixFlags, ...special.args.slice(1)]
     return executeProjectEvalCommand(
-      [
-        ...(specialPrefix?.model === undefined
-          ? []
-          : ['--model', specialPrefix.model]),
-        ...special.args.slice(1),
-      ],
+      evalArgs,
       io,
       dependencies.projectEval,
       process.cwd(),
