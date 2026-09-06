@@ -11,8 +11,10 @@ flowchart LR
     n_696e7374616c6c65642d7061636b6167652d73746172747570_s1 --> n_696e7374616c6c65642d7061636b6167652d73746172747570_s2
     n_696e7374616c6c65642d7061636b6167652d73746172747570_s3["Session application: List or resume sessions using only native data-plane records."]
     n_696e7374616c6c65642d7061636b6167652d73746172747570_s2 --> n_696e7374616c6c65642d7061636b6167652d73746172747570_s3
-    n_696e7374616c6c65642d7061636b6167652d73746172747570_s4["CLI composition: Complete the package probe with no source-tree or package-local .git dependency."]
+    n_696e7374616c6c65642d7061636b6167652d73746172747570_s4["CLI composition: Classify the package probe; missing or mismatched build identity, package-local .git, version/help startup failure, or invalid native session-list output terminates with an error."]
     n_696e7374616c6c65642d7061636b6167652d73746172747570_s3 --> n_696e7374616c6c65642d7061636b6167652d73746172747570_s4
+    n_696e7374616c6c65642d7061636b6167652d73746172747570_s5["CLI composition: For a passing package probe, complete with no source-tree or package-local .git dependency."]
+    n_696e7374616c6c65642d7061636b6167652d73746172747570_s4 --> n_696e7374616c6c65642d7061636b6167652d73746172747570_s5
 ```
 
 ## Evidence

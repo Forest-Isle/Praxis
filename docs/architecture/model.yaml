@@ -820,7 +820,9 @@ flows:
       - node: session-application
         action: List or resume sessions using only native data-plane records.
       - node: cli-composition
-        action: Complete the package probe with no source-tree or package-local .git dependency.
+        action: Classify the package probe; missing or mismatched build identity, package-local .git, version/help startup failure, or invalid native session-list output terminates with an error.
+      - node: cli-composition
+        action: For a passing package probe, complete with no source-tree or package-local .git dependency.
     evidence:
       - path: package.json
         symbol: bin
