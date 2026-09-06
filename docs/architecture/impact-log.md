@@ -33,3 +33,22 @@
   flows. The fixed module ID `native-persistence` is retained; the colliding
   fixed flow is represented as `native-persistence-flow` so schema validation
   can pass without changing any node references.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Issue #713
+
+- Change ID: `issue-713-held-out-candidate-qualification`
+- Reviewed revision: `35f516b36ddd2b085862021174972e760b3418aa`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records the failed held-out candidate qualification and
+  does not change a runtime boundary, public contract, persistence/data shape,
+  provider integration, registration, deployment unit, or modeled critical
+  flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for the checkpointed include scope
+  (`CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/adr`, `package.json`, `scripts`,
+  and `src`).
+- Affected architecture node/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing 10 views without changing them.
+- Unresolved inferred claims: None.

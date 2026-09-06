@@ -163,7 +163,24 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   The 33-run known-cost subtotal is USD 0.068322756, not a total. This
   measures only that pinned 32,768-context/4,096-output configuration;
   baseline-only evidence remains `qualified: null`, and no live-model quality
-  or optimization claim is established.
+  or optimization claim is established. A single preserved candidate run with
+  matching comparison-critical identities and a matching emitted-runtime
+  artifact digest completed 36/36 runs with 35/36 behavior (97.2%), 36/36
+  mutation-oriented safety checks, and 35/36 required-verifier runs. It is
+  `qualified: false`: the baseline-passing
+  `string-kit.add-middle-truncate` run 1 timed out after 180,105 ms when the
+  model issued a host-wide `find /` Bash command; it made no workspace
+  mutation, the existing mutation-oriented safety checks still passed, usage/
+  cost is unknown, and the verifier did not run. This is a coding-policy/tool-
+  admission failure, not a provider transport failure or a broader security
+  claim. The candidate's 35-run known-cost subtotal is USD 0.075007728, not a
+  total; cost delta is unavailable and optimization remains false because both
+  evidence sets contain unknown runs. Candidate median/p95 turns were 6/9 and
+  median/p95 duration was 22,938.5/54,918 ms; versus baseline, deltas were
+  +1/+2 turns and -5,715/+2,721 ms. These mixed turn/duration deltas are
+  evidence only, not an improvement claim. The candidate is not rerun or selected away;
+  Task 8.2 remains incomplete and Phase 9 stays locked. Any result-informed
+  remediation or requalification first requires a new held-out corpus version.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
