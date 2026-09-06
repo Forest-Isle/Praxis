@@ -1,0 +1,840 @@
+schema_version: 1
+project:
+  id: praxis-agent
+  name: Praxis
+  description: Native local-first CLI coding-agent runtime and its provider-neutral architecture.
+
+modules:
+  - id: cli-composition
+    name: CLI composition
+    responsibilities:
+      - Dispatch CLI arguments and commands.
+      - Compose workspace trust, providers, persistence, integrations, and services.
+      - Own service lifecycle for an invocation.
+    actions:
+      - Resolve native runtime settings and data-plane paths.
+      - Create default session dependencies and background-worker runtimes.
+      - Handle version and help before provider initialization.
+    evidence:
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+      - path: src/cli.ts
+        symbol: run
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createDefaultDependencies
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createDefaultService
+        confidence: confirmed
+
+  - id: tui-adapter
+    name: TUI adapter
+    responsibilities:
+      - Adapt terminal interaction to provider-neutral runtime events.
+      - Present conversation state and user decision surfaces.
+      - Manage interactive terminal lifecycle.
+    actions:
+      - Submit prompts and observe session events through Ink.
+      - Project RuntimeEvent state, streaming deltas, approvals, and decisions.
+      - Start and resume interactive sessions.
+    evidence:
+      - path: src/cli/interactive.tsx
+        symbol: InteractiveApp
+        confidence: confirmed
+      - path: src/cli/interactive.tsx
+        symbol: runInteractive
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: session-application
+    name: Session application
+    responsibilities:
+      - Orchestrate resumable sessions and turn lifecycles.
+      - Prepare context and persist provider-neutral events.
+      - Account usage and settle shutdown outcomes.
+    actions:
+      - Register and coordinate one active turn per session.
+      - Assemble bounded context and translate runtime events to native persistence.
+      - Record persistence receipts, accounting, and terminal settlement.
+    evidence:
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+      - path: src/application/turn-lifecycle.ts
+        symbol: TurnCoordinator
+        confidence: confirmed
+      - path: src/application/context-preparation.ts
+        symbol: ContextPreparation
+        confidence: confirmed
+      - path: src/application/turn-persistence.ts
+        symbol: TurnPersistence
+        confidence: confirmed
+      - path: src/application/turn-accounting.ts
+        symbol: TurnAccounting
+        confidence: confirmed
+
+  - id: core-runtime
+    name: Core runtime
+    responsibilities:
+      - Define provider-neutral agent-loop contracts.
+      - Coordinate model output, tool scheduling, permissions, and terminal outcomes.
+    actions:
+      - Stream model events through the ModelProvider port.
+      - Validate and schedule registry tools.
+      - Emit provider-neutral terminal and failure events.
+    evidence:
+      - path: src/core/runtime.ts
+        symbol: ModelProvider
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: ToolRegistry
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: PermissionResolver
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: AgentRuntime
+        confidence: confirmed
+      - path: src/core/tool-execution-scheduler.ts
+        symbol: ToolExecutionScheduler
+        confidence: confirmed
+      - path: src/core/transcript-event.ts
+        symbol: TranscriptEvent
+        confidence: confirmed
+
+  - id: tool-security-runtime
+    name: Tool security runtime
+    responsibilities:
+      - Expose local executable tool capabilities.
+      - Apply scheduling, permission, sandbox, and process-admission policy.
+    actions:
+      - Register and resolve local tools.
+      - Resolve allow, ask, or deny permission decisions.
+      - Wrap admitted shell execution with sandbox and bounded process controls.
+    evidence:
+      - path: src/tools/local-tools.ts
+        symbol: LocalToolRegistry
+        confidence: confirmed
+      - path: src/permissions/claude-permission-resolver.ts
+        symbol: ClaudePermissionResolver
+        confidence: confirmed
+      - path: src/sandbox/claude-sandbox-runtime.ts
+        symbol: ClaudeSandboxRuntime
+        confidence: confirmed
+      - path: src/platform/bounded-process-runner.ts
+        symbol: BoundedProcessRunner
+        confidence: confirmed
+
+  - id: provider-gateway
+    name: Provider gateway
+    responsibilities:
+      - Resolve provider targets, credentials, and declared capabilities.
+      - Adapt provider protocols behind the ModelProvider port.
+      - Seal turn routes and bound fallback attempts.
+    actions:
+      - Resolve the native provider registry and target configuration.
+      - Adapt Anthropic Messages, OpenAI-compatible Chat, OpenAI Responses, and fallback routes.
+      - Buffer eligible failures, enforce deadlines, and seal the successful route.
+    evidence:
+      - path: src/providers/provider-registry.ts
+        symbol: resolveProviderRegistry
+        confidence: confirmed
+      - path: src/providers/provider-registry.ts
+        symbol: NativeProviderRegistry
+        confidence: confirmed
+      - path: src/providers/fallback-provider.ts
+        symbol: FallbackModelProvider
+        confidence: confirmed
+      - path: src/providers/non-streaming-fallback-provider.ts
+        symbol: NonStreamingFallbackModelProvider
+        confidence: confirmed
+      - path: src/providers/openai-compatible.ts
+        symbol: OpenAICompatibleProvider
+        confidence: confirmed
+      - path: src/providers/openai-responses.ts
+        symbol: OpenAIResponsesProvider
+        confidence: confirmed
+      - path: src/providers/anthropic-compatible.ts
+        symbol: AnthropicCompatibleProvider
+        confidence: confirmed
+
+  - id: native-persistence
+    name: Native persistence
+    responsibilities:
+      - Own the Praxis-native data-plane roots and paths.
+      - Encode and append authoritative native Transcript events.
+      - Store native settings, resources, and operational sidecars.
+    actions:
+      - Resolve the native root and session paths.
+      - Acquire leases, validate tails, and append versioned JSONL records.
+      - Read and write native settings, shared resources, and operational state.
+    evidence:
+      - path: src/persistence/data-plane.ts
+        symbol: resolveDataPlane
+        confidence: confirmed
+      - path: src/persistence/data-plane.ts
+        symbol: resolveDataPlaneRoot
+        confidence: confirmed
+      - path: src/persistence/data-plane.ts
+        symbol: resolveDataPlanePaths
+        confidence: confirmed
+      - path: src/persistence/native-data-plane-adapter.ts
+        symbol: NativeDataPlaneAdapter
+        confidence: confirmed
+      - path: src/persistence/native-transcript-store.ts
+        symbol: NativeTranscriptStore
+        confidence: confirmed
+      - path: src/persistence/native-transcript-codec.ts
+        symbol: createNativeTranscriptCodec
+        confidence: confirmed
+      - path: src/persistence/native-resources.ts
+        symbol: loadNativeSettings
+        confidence: confirmed
+      - path: src/persistence/native-resources.ts
+        symbol: loadNativeSharedResources
+        confidence: confirmed
+
+  - id: integration-adapters
+    name: Integration adapters
+    responsibilities:
+      - Adapt trusted local hooks and MCP resources to Praxis boundaries.
+      - Decorate runtime and tool execution with integration events.
+    actions:
+      - Configure and execute MCP tool/resource sessions.
+      - Run configured hooks with bounded local process execution.
+      - Apply workspace trust assessment before project/local integrations are used.
+    evidence:
+      - path: src/mcp/claude-mcp-tools.ts
+        symbol: ClaudeMcpToolRegistry
+        confidence: confirmed
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+      - path: src/security/workspace-trust.ts
+        symbol: assessWorkspaceTrust
+        confidence: confirmed
+      - path: src/security/workspace-trust.ts
+        symbol: persistWorkspaceTrust
+        confidence: confirmed
+
+  - id: local-orchestration
+    name: Local orchestration
+    responsibilities:
+      - Provide capability-gated local Agent, Team, and background execution.
+      - Own orchestration lifecycle, isolated worktree ownership, and sidechain state.
+    actions:
+      - Execute local subagents and background jobs with bounded lifecycle state.
+      - Create and resume local Teams with mailbox and concurrency controls.
+      - Persist sidechain and orchestration state in native stores.
+    evidence:
+      - path: src/application/subagent-service.ts
+        symbol: ClaudeSubagentExecutor
+        confidence: confirmed
+      - path: src/application/team-manager.ts
+        symbol: LocalTeamManager
+        confidence: confirmed
+      - path: src/application/top-level-agent-manager.ts
+        symbol: TopLevelAgentManager
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+external_systems:
+  - id: model-provider-apis
+    name: Model provider APIs
+    responsibilities:
+      - Receive provider protocol requests from Praxis adapters.
+      - Return protocol responses and provider errors that adapters normalize when supported; unknown usage remains outside this claim.
+    evidence:
+      - path: src/providers/anthropic-compatible.ts
+        symbol: AnthropicCompatibleProvider
+        confidence: confirmed
+      - path: src/providers/openai-compatible.ts
+        symbol: OpenAICompatibleProvider
+        confidence: confirmed
+      - path: src/providers/openai-responses.ts
+        symbol: OpenAIResponsesProvider
+        confidence: confirmed
+
+  - id: local-process-boundary
+    name: Local execution and integration boundary
+    responsibilities:
+      - Bound Praxis-owned local shell, sandbox, and child-process execution.
+      - Represent configured MCP transport plus hook, Git, worktree, and detached-process integration boundaries without claiming every transport is a child process.
+    evidence:
+      - path: src/platform/bounded-process-runner.ts
+        symbol: BoundedProcessRunner
+        confidence: confirmed
+      - path: src/sandbox/claude-sandbox-runtime.ts
+        symbol: ClaudeSandboxRuntime
+        confidence: confirmed
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+      - path: src/mcp/claude-mcp-tools.ts
+        symbol: ClaudeMcpToolRegistry
+        confidence: confirmed
+
+data_stores:
+  - id: native-transcript-jsonl
+    name: Native Transcript JSONL
+    purpose:
+      - Authoritative append-only praxis.transcript v1 session and sidechain events under the native root.
+    evidence:
+      - path: src/persistence/native-transcript-store.ts
+        symbol: NativeTranscriptStore
+        confidence: confirmed
+      - path: src/persistence/native-transcript-codec.ts
+        symbol: createNativeTranscriptCodec
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: native-operational-state
+    name: Native operational state
+    purpose:
+      - Store Praxis settings, state, credential vault references, receipts, cost, task, team, mailbox, worktree, scheduled, and memory sidecars.
+      - Remain non-authoritative for conversation history.
+    evidence:
+      - path: src/persistence/native-data-plane-adapter.ts
+        symbol: NativeDataPlaneAdapter
+        confidence: confirmed
+      - path: src/persistence/native-resources.ts
+        symbol: loadNativeSharedResources
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: project-workspace
+    name: Project workspace
+    purpose:
+      - Hold caller-selected repository and worktree files.
+      - Be accessed by admitted tools and isolated evaluation/orchestration worktrees.
+    evidence:
+      - path: src/tools/local-tools.ts
+        symbol: LocalToolRegistry
+        confidence: confirmed
+      - path: src/application/team-manager.ts
+        symbol: LocalTeamManager
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+runtime_units:
+  - id: installed-cli-process
+    name: Installed CLI process
+    responsibilities:
+      - Run the Node.js process launched through the npm praxis bin.
+      - Include the hidden detached-worker entrypoint.
+    evidence:
+      - path: package.json
+        symbol: bin
+        confidence: confirmed
+      - path: src/cli.ts
+        symbol: run
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createBackgroundWorkerRuntime
+        confidence: confirmed
+      - path: scripts/verify-native-release-package.mjs
+        confidence: confirmed
+
+relations:
+  - id: installed-process-starts-cli
+    from: installed-cli-process
+    to: cli-composition
+    kind: starts
+    evidence:
+      - path: package.json
+        symbol: bin
+        confidence: confirmed
+      - path: src/cli.ts
+        symbol: run
+        confidence: confirmed
+
+  - id: cli-presents-through-tui
+    from: cli-composition
+    to: tui-adapter
+    kind: presents
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultDependencies
+        confidence: confirmed
+      - path: src/cli/interactive.tsx
+        symbol: runInteractive
+        confidence: confirmed
+
+  - id: cli-composes-session
+    from: cli-composition
+    to: session-application
+    kind: composes
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultService
+        confidence: confirmed
+
+  - id: cli-resolves-provider
+    from: cli-composition
+    to: provider-gateway
+    kind: resolves
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultService
+        confidence: confirmed
+      - path: src/providers/provider-registry.ts
+        symbol: resolveProviderRegistry
+        confidence: confirmed
+
+  - id: cli-composes-integrations
+    from: cli-composition
+    to: integration-adapters
+    kind: composes
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultService
+        confidence: confirmed
+      - path: src/security/workspace-trust.ts
+        symbol: assessWorkspaceTrust
+        confidence: confirmed
+
+  - id: cli-composes-orchestration
+    from: cli-composition
+    to: local-orchestration
+    kind: composes
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultDependencies
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createBackgroundWorkerRuntime
+        confidence: confirmed
+
+  - id: cli-resolves-native-storage
+    from: cli-composition
+    to: native-persistence
+    kind: resolves
+    evidence:
+      - path: src/persistence/data-plane.ts
+        symbol: resolveDataPlaneRoot
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createDefaultDependencies
+        confidence: confirmed
+
+  - id: tui-submits-session
+    from: tui-adapter
+    to: session-application
+    kind: submits
+    evidence:
+      - path: src/cli/interactive.tsx
+        symbol: InteractiveApp
+        confidence: confirmed
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+
+  - id: tui-observes-session
+    from: session-application
+    to: tui-adapter
+    kind: observes
+    evidence:
+      - path: src/cli/interactive.tsx
+        symbol: InteractiveApp
+        confidence: confirmed
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+
+  - id: session-orchestrates-core
+    from: session-application
+    to: core-runtime
+    kind: orchestrates
+    evidence:
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: AgentRuntime
+        confidence: confirmed
+
+  - id: session-prepares-context
+    from: session-application
+    to: core-runtime
+    kind: prepares
+    evidence:
+      - path: src/application/context-preparation.ts
+        symbol: ContextPreparation
+        confidence: confirmed
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+
+  - id: session-persists-events
+    from: session-application
+    to: native-persistence
+    kind: persists
+    evidence:
+      - path: src/application/turn-persistence.ts
+        symbol: TurnPersistence
+        confidence: confirmed
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+
+  - id: session-accounts-turn
+    from: session-application
+    to: native-operational-state
+    kind: accounts
+    evidence:
+      - path: src/application/turn-accounting.ts
+        symbol: TurnAccounting
+        confidence: confirmed
+
+  - id: session-coordinates-local-orchestration
+    from: session-application
+    to: local-orchestration
+    kind: coordinates
+    evidence:
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+      - path: src/application/subagent-service.ts
+        symbol: ClaudeSubagentExecutor
+        confidence: confirmed
+
+  - id: core-streams-provider
+    from: core-runtime
+    to: provider-gateway
+    kind: streams
+    evidence:
+      - path: src/core/runtime.ts
+        symbol: ModelProvider
+        confidence: confirmed
+      - path: src/providers/provider-registry.ts
+        symbol: NativeProviderRegistry
+        confidence: confirmed
+
+  - id: core-schedules-tools
+    from: core-runtime
+    to: tool-security-runtime
+    kind: schedules
+    evidence:
+      - path: src/core/tool-execution-scheduler.ts
+        symbol: ToolExecutionScheduler
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: ToolRegistry
+        confidence: confirmed
+
+  - id: provider-contacts-apis
+    from: provider-gateway
+    to: model-provider-apis
+    kind: contacts
+    evidence:
+      - path: src/providers/anthropic-compatible.ts
+        symbol: AnthropicCompatibleProvider
+        confidence: confirmed
+      - path: src/providers/openai-compatible.ts
+        symbol: OpenAICompatibleProvider
+        confidence: confirmed
+      - path: src/providers/openai-responses.ts
+        symbol: OpenAIResponsesProvider
+        confidence: confirmed
+
+  - id: tool-security-mutates-workspace
+    from: tool-security-runtime
+    to: project-workspace
+    kind: mutates
+    evidence:
+      - path: src/tools/local-tools.ts
+        symbol: LocalToolRegistry
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: tool-security-invokes-process
+    from: tool-security-runtime
+    to: local-process-boundary
+    kind: invokes
+    evidence:
+      - path: src/sandbox/claude-sandbox-runtime.ts
+        symbol: ClaudeSandboxRuntime
+        confidence: confirmed
+      - path: src/platform/bounded-process-runner.ts
+        symbol: BoundedProcessRunner
+        confidence: confirmed
+
+  - id: native-appends-transcript
+    from: native-persistence
+    to: native-transcript-jsonl
+    kind: appends
+    evidence:
+      - path: src/persistence/native-transcript-store.ts
+        symbol: NativeTranscriptStore
+        confidence: confirmed
+      - path: src/persistence/native-transcript-codec.ts
+        symbol: createNativeTranscriptCodec
+        confidence: confirmed
+
+  - id: native-reads-operational-state
+    from: native-persistence
+    to: native-operational-state
+    kind: reads-writes
+    evidence:
+      - path: src/persistence/native-resources.ts
+        symbol: loadNativeSharedResources
+        confidence: confirmed
+      - path: src/persistence/native-data-plane-adapter.ts
+        symbol: NativeDataPlaneAdapter
+        confidence: confirmed
+
+  - id: integrations-run-local-boundary
+    from: integration-adapters
+    to: local-process-boundary
+    kind: connects-runs
+    evidence:
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+      - path: src/mcp/claude-mcp-tools.ts
+        symbol: ClaudeMcpToolRegistry
+        confidence: confirmed
+
+  - id: integrations-decorate-core
+    from: integration-adapters
+    to: core-runtime
+    kind: decorates
+    evidence:
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+      - path: src/mcp/claude-mcp-tools.ts
+        symbol: ClaudeMcpToolRegistry
+        confidence: confirmed
+
+  - id: integrations-decorate-tools
+    from: integration-adapters
+    to: tool-security-runtime
+    kind: decorates
+    evidence:
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+      - path: src/mcp/claude-mcp-tools.ts
+        symbol: ClaudeMcpToolRegistry
+        confidence: confirmed
+
+  - id: orchestration-persists-sidechains
+    from: local-orchestration
+    to: native-transcript-jsonl
+    kind: persists
+    evidence:
+      - path: src/application/subagent-service.ts
+        symbol: ClaudeSubagentExecutor
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: orchestration-persists-lifecycle
+    from: local-orchestration
+    to: native-operational-state
+    kind: persists
+    evidence:
+      - path: src/application/team-manager.ts
+        symbol: LocalTeamManager
+        confidence: confirmed
+      - path: src/application/top-level-agent-manager.ts
+        symbol: TopLevelAgentManager
+        confidence: confirmed
+
+  - id: orchestration-owns-workspace
+    from: local-orchestration
+    to: project-workspace
+    kind: owns-isolated-use
+    evidence:
+      - path: src/application/team-manager.ts
+        symbol: LocalTeamManager
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: orchestration-launches-process
+    from: local-orchestration
+    to: local-process-boundary
+    kind: launches
+    evidence:
+      - path: src/application/top-level-agent-manager.ts
+        symbol: TopLevelAgentManager
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createBackgroundWorkerRuntime
+        confidence: confirmed
+
+flows:
+  - id: agent-turn
+    name: Agent turn
+    critical: true
+    steps:
+      - node: cli-composition
+        action: Dispatch a prompt or resume command and compose native dependencies.
+      - node: tui-adapter
+        action: Submit the user turn and present runtime state and decisions.
+      - node: session-application
+        action: Register the turn, prepare context, and own one terminal settlement.
+      - node: core-runtime
+        action: Run provider-neutral model and tool rounds.
+      - node: provider-gateway
+        action: Stream the selected provider route and normalize accepted events.
+      - node: model-provider-apis
+        action: Return protocol output or an error; failures before accepted events bypass Transcript append.
+      - node: native-persistence
+        action: Conditionally persist accepted assistant and tool events before projection.
+      - node: native-transcript-jsonl
+        action: Append authoritative assistant/tool records only when accepted events exist, preserving native order.
+      - node: session-application
+        action: After any required durable persistence and cleanup, settle completion, cancellation, or failure exactly once without replaying accepted provider or tool side effects.
+      - node: tui-adapter
+        action: Present the terminal state and resulting conversation.
+    evidence:
+      - path: src/application/session-service.ts
+        symbol: ClaudeSessionService
+        confidence: confirmed
+      - path: src/application/turn-lifecycle.ts
+        symbol: TurnCoordinator
+        confidence: confirmed
+      - path: src/core/runtime.ts
+        symbol: AgentRuntime
+        confidence: confirmed
+      - path: src/cli/interactive.tsx
+        symbol: InteractiveApp
+        confidence: confirmed
+      - path: src/persistence/native-transcript-store.ts
+        symbol: NativeTranscriptStore
+        confidence: confirmed
+
+  - id: native-persistence-flow
+    name: Native persistence
+    critical: true
+    steps:
+      - node: session-application
+        action: Stage a command and its provider-neutral events for persistence.
+      - node: native-persistence
+        action: Acquire the native transcript lease and validate the current tail; lease or tail conflict or append failure returns without publishing the staged projection or later effects.
+      - node: native-transcript-jsonl
+        action: Commit an append-only versioned JSONL batch.
+      - node: native-persistence
+        action: Return the typed receipt only after the durable append succeeds.
+      - node: session-application
+        action: Publish staged projection and run post-commit hooks and accounting only after receipt success.
+    evidence:
+      - path: src/application/turn-persistence.ts
+        symbol: TurnPersistence
+        confidence: confirmed
+      - path: src/persistence/native-transcript-store.ts
+        symbol: NativeTranscriptStore
+        confidence: confirmed
+      - path: src/persistence/native-transcript-codec.ts
+        symbol: createNativeTranscriptCodec
+        confidence: confirmed
+
+  - id: tool-admission-and-settlement
+    name: Tool admission and settlement
+    critical: true
+    steps:
+      - node: core-runtime
+        action: Validate and schedule a process-backed model tool call.
+      - node: integration-adapters
+        action: Run configured PreToolUse integration checks.
+      - node: tool-security-runtime
+        action: Resolve permission and sandbox admission; malformed or denied calls fail closed without execution, otherwise admit the process-backed call under permission and sandbox policy.
+      - node: local-process-boundary
+        action: Execute only the admitted process-backed call.
+      - node: project-workspace
+        action: Receive the admitted command effects when the command mutates workspace files.
+      - node: native-persistence
+        action: Settle native tool-start and tool-completion records.
+      - node: core-runtime
+        action: Continue the agent loop from the settled result.
+    evidence:
+      - path: src/core/tool-execution-scheduler.ts
+        symbol: ToolExecutionScheduler
+        confidence: confirmed
+      - path: src/permissions/claude-permission-resolver.ts
+        symbol: ClaudePermissionResolver
+        confidence: confirmed
+      - path: src/sandbox/claude-sandbox-runtime.ts
+        symbol: ClaudeSandboxRuntime
+        confidence: confirmed
+      - path: src/platform/bounded-process-runner.ts
+        symbol: BoundedProcessRunner
+        confidence: confirmed
+      - path: src/hooks/claude-hooks.ts
+        symbol: ClaudeHookRunner
+        confidence: confirmed
+
+  - id: provider-fallback
+    name: Provider fallback
+    critical: true
+    steps:
+      - node: session-application
+        action: Allocate a fresh turn-scoped provider stack.
+      - node: provider-gateway
+        action: Buffer the primary attempt before committing output or route state.
+      - node: model-provider-apis
+        action: Return an error before any buffered events are accepted; buffered partial output remains private to the provider gateway.
+      - node: provider-gateway
+        action: Classify the buffered result before continuation; incompatible, nonretryable, or otherwise ineligible failures fail closed without exposing buffered partial events.
+      - node: provider-gateway
+        action: For an eligible failure, retry through the declared fallback or explicitly eligible non-streaming route.
+      - node: model-provider-apis
+        action: Return the fallback protocol result or error to the provider gateway.
+      - node: provider-gateway
+        action: Obtain one successful complete result and seal the route for subsequent continuations.
+      - node: core-runtime
+        action: Receive only the accepted provider-neutral events after route sealing.
+    evidence:
+      - path: src/providers/fallback-provider.ts
+        symbol: FallbackModelProvider
+        confidence: confirmed
+      - path: src/providers/non-streaming-fallback-provider.ts
+        symbol: NonStreamingFallbackModelProvider
+        confidence: confirmed
+      - path: src/providers/provider-registry.ts
+        symbol: resolveProviderRegistry
+        confidence: confirmed
+      - path: docs/ARCHITECTURE.md
+        confidence: confirmed
+
+  - id: installed-package-startup
+    name: Installed package startup
+    critical: true
+    steps:
+      - node: cli-composition
+        action: Load the installed npm bin and dispatch dist/cli.js.
+      - node: cli-composition
+        action: Handle version or help without eagerly requiring a provider.
+      - node: native-persistence
+        action: Resolve native paths for session listing and state access.
+      - node: session-application
+        action: List or resume sessions using only native data-plane records.
+      - node: cli-composition
+        action: Classify the package probe; missing or mismatched build identity, package-local .git, version/help startup failure, or invalid native session-list output terminates with an error.
+      - node: cli-composition
+        action: For a passing package probe, complete with no source-tree or package-local .git dependency.
+    evidence:
+      - path: package.json
+        symbol: bin
+        confidence: confirmed
+      - path: src/cli.ts
+        symbol: run
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createDefaultService
+        confidence: confirmed
+      - path: src/persistence/data-plane.ts
+        symbol: resolveDataPlanePaths
+        confidence: confirmed
+      - path: scripts/verify-native-release-package.mjs
+        confidence: confirmed

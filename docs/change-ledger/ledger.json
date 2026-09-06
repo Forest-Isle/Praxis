@@ -116,6 +116,94 @@
       "supersedes": [],
       "title": "Risk-tiered native fixture evidence"
     },
+    "issue-692-architecture-model": {
+      "architecture_link": {
+        "evidence": "Architecture-chain mode was BOOTSTRAP: the new canonical model records the already-existing native local CLI architecture at the bounded source checkpoint. The documentation/governance change itself alters no runtime boundary, contract, persistence owner, integration, data shape, or deployment unit.",
+        "verdict": "NO_MODEL_CHANGE"
+      },
+      "base_revision": "git:1f78926ebc463fed5e2d7a0f22f49c9569171350",
+      "capsule_path": "docs/change-ledger/entries/2026/09/issue-692-architecture-model.md",
+      "change_kind": "architecture",
+      "changed_files": [
+        ".prettierignore",
+        "docs/README.md",
+        "docs/architecture/context.md",
+        "docs/architecture/data-flow.md",
+        "docs/architecture/deployment.md",
+        "docs/architecture/flows/agent-turn.md",
+        "docs/architecture/flows/installed-package-startup.md",
+        "docs/architecture/flows/native-persistence-flow.md",
+        "docs/architecture/flows/provider-fallback.md",
+        "docs/architecture/flows/tool-admission-and-settlement.md",
+        "docs/architecture/impact-log.md",
+        "docs/architecture/index.md",
+        "docs/architecture/model-state.json",
+        "docs/architecture/model.yaml",
+        "docs/architecture/modules.md"
+      ],
+      "created_at": "2026-09-06T15:28:01Z",
+      "effective_fingerprints": {
+        ".prettierignore": "sha256:a8f327a00039d52ee6ad604549168b30703b1762f039ed1e29066d0d07e980e9",
+        "docs/README.md": "sha256:dee4c04761db7b52c3a4ac96cbe901a91dcfdd8bc560cf6ba727dc0e2c5ef69e",
+        "docs/architecture/context.md": "sha256:c3473e451d33ba9f9e61a5713ce57f145d857dc115921f00213fe4ce85614f8e",
+        "docs/architecture/data-flow.md": "sha256:bb1f83aba718c11e5c52676e9a9be43db2ec915c466f1d4214f720f9cf245e1c",
+        "docs/architecture/deployment.md": "sha256:5d7ead87a3570036cfa62ba3548f9a5d9bd3d8599841d3bb96845e0210391531",
+        "docs/architecture/flows/agent-turn.md": "sha256:f7d8323d3408fb19436fd88853c663bcae764ce0a11c6d0628cc1206ae4df3cf",
+        "docs/architecture/flows/installed-package-startup.md": "sha256:b2c6e69d0c6a7916ba6e238025e7c31896e8ee8b643b87966a9cbe8af06c9246",
+        "docs/architecture/flows/native-persistence-flow.md": "sha256:b20075b2c2bcd34ddd651f0b435a4d830c88e7944604f18a5aecdaf76e19a4eb",
+        "docs/architecture/flows/provider-fallback.md": "sha256:2124e374305b93d012f00446720a8ec5868fbd9ed05cdec1f2baba2ad3b3d3de",
+        "docs/architecture/flows/tool-admission-and-settlement.md": "sha256:989de89ab18f8cbef2dec9568398b64dd7cbeaa58958406b5f35e68c2082cc28",
+        "docs/architecture/impact-log.md": "sha256:c4c934327c92756c066ce4a97f7fa8b0c890b250f5cc6b6587ffd63a87e19855",
+        "docs/architecture/index.md": "sha256:5da6049f546f101eebbcc6f3d626cf3f22cee19aff6131b28e6f5b49953d21fb",
+        "docs/architecture/model-state.json": "sha256:c0d4c12f2fcec6fa76892292ac1588442db2dd21316b7456845e21e46a81041b",
+        "docs/architecture/model.yaml": "sha256:2c532edb04957fda751fabcac43c9dc39ad24610fff9b6e93a8e93f53fd07d5e",
+        "docs/architecture/modules.md": "sha256:9111ef8d1b206b9d25d5b6e9c982042f0dd4ae2cc286cee604b065cb8b597595"
+      },
+      "excluded_preexisting_files": [
+        ".claude",
+        "docs/CLAUDE_EXPERIMENTAL_CAPABILITIES.md",
+        "docs/research"
+      ],
+      "implementation_status": "verified",
+      "observed_revision": "git:386dcc226ec13b4e7ce261a3b8dc9d2fe2dcfa84",
+      "own_fingerprints": {
+        ".prettierignore": "sha256:a8f327a00039d52ee6ad604549168b30703b1762f039ed1e29066d0d07e980e9",
+        "docs/README.md": "sha256:dee4c04761db7b52c3a4ac96cbe901a91dcfdd8bc560cf6ba727dc0e2c5ef69e",
+        "docs/architecture/context.md": "sha256:c3473e451d33ba9f9e61a5713ce57f145d857dc115921f00213fe4ce85614f8e",
+        "docs/architecture/data-flow.md": "sha256:bb1f83aba718c11e5c52676e9a9be43db2ec915c466f1d4214f720f9cf245e1c",
+        "docs/architecture/deployment.md": "sha256:5d7ead87a3570036cfa62ba3548f9a5d9bd3d8599841d3bb96845e0210391531",
+        "docs/architecture/flows/agent-turn.md": "sha256:f7d8323d3408fb19436fd88853c663bcae764ce0a11c6d0628cc1206ae4df3cf",
+        "docs/architecture/flows/installed-package-startup.md": "sha256:b2c6e69d0c6a7916ba6e238025e7c31896e8ee8b643b87966a9cbe8af06c9246",
+        "docs/architecture/flows/native-persistence-flow.md": "sha256:b20075b2c2bcd34ddd651f0b435a4d830c88e7944604f18a5aecdaf76e19a4eb",
+        "docs/architecture/flows/provider-fallback.md": "sha256:2124e374305b93d012f00446720a8ec5868fbd9ed05cdec1f2baba2ad3b3d3de",
+        "docs/architecture/flows/tool-admission-and-settlement.md": "sha256:989de89ab18f8cbef2dec9568398b64dd7cbeaa58958406b5f35e68c2082cc28",
+        "docs/architecture/impact-log.md": "sha256:c4c934327c92756c066ce4a97f7fa8b0c890b250f5cc6b6587ffd63a87e19855",
+        "docs/architecture/index.md": "sha256:5da6049f546f101eebbcc6f3d626cf3f22cee19aff6131b28e6f5b49953d21fb",
+        "docs/architecture/model-state.json": "sha256:c0d4c12f2fcec6fa76892292ac1588442db2dd21316b7456845e21e46a81041b",
+        "docs/architecture/model.yaml": "sha256:2c532edb04957fda751fabcac43c9dc39ad24610fff9b6e93a8e93f53fd07d5e",
+        "docs/architecture/modules.md": "sha256:9111ef8d1b206b9d25d5b6e9c982042f0dd4ae2cc286cee604b065cb8b597595"
+      },
+      "parents": [],
+      "project_root": "/Users/wuqisen/dev/Praxis",
+      "repair_of": [],
+      "requirement_ids": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5",
+        "R6",
+        "R7"
+      ],
+      "review_status": "pending",
+      "risk": "medium",
+      "schema_version": "2",
+      "scopes": [
+        "architecture-model"
+      ],
+      "supersedes": [],
+      "title": "Bootstrap evidence-backed architecture model"
+    },
     "issue-694-project-eval-evidence": {
       "architecture_link": {
         "evidence": "A bounded collect_changes assessment over the exact 39 reviewed paths returned BOOTSTRAP because the canonical model, impact log, and checkpoint are absent. The public Project Eval contract changed; bootstrap remains separately tracked by #692 and excluded here.",
@@ -1595,6 +1683,9 @@
     }
   },
   "heads_by_scope": {
+    "architecture-model": [
+      "issue-692-architecture-model"
+    ],
     "change-ledger": [
       "issue-691-ledger-prettier-compat"
     ],
