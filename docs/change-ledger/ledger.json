@@ -1680,11 +1680,68 @@
       ],
       "supersedes": [],
       "title": "Add pinned held-out qualification workflow"
+    },
+    "issue-713-architecture-verdict": {
+      "architecture_link": {
+        "evidence": "The bounded checkpoint reported added=0, modified=0, and deleted=0; the canonical model validated and deterministically rendered the same ten views.",
+        "verdict": "NO_MODEL_CHANGE"
+      },
+      "base_revision": "git:35f516b36ddd2b085862021174972e760b3418aa",
+      "capsule_path": "docs/change-ledger/entries/2026/09/issue-713-architecture-verdict.md",
+      "change_kind": "architecture",
+      "changed_files": [
+        "docs/architecture/impact-log.md"
+      ],
+      "created_at": "2026-09-06T16:56:03Z",
+      "effective_fingerprints": {
+        ".prettierignore": "sha256:a8f327a00039d52ee6ad604549168b30703b1762f039ed1e29066d0d07e980e9",
+        "docs/README.md": "sha256:dee4c04761db7b52c3a4ac96cbe901a91dcfdd8bc560cf6ba727dc0e2c5ef69e",
+        "docs/architecture/context.md": "sha256:c3473e451d33ba9f9e61a5713ce57f145d857dc115921f00213fe4ce85614f8e",
+        "docs/architecture/data-flow.md": "sha256:bb1f83aba718c11e5c52676e9a9be43db2ec915c466f1d4214f720f9cf245e1c",
+        "docs/architecture/deployment.md": "sha256:5d7ead87a3570036cfa62ba3548f9a5d9bd3d8599841d3bb96845e0210391531",
+        "docs/architecture/flows/agent-turn.md": "sha256:f7d8323d3408fb19436fd88853c663bcae764ce0a11c6d0628cc1206ae4df3cf",
+        "docs/architecture/flows/installed-package-startup.md": "sha256:b2c6e69d0c6a7916ba6e238025e7c31896e8ee8b643b87966a9cbe8af06c9246",
+        "docs/architecture/flows/native-persistence-flow.md": "sha256:b20075b2c2bcd34ddd651f0b435a4d830c88e7944604f18a5aecdaf76e19a4eb",
+        "docs/architecture/flows/provider-fallback.md": "sha256:2124e374305b93d012f00446720a8ec5868fbd9ed05cdec1f2baba2ad3b3d3de",
+        "docs/architecture/flows/tool-admission-and-settlement.md": "sha256:989de89ab18f8cbef2dec9568398b64dd7cbeaa58958406b5f35e68c2082cc28",
+        "docs/architecture/impact-log.md": "sha256:1fb3d778e73124666760a20011f4ca8da20acd86ea5fb87b3c8cf4d5737b5947",
+        "docs/architecture/index.md": "sha256:5da6049f546f101eebbcc6f3d626cf3f22cee19aff6131b28e6f5b49953d21fb",
+        "docs/architecture/model-state.json": "sha256:c0d4c12f2fcec6fa76892292ac1588442db2dd21316b7456845e21e46a81041b",
+        "docs/architecture/model.yaml": "sha256:2c532edb04957fda751fabcac43c9dc39ad24610fff9b6e93a8e93f53fd07d5e",
+        "docs/architecture/modules.md": "sha256:9111ef8d1b206b9d25d5b6e9c982042f0dd4ae2cc286cee604b065cb8b597595"
+      },
+      "excluded_preexisting_files": [
+        ".claude",
+        "docs/CLAUDE_EXPERIMENTAL_CAPABILITIES.md",
+        "docs/research"
+      ],
+      "implementation_status": "verified",
+      "observed_revision": "git:1b928b2e49d9a261d915a66f9ed7869dc927f0d3",
+      "own_fingerprints": {
+        "docs/architecture/impact-log.md": "sha256:1fb3d778e73124666760a20011f4ca8da20acd86ea5fb87b3c8cf4d5737b5947"
+      },
+      "parents": [
+        "issue-692-architecture-model"
+      ],
+      "project_root": "/Users/wuqisen/dev/Praxis",
+      "repair_of": [],
+      "requirement_ids": [
+        "R1",
+        "R2"
+      ],
+      "review_status": "pending",
+      "risk": "low",
+      "schema_version": "2",
+      "scopes": [
+        "architecture-model"
+      ],
+      "supersedes": [],
+      "title": "Record Issue 713 architecture verdict"
     }
   },
   "heads_by_scope": {
     "architecture-model": [
-      "issue-692-architecture-model"
+      "issue-713-architecture-verdict"
     ],
     "change-ledger": [
       "issue-691-ledger-prettier-compat"
