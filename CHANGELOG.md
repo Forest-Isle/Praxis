@@ -50,6 +50,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.69.0](https://github.com/Forest-Isle/Praxis/compare/v0.68.0...v0.69.0) (2026-09-06)
+
+
+### Features
+
+* add pinned held-out qualification ([#709](https://github.com/Forest-Isle/Praxis/issues/709)) ([7c86626](https://github.com/Forest-Isle/Praxis/commit/7c86626a74fc8e9dea9bf348a52d08514819e8ec))
+
 ## [0.68.0](https://github.com/Forest-Isle/Praxis/compare/v0.67.2...v0.68.0) (2026-09-06)
 
 
