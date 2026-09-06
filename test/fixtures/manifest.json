@@ -530,6 +530,7 @@
         "src/application/session-service.ts"
       ],
       "outcomes": [
+        "Projection entries and their explicit cursor initialize from the selected native branch, advance atomically after successful commits, and refresh idempotently after compaction.",
         "Combined message commits publish compatibility projection only after native persistence succeeds."
       ],
       "evidence": [
@@ -549,18 +550,25 @@
           "kind": "vitest",
           "file": "src/application/session-service.test.ts",
           "testName": "ClaudeSessionService > automatically compacts native history while preserving the complete current-turn suffix and metering",
-          "covers": ["success"]
+          "covers": ["success", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/session-service.test.ts",
+          "testName": "ClaudeSessionService > resumes and forks at an active user message using native transcript branches",
+          "covers": ["success", "recovery"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/application/turn-persistence.test.ts",
+          "testName": "TurnPersistence > tracks the selected native branch cursor through refresh and non-addressable entries",
+          "covers": ["success", "recovery"]
         }
       ],
       "risk": "high",
       "evidenceRequirements": {
-        "required": ["success", "negative", "persistence"],
-        "exemptions": [
-          {
-            "dimension": "recovery",
-            "reason": "The persistence seam commits or rejects a turn and has no retry or recovery transition."
-          }
-        ]
+        "required": ["success", "negative", "persistence", "recovery"],
+        "exemptions": []
       }
     },
     {

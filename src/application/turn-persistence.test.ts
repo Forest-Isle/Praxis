@@ -39,6 +39,71 @@ async function withPersistence<T>(
 }
 
 describe('TurnPersistence', () => {
+  it('tracks the selected native branch cursor through refresh and non-addressable entries', async () => {
+    const store = new InMemoryTranscriptStore()
+    const transcript = new NativeSessionTranscript({
+      sessionId,
+      store,
+      createId: (() => {
+        let index = 0
+        return () => `event-${++index}`
+      })(),
+      now: () => '2026-08-23T00:00:00.000Z',
+    })
+    await transcript.withLease({ kind: 'start' }, async (native) => {
+      await native.appendMessages({
+        messages: [user('first'), assistant('first answer')],
+      })
+      await native.appendMessages({ messages: [user('abandoned')] })
+    })
+
+    await transcript.withLease(
+      { kind: 'resume', atEventId: 'event-1' },
+      async (native) => {
+        const persistence = new TurnPersistence({ native })
+        expect(
+          persistence.view().projectionEntries.map((entry) => entry.uuid),
+        ).toEqual(['event-1:0', 'event-1'])
+        expect(persistence.view().projectionCursor).toEqual({
+          lastEntryId: 'event-1',
+          entryCount: 2,
+        })
+
+        const metadata = {
+          type: 'agent-setting',
+          agentSetting: 'selected-branch',
+          sessionId,
+        } as NativeTranscriptEntry
+        const receipt = await persistence.commit({
+          kind: 'projection',
+          entries: [metadata],
+        })
+        expect(receipt).toEqual({
+          kind: 'projection',
+          lastProjectionId: 'event-1',
+        })
+        expect(persistence.view().projectionCursor).toEqual({
+          lastEntryId: 'event-1',
+          entryCount: 3,
+        })
+
+        await native.appendMessages({ messages: [user('selected branch')] })
+        const refreshed = persistence.refresh()
+        expect(refreshed.projectionEntries.map((entry) => entry.uuid)).toEqual([
+          'event-1:0',
+          'event-1',
+          'event-3',
+        ])
+        expect(refreshed.projectionCursor).toEqual({
+          lastEntryId: 'event-3',
+          entryCount: 3,
+        })
+        const repeated = persistence.refresh()
+        expect(repeated).toEqual(refreshed)
+      },
+    )
+  })
+
   it('isolates views, supports projection-only commits, and refreshes explicitly', async () => {
     await withPersistence(async (persistence) => {
       const entry = {
@@ -48,20 +113,21 @@ describe('TurnPersistence', () => {
         message: { role: 'user', content: 'projected' },
       } as NativeTranscriptEntry
       const initial = persistence.view()
-      expect(initial.projectionTail).toEqual({
-        byteLength: 0,
-        lastLineHash: null,
-        lastEventId: null,
-        newlineTerminated: true,
+      expect(initial.projectionCursor).toEqual({
+        lastEntryId: null,
+        entryCount: 0,
       })
       await persistence.commit({ kind: 'projection', entries: [entry] })
       const view = persistence.view()
       ;(view.projectionEntries as NativeTranscriptEntry[]).push(entry)
       ;(view.activeEvents as unknown[]).push({})
-      ;(view.projectionTail as { byteLength: number }).byteLength = 99
+      ;(view.projectionCursor as { entryCount: number }).entryCount = 99
       expect(persistence.view().projectionEntries).toHaveLength(1)
       expect(persistence.view().activeEvents).toHaveLength(0)
-      expect(persistence.view().projectionTail.byteLength).toBe(1)
+      expect(persistence.view().projectionCursor).toEqual({
+        lastEntryId: 'projection-1',
+        entryCount: 1,
+      })
 
       await persistence.commit({
         kind: 'messages',
@@ -72,7 +138,10 @@ describe('TurnPersistence', () => {
       expect(refreshed.projectionEntries.at(-1)).toMatchObject({
         message: { content: 'native' },
       })
-      expect(refreshed.projectionTail.byteLength).toBe(1)
+      expect(refreshed.projectionCursor).toEqual({
+        lastEntryId: 'event-1',
+        entryCount: 1,
+      })
     })
   })
 
@@ -105,6 +174,7 @@ describe('TurnPersistence', () => {
       appendCompaction: async () => ({ boundaryId: 'b', summaryId: 's' }),
     }
     const persistence = new TurnPersistence({ native: failing })
+    const beforeFailure = persistence.view()
     await expect(
       persistence.commit({
         kind: 'messages',
@@ -119,7 +189,7 @@ describe('TurnPersistence', () => {
         ],
       }),
     ).rejects.toThrow('append failed')
-    expect(persistence.view().projectionEntries).toEqual([])
+    expect(persistence.view()).toEqual(beforeFailure)
     await expect(
       persistence.commit({
         kind: 'projection',
@@ -157,6 +227,7 @@ describe('TurnPersistence', () => {
       },
     }
     const persistence = new TurnPersistence({ native })
+    const initial = persistence.view()
     const entry = {
       type: 'user',
       uuid: 'valid-after-invalid',
@@ -167,9 +238,16 @@ describe('TurnPersistence', () => {
     await expect(
       persistence.commit({ kind: 'messages', input: { messages: [] } }),
     ).rejects.toThrow('native transcript cannot append empty messages')
+    expect(persistence.view().projectionEntries).toEqual(
+      initial.projectionEntries,
+    )
+    expect(persistence.view().projectionCursor).toEqual(
+      initial.projectionCursor,
+    )
     await expect(
       persistence.commit({ kind: 'projection', entries: [] }),
     ).rejects.toThrow('Cannot append an empty projection')
+    expect(persistence.view()).toEqual(initial)
     await expect(
       persistence.commit({
         kind: 'messages',
@@ -177,6 +255,7 @@ describe('TurnPersistence', () => {
         projectionEntries: [],
       }),
     ).rejects.toThrow('Cannot append an empty projection')
+    expect(persistence.view()).toEqual(initial)
 
     expect(nativeMutations).toBe(0)
     const uncloneable = {
@@ -195,16 +274,22 @@ describe('TurnPersistence', () => {
     expect(() => {
       uncloneablePromise = persistence.commit(uncloneable)
     }).not.toThrow()
+    if (uncloneablePromise === undefined)
+      throw new Error('uncloneable commit did not return a promise')
+    await expect(uncloneablePromise).rejects.toThrow()
+    expect(persistence.view()).toEqual(initial)
     const laterValidPromise = persistence.commit({
       kind: 'projection',
       entries: [entry],
     })
-    if (uncloneablePromise === undefined)
-      throw new Error('uncloneable commit did not return a promise')
-    await expect(uncloneablePromise).rejects.toThrow()
     await expect(laterValidPromise).resolves.toEqual({
       kind: 'projection',
       lastProjectionId: entry.uuid,
+    })
+    expect(persistence.view().projectionEntries).toEqual([entry])
+    expect(persistence.view().projectionCursor).toEqual({
+      lastEntryId: entry.uuid,
+      entryCount: 1,
     })
     expect(nativeMutations).toBe(0)
   })
@@ -363,7 +448,7 @@ describe('TurnPersistence', () => {
         kind: 'messages',
         input: { messages: [user('old'), assistant('suffix')] },
       })
-      const before = persistence.view().projectionEntries
+      const before = persistence.refresh()
       const receipt = await persistence.commit({
         kind: 'compaction',
         input: {
@@ -380,23 +465,31 @@ describe('TurnPersistence', () => {
         boundaryId: 'event-2',
         summaryId: 'event-3',
       })
-      expect(persistence.view().projectionEntries).toEqual(before)
-      const refreshed = persistence.refresh().projectionEntries
-      expect(
-        refreshed.some((entry) => entry.subtype === 'compact_boundary'),
-      ).toBe(true)
-      expect(refreshed.some((entry) => entry.isCompactSummary === true)).toBe(
-        true,
+      expect(persistence.view().projectionEntries).toEqual(
+        before.projectionEntries,
       )
-      expect(
-        refreshed.some(
-          (entry) =>
-            typeof entry.message === 'object' &&
-            entry.message !== null &&
-            'content' in entry.message &&
-            entry.message.content === 'suffix',
-        ),
-      ).toBe(true)
+      expect(persistence.view().projectionCursor).toEqual(
+        before.projectionCursor,
+      )
+      const refreshed = persistence.refresh()
+      expect(refreshed.projectionEntries.map((entry) => entry.uuid)).toEqual([
+        'event-1:0',
+        'event-1',
+        'event-2',
+        'event-3',
+        'event-4',
+      ])
+      expect(refreshed.projectionCursor).toEqual({
+        lastEntryId: 'event-4',
+        entryCount: 5,
+      })
+      expect(refreshed.projectionEntries[2]?.subtype).toBe('compact_boundary')
+      expect(refreshed.projectionEntries[3]?.isCompactSummary).toBe(true)
+      expect(refreshed.projectionEntries[4]?.message).toEqual({
+        role: 'user',
+        content: 'suffix',
+      })
+      expect(persistence.refresh()).toEqual(refreshed)
     })
   })
 })

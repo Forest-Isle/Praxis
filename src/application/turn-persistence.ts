@@ -8,11 +8,15 @@ import type {
   NativeMessageAppend,
   NativeSessionTranscriptLease,
 } from './native-session-transcript.js'
-import type { NativeTranscriptTail } from '../persistence/native-transcript-store.js'
+
+export interface TurnProjectionCursor {
+  readonly lastEntryId: string | null
+  readonly entryCount: number
+}
 
 export interface TurnPersistenceView {
   readonly projectionEntries: readonly NativeTranscriptEntry[]
-  readonly projectionTail: NativeTranscriptTail
+  readonly projectionCursor: TurnProjectionCursor
   readonly activeEvents: readonly TranscriptEvent[]
   readonly activeMessages: readonly ModelMessage[]
   readonly interruption: NativeInterruption
@@ -54,16 +58,9 @@ export type TurnPersistenceReceipt =
       readonly summaryId: string
     }
 
-const emptyProjectionTail = (): NativeTranscriptTail => ({
-  byteLength: 0,
-  lastLineHash: null,
-  lastEventId: null,
-  newlineTerminated: true,
-})
-
 export class TurnPersistence {
   private projectionEntries: NativeTranscriptEntry[]
-  private projectionTail: NativeTranscriptTail = emptyProjectionTail()
+  private projectionCursor: TurnProjectionCursor
   private commitQueue: Promise<void> = Promise.resolve()
 
   constructor(
@@ -77,12 +74,13 @@ export class TurnPersistence {
         ? [...input.initialProjectionEntries]
         : projectNativeSessionEntries(input.native.activeEvents()),
     )
+    this.projectionCursor = deriveTurnProjectionCursor(this.projectionEntries)
   }
 
   view(): TurnPersistenceView {
     return {
       projectionEntries: structuredClone(this.projectionEntries),
-      projectionTail: structuredClone(this.projectionTail),
+      projectionCursor: structuredClone(this.projectionCursor),
       activeEvents: structuredClone(this.input.native.activeEvents()),
       activeMessages: structuredClone(this.input.native.activeMessages()),
       interruption: structuredClone(this.input.native.interruption()),
@@ -90,9 +88,10 @@ export class TurnPersistence {
   }
 
   refresh(): TurnPersistenceView {
-    this.projectionEntries = structuredClone(
-      projectNativeSessionEntries(this.input.native.activeEvents()),
+    const entries = projectNativeSessionEntries(
+      this.input.native.activeEvents(),
     )
+    this.replaceProjection(entries)
     return this.view()
   }
 
@@ -122,15 +121,10 @@ export class TurnPersistence {
     switch (command.kind) {
       case 'projection': {
         const staged = this.stageProjection(command.entries)
-        this.projectionEntries = staged.entries
-        this.projectionTail = staged.tail
-        const lastProjectionId = [...command.entries]
-          .reverse()
-          .find((entry) => typeof entry.uuid === 'string')?.uuid
+        this.replaceProjection(staged.entries, staged.cursor)
         return {
           kind: 'projection',
-          lastProjectionId:
-            typeof lastProjectionId === 'string' ? lastProjectionId : null,
+          lastProjectionId: staged.cursor.lastEntryId,
         }
       }
       case 'messages': {
@@ -142,8 +136,7 @@ export class TurnPersistence {
             : this.stageProjection(command.projectionEntries)
         const eventId = await this.input.native.appendMessages(command.input)
         if (staged) {
-          this.projectionEntries = staged.entries
-          this.projectionTail = staged.tail
+          this.replaceProjection(staged.entries, staged.cursor)
         }
         return { kind: 'messages', eventId }
       }
@@ -164,31 +157,33 @@ export class TurnPersistence {
 
   private stageProjection(entries: readonly NativeTranscriptEntry[]): {
     entries: NativeTranscriptEntry[]
-    tail: NativeTranscriptTail
+    cursor: TurnProjectionCursor
   } {
     if (entries.length === 0)
       throw new Error('Cannot append an empty projection')
     const stagedEntries = [...this.projectionEntries, ...entries]
-    const lastUuidValue = [...entries]
-      .reverse()
-      .find((entry) => typeof entry.uuid === 'string')?.uuid
-    const lastUuid =
-      typeof lastUuidValue === 'string' ? lastUuidValue : undefined
-    const byteLength = this.projectionTail.byteLength + entries.length
     return {
       entries: stagedEntries,
-      tail: {
-        ...this.projectionTail,
-        byteLength,
-        lastLineHash: `projection:${byteLength}`,
-        lastEventId:
-          typeof lastUuid === 'string'
-            ? lastUuid
-            : this.projectionTail.lastEventId,
-        ...(this.projectionTail.branchParentId === undefined
-          ? {}
-          : { branchParentId: null }),
-      },
+      cursor: deriveTurnProjectionCursor(stagedEntries),
     }
   }
+
+  private replaceProjection(
+    entries: readonly NativeTranscriptEntry[],
+    cursor = deriveTurnProjectionCursor(entries),
+  ): void {
+    this.projectionEntries = structuredClone([...entries])
+    this.projectionCursor = structuredClone(cursor)
+  }
+}
+
+export const deriveTurnProjectionCursor = (
+  entries: readonly NativeTranscriptEntry[],
+): TurnProjectionCursor => {
+  let lastEntryId: string | null = null
+  for (const entry of entries) {
+    if (typeof entry.uuid === 'string' && entry.uuid.length > 0)
+      lastEntryId = entry.uuid
+  }
+  return { lastEntryId, entryCount: entries.length }
 }

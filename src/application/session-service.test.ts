@@ -62,6 +62,7 @@ import {
   SessionMemoryStore,
   type SessionMemoryState,
 } from './session-memory.js'
+import { TurnPersistence } from './turn-persistence.js'
 import {
   ProjectMemoryExtractionController,
   type ProjectMemoryExtractorInput,
@@ -1045,6 +1046,7 @@ describe('ClaudeSessionService', () => {
     const sessionId = '92929292-1111-4111-8111-929292929292'
     const requests: ModelRequest[] = []
     const compactInputs: ModelMessage[][] = []
+    const persistenceCommit = vi.spyOn(TurnPersistence.prototype, 'commit')
     let mainTurn = 0
     const service = new ClaudeSessionService({
       configRoot,
@@ -1173,6 +1175,37 @@ describe('ClaudeSessionService', () => {
       .trimEnd()
       .split('\n')
       .map((line) => JSON.parse(line).event)
+    const finalAnswerCommand = persistenceCommit.mock.calls
+      .map(([command]) => command)
+      .find(
+        (command) =>
+          command.kind === 'messages' &&
+          JSON.stringify(command.input.messages).includes(
+            'native compacted answer',
+          ),
+      )
+    if (!finalAnswerCommand || finalAnswerCommand.kind !== 'messages') {
+      throw new Error('Could not capture the native compacted answer commit')
+    }
+    const finalAnswerProjection = finalAnswerCommand.projectionEntries?.find(
+      (entry) => JSON.stringify(entry).includes('native compacted answer'),
+    )
+    if (!finalAnswerProjection) {
+      throw new Error(
+        'Could not locate the native compacted answer compatibility projection',
+      )
+    }
+    const nativeAnswerEvent = events.find(
+      (event) =>
+        event.kind === 'messages' &&
+        JSON.stringify(event.messages).includes('native compacted answer'),
+    )
+    if (!nativeAnswerEvent || typeof nativeAnswerEvent.parentId !== 'string') {
+      throw new Error(
+        'Could not locate the native compacted answer parent event',
+      )
+    }
+    expect(finalAnswerProjection.parentUuid).toBe(nativeAnswerEvent.parentId)
     expect(
       events.filter((event) => event.kind === 'context-boundary'),
     ).toHaveLength(1)
@@ -12441,6 +12474,7 @@ return 'done'`,
     const configRoot = join(root, 'config')
     const cwd = join(root, 'project')
     const requests: ModelRequest[] = []
+    const persistenceCommit = vi.spyOn(TurnPersistence.prototype, 'commit')
     let turn = 0
     const provider: ModelProvider = {
       capabilities: { streaming: true, usage: true, tools: false },
@@ -12505,6 +12539,39 @@ return 'done'`,
       undefined,
       target.id,
     )
+    const branchPromptCommand = persistenceCommit.mock.calls
+      .map(([command]) => command)
+      .find(
+        (command) =>
+          command.kind === 'messages' &&
+          JSON.stringify(command.input.messages).includes('branch prompt'),
+      )
+    if (!branchPromptCommand || branchPromptCommand.kind !== 'messages') {
+      throw new Error('Could not capture the branch prompt commit')
+    }
+    const branchPromptProjection = branchPromptCommand.projectionEntries?.find(
+      (entry) => JSON.stringify(entry).includes('branch prompt'),
+    )
+    if (!branchPromptProjection) {
+      throw new Error(
+        'Could not locate the branch prompt compatibility projection',
+      )
+    }
+    const afterBranch = await readNativeEvents(sessionFile)
+    const branchEvent = afterBranch.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('branch prompt'),
+    )
+    if (
+      !branchEvent ||
+      typeof branchEvent.id !== 'string' ||
+      typeof branchEvent.parentId !== 'string'
+    ) {
+      throw new Error('Could not locate the durable native branch prompt event')
+    }
+    const branchPromptNativeEventId = branchEvent.id
+    expect(branchPromptProjection.parentUuid).toBe(branchEvent.parentId)
     const branchRequest = JSON.stringify(requests[3]?.messages)
     expect(branchRequest).toContain('first prompt')
     expect(branchRequest).toContain('answer 1')
@@ -12515,6 +12582,52 @@ return 'done'`,
     expect(branchRequest).not.toContain('answer 3')
 
     await service.resume(first.sessionId, 'continue branch')
+    const branchAnswerCommand = persistenceCommit.mock.calls
+      .map(([command]) => command)
+      .find(
+        (command) =>
+          command.kind === 'messages' &&
+          JSON.stringify(command.input.messages).includes('answer 4'),
+      )
+    if (!branchAnswerCommand || branchAnswerCommand.kind !== 'messages') {
+      throw new Error('Could not capture the answer-4 commit')
+    }
+    const branchAnswerProjection = branchAnswerCommand.projectionEntries?.find(
+      (entry) => JSON.stringify(entry).includes('answer 4'),
+    )
+    if (!branchAnswerProjection) {
+      throw new Error('Could not locate the answer-4 compatibility projection')
+    }
+    expect(branchAnswerProjection.parentUuid).toBe(branchPromptNativeEventId)
+    const afterContinue = await readNativeEvents(sessionFile)
+    const branchAnswerEvent = afterContinue.find(
+      (entry) =>
+        entry.kind === 'messages' &&
+        JSON.stringify(entry.messages).includes('answer 4'),
+    )
+    if (!branchAnswerEvent || typeof branchAnswerEvent.id !== 'string') {
+      throw new Error('Could not locate the durable native answer-4 event')
+    }
+    const continueBranchCommand = persistenceCommit.mock.calls
+      .map(([command]) => command)
+      .find(
+        (command) =>
+          command.kind === 'messages' &&
+          JSON.stringify(command.input.messages).includes('continue branch'),
+      )
+    if (!continueBranchCommand || continueBranchCommand.kind !== 'messages') {
+      throw new Error('Could not capture the continue branch commit')
+    }
+    const continueBranchProjection =
+      continueBranchCommand.projectionEntries?.find((entry) =>
+        JSON.stringify(entry).includes('continue branch'),
+      )
+    if (!continueBranchProjection) {
+      throw new Error(
+        'Could not locate the continue branch compatibility projection',
+      )
+    }
+    expect(continueBranchProjection.parentUuid).toBe(branchAnswerEvent.id)
     const continuedRequest = JSON.stringify(requests[4]?.messages)
     expect(continuedRequest).toContain('branch prompt')
     expect(continuedRequest).toContain('answer 4')

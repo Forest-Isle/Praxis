@@ -468,11 +468,14 @@ manual success and preflight rejection, no-store and configured-store recovery,
 automatic post-commit recovery, deterministic pending-chain ordering, and the
 private receipt-store round-trip.
 
-### Task 7.2: Projection cursor continuity [depends: Task 7.1]
+### Task 7.2: Projection cursor continuity — implemented [depends: Task 7.1]
 
-Make projection cursor ownership explicit after the compaction contract.
-Acceptance: projection refresh and recovery resume from the correct cursor
-without duplicate or skipped durable state.
+`TurnPersistence` owns an explicit projection cursor alongside its compatibility
+entries. Initialization, successful projection/message commits, selected-branch
+resume, and explicit post-compaction refresh replace entries and cursor as one
+state; failed commits leave both unchanged. `SessionService` consumes the cursor
+for translation and recovery hook continuation, preserving the selected native
+branch without duplicate or skipped durable state.
 
 ### Task 7.3: Foreground shutdown ownership [depends: Task 7.1]
 
