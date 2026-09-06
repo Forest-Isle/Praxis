@@ -7,3 +7,13 @@ docs/change-ledger/
 test/fixtures/**/*.jsonl
 .agent/
 .praxis/
+docs/architecture/context.md
+docs/architecture/data-flow.md
+docs/architecture/deployment.md
+docs/architecture/index.md
+docs/architecture/modules.md
+docs/architecture/flows/agent-turn.md
+docs/architecture/flows/installed-package-startup.md
+docs/architecture/flows/native-persistence-flow.md
+docs/architecture/flows/provider-fallback.md
+docs/architecture/flows/tool-admission-and-settlement.md
