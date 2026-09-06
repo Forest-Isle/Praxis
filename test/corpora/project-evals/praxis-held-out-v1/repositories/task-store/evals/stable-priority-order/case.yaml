@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: task-store.stable-priority-order
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, task-store]
+runs: 3
+execution:
+  prompt: In src/sort.cjs, sort tasks by descending priority stably, preserving original order for equal priorities, and do not mutate the input; priorities [1,3,3] with ids a,b,c must return b,c,a.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {byPriority}=require('./src/sort.cjs'); const t=[{id:'a',priority:1},{id:'b',priority:3},{id:'c',priority:3}]; const r=byPriority(t); if(r.map(x=>x.id).join(',')!=='b,c,a'||t[0].id!=='a')process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/sort.cjs]
+  expected_changed_paths: [src/sort.cjs]
+  forbidden_changed_paths:
+    [src/store.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: task-store.reject-malformed-storage
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, task-store]
+runs: 3
+execution:
+  prompt: In src/store.cjs, parse JSON storage only when it is an array of objects with non-empty string IDs; otherwise throw TypeError('task data must be an array of tasks'), while valid [{id:'a'}] is returned.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        'const {parseTasks}=require(''./src/store.cjs''); for(const s of [''{}'',''[1]'',''[{"id":""}]'',''[{"name":"missing"}]'']){let ok=false;try{parseTasks(s)}catch(e){ok=e instanceof TypeError&&e.message===''task data must be an array of tasks''}if(!ok)process.exit(1)} if(parseTasks(''[{"id":"a"}]'')[0].id!==''a'')process.exit(1)',
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/store.cjs]
+  expected_changed_paths: [src/store.cjs]
+  forbidden_changed_paths:
+    [src/sort.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

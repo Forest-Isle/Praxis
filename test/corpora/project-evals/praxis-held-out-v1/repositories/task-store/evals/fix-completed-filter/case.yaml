@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: task-store.fix-completed-filter
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, task-store]
+runs: 3
+execution:
+  prompt: In src/store.cjs, make filterCompleted return all tasks when completed is undefined, exactly the completed members when true, and exactly the incomplete members when false.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {filterCompleted}=require('./src/store.cjs'); const t=[{id:'done',completed:true},{id:'todo',completed:false}]; if(filterCompleted(t).map(x=>x.id).join(',')!=='done,todo'||filterCompleted(t,true).map(x=>x.id).join(',')!=='done'||filterCompleted(t,false).map(x=>x.id).join(',')!=='todo')process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/store.cjs]
+  expected_changed_paths: [src/store.cjs]
+  forbidden_changed_paths:
+    [src/sort.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

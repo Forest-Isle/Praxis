@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: string-kit.fix-slug-collapse
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, string-kit]
+runs: 3
+execution:
+  prompt: In src/slug.cjs, normalize any run of whitespace, underscore, or hyphen separators to one hyphen, trim separators, and lowercase; slugify('  Hello__world---again ') must return 'hello-world-again' while ordinary text remains 'ordinary-text'.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {slugify}=require('./src/slug.cjs'); if(slugify('  Hello__world---again ')!=='hello-world-again'||slugify('ordinary text')!=='ordinary-text')process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/slug.cjs]
+  expected_changed_paths: [src/slug.cjs]
+  forbidden_changed_paths:
+    [src/index.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

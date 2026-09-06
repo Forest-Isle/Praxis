@@ -155,7 +155,16 @@ praxis eval --allow-tools Bash --run-verification --output-dir ./eval-results ./
 praxis eval --json ./my-project
 ```
 
-Cases are discovered under `<target>/evals/**/case.yaml`. A minimal case is:
+Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in
+`test/corpora/project-evals/praxis-held-out-v1` corpus contains three directly
+runnable repositories, twelve tasks, and 36 planned runs (three repetitions
+per task). These tasks are not secret: held-out means results cannot tune the
+same corpus version. CI structurally parses and hashes it only. Real execution
+is explicit opt-in and local-only; run a repository with
+`praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`.
+Any result-informed Praxis change requires a new corpus version.
+
+A minimal case is:
 
 ```yaml
 schema_version: '1.1'

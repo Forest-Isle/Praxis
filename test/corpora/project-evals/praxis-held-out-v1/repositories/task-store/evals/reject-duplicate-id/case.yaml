@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: task-store.reject-duplicate-id
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, task-store]
+runs: 3
+execution:
+  prompt: "In src/store.cjs, reject adding an existing ID with Error('duplicate task id: <id>') and leave the entire input array unchanged; adding id a to [{id:a,done:false}] must throw Error('duplicate task id: a') without changing any value or length."
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {addTask}=require('./src/store.cjs'); const t=[{id:'a',done:false}]; const before=JSON.stringify(t); let ok=false; try{addTask(t,{id:'a',done:true})}catch(e){ok=e.message==='duplicate task id: a'} if(!ok||JSON.stringify(t)!==before)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/store.cjs]
+  expected_changed_paths: [src/store.cjs]
+  forbidden_changed_paths:
+    [src/sort.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

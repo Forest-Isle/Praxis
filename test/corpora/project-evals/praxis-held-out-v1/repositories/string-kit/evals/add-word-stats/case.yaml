@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: string-kit.add-word-stats
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, string-kit]
+runs: 3
+execution:
+  prompt: In src/index.cjs, export wordStats(value), counting whitespace-delimited case-insensitive words and unique words; mixed whitespace input ' One\tFISH \n two fish ' must produce {words:4,unique:3}.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {wordStats}=require('./src/index.cjs'); if(JSON.stringify(wordStats(' One\\tFISH \\n two fish '))!==JSON.stringify({words:4,unique:3}))process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/index.cjs]
+  expected_changed_paths: [src/index.cjs]
+  forbidden_changed_paths:
+    [src/slug.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

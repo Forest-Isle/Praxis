@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: config-kit.preserve-zero-values
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, config-kit]
+runs: 3
+execution:
+  prompt: In src/config.cjs, preserve explicit zero and false values instead of replacing them with defaults; loadConfig({port:0,debug:false},{}) must return port 0 and debug false.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {loadConfig}=require('./src/config.cjs'); const r=loadConfig({port:0,debug:false},{}); if(r.port!==0||r.debug!==false)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/config.cjs]
+  expected_changed_paths: [src/config.cjs]
+  forbidden_changed_paths:
+    [src/cli.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,32 @@
+schema_version: '1.0'
+id: praxis-held-out-v1
+version: 1
+split: held-out
+repetitions: 3
+policy:
+  execution: opt-in-only
+  tuning: forbidden
+  result_informed_changes: require-new-version
+content_sha256: sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb
+repositories:
+  - id: config-kit
+    path: repositories/config-kit
+    tasks:
+      - config-kit.add-json-output
+      - config-kit.fix-env-precedence
+      - config-kit.preserve-zero-values
+      - config-kit.validate-port-range
+  - id: string-kit
+    path: repositories/string-kit
+    tasks:
+      - string-kit.add-middle-truncate
+      - string-kit.add-word-stats
+      - string-kit.fix-slug-collapse
+      - string-kit.reject-invalid-width
+  - id: task-store
+    path: repositories/task-store
+    tasks:
+      - task-store.fix-completed-filter
+      - task-store.reject-duplicate-id
+      - task-store.reject-malformed-storage
+      - task-store.stable-priority-order

@@ -2156,6 +2156,41 @@
       }
     },
     {
+      "id": "eval.coding.heldout.corpus",
+      "seam": "Held-out Project Eval corpus",
+      "contract": "A checked-in versioned held-out corpus loads only when its manifest, repository layout, cases, and deterministic content digest satisfy the structural contract.",
+      "status": "qualified",
+      "modules": ["src/evals/held-out-corpus.ts"],
+      "outcomes": [
+        "Three repositories and twelve three-repeat tasks are structurally loadable without model execution.",
+        "Unsafe, incomplete, contaminated, or content-drifted corpora fail closed before execution."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-corpus.test.ts",
+          "testName": "held-out corpus contract > loads three versioned repositories and twelve three-repeat tasks without executing them",
+          "covers": ["success", "persistence"]
+        },
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-corpus.test.ts",
+          "testName": "held-out corpus contract > rejects unsafe, incomplete, contaminated, and content-drifted corpora",
+          "covers": ["negative"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "Immutable structural corpus loading has no mutable retry, resume, or recovery transition."
+          }
+        ]
+      }
+    },
+    {
       "id": "native.deletion.gate",
       "seam": "Native deletion verification",
       "contract": "Removed compatibility and migration surfaces remain absent from source, build, and package output.",
