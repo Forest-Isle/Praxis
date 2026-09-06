@@ -19,6 +19,8 @@ export interface EvalRuntimeFactoryOptions {
   cwd: string
   configRoot: string
   home: string
+  provider?: string
+  providerProfile?: string
   model?: string
   maxTurns: number
   pluginDirectories?: readonly string[]

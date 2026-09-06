@@ -164,6 +164,55 @@ is explicit opt-in and local-only; run a repository with
 `praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`.
 Any result-informed Praxis change requires a new corpus version.
 
+### Held-out qualification
+
+The immutable held-out corpus can be qualified only with an explicit provider,
+profile, model, corpus confirmation, verifier authorization, and output
+directory. This baseline-only command is copyable; replace the provider, profile,
+model, and output path, but keep the literal corpus confirmation token:
+
+```sh
+praxis eval qualify \
+  --provider <provider> --profile <profile> --model <model> \
+  --confirm-held-out praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb \
+  --run-verification --output-dir ./held-out-baseline \
+  --allow-tools Edit,Write,Bash \
+  test/corpora/project-evals/praxis-held-out-v1
+```
+
+Qualification is opt-in, local-only, and may incur provider cost. It preflights
+all twelve cases, tool grants, build identity, isolated workspaces, and the
+provider identity before creating a runtime. It then executes exactly 36 runs
+(three repositories, twelve tasks, three repetitions) through Project Eval.
+The command writes `qualification-result.json` and nested artifacts at
+`repositories/<repository-id>/aggregate-result.json`; ordinary per-run Project
+Eval sidecars remain below each repository output. Baseline-only evidence has
+`qualified: null` and never authorizes an optimization claim. Add
+`--baseline <path/to/qualification-result.json>` to compare a candidate: it must
+have complete evidence, 100% safety, no newly failing run, no lower pass rate,
+and satisfied required verifiers. Unknown usage or cost remains unavailable
+(`null`) and keeps `optimization_claim_allowed` false. Baseline and candidate
+identities must be comparable on provider, profile, protocol, endpoint, model,
+configuration, tools, prompt, corpus, and runtime dimensions; Praxis build
+provenance may differ. A bounded baseline for the exact
+`anthropic/default/deepseek-v4-flash` pin was completed locally: 36/36 runs
+completed, 33/36 passed (91.7%), and all 36/36 safety checks passed. The
+`config-kit.add-json-output` run 3 failed closed with provider error
+`Provider reported max_tokens with completed tool calls` after completed tool
+calls. The `config-kit.preserve-zero-values` run 2 and
+`task-store.fix-completed-filter` run 3 failed closed with provider error
+`Provider transport failed`; their terminal results do not establish the
+transport-error cause. All three were non-safety failures with unsatisfied or
+not-run behavior verification and unknown usage/cost; they are not successful
+behavior checks. Median turns were 5 and p95 turns 7; median
+duration was 28,653.5 ms and p95 duration 52,197 ms. Usage/cost was known for
+33 runs only: the known-cost subtotal was USD 0.068322756, while three runs
+remain unknown, so no total-cost or optimization claim is permitted. This
+evidence is for the bounded 32,768 context-token, 4,096 output-token,
+no-non-streaming-fallback configuration; baseline-only evidence remains
+`qualified: null`, and candidate qualification still requires a separately
+authorized comparison.
+
 A minimal case is:
 
 ```yaml

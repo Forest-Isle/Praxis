@@ -2222,6 +2222,7 @@ process.stdin.on('data', chunk => {
       [['import', '--help'], '--dry-run'],
       [['eval', '--help'], '--run-verification'],
       [['eval', 'compare', '--help'], '--baseline-name'],
+      [['eval', 'qualify', '--help'], '--confirm-held-out'],
     ]
     for (const [argv, detail] of detailedRoutes) {
       const capture = captureIO()
@@ -2250,7 +2251,10 @@ expect:
 `,
     )
     let selectedModel: string | undefined
+    let selectedProvider: string | undefined
+    let selectedProfile: string | undefined
     let buildIdentityLoads = 0
+    const qualificationController = new AbortController()
     const buildIdentity = {
       schema_version: '1.0' as const,
       source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
@@ -2267,16 +2271,22 @@ expect:
         },
         runtimeFactory: {
           identify: async (options) => ({
-            providerId: 'test-provider',
-            profileId: 'default',
+            providerId: options.provider ?? 'test-provider',
+            profileId: options.providerProfile ?? 'default',
             protocol: 'openai-compatible',
             endpoint: 'https://eval.test/v1',
             modelId: options.model ?? 'test-model',
           }),
           create: async (options) => {
             selectedModel = options.model
+            selectedProvider = options.provider
+            selectedProfile = options.providerProfile
             return {
-              run: async () => ({ text: 'done', turns: 1 }),
+              run: async () => {
+                if (options.provider)
+                  qualificationController.abort('stop after routed run')
+                return { text: 'done', turns: 1 }
+              },
             }
           },
         },
@@ -2292,6 +2302,8 @@ expect:
         ),
       ).resolves.toBe(0)
       expect(selectedModel).toBe('prefixed-model')
+      expect(selectedProvider).toBeUndefined()
+      expect(selectedProfile).toBeUndefined()
       expect(buildIdentityLoads).toBe(1)
       const aggregate = JSON.parse(capture.stdout.join('')) as {
         output_dir: string
@@ -2340,10 +2352,74 @@ expect:
         comparable_run_count: 1,
       })
       expect(compareCapture.stderr).toEqual([])
+
+      const qualificationCapture = captureIO()
+      const qualificationOutput = join(root, 'qualification')
+      await expect(
+        run(
+          [
+            '--provider',
+            'test-provider',
+            '--provider-profile',
+            'default',
+            '--model',
+            'prefixed-model',
+            'eval',
+            'qualify',
+            '--confirm-held-out',
+            'praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb',
+            '--run-verification',
+            '--allow-tools',
+            'Bash,Read,Glob,Grep,Edit,Write',
+            '--output-dir',
+            qualificationOutput,
+            join(
+              process.cwd(),
+              'test/corpora/project-evals/praxis-held-out-v1',
+            ),
+          ],
+          qualificationCapture.io,
+          projectDependencies,
+          qualificationController.signal,
+        ),
+      ).resolves.toBe(130)
+      expect(selectedModel).toBe('prefixed-model')
+      expect(selectedProvider).toBe('test-provider')
+      expect(selectedProfile).toBe('default')
+      expect(buildIdentityLoads).toBe(2)
+      expect(qualificationController.signal.aborted).toBe(true)
+      expect(qualificationCapture.stdout).toEqual([])
+      expect(qualificationCapture.stderr.join('')).toContain('runs=36')
+
+      const prefixedCompareCapture = captureIO()
+      await expect(
+        run(
+          [
+            '--model',
+            'irrelevant-model',
+            'eval',
+            'compare',
+            '--baseline',
+            aggregatePath,
+            '--baseline-name',
+            'baseline',
+            '--candidate',
+            aggregatePath,
+            '--candidate-name',
+            'candidate',
+          ],
+          prefixedCompareCapture.io,
+          projectDependencies,
+        ),
+      ).resolves.toBe(1)
+      expect(prefixedCompareCapture.stderr.join('')).toContain(
+        'eval compare does not accept global provider, profile, or model options',
+      )
+      expect(buildIdentityLoads).toBe(2)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
-  })
+  }, 30_000)
 
   it('uses the production Project Eval identity target resolver hermetically', async () => {
     const root = await mkdtemp(

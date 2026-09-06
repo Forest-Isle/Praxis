@@ -31,6 +31,8 @@ Options:
   --tag <tag[,tag]>      Filter tags; repeatable
   --runs <1..50>         Override run count
   --model <model>        Override model
+  --provider <id>        Override provider
+  --profile <id>         Override provider profile
   --allow-tools <rules>  Grant gated tools; comma-separated and repeatable
   --run-verification     Enable verifier subprocesses
   --output-dir <dir>     Write artifacts to this directory
@@ -54,6 +56,8 @@ export interface ProjectEvalOptions {
   tags: string[]
   runs?: number
   model?: string
+  provider?: string
+  profile?: string
   allowTools: string[]
   runVerification: boolean
   outputDir?: string
@@ -183,6 +187,8 @@ export function parseProjectEvalOptions(
     else if (
       value === '--case' ||
       value === '--model' ||
+      value === '--provider' ||
+      value === '--profile' ||
       value === '--output-dir' ||
       value === '--runs' ||
       value === '--tag' ||
@@ -192,6 +198,8 @@ export function parseProjectEvalOptions(
       index += 1
       if (value === '--case') options.caseGlob = selected
       else if (value === '--model') options.model = selected
+      else if (value === '--provider') options.provider = selected
+      else if (value === '--profile') options.profile = selected
       else if (value === '--output-dir') options.outputDir = selected
       else if (value === '--runs') {
         const runs = Number(selected)
@@ -274,6 +282,17 @@ export async function executeProjectEvalCommand(
   callerCwd = process.cwd(),
   signal?: AbortSignal,
 ): Promise<number> {
+  if (argv[0] === 'qualify') {
+    const { executeHeldOutQualificationCommand } =
+      await import('./held-out-qualification.js')
+    return executeHeldOutQualificationCommand(
+      argv.slice(1),
+      io,
+      dependencies,
+      callerCwd,
+      signal,
+    )
+  }
   if (argv[0] === 'compare')
     return executeProjectEvalCompareCommand(
       argv.slice(1),
@@ -327,6 +346,10 @@ export async function executeProjectEvalCommand(
         run: runIndex,
         allowTools: options.allowTools,
         ...(options.model === undefined ? {} : { model: options.model }),
+        ...(options.provider === undefined
+          ? {}
+          : { provider: options.provider }),
+        ...(options.profile === undefined ? {} : { profile: options.profile }),
         keepTemp: options.keepTemp,
         runVerification: options.runVerification,
         outputDir: outputDirectory,

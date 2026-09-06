@@ -498,10 +498,23 @@ local-only, and result-informed changes require a new corpus version.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
-Run one pinned, opt-in provider/model configuration with local-only artifacts.
-Acceptance: safety is 100%, zero newly failing cases occur, pass rate does not
-regress, and median/p95 turns and duration are recorded; unknown usage or cost
-blocks optimization claims.
+The qualification mechanism is implemented by #708: `praxis eval qualify`
+preflights one pinned, opt-in provider/model configuration, executes the fixed
+36-run corpus through Project Eval, and writes local aggregate-bound evidence.
+A bounded baseline for `anthropic/default/deepseek-v4-flash` completed locally
+with 36/36 runs, 33/36 passes (91.7%), and 36/36 safety passes. The
+`config-kit.add-json-output` run 3 failed closed with provider error
+`Provider reported max_tokens with completed tool calls` after completed tool
+calls; `config-kit.preserve-zero-values` run 2 and
+`task-store.fix-completed-filter` run 3 failed closed with provider error
+`Provider transport failed`, whose cause is not established by the terminal
+result. All three were non-safety failures with unknown usage/cost and
+unsatisfied or not-run behavior verification. The known-cost subtotal for 33
+runs was USD 0.068322756, not a total. Median/p95 turns were 5/7 and
+median/p95 duration was 28,653.5/52,197 ms. This evidence is limited to the pinned
+32,768-context/4,096-output/no-fallback configuration. Baseline-only evidence
+remains `qualified: null`; candidate comparison and optimization claims remain
+open, and Task 8.2 does not unlock Phase 9 until its acceptance gates are met.
 
 ## Phase 9 — Measured coding policy
 
