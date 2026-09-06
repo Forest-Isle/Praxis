@@ -487,11 +487,14 @@ dependent teardown.
 
 ## Phase 8 — Controlled real coding qualification
 
-### Task 8.1: Held-out coding corpus [depends: Tasks 6.5, 7.1]
+### Task 8.1: Held-out coding corpus — implemented by #705 [depends: Tasks 6.5, 7.1]
 
 Assemble at least three fixture repositories and twelve held-out coding tasks
 with three repetitions each. Acceptance: the corpus is versioned locally and
-the tasks remain held out from tuning.
+the tasks remain held out from tuning. The checked-in `praxis-held-out-v1`
+corpus has three repositories, twelve tasks, and 36 planned runs. CI performs
+structural parsing and hashing only; real execution is explicit opt-in and
+local-only, and result-informed changes require a new corpus version.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 

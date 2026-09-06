@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: config-kit.validate-port-range
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, config-kit]
+runs: 3
+execution:
+  prompt: In src/config.cjs, make parsePort accept only integer numbers from 1 through 65535, including both boundaries; reject 0, 65536, fractional, non-finite, and numeric-string inputs with RangeError('port must be an integer from 1 to 65535').
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {parsePort}=require('./src/config.cjs'); for(const v of [0,65536,1.2,Infinity,NaN,'8080','abc']){let ok=false;try{parsePort(v)}catch(e){ok=e instanceof RangeError&&e.message==='port must be an integer from 1 to 65535'}if(!ok)process.exit(1)} if(parsePort(1)!==1||parsePort(65535)!==65535)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/config.cjs]
+  expected_changed_paths: [src/config.cjs]
+  forbidden_changed_paths:
+    [src/cli.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -51,6 +51,15 @@ or retained clean-room observations, never values recomputed by production code.
   - `gate`: a package script declared in the manifest's gate table, with the
     dimensions it proves.
 
+The held-out Project Eval corpus under
+`test/corpora/project-evals/praxis-held-out-v1` is separately versioned and is
+not fixture evidence. Its checked-in tasks are not secret; held-out means
+results cannot tune the same corpus version. CI structurally parses and hashes
+it only. Real execution is explicit opt-in and local-only, using
+`praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`;
+the corpus plans 36 runs across three repositories and twelve tasks. A
+result-informed Praxis change requires a new corpus version.
+
 Each qualified behavior declares `risk` as `low`, `medium`, `high`, or
 `release`, and each blocked or excluded behavior declares `risk: "none"` with
 empty evidence requirements. `evidenceRequirements.required` is a unique list
@@ -171,6 +180,10 @@ delta with no permission, retry, timeout, interruption, pass, or safety
 regression. This evidence does not implement live LSP diagnostics or establish
 Claude/external parity.
 
+The held-out corpus contract is implemented by #705; unsafe, incomplete,
+contaminated, and content-drifted repositories fail closed before model
+execution.
+
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
 production bounded-ripgrep candidate. Both variants pass 4/4 task and safety
@@ -194,3 +207,5 @@ parity or external qualification.
   modules with zero statements remain valid.
 - Native-only architecture and clean-room TUI reference behavior remain intact.
 - All required local and protected CI gates pass.
+- The held-out corpus contract reports three repositories, twelve tasks, and
+  36 planned runs without creating a runtime or executing prompts.

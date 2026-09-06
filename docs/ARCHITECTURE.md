@@ -223,6 +223,13 @@ probe budgets production CLI process startup, 500-session discovery, and
 network, Claude Code, and hook latency remain separate integration concerns.
 See [PERFORMANCE.md](PERFORMANCE.md).
 
+The checked-in held-out Project Eval corpus is a versioned, local structural
+qualification asset: CI validates repository layout, case contracts, and a
+deterministic content digest without creating a runtime or executing prompts.
+Version `praxis-held-out-v1` contains three repositories, twelve tasks, and 36
+planned three-repeat runs. Real runs are explicit opt-in and local-only; any
+result-informed Praxis change requires a new corpus version.
+
 Release artifacts contain compiled `dist` output plus npm-required manifest,
 README, and license files only. The package gate installs that tarball in an
 empty project and exercises the real npm bin, preventing source-tree resolution

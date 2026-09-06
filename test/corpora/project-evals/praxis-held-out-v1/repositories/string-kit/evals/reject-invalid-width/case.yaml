@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: string-kit.reject-invalid-width
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, string-kit]
+runs: 3
+execution:
+  prompt: In src/index.cjs, make truncate throw RangeError('maxLength must be a non-negative integer') for negative, fractional, or non-finite maxLength values while preserving valid zero and integer behavior; truncate('abc',0) is '' and truncate('abc',2) is 'ab'.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {truncate}=require('./src/index.cjs'); for(const w of [-1,1.5,Infinity,NaN]){let ok=false;try{truncate('abc',w)}catch(e){ok=e instanceof RangeError&&e.message==='maxLength must be a non-negative integer'}if(!ok)process.exit(1)} if(truncate('abc',0)!=='')process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/index.cjs]
+  expected_changed_paths: [src/index.cjs]
+  forbidden_changed_paths:
+    [src/slug.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

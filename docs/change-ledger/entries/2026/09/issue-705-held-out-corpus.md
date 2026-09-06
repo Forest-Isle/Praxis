@@ -1,0 +1,61 @@
+---
+schema_version: "2"
+change_id: "issue-705-held-out-corpus"
+created_at: "2026-09-06T12:40:00+08:00"
+title: "Add versioned held-out coding corpus"
+change_kind: "feature"
+implementation_status: "verified"
+review_status: "pending"
+project_root: "/Users/wuqisen/dev/Praxis"
+parents: ["issue-702-foreground-shutdown-ownership", "issue-694-project-eval-evidence"]
+supersedes: []
+scopes: ["project", "project-eval", "fixture-contracts"]
+changed_files: ["docs/ARCHITECTURE.md", "docs/CLI_REFERENCE.md", "docs/CODING_AGENT_ROADMAP.md", "docs/NATIVE_FIXTURE_CONTRACTS.md", "package.json", "src/evals/held-out-corpus.test.ts", "src/evals/held-out-corpus.ts", "test/corpora/project-evals/praxis-held-out-v1/corpus.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/add-json-output/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/add-json-output/fixture/src/cli.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/add-json-output/fixture/src/config.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/fix-env-precedence/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/fix-env-precedence/fixture/src/cli.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/fix-env-precedence/fixture/src/config.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/preserve-zero-values/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/preserve-zero-values/fixture/src/cli.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/preserve-zero-values/fixture/src/config.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/validate-port-range/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/validate-port-range/fixture/src/cli.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/config-kit/evals/validate-port-range/fixture/src/config.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-middle-truncate/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-middle-truncate/fixture/src/index.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-middle-truncate/fixture/src/slug.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-word-stats/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-word-stats/fixture/src/index.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/add-word-stats/fixture/src/slug.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/fix-slug-collapse/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/fix-slug-collapse/fixture/src/index.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/fix-slug-collapse/fixture/src/slug.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/reject-invalid-width/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/reject-invalid-width/fixture/src/index.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/string-kit/evals/reject-invalid-width/fixture/src/slug.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/fix-completed-filter/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/fix-completed-filter/fixture/src/sort.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/fix-completed-filter/fixture/src/store.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-duplicate-id/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-duplicate-id/fixture/src/sort.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-duplicate-id/fixture/src/store.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-malformed-storage/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-malformed-storage/fixture/src/sort.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/reject-malformed-storage/fixture/src/store.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/stable-priority-order/case.yaml", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/stable-priority-order/fixture/src/sort.cjs", "test/corpora/project-evals/praxis-held-out-v1/repositories/task-store/evals/stable-priority-order/fixture/src/store.cjs", "test/fixtures/manifest.json"]
+excluded_preexisting_files: [".claude", "docs/CLAUDE_EXPERIMENTAL_CAPABILITIES.md", "docs/research"]
+base_revision: "git:cdfb04df03516521ee1f366319665ef07c41fdb7"
+observed_revision: "git:b151b6384eff2cc629b3b7f2722e10df76035a5c"
+architecture_verdict: "MODEL_REBUILD_REQUIRED"
+architecture_evidence: "The canonical docs/architecture model and checkpoint are absent, so no incremental verdict is provable. This change adds a local Project Eval corpus-validation boundary, but open Issue #692 exclusively owns the evidence-backed architecture bootstrap."
+risk: "high"
+requirement_ids: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"]
+repair_of: []
+---
+
+# Executive Summary
+Praxis now contains `praxis-held-out-v1`, a checked-in, versioned coding corpus with three directly runnable Project Eval repositories, twelve independent tasks, three repetitions per task, and 36 planned runs. A strict local loader validates identity, no-tuning policy, repository and case contracts, filesystem safety, bounded traversal, mutation boundaries, and a deterministic content digest without creating a provider/runtime or executing prompts.
+
+# Review Contract
+Review Issue #705 against R1-R10: exact schema-1.0 corpus identity and policy; three repositories/four tasks each; twelve unique three-repeat cases; clear task prompts and initially failing deterministic verifiers; contained exact mutations with forbidden metadata/secret paths; fail-closed path, symlink, special-entry, count, tag, model, verifier, mutation, and digest handling; structural-only CI; unchanged public Project Eval/CLI contracts and eight-case development baseline; truthful fixture evidence and documentation.
+
+# Before And After
+Previously Praxis had only the eight-case development baseline and admission fixtures, with no separate qualification corpus or mechanical contamination boundary. It can now load a fixed held-out corpus version, report 3/12/36, reject unsafe or result-drifted contents before execution, and require a new corpus version after any result-informed Praxis change; checked-in tasks are explicitly not represented as secret.
+
+# Implementation Path
+`loadHeldOutCorpus()` parses a bounded exact-key YAML manifest, resolves every repository component without symlinks, rejects overlapping roots, streams a bounded preflight before existing case discovery, sorts with a locale-independent comparator, validates case repetitions/tags/model/verifier and exact allowed/expected paths against forbidden Minimatch patterns, then verifies the path/mode/size/file-SHA content digest. Twelve clean-room CommonJS task snapshots and cases supply string, configuration, and task-store outcomes. Focused tests exercise the positive contract and independent negative mutations without provider construction.
+
+# Change Surface
+The coherent main surface is exactly 45 files: loader and one focused test, corpus manifest, twelve case definitions, twenty-four two-file source snapshots, package test script, fixture behavior, and four directly affected documents. README count synchronization is intentionally excluded and recorded as a separate capsule. Operational `.agent` files, generated build/package outputs, architecture bootstrap assets, and protected pre-existing paths are not attributed.
+
+# Contracts And Compatibility
+Project Eval case schema 1.1, run/aggregate/comparison schema 1.2, identity schema 1.1, `praxis eval` arguments and artifacts, providers, runtimes, transcripts, permissions, dependencies, and existing eight-case baseline remain unchanged. Real held-out execution is local-only and opt-in; CI only parses and hashes. Result-informed product or policy changes cannot tune or reuse the same corpus version.
+
+# Architecture Impact
+The loader introduces a local structural qualification boundary from a corpus manifest through bounded repository preflight, existing Project Eval case discovery, and deterministic digest verification. The verdict is `MODEL_REBUILD_REQUIRED`, not `NO_MODEL_CHANGE`, because the canonical model, impact log, and checkpoint do not exist. Issue #692 remains the independent bootstrap owner; maintained architecture and evaluation documents capture this change without creating partial model assets.
+
+# Verification Evidence
+Final evidence passed focused and repository-wide Prettier/ESLint, typecheck, native/product builds, the 2-test held-out contract, all twelve no-op verifier checks with zero unexpected passes, fixture validation/execution with 75 behaviors, the 5-file/20-test development baseline, docs, and `npm run check` with 252 files and 3,346 tests. Package installation/native-session smoke, performance thresholds, and production audit with zero vulnerabilities passed. Initial full-check failures were localized to CommonJS fixture lint declarations and the filesystem-heavy test's explicit timeout budget; both were repaired and the complete gates rerun. Independent final Spec and Standards reviews reported zero findings, and Change Control accepted the exact 45-file scope with no violations.
+
+# Risks And Known Gaps
+Risk is high because future real-model qualification decisions will trust this structural boundary. Tests cover entry/file/byte limits, preflight-before-discovery, path-component and nested-tree symlinks, special and forbidden entries, root overlap, count/declaration drift, case-policy drift, exact/glob mutation conflicts, and content tamper. The corpus has not been executed against a real model, makes no quality or parity claim, and grants no release authority. Human review remains pending; architecture bootstrap #692 remains open.
+
+# Lineage And Freshness
+This capsule links the current project/fixture lineage at `issue-702-foreground-shutdown-ownership` and the current project-eval head at `issue-694-project-eval-evidence`; the older fixture-contract parallel head remains explicit rather than being falsely merged. Base is `origin/main` at `cdfb04df`; observed revision is product commit `b151b63`. Fingerprints bind only the 45 reviewed main files, excluding the two README edits and all protected local content.
+
+# Reviewer Checklist
+- Confirm the manifest identity, version, split, repetitions, policy, repository/task declarations, and final `sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb` digest are exact.
+- Confirm traversal rejects path-component and nested symlinks, special files, `.git`, `node_modules`, escapes, overlaps, and entry/file/byte overrun before unbounded case discovery.
+- Confirm discovered cases are deterministically ordered and exactly match the 3/12/36 declaration without changing Project Eval schema or CLI contracts.
+- Confirm every allowed/expected mutation is an exact path, every expected path is allowed, and every exact mutation is checked semantically against forbidden glob patterns.
+- Confirm each of the twelve prompts fully states its behavior, each initial snapshot fails its required verifier, and sibling plus metadata/secret paths are forbidden.
+- Confirm CI evidence never creates a runtime/provider or executes a prompt, and existing eight-case baseline evidence is unchanged.
+- Confirm only the 45 main files are attributed, protected untracked paths remain excluded, human review is pending, and #692 still owns architecture bootstrap.

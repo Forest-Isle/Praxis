@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: config-kit.add-json-output
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v1, config-kit]
+runs: 3
+execution:
+  prompt: In src/cli.cjs, add renderConfig(config, {json:true}) returning deterministic JSON.stringify(config) followed by a newline; preserve the existing default text output, including its key=value lines and trailing newline.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {renderConfig}=require('./src/cli.cjs'); const c={debug:false,port:3000}; if(renderConfig(c,{json:true})!==JSON.stringify(c)+'\\n'||renderConfig(c)!=='debug=false\\nport=3000\\n')process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/cli.cjs]
+  expected_changed_paths: [src/cli.cjs]
+  forbidden_changed_paths:
+    [src/config.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]
