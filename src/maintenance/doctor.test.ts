@@ -350,6 +350,58 @@ describe('Praxis doctor', () => {
       expect(serialized).not.toContain(secret)
   })
 
+  it('diagnoses custom Codex relay subscription billing without pricing or network calls', async () => {
+    const value = await fixture()
+    await writeFile(
+      join(value.configRoot, 'settings.json'),
+      JSON.stringify({
+        experimental: { codexResponses: true },
+        providers: {
+          'codex-relay': {
+            protocol: 'codex-responses',
+            profiles: {
+              default: {
+                baseUrl: 'https://relay.example/v1?secret=query#hash',
+                credential: { source: 'env', name: 'CODEX_RELAY_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const fetch = vi.fn(() => {
+      throw new Error('network must not run')
+    })
+    vi.stubGlobal('fetch', fetch)
+    const report = await doctorFor(value, {
+      PRAXIS_PROVIDER: 'codex-relay',
+      PRAXIS_MODEL: 'gpt-codex',
+      CODEX_RELAY_KEY: 'relay-secret',
+      PRAXIS_PRICING_JSON: '{malformed',
+    })
+    const provider = report.checks.find((check) => check.id === 'provider')
+    if (!provider) throw new Error('provider check missing')
+    expect(provider).toMatchObject({
+      status: 'pass',
+      details: {
+        provider: 'codex-relay',
+        profile: 'default',
+        model: 'gpt-codex',
+        protocol: 'codex-responses',
+        billingMode: 'subscription',
+        experimental: true,
+        credential: { source: 'env', name: 'CODEX_RELAY_KEY' },
+      },
+    })
+    expect(provider.details).not.toHaveProperty('pricing')
+    expect(fetch).not.toHaveBeenCalled()
+    const serialized = JSON.stringify(report)
+    expect(serialized).not.toContain('relay-secret')
+    expect(serialized).not.toContain('secret=query')
+    expect(serialized).not.toContain('#hash')
+    expect(formatDoctorReport(report)).not.toContain('secret=query')
+  })
+
   it('skips command helpers and reports effective source precedence', async () => {
     const value = await fixture()
     const marker = join(value.root, 'helper-marker')

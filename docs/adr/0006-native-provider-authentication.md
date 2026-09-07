@@ -48,15 +48,17 @@ not accepted in provider definitions.
     }
   },
   "experimental": {
-    "codexSubscription": true
+    "codexSubscription": true,
+    "codexResponses": true
   }
 }
 ```
 
 Built-in provider IDs are `openai`, `openai-responses`, `anthropic`, and
 `openai-codex`. Custom providers use `openai-compatible`, `openai-responses`,
-or `anthropic-messages`. A selected target is the tuple `providerId`,
-`profileId`, and `modelId`.
+or `anthropic-messages`; the separately gated `codex-responses` protocol
+requires `experimental.codexResponses: true`. A selected target is the tuple
+`providerId`, `profileId`, and `modelId`.
 
 Selection precedence is explicit CLI input, `PRAXIS_PROVIDER`,
 `PRAXIS_PROVIDER_PROFILE`, `PRAXIS_MODEL`, trusted local defaults, trusted
@@ -111,6 +113,7 @@ Seam:
 - `OpenAIResponsesProvider` for the public OpenAI Responses API-key transport.
 - `AnthropicCompatibleProvider` for Anthropic Messages.
 - `CodexSubscriptionProvider` for the ChatGPT Codex responses transport.
+- `CodexResponsesProvider` for a custom API-key Codex-native relay transport.
 
 Adapter selection happens before a request. Unsupported capabilities fail
 closed; request fields are never silently discarded. A request cannot switch
@@ -152,14 +155,16 @@ switch protocols implicitly. The public adapter uses API billing and the
 ordinary provider deadlines, and does not receive Anthropic's non-streaming
 replay behavior.
 
-The public API-key transport and `CodexSubscriptionProvider` share one
-stateless Responses codec for provider-neutral history-to-item mapping and SSE
-parsing. It sends `store:false`, carries full local history, and keeps encrypted
-reasoning, function-call, and output continuity locally. It never sends
+The public API-key transport, `CodexSubscriptionProvider`, and custom
+`CodexResponsesProvider` share one stateless Responses codec for
+provider-neutral history-to-item mapping and SSE parsing. It sends
+`store:false`, carries full local history, and keeps encrypted reasoning,
+function-call, and output continuity locally. It never sends
 `previous_response_id` and never puts provider-native transcript fields into
-core or transcripts. Authentication and headers remain transport-owned: the
-public adapter uses standard Bearer/JSON/SSE headers, while Codex retains its
-OAuth/account/private headers and fixed endpoint.
+core or transcripts. The codec's public dialect remains unchanged; only the
+Codex adapters select the native typed-message/control dialect. Authentication,
+headers, endpoint, relay trust, and billing remain transport-owned, with no
+fallback, built-in relay, default model, or live compatibility claim.
 
 ## Codex OAuth and transport
 
@@ -180,7 +185,9 @@ committed before the lock is released.
 
 The first transport is SSE. Codex headers, account identity, and fixed endpoint
 stay private to `CodexSubscriptionProvider`; its request mapping and streaming
-parsing use the shared Responses codec. Subscription usage reports tokens and
+parsing use the shared Responses codec. The separately gated custom
+`CodexResponsesProvider` uses an API key and user-configured relay endpoint,
+while retaining the same native codec dialect. Subscription usage reports tokens and
 model usage but does not calculate pay-as-you-go API
 charges. API pricing tables are ignored for subscription runs; USD budgets and
 plugin-eval paid LLM judges reject before inference when numeric API-billed cost
@@ -225,3 +232,11 @@ Praxis owns the maintenance cost of provider and Codex protocol changes, but
 its runtime stays independent from external SDK types and release cycles.
 Adding an OpenAI-compatible vendor is primarily configuration; a new Adapter is
 introduced only for a genuinely different wire protocol.
+
+The direct `openai-codex` route remains OAuth-backed and fixed to its ChatGPT
+endpoint. A separate custom `codex-responses` protocol is explicitly gated by
+`experimental.codexResponses`, uses ordinary API-key credential references and
+a user-supplied relay URL, and reports subscription billing. Relay trust,
+credential ownership, and unavailable subscription cost therefore remain
+distinct from both direct OAuth and public `openai-responses`; no relay or
+protocol fallback is implicit.

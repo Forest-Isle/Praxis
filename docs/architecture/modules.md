@@ -114,6 +114,9 @@ flowchart LR
 | `provider-gateway` | `src/providers/non-streaming-fallback-provider.ts#NonStreamingFallbackModelProvider` | **confirmed** |
 | `provider-gateway` | `src/providers/openai-compatible.ts#OpenAICompatibleProvider` | **confirmed** |
 | `provider-gateway` | `src/providers/openai-responses.ts#OpenAIResponsesProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/codex-subscription.ts#CodexSubscriptionProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/codex-responses.ts#CodexResponsesProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/responses-codec.ts#ResponsesCodec` | **confirmed** |
 | `provider-gateway` | `src/providers/anthropic-compatible.ts#AnthropicCompatibleProvider` | **confirmed** |
 | `native-persistence` | `src/persistence/data-plane.ts#resolveDataPlane` | **confirmed** |
 | `native-persistence` | `src/persistence/data-plane.ts#resolveDataPlaneRoot` | **confirmed** |

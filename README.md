@@ -88,6 +88,11 @@ This uses an undocumented third-party subscription/backend contract and may
 change; it is not Claude subscription authentication. Subscription runs retain
 token usage but do not provide API-dollar cost or enforce USD budgets.
 
+Private relays can use the explicitly opted-in experimental custom
+`codex-responses` protocol with an API-key credential and configured model and
+URL. It has subscription billing semantics, no built-in relay/default, and no
+automatic protocol fallback; see [Getting Started](docs/GETTING_STARTED.md).
+
 For Anthropic Messages:
 
 ```sh

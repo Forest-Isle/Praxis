@@ -157,6 +157,7 @@ export class CodexSubscriptionProvider implements ModelProvider {
     )
     this.responsesCodec = new ResponsesCodec({
       providerLabel: 'Codex subscription provider',
+      requestDialect: 'codex-native',
       ...(options.thinking === undefined ? {} : { thinking: options.thinking }),
       ...(options.maxStreamBufferBytes === undefined
         ? {}

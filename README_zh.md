@@ -98,6 +98,10 @@ Praxis 还提供实验性的 `openai-codex` 提供商，用于 ChatGPT-backed Co
 该功能依赖 OpenAI 未正式记录为稳定的第三方订阅/后端契约，可能发生变化；它不是 Claude 订阅认证。
 订阅运行会保留 token 用量，但不提供 API 美元成本，也无法执行美元预算。
 
+私有 relay 可显式启用自定义实验协议 `codex-responses`，使用 API 密钥、明确配置的
+relay URL 和模型。它按订阅计费处理，没有内置 relay 或默认模型，也不会自动跨协议回退；
+详见[入门指南](docs/GETTING_STARTED.md)。
+
 常见的非交互操作：
 
 ```sh

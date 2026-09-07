@@ -616,8 +616,10 @@ other built-ins still require an explicit model.
 
 Native settings are `$PRAXIS_HOME/settings.json`. Built-ins are `openai`,
 `anthropic`, and experimental `openai-codex`; custom profiles use
-`openai-compatible` or `anthropic-messages` and credential references (`env`,
-argv `command`, or `vault`). Plaintext secrets are rejected. Selection
+`openai-compatible`, `openai-responses`, or `anthropic-messages` and credential
+references (`env`, argv `command`, or `vault`). The private experimental
+`codex-responses` protocol is separately available only for custom providers with
+`experimental.codexResponses: true`. Plaintext secrets are rejected. Selection
 precedence is explicit CLI > environment > trusted local selection > trusted
 project selection > user settings > native defaults.
 
@@ -631,6 +633,11 @@ main user turn starts from the primary model.
 `openai-codex` requires `experimental.codexSubscription: true`, a Vault OAuth
 credential, and its private Responses/SSE transport. It is a ChatGPT-backed
 subscription integration, not a stable OpenAI API-compatible endpoint.
+
+Custom `codex-responses` targets also report subscription billing and do not
+provide numeric API cost. They require an explicit model, configured relay URL,
+API-key credential, and trusted relay; Praxis provides no relay/default and does
+not silently fall back to another protocol.
 
 Subscription usage retains token and model usage but omits `costUsd`; API
 pricing does not apply. Numeric USD budgets and plugin-eval paid LLM judges

@@ -22,6 +22,7 @@ const access = async () => ({
 const serializeCodexRequest = (request: ModelRequest, model: string) =>
   new ResponsesCodec({
     providerLabel: 'Codex subscription provider',
+    requestDialect: 'codex-native',
   }).serialize(request, model)
 
 function response(body: string, status = 200): Response {
@@ -106,16 +107,23 @@ describe('CodexSubscriptionProvider', () => {
       instructions: 'one',
       reasoning: { effort: 'high', summary: 'auto' },
       tools: [{ type: 'function', name: 'lookup', strict: false }],
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
     })
     expect(body.input).toEqual([
       {
+        type: 'message',
         role: 'user',
         content: [
           { type: 'input_text', text: 'hello' },
           { type: 'input_image', image_url: 'data:image/png;base64,abc' },
         ],
       },
-      { role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'answer' }],
+      },
       {
         type: 'function_call',
         call_id: 'call-1',
@@ -128,6 +136,7 @@ describe('CodexSubscriptionProvider', () => {
         output: 'block-result',
       },
       {
+        type: 'message',
         role: 'user',
         content: [
           { type: 'input_image', image_url: 'data:image/jpeg;base64,xyz' },
@@ -170,6 +179,15 @@ describe('CodexSubscriptionProvider', () => {
     expect(new Headers(calls[0]?.init?.headers).get('chatgpt-account-id')).toBe(
       'fixture-account',
     )
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(body).toMatchObject({
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      input: [expect.objectContaining({ type: 'message', role: 'user' })],
+    })
   })
 
   it('refreshes once on a pre-output 401 and redacts provider failures', async () => {

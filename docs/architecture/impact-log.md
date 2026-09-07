@@ -200,3 +200,37 @@
   deterministically rendered the existing views without changing them. The
   bounded source checkpoint was refreshed only after both passed.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — MODEL_UPDATE_REQUIRED — Issue #728
+
+- Change ID: `issue-728-codex-responses-relay`.
+- Observed worktree: `feat/728-codex-responses-relay`, based on `origin/main`
+  `b18fc9ce0273d3baec62853d8a4f10297dad24b7`.
+- Changed bounded-source paths: added
+  `src/providers/codex-responses.ts` and its focused test; modified provider
+  settings, registry, shared Responses codec, direct OAuth Codex adapter,
+  focused provider/doctor tests, and ADR 0006/0007. `collect_changes.py`
+  reported `added=2`, `modified=11`, and `deleted=0`.
+- Verdict: the change adds an explicitly selected custom Codex-native
+  Responses integration at the existing provider gateway and moves the direct
+  OAuth Codex adapter onto the explicit native request dialect. The existing
+  provider-gateway module, model-provider-apis external boundary, and their
+  contact relation therefore require new confirmed evidence; no new module,
+  external system, relation, deployment unit, persistence object, or critical
+  flow is required.
+- Contract boundary: `openai-responses` remains the public dialect;
+  `openai-codex` remains fixed OAuth/chatgpt.com; custom `codex-responses`
+  requires explicit experimental settings, API-key credential reference,
+  relay URL, model, subscription billing, and no inferred fallback/default.
+- Verification boundary: hermetic focused, full, package, performance, and
+  audit gates passed. The one permitted live smoke failed before provider
+  construction because `--bare`/`--safe-mode` excluded the temporary custom
+  settings; it supplies no relay, model, request-body, or adapter compatibility
+  claim and was not retried.
+- Affected architecture node/relation/flow IDs: `provider-gateway`,
+  `model-provider-apis`, and `provider-contacts-apis`; flows none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered 10 views. The bounded source checkpoint was
+  advanced only after both passed.
+- Unresolved inferred claims: None. Live relay compatibility remains
+  unverified rather than inferred.

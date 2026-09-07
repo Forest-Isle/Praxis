@@ -115,6 +115,8 @@ flowchart LR
 | `provider-contacts-apis` | `src/providers/anthropic-compatible.ts#AnthropicCompatibleProvider` | **confirmed** |
 | `provider-contacts-apis` | `src/providers/openai-compatible.ts#OpenAICompatibleProvider` | **confirmed** |
 | `provider-contacts-apis` | `src/providers/openai-responses.ts#OpenAIResponsesProvider` | **confirmed** |
+| `provider-contacts-apis` | `src/providers/codex-subscription.ts#CodexSubscriptionProvider` | **confirmed** |
+| `provider-contacts-apis` | `src/providers/codex-responses.ts#CodexResponsesProvider` | **confirmed** |
 | `tool-security-mutates-workspace` | `src/tools/local-tools.ts#LocalToolRegistry` | **confirmed** |
 | `tool-security-mutates-workspace` | `docs/ARCHITECTURE.md` | **confirmed** |
 | `tool-security-invokes-process` | `src/sandbox/claude-sandbox-runtime.ts#ClaudeSandboxRuntime` | **confirmed** |
@@ -169,6 +171,9 @@ flowchart LR
 | `provider-gateway` | `src/providers/non-streaming-fallback-provider.ts#NonStreamingFallbackModelProvider` | **confirmed** |
 | `provider-gateway` | `src/providers/openai-compatible.ts#OpenAICompatibleProvider` | **confirmed** |
 | `provider-gateway` | `src/providers/openai-responses.ts#OpenAIResponsesProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/codex-subscription.ts#CodexSubscriptionProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/codex-responses.ts#CodexResponsesProvider` | **confirmed** |
+| `provider-gateway` | `src/providers/responses-codec.ts#ResponsesCodec` | **confirmed** |
 | `provider-gateway` | `src/providers/anthropic-compatible.ts#AnthropicCompatibleProvider` | **confirmed** |
 | `native-persistence` | `src/persistence/data-plane.ts#resolveDataPlane` | **confirmed** |
 | `native-persistence` | `src/persistence/data-plane.ts#resolveDataPlaneRoot` | **confirmed** |
@@ -189,6 +194,8 @@ flowchart LR
 | `model-provider-apis` | `src/providers/anthropic-compatible.ts#AnthropicCompatibleProvider` | **confirmed** |
 | `model-provider-apis` | `src/providers/openai-compatible.ts#OpenAICompatibleProvider` | **confirmed** |
 | `model-provider-apis` | `src/providers/openai-responses.ts#OpenAIResponsesProvider` | **confirmed** |
+| `model-provider-apis` | `src/providers/codex-subscription.ts#CodexSubscriptionProvider` | **confirmed** |
+| `model-provider-apis` | `src/providers/codex-responses.ts#CodexResponsesProvider` | **confirmed** |
 | `local-process-boundary` | `src/platform/bounded-process-runner.ts#BoundedProcessRunner` | **confirmed** |
 | `local-process-boundary` | `src/sandbox/claude-sandbox-runtime.ts#ClaudeSandboxRuntime` | **confirmed** |
 | `local-process-boundary` | `src/hooks/claude-hooks.ts#ClaudeHookRunner` | **confirmed** |
