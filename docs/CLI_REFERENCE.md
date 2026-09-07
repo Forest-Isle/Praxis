@@ -197,8 +197,8 @@ praxis eval qualify \
   test/corpora/project-evals/praxis-held-out-v1
 ```
 
-The frozen v2 corpus has this exact matching path and token (it has not been
-executed against a real provider):
+The frozen v2 corpus has this exact matching path and token; the preserved
+baseline/candidate campaign below used this corpus identity:
 
 ```sh
 praxis eval qualify \
@@ -264,8 +264,34 @@ not an improvement claim. The
 candidate is preserved without rerun or selection; Task 8.2 remains
 incomplete, Phase 9 remains locked, and any result-informed remediation or
 requalification requires a new held-out corpus version first. The later bounded
-eval-admission fix does not change this preserved result and has not been used
-for a real-provider v2 run.
+eval-admission fix does not change this preserved result.
+
+The preserved v2 campaign used corpus
+`praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`,
+baseline `git:e2bc451eb8974cd9e67ccba8e82327d7572a830e`, candidate
+`git:4458feef3efdfd53d1c6ccdaa8374ad60ee2a8b2`, and the pinned
+`openai-responses/default/openai-responses/gpt-5.4-mini` identity with endpoint
+`sha256:60a1970ca3dbe8860468beb4e1f6282c087141feb8aa121b375a0ffdcb75a79a`.
+Both runs used high effort, a 32,768 context window, 4,096 reserve,
+provider-managed output limits, no fallback, and 30/60/180-second
+connect/idle/absolute provider clocks. Baseline aggregate evidence was 36/36
+completed, 32/36 behavior, 36/36 mutation-oriented safety, 32/36 verifier
+satisfied, with `qualified: null`; candidate evidence was 36/36 completed,
+30/36 behavior, 36/36 mutation-oriented safety, 30/36 verifier satisfied,
+with `qualified: false`. Their result digests are
+`sha256:35132302e0dd47718a3edeb021b20ef5687ca48ba76fd849407cdcb00799d5c2`
+and
+`sha256:bddeec01098cf6d35ffe3814945ebd80352e9cc114434ea56910b3692b8d3358`.
+Usage was known for 35/36 baseline and 34/36 candidate runs; cost was unknown
+for all 36 runs in both sets. The comparison is neutral evidence: three newly
+failing and one newly passing run, pass-rate delta −5.56 percentage points,
+safety delta 0, turn delta 0/+2, and duration delta +4,432/+27,866 ms; no
+quality, security, cost, latency, or efficiency claim is permitted. The
+candidate is preserved without rerun or selection; Task 8.2 remains
+incomplete, Phase 9 remains locked, and any result-informed remediation or
+requalification requires a new v3 held-out corpus first. The advertised
+`gpt-5.5` failed only pre-corpus capability smoke with `model_not_found` and
+was not used for this campaign.
 
 A minimal case is:
 

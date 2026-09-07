@@ -123,3 +123,27 @@
 - Validation: `validate_model.py` reported `model valid`; `render_model.py`
   deterministically rendered the existing 10 views without changing them.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Issue #720
+
+- Change ID: `issue-720-held-out-v2-relay-gpt54`.
+- Observed worktree: `test/720-held-out-v2-relay`, based on `origin/main`
+  `12b1ee6385af5b44620dacf57a70067018a1d5c6`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records one preserved held-out v2 real-provider
+  baseline/candidate campaign and its failed qualification verdict. It does
+  not change a runtime boundary, public contract, persistence/data shape,
+  provider integration, registration, deployment unit, or modeled critical
+  flow.
+- Bounded source assessment: after the separately accepted 0.69.1 checkpoint
+  catch-up, `collect_changes.py` reported `added=0`, `modified=0`, and
+  `deleted=0` for `CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/adr`,
+  `package.json`, `scripts`, and `src`.
+- Qualification boundary: candidate `qualified: false`; Task 8.2 remains
+  incomplete, Phase 9 remains locked, and result-informed work requires a new
+  v3 held-out corpus first.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing 10 views without changing them.
+- Unresolved inferred claims: None.

@@ -159,7 +159,16 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   matching versioned `praxis-held-out-vN` identities. V1 is unchanged; v2 is
   frozen at 3 repositories, 12 tasks, and 36 runs with digest
   `sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
-  V2 has no real-provider evidence, and Task 8.2/Phase 9 remain locked. A
+  The preserved v2 real-provider campaign pins
+  `openai-responses/default/openai-responses/gpt-5.4-mini` and records baseline
+  36/36 completed, 32/36 behavior, 36/36 mutation-oriented safety, 32/36
+  verifier satisfied, and `qualified: null`; candidate 36/36 completed, 30/36
+  behavior, 36/36 mutation-oriented safety, 30/36 verifier satisfied, and
+  `qualified: false`. Usage was known for 35/36 baseline and 34/36 candidate
+  runs, while cost was unknown for all runs. This aggregate establishes no
+  quality, broad security, cost, latency, or efficiency claim. The −5.56-point
+  pass-rate delta leaves Task 8.2/Phase 9 locked. Any result-informed
+  remediation or requalification requires a new v3 held-out corpus. A
   bounded DeepSeek baseline for the exact
   `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
   33/36 passes (91.7%) and 36/36 safety passes. The
@@ -193,7 +202,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   Task 8.2 remains incomplete and Phase 9 stays locked. Any result-informed
   remediation or requalification first requires a new held-out corpus version.
   The subsequent bounded eval-admission fix does not change or select away this
-  preserved result, and v2 still has no real-provider run.
+  preserved result.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
