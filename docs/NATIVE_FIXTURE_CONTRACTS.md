@@ -253,6 +253,24 @@ does not establish a candidate qualification or optimization claim; the
 evidence is limited to the pinned 32,768-context/4,096-output/no-fallback
 configuration.
 
+Issue #724 performed one predeclared no-tool/no-file smoke for the pinned
+`openai-responses/default/openai-responses/gpt-5.5` configuration through
+`https://codex.senyu.blog/backend-api/codex`. Relay health remained ok with
+3/3 active accounts, and authenticated model reads advertised `gpt-5.5`, but
+the baseline build was `git:e2bc451eb8974cd9e67ccba8e82327d7572a830e`; the
+smoke used high effort, 32,768 context, 4,096 reserve, provider-managed output
+limit, no fallback, 30/60/180-second connect/idle/absolute clocks, empty tools,
+bare/safe mode, an in-memory session, and one attempted turn. The exact Praxis
+Responses request returned HTTP 404 after 2,995 ms with
+`is_error: true`, zero input/output tokens, zero API duration, no tool call,
+and no file access. The 404 source is unestablished; no model-not-found,
+relay-outage, request-shape, or edge-route cause is inferred. The predeclared
+no-retry/no-substitution rule was honored. No v3 baseline, candidate, or
+qualification run occurred and no output roots exist, so there is no v3
+qualification verdict, pass/safety/verifier/cost/latency/model-quality
+evidence. Task
+8.2 remains incomplete and Phase 9 stays locked.
+
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
 production bounded-ripgrep candidate. Both variants pass 4/4 task and safety

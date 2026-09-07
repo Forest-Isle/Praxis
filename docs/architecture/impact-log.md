@@ -176,3 +176,27 @@
   deterministically rendered the existing 10 views without changing them; the
   bounded source checkpoint was advanced after both passed.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Issue #724
+
+- Change ID: `issue-724-held-out-v3-relay-qualification`.
+- Observed worktree: `test/724-held-out-v3-relay-qualification`, based on
+  `origin/main` `adcd6cd65fe64885e166261cd55086c9a1977430`.
+- Changed paths: `CHANGELOG.md`, `README.md`, `README_zh.md`,
+  `docs/CLI_REFERENCE.md`, `docs/CODING_AGENT_ROADMAP.md`, and
+  `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records the HTTP 404 fail-closed boundary from the one
+  permitted pre-corpus Praxis Responses smoke. It does not change a runtime
+  boundary, public contract, persistence/data shape, provider integration,
+  registration, deployment unit, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for `CONTEXT.md`, `docs/ARCHITECTURE.md`,
+  `docs/adr`, `package.json`, `scripts`, and `src`.
+- Qualification boundary: no v3 corpus case ran, no v3 baseline/candidate
+  output root or qualification verdict exists, Task 8.2 remains incomplete,
+  and Phase 9 remains locked. The HTTP 404 source is not established.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing views without changing them. The
+  bounded source checkpoint was refreshed only after both passed.
+- Unresolved inferred claims: None.

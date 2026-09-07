@@ -304,9 +304,26 @@ candidate is preserved without rerun or selection; Task 8.2 remains
 incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen but has
 not been run or used for result-informed remediation; any later
 result-informed remediation or requalification requires a new corpus version.
-The advertised
-`gpt-5.5` failed only pre-corpus capability smoke with `model_not_found` and
-was not used for this campaign.
+During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
+smoke with `model_not_found` and was not used for the v2 campaign. This is
+separate from the later #724 preflight below.
+Issue #724 performed the one predeclared no-tool/no-file smoke for the pinned
+`openai-responses/default/openai-responses/gpt-5.5` configuration through
+`https://codex.senyu.blog/backend-api/codex`. Relay health was ok with 3/3
+active accounts and authenticated model reads advertised `gpt-5.5`, but the
+baseline build was `git:e2bc451eb8974cd9e67ccba8e82327d7572a830e`; the smoke
+used high effort, 32,768 context, 4,096 reserve, provider-managed output
+limit, no fallback, 30/60/180-second connect/idle/absolute clocks, empty tools,
+bare/safe mode, an in-memory session, and one attempted turn. The exact Praxis
+Responses request returned HTTP 404 after 2,995 ms with
+`is_error: true`, zero input/output tokens, zero API duration, no tool call,
+and no file access. The 404 source is unestablished; this does not establish
+`model_not_found`, a relay outage, request-shape defect, or edge-route defect.
+The predeclared no-retry/no-substitution rule was honored. No v3 baseline,
+candidate, or qualification run occurred, no output roots were created, and
+there is no v3 verdict, pass/safety/verifier/cost/latency/model-quality
+evidence.
+Task 8.2 remains incomplete and Phase 9 remains locked.
 
 A minimal case is:
 

@@ -32,6 +32,7 @@ this file from merged Conventional Commit pull requests.
 
 ### Bug Fixes
 
+* document the HTTP 404 pre-corpus `gpt-5.5` smoke boundary and preserve the locked v3 qualification status ([#724](https://github.com/Forest-Isle/Praxis/issues/724))
 * bound default eval Bash preapproval to the isolated workspace and explicit added directories ([#717](https://github.com/Forest-Isle/Praxis/issues/717))
 * resolve the built-in Anthropic `best` model alias through the current Opus family ([#670](https://github.com/Forest-Isle/Praxis/issues/670))
 * resolve Anthropic family model aliases to current verified model identities ([#664](https://github.com/Forest-Isle/Praxis/issues/664))
