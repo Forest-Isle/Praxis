@@ -145,6 +145,14 @@ describe('OpenAIResponsesProvider', () => {
       tools: [{ type: 'function', name: 'lookup', strict: false }],
     })
     expect(body).not.toHaveProperty('previous_response_id')
+    expect(body).not.toHaveProperty('tool_choice')
+    expect(body).not.toHaveProperty('parallel_tool_calls')
+    expect(body.input).toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: 'user' })]),
+    )
+    expect(body.input).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'message' })]),
+    )
     expect(body.input).toEqual([
       {
         role: 'user',

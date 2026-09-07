@@ -6,6 +6,7 @@ export type ProviderProtocol =
   | 'openai-responses'
   | 'anthropic-messages'
   | 'codex-subscription'
+  | 'codex-responses'
 
 export type CredentialSource =
   | { source: 'env'; name: string }
@@ -241,10 +242,11 @@ function parseProvider(value: unknown, providerId: string): ProviderDefinition {
   if (
     protocol !== 'openai-compatible' &&
     protocol !== 'openai-responses' &&
-    protocol !== 'anthropic-messages'
+    protocol !== 'anthropic-messages' &&
+    protocol !== 'codex-responses'
   ) {
     fail(
-      `providers.${providerId}.protocol must be openai-compatible, openai-responses, or anthropic-messages`,
+      `providers.${providerId}.protocol must be openai-compatible, openai-responses, anthropic-messages, or codex-responses`,
     )
   }
   if (!isRecord(value.profiles) || Object.keys(value.profiles).length === 0)
@@ -312,15 +314,27 @@ function mergeSelection(...values: Selection[]): Selection {
   return values.reduce((result, value) => ({ ...result, ...value }), {})
 }
 
-function validateExperimental(value: unknown): boolean {
-  if (value === undefined) return false
+function validateExperimental(value: unknown): {
+  codexSubscription: boolean
+  codexResponses: boolean
+} {
+  if (value === undefined)
+    return { codexSubscription: false, codexResponses: false }
+  if (!isRecord(value)) fail('experimental.codexSubscription must be a boolean')
   if (
-    !isRecord(value) ||
-    (value.codexSubscription !== undefined &&
-      typeof value.codexSubscription !== 'boolean')
+    value.codexSubscription !== undefined &&
+    typeof value.codexSubscription !== 'boolean'
   )
     fail('experimental.codexSubscription must be a boolean')
-  return value.codexSubscription === true
+  if (
+    value.codexResponses !== undefined &&
+    typeof value.codexResponses !== 'boolean'
+  )
+    fail('experimental.codexResponses must be a boolean')
+  return {
+    codexSubscription: value.codexSubscription === true,
+    codexResponses: value.codexResponses === true,
+  }
 }
 
 function ensureSelectionPart(value: string, field: string): string {
@@ -347,7 +361,7 @@ export async function resolveProviderTarget(
     : {}
   scanForPlaintextSecrets(user.providers, 'providers')
   const userProviders = parseProviders(user.providers)
-  const codexEnabled = validateExperimental(user.experimental)
+  const experimental = validateExperimental(user.experimental)
   const explicit: Selection = {
     ...(options.provider === undefined
       ? {}
@@ -400,7 +414,7 @@ export async function resolveProviderTarget(
   )
   const providerId = selected.provider ?? 'openai'
   identifier(providerId, 'provider ID')
-  if (providerId === 'openai-codex' && !codexEnabled)
+  if (providerId === 'openai-codex' && !experimental.codexSubscription)
     fail('openai-codex requires experimental.codexSubscription=true')
   if (
     providerId !== 'openai-codex' &&
@@ -420,6 +434,10 @@ export async function resolveProviderTarget(
     fail(`built-in provider ${providerId} has an incompatible protocol`)
   if (custom?.protocol === 'codex-subscription')
     fail('custom codex-subscription providers are not allowed')
+  if (custom?.protocol === 'codex-responses' && !experimental.codexResponses)
+    fail(
+      'custom codex-responses providers require experimental.codexResponses=true',
+    )
   const definition = custom ?? BUILT_INS[providerId]
   if (!definition)
     throw new ProviderSettingsError(
@@ -468,7 +486,11 @@ export async function resolveProviderTarget(
     protocol,
     baseUrl,
     credential: resolvedCredential,
-    billingMode: protocol === 'codex-subscription' ? 'subscription' : 'api',
-    experimental: providerId === 'openai-codex',
+    billingMode:
+      protocol === 'codex-subscription' || protocol === 'codex-responses'
+        ? 'subscription'
+        : 'api',
+    experimental:
+      providerId === 'openai-codex' || protocol === 'codex-responses',
   }
 }

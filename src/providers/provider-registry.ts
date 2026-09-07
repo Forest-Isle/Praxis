@@ -2,6 +2,7 @@ import type { ModelProvider, ModelThinkingConfig } from '../core/runtime.js'
 import { AnthropicCompatibleProvider } from './anthropic-compatible.js'
 import { OpenAICompatibleProvider } from './openai-compatible.js'
 import { OpenAIResponsesProvider } from './openai-responses.js'
+import { CodexResponsesProvider } from './codex-responses.js'
 import { CodexSubscriptionProvider } from './codex-subscription.js'
 import { DeadlineModelProvider } from './deadline-provider.js'
 import { NonStreamingFallbackModelProvider } from './non-streaming-fallback-provider.js'
@@ -137,7 +138,8 @@ export function resolveProviderContextWindowTokens(options: {
     ).contextWindowTokens
   if (
     options.protocol === 'openai-compatible' ||
-    options.protocol === 'openai-responses'
+    options.protocol === 'openai-responses' ||
+    options.protocol === 'codex-responses'
   )
     return options.explicitContextWindowTokens
   return undefined
@@ -319,6 +321,32 @@ class NativeProviderRegistry implements ProviderRegistry {
           ...(this.options.openAiThinking === undefined
             ? {}
             : { thinking: this.options.openAiThinking }),
+          ...(this.options.fetchImplementation === undefined
+            ? {}
+            : { fetchImplementation: this.options.fetchImplementation }),
+        }),
+      )
+    }
+    if (target.protocol === 'codex-responses') {
+      if (this.options.credential.type !== 'api-key') {
+        throw new ProviderAuthenticationError(
+          'invalid_credential',
+          'Provider authentication failed: an API key is required',
+        )
+      }
+      return this.withDeadline(
+        new CodexResponsesProvider({
+          baseUrl: target.baseUrl,
+          model: target.modelId,
+          apiKey: this.options.credential.secret,
+          ...(this.options.context?.contextWindowTokens === undefined
+            ? {}
+            : {
+                contextWindowTokens: this.options.context.contextWindowTokens,
+              }),
+          ...(this.options.codexThinking === undefined
+            ? {}
+            : { thinking: this.options.codexThinking }),
           ...(this.options.fetchImplementation === undefined
             ? {}
             : { fetchImplementation: this.options.fetchImplementation }),

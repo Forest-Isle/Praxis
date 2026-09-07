@@ -65,6 +65,34 @@ endpoint. The `openai` provider remains Chat Completions; model IDs never
 switch protocols implicitly. Keep API keys in the environment or a local
 secret manager, not in settings files or command arguments.
 
+### Experimental Codex Responses relay
+
+Custom relays may opt into the private `codex-responses` protocol explicitly:
+
+```json
+{
+  "experimental": { "codexResponses": true },
+  "provider": "codex-relay",
+  "providerProfile": "default",
+  "model": "gpt-5.6-sol",
+  "providers": {
+    "codex-relay": {
+      "protocol": "codex-responses",
+      "profiles": {
+        "default": {
+          "baseUrl": "https://your-relay.example/v1",
+          "credential": { "source": "env", "name": "CODEX_RELAY_API_KEY" }
+        }
+      }
+    }
+  }
+}
+```
+
+This is private and experimental: relay availability, native compatibility,
+and subscription billing are not guaranteed. There is no built-in relay URL or
+default model; select both the protocol and model explicitly.
+
 ### Anthropic Messages
 
 ```sh
@@ -143,8 +171,8 @@ references, never key or token values:
 }
 ```
 
-Custom protocols are `openai-compatible`, `openai-responses`, and
-`anthropic-messages`. Credentials
+Custom protocols are `openai-compatible`, `openai-responses`,
+`anthropic-messages`, and the separately gated `codex-responses`. Credentials
 may reference an environment variable, an argv `command`, or a native Vault
 profile; these are alternative credential sources. Select a target per session
 with `--provider`, `--provider-profile`, and `--model` (or `PRAXIS_PROVIDER`,

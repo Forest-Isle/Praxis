@@ -122,6 +122,57 @@ describe('resolveProviderTarget', () => {
     ).rejects.toThrow(/openai-responses/)
   })
 
+  it('requires explicit Codex Responses opt-in and reports subscription billing', async () => {
+    const { root, cwd } = await fixture()
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        provider: 'codex-relay',
+        model: 'gpt-codex',
+        providers: {
+          'codex-relay': {
+            protocol: 'codex-responses',
+            profiles: {
+              default: {
+                baseUrl: 'https://relay.example/v1',
+                credential: { source: 'env', name: 'CODEX_RELAY_API_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
+    ).rejects.toThrow(/codexResponses/)
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        experimental: { codexResponses: true },
+        provider: 'codex-relay',
+        model: 'gpt-codex',
+        providers: {
+          'codex-relay': {
+            protocol: 'codex-responses',
+            profiles: {
+              default: {
+                baseUrl: 'https://relay.example/v1',
+                credential: { source: 'env', name: 'CODEX_RELAY_API_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, environment: {} }),
+    ).resolves.toMatchObject({
+      protocol: 'codex-responses',
+      billingMode: 'subscription',
+      experimental: true,
+    })
+  })
+
   it('uses trusted local selection but ignores local provider definitions', async () => {
     const { root, cwd } = await fixture()
     await writeFile(
@@ -384,6 +435,35 @@ describe('resolveProviderTarget', () => {
         },
       }),
     ).rejects.toThrow(/cannot override/)
+  })
+
+  it('preserves field-specific experimental validation errors', async () => {
+    const { root, cwd } = await fixture()
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({ experimental: { codexSubscription: 'yes' } }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, model: 'm' }),
+    ).rejects.toThrow(
+      'Invalid provider settings: experimental.codexSubscription must be a boolean',
+    )
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({ experimental: { codexResponses: 'yes' } }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, model: 'm' }),
+    ).rejects.toThrow(
+      'Invalid provider settings: experimental.codexResponses must be a boolean',
+    )
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({ experimental: { unrelated: 'allowed' } }),
+    )
+    await expect(
+      resolveProviderTarget({ configRoot: root, cwd, model: 'm' }),
+    ).resolves.toMatchObject({ modelId: 'm' })
   })
 
   it('defaults only the built-in Anthropic provider to the default model alias', async () => {

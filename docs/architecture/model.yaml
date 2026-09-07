@@ -150,7 +150,7 @@ modules:
       - Seal turn routes and bound fallback attempts.
     actions:
       - Resolve the native provider registry and target configuration.
-      - Adapt Anthropic Messages, OpenAI-compatible Chat, OpenAI Responses, and fallback routes.
+      - Adapt Anthropic Messages, OpenAI-compatible Chat, public OpenAI Responses, direct OAuth Codex, custom Codex-native Responses, and fallback routes.
       - Buffer eligible failures, enforce deadlines, and seal the successful route.
     evidence:
       - path: src/providers/provider-registry.ts
@@ -170,6 +170,15 @@ modules:
         confidence: confirmed
       - path: src/providers/openai-responses.ts
         symbol: OpenAIResponsesProvider
+        confidence: confirmed
+      - path: src/providers/codex-subscription.ts
+        symbol: CodexSubscriptionProvider
+        confidence: confirmed
+      - path: src/providers/codex-responses.ts
+        symbol: CodexResponsesProvider
+        confidence: confirmed
+      - path: src/providers/responses-codec.ts
+        symbol: ResponsesCodec
         confidence: confirmed
       - path: src/providers/anthropic-compatible.ts
         symbol: AnthropicCompatibleProvider
@@ -271,6 +280,12 @@ external_systems:
         confidence: confirmed
       - path: src/providers/openai-responses.ts
         symbol: OpenAIResponsesProvider
+        confidence: confirmed
+      - path: src/providers/codex-subscription.ts
+        symbol: CodexSubscriptionProvider
+        confidence: confirmed
+      - path: src/providers/codex-responses.ts
+        symbol: CodexResponsesProvider
         confidence: confirmed
 
   - id: local-process-boundary
@@ -568,6 +583,12 @@ relations:
         confidence: confirmed
       - path: src/providers/openai-responses.ts
         symbol: OpenAIResponsesProvider
+        confidence: confirmed
+      - path: src/providers/codex-subscription.ts
+        symbol: CodexSubscriptionProvider
+        confidence: confirmed
+      - path: src/providers/codex-responses.ts
+        symbol: CodexResponsesProvider
         confidence: confirmed
 
   - id: tool-security-mutates-workspace

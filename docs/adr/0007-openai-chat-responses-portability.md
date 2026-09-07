@@ -245,3 +245,9 @@ function call/output histories with local identity and plain text output, and
 basic input/output usage. Reasoning-enabled or signed-reasoning histories,
 protocol-native terminal/refusal/incomplete details, cached or richer usage,
 and hosted response state remain fail-closed boundaries.
+
+The private `codex-responses` relay is a separate explicitly selected protocol,
+not portability fallback for public `openai-responses`. Its native dialect adds
+typed message items and fixed automatic/parallel tool controls only for that
+adapter; relay trust and subscription billing remain explicit and no relay URL
+or model default is provided.

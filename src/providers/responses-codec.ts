@@ -206,6 +206,7 @@ function serializeResponsesRequest(
   request: ModelRequest,
   model: string,
   configuredThinking?: ModelThinkingConfig,
+  dialect: ResponsesRequestDialect = 'public',
 ): Record<string, unknown> {
   if (request.webSearch !== undefined)
     throw invalid('Codex subscription provider does not support web search')
@@ -246,6 +247,17 @@ function serializeResponsesRequest(
     instructions,
     input,
   }
+  if (dialect === 'codex-native') {
+    body.tool_choice = 'auto'
+    body.parallel_tool_calls = true
+    for (const item of input) {
+      if (
+        (item.role === 'user' || item.role === 'assistant') &&
+        item.content !== undefined
+      )
+        item.type = 'message'
+    }
+  }
   if (request.tools?.length) {
     body.tools = request.tools.map((tool) => ({
       type: 'function',
@@ -263,6 +275,8 @@ function serializeResponsesRequest(
   }
   return body
 }
+
+export type ResponsesRequestDialect = 'public' | 'codex-native'
 
 function usageFrom(value: unknown): ModelStreamEvent | undefined {
   if (!isRecord(value)) return undefined
@@ -779,6 +793,7 @@ export interface ResponsesCodecOptions {
   maxToolCallsPerResponse?: number
   maxToolMetadataBytes?: number
   maxReasoningBytes?: number
+  requestDialect?: ResponsesRequestDialect
 }
 
 export interface ResponsesStreamOptions {
@@ -794,10 +809,12 @@ export class ResponsesCodec {
   readonly maxReasoningBytes: number
   private readonly label: string
   private readonly configuredThinking: ModelThinkingConfig | undefined
+  private readonly requestDialect: ResponsesRequestDialect
 
   constructor(options: ResponsesCodecOptions = {}) {
     this.label = options.providerLabel ?? 'Responses provider'
     this.configuredThinking = options.thinking
+    this.requestDialect = options.requestDialect ?? 'public'
     if (
       options.thinking !== undefined &&
       options.thinking.mode !== 'disabled' &&
@@ -830,7 +847,12 @@ export class ResponsesCodec {
   }
   serialize(request: ModelRequest, model: string): Record<string, unknown> {
     try {
-      return serializeResponsesRequest(request, model, this.configuredThinking)
+      return serializeResponsesRequest(
+        request,
+        model,
+        this.configuredThinking,
+        this.requestDialect,
+      )
     } catch (error) {
       throw this.contextualize(error)
     }

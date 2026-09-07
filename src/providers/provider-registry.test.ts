@@ -73,6 +73,19 @@ describe('ProviderRegistry', () => {
         explicitContextWindowTokens: 123_456,
       }),
     ).toBeUndefined()
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'codex-responses',
+        modelId: 'gpt-test',
+        explicitContextWindowTokens: 654_321,
+      }),
+    ).toBe(654_321)
+    expect(
+      resolveProviderContextWindowTokens({
+        protocol: 'codex-responses',
+        modelId: 'gpt-test',
+      }),
+    ).toBeUndefined()
   })
 
   it('creates OpenAI and Anthropic adapters from one resolved target', () => {
@@ -603,6 +616,25 @@ describe('ProviderRegistry', () => {
     ).toThrow(ProviderAuthenticationError)
   })
 
+  it('rejects OAuth credentials for Codex Responses', () => {
+    expect(() =>
+      createProviderRegistry({
+        target: { ...target('codex-responses'), billingMode: 'subscription' },
+        credential: {
+          type: 'oauth',
+          accessToken: 'access',
+          refreshToken: 'refresh',
+          expiresAt: Date.now() + 100_000,
+          source: {
+            source: 'vault',
+            providerId: 'fixture',
+            profileId: 'default',
+          },
+        },
+      }).create(),
+    ).toThrow(/API key is required/)
+  })
+
   it('composes resolved connect and idle timeouts around providers', async () => {
     vi.useFakeTimers()
     const credential = {
@@ -760,6 +792,106 @@ describe('ProviderRegistry', () => {
     ).resolves.toMatchObject({
       target: { providerId: 'openai', modelId: 'safe-model' },
     })
+  })
+
+  it('resolves a Codex relay from settings through native request and deadlines', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'praxis-codex-relay-'))
+    const cwd = join(root, 'project')
+    await mkdir(cwd, { recursive: true })
+    await writeFile(
+      join(root, 'settings.json'),
+      JSON.stringify({
+        experimental: { codexResponses: true },
+        provider: 'codex-relay',
+        model: 'gpt-codex',
+        providers: {
+          'codex-relay': {
+            protocol: 'codex-responses',
+            profiles: {
+              default: {
+                baseUrl: 'https://relay.example/v1',
+                credential: { source: 'env', name: 'CODEX_RELAY_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    const vault = { read: async () => undefined, modify: async () => undefined }
+    const calls: Array<{ input: string | URL | Request; init?: RequestInit }> =
+      []
+    const registry = await resolveProviderRegistry({
+      configRoot: root,
+      cwd,
+      environment: {
+        CODEX_RELAY_KEY: 'relay-secret',
+        PRAXIS_CONTEXT_WINDOW_TOKENS: '777777',
+        PRAXIS_PROVIDER_DEADLINE_MS: '1000',
+        PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: '20',
+        PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: '100',
+      },
+      codexThinking: { mode: 'enabled' },
+      vault,
+      fetchImplementation: async (input, init) => {
+        calls.push({ input, ...(init === undefined ? {} : { init }) })
+        return new Response(
+          'data: {"type":"response.completed","response":{}}\n\n',
+          {
+            headers: { 'content-type': 'text/event-stream' },
+          },
+        )
+      },
+    })
+    expect(registry.target).toMatchObject({
+      protocol: 'codex-responses',
+      billingMode: 'subscription',
+      experimental: true,
+      credential: { source: 'env', name: 'CODEX_RELAY_KEY' },
+    })
+    const provider = registry.create()
+    expect(provider.model).toBe('gpt-codex')
+    expect(provider.capabilities.contextWindowTokens).toBe(777_777)
+    for await (const event of provider.complete({
+      messages: [{ role: 'user', content: 'hello' }],
+    })) {
+      expect(event).toBeDefined()
+    }
+    expect(String(calls[0]?.input)).toBe('https://relay.example/v1/responses')
+    const headers = new Headers(calls[0]?.init?.headers)
+    expect(headers.get('authorization')).toBe('Bearer relay-secret')
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<
+      string,
+      unknown
+    >
+    expect(body).toMatchObject({
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      reasoning: { summary: 'auto' },
+    })
+    expect(JSON.stringify(body)).not.toContain('relay-secret')
+
+    vi.useFakeTimers()
+    const hanging = await resolveProviderRegistry({
+      configRoot: root,
+      cwd,
+      environment: {
+        CODEX_RELAY_KEY: 'relay-secret',
+        PRAXIS_PROVIDER_DEADLINE_MS: '1000',
+        PRAXIS_PROVIDER_CONNECT_TIMEOUT_MS: '20',
+        PRAXIS_PROVIDER_IDLE_TIMEOUT_MS: '100',
+      },
+      vault,
+      fetchImplementation: async () => new Promise<Response>(() => {}),
+    })
+    const completion = hanging.create().complete({ messages: [] })
+    const pending = completion[Symbol.asyncIterator]().next()
+    const timedOut = expect(pending).rejects.toMatchObject({
+      kind: 'timeout',
+      timeoutPhase: 'connect',
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    await timedOut
+    await rm(root, { recursive: true, force: true })
   })
 
   it('parses built-in Anthropic model aliases from explicit environment', async () => {
