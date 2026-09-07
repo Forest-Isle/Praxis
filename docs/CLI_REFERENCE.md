@@ -373,6 +373,27 @@ result-informed remediation or requalification requires a new corpus version.
 Issue #740 has now frozen v4 before any result-informed remediation, but no
 remediation, requalification, or provider request occurred; the v4 freeze does
 not unlock Task 8.2 or Phase 9.
+Issue #742's exactly-once v4 relay smoke used clean runtime source
+`git:2dfb43e9ea00b38cbc4ca85ce7c2307042140880`, emitted artifact
+`sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+and the `codex-relay/default/codex-responses/gpt-5.6-sol` configuration. It
+then failed closed before any corpus case with process exit 1: the terminal
+result subtype was `success` but
+`is_error: true`, `terminal_reason: api_error`, and HTTP 404 after 1,969 ms
+(API duration 0 ms). It made one attempted turn with zero input/output tokens,
+zero tools/tool calls, zero isolated-workspace entries, and empty stderr. The
+public redacted error was `API Error: 404 Codex Responses provider request
+failed with HTTP 404`; the source is unestablished. Provider-free preflight
+passed with clean `npm ci` (0 vulnerabilities), the build identity frozen
+before smoke, and six focused files / 84 tests passed. Neither baseline nor
+candidate executed; zero of 36 planned runs occurred for each. No corpus
+completion request or case behavior, mutation-oriented safety, verifier,
+regression, usage, subscription-cost, aggregate, comparison, or qualification
+verdict evidence exists; the smoke's zero counters are not corpus usage. No
+retry, substitution, or result selection occurred. The v4 corpus remains
+unexecuted, and #742 is immutable and not retried. Separate diagnosis of the
+unestablished HTTP 404 source and new explicit authorization are required for
+any future v4 campaign; Task 8.2 remains incomplete and Phase 9 remains locked.
 During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
 smoke with `model_not_found` and was not used for the v2 campaign. This is
 separate from the later #724 preflight below.

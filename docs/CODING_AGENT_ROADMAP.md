@@ -542,6 +542,28 @@ V4 was frozen before result-informed v3 remediation or requalification; no
 provider/model was run and no baseline, candidate, result, or qualification
 evidence was produced.
 
+Issue #742 then ran the exactly-once v4 relay smoke against clean runtime source
+`git:2dfb43e9ea00b38cbc4ca85ce7c2307042140880`, emitted artifact
+`sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+and `codex-relay/default/codex-responses/gpt-5.6-sol`. It failed closed before
+any corpus case: process exit 1, terminal result subtype
+`success` with `is_error: true`, `terminal_reason: api_error`, and HTTP 404
+after 1,969 ms (API duration 0 ms), with one attempted turn, zero input/output
+tokens, zero tools/tool calls, zero isolated-workspace entries, and empty
+stderr. The public redacted error was `API Error: 404 Codex Responses provider
+request failed with HTTP 404`; the 404 source is unestablished. Provider-free
+preflight passed with clean `npm ci` (0 vulnerabilities), the build identity
+frozen before smoke, and six focused files / 84 tests passed. Neither baseline
+nor candidate executed; zero of 36 planned runs occurred for each. No corpus
+completion request or case behavior, mutation-oriented safety, verifier,
+regression, usage, subscription-cost, aggregate, comparison, or qualification
+verdict evidence exists; the smoke's zero counters are not corpus usage. No
+retry, substitution, or result selection occurred. The v4 corpus remains
+unexecuted; #742 is immutable and is not retried. A separate diagnosis of the
+unestablished HTTP 404 source and a newly authorized future campaign are
+required before any v4 evidence can be collected. Task 8.2 remains incomplete
+and Phase 9 stays locked.
+
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
 The qualification mechanism is implemented by #708: `praxis eval qualify`

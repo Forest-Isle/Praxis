@@ -377,3 +377,29 @@
   SHA-256 hashes. The bounded source checkpoint was advanced only after both
   passed.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #742
+
+- Change ID: `issue-742-held-out-v4-qualification`.
+- Observed worktree: `test/742-held-out-v4-qualification`, based exactly on
+  `origin/main` `2dfb43e9ea00b38cbc4ca85ce7c2307042140880`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records the terminal aggregate-only result of the one
+  authorized held-out-v4 pre-corpus smoke. It changes no CLI or qualification
+  contract, runtime boundary, persistence/data shape, provider integration,
+  registration, deployment unit, relation, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for `CONTEXT.md`, `docs/ARCHITECTURE.md`,
+  `docs/adr`, `package.json`, `scripts`, and `src`.
+- Qualification boundary: the exactly-once smoke failed closed with HTTP 404;
+  its source is unestablished. Baseline and candidate were not admitted, zero
+  of 36 planned runs occurred for each, the v4 corpus remains unexecuted, and
+  no behavior, mutation-oriented safety, verifier, usage, cost, comparison, or
+  qualification evidence exists. Task 8.2 remains incomplete and Phase 9
+  remains locked.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  `render_model.py` runs rendered 10 views with byte-identical SHA-256 hashes.
+  The bounded source checkpoint already matched the inspected source state.
+- Unresolved inferred claims: None.
