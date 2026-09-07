@@ -237,7 +237,15 @@ mutation-oriented safety, verifier, usage, subscription-cost, duration/latency,
 quality, security, compatibility, efficiency, optimization, baseline,
 candidate, or qualification conclusion. Resolve the settings-forwarding gap in
 a new change before any separately authorized future campaign. Task 8.2 remains
-incomplete and Phase 9 remains locked.
+incomplete and Phase 9 remains locked. Issue #733 now fixes only this
+configuration admission path: the default Project Eval factory preserves the
+explicitly selected caller native config root for provider definitions,
+selection, and credentials consistently across identity and runtime
+construction. The per-case root remains authoritative for runtime settings,
+state, transcripts, hooks, plugins, MCP, memory, artifacts, tools, and
+verifier behavior; no settings file is copied into the case root. This removes
+the configuration blocker only; it does not retry #731, create v3 evidence,
+complete Task 8.2, unlock Phase 9, or authorize a future provider request.
 
 The v1 confirmation remains
 `praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.

@@ -17,6 +17,7 @@ modules:
       - Handle version and help before provider initialization.
       - Load versioned local held-out corpora and validate qualification artifacts before provider runtime creation.
       - Configure default Project and Plugin Eval tool admission so catalog exposure and Bash call preapproval remain separate.
+      - Capture the caller native provider configuration root for Project Eval provider definitions, selection, and credentials while each case root remains authoritative for runtime settings and local state.
     evidence:
       - path: docs/ARCHITECTURE.md
         confidence: confirmed
@@ -37,6 +38,9 @@ modules:
         confidence: confirmed
       - path: src/cli-runtime.ts
         symbol: defaultPluginEvalRuntimeFactory
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: createDefaultProjectEvalRuntimeFactory
         confidence: confirmed
 
   - id: tui-adapter
@@ -422,6 +426,9 @@ relations:
     to: provider-gateway
     kind: resolves
     evidence:
+      - path: src/cli-runtime.ts
+        symbol: createDefaultProjectEvalRuntimeFactory
+        confidence: confirmed
       - path: src/cli-runtime.ts
         symbol: createDefaultService
         confidence: confirmed

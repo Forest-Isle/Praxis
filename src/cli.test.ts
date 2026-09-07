@@ -2427,23 +2427,27 @@ expect:
     )
     const cwd = join(root, 'cwd')
     const configRoot = join(root, 'config')
+    const previousHome = process.env.PRAXIS_HOME
     await mkdir(cwd, { recursive: true })
     await mkdir(configRoot, { recursive: true })
-    const factory = createDefaultDependencies().projectEval?.runtimeFactory
-    if (!factory) throw new Error('Project Eval runtime factory unavailable')
     const names = [
       'PRAXIS_PROVIDER',
       'PRAXIS_PROVIDER_PROFILE',
       'PRAXIS_MODEL',
+      'PRAXIS_BASE_URL',
       'ANTHROPIC_DEFAULT_SONNET_MODEL',
     ] as const
     const previous = Object.fromEntries(
       names.map((name) => [name, process.env[name]]),
     )
     try {
+      process.env.PRAXIS_HOME = configRoot
+      const factory = createDefaultDependencies().projectEval?.runtimeFactory
+      if (!factory) throw new Error('Project Eval runtime factory unavailable')
       process.env.PRAXIS_PROVIDER = 'anthropic'
       delete process.env.PRAXIS_PROVIDER_PROFILE
       delete process.env.PRAXIS_MODEL
+      delete process.env.PRAXIS_BASE_URL
       process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'fixture-sonnet'
       const options = {
         dataPlane: 'native' as const,
@@ -2486,11 +2490,103 @@ expect:
         modelId: 'sonnet',
       })
     } finally {
+      if (previousHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousHome
       for (const name of names) {
         const value = previous[name]
         if (value === undefined) delete process.env[name]
         else process.env[name] = value
       }
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('uses caller native provider settings while keeping the Project Eval case config isolated', async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), 'praxis-cli-project-eval-provider-settings-'),
+    )
+    const cwd = join(root, 'cwd')
+    const callerConfigRoot = join(root, 'caller-config')
+    const caseConfigRoot = join(root, 'case-config')
+    const previousHome = process.env.PRAXIS_HOME
+    const previousRelayKey = process.env.RELAY_KEY
+    const previousBaseUrl = process.env.PRAXIS_BASE_URL
+    await mkdir(cwd, { recursive: true })
+    await mkdir(callerConfigRoot, { recursive: true })
+    await mkdir(caseConfigRoot, { recursive: true })
+    await writeFile(
+      join(callerConfigRoot, 'settings.json'),
+      JSON.stringify({
+        provider: 'relay',
+        providers: {
+          relay: {
+            protocol: 'anthropic-messages',
+            profiles: {
+              default: {
+                baseUrl: 'https://relay.example/v1',
+                credential: { source: 'env', name: 'RELAY_KEY' },
+              },
+            },
+          },
+        },
+      }),
+    )
+    try {
+      process.env.PRAXIS_HOME = callerConfigRoot
+      process.env.RELAY_KEY = root
+      delete process.env.PRAXIS_BASE_URL
+      const dependencies = createDefaultDependencies()
+      expect(dependencies.projectEval?.configRoot).toBe(callerConfigRoot)
+      const factory = dependencies.projectEval?.runtimeFactory
+      if (!factory) throw new Error('Project Eval runtime factory unavailable')
+
+      const options = {
+        dataPlane: 'native' as const,
+        cwd,
+        configRoot: caseConfigRoot,
+        home: join(root, 'home'),
+        provider: 'relay',
+        providerProfile: 'default',
+        model: 'sonnet',
+        maxTurns: 1,
+        pluginDirectories: [],
+        allowedTools: ['Read'],
+        addDirs: [],
+        env: {},
+      }
+      await expect(factory.identify(options)).resolves.toMatchObject({
+        providerId: 'relay',
+        profileId: 'default',
+        protocol: 'anthropic-messages',
+        endpoint: 'https://relay.example/v1',
+        modelId: 'sonnet',
+      })
+      const service = await factory.create({
+        ...options,
+        eventSink: () => {},
+      })
+      await service.close?.()
+      await expect(
+        access(join(caseConfigRoot, 'settings.json')),
+      ).rejects.toThrow()
+
+      const emptyCallerRoot = join(root, 'empty-caller-config')
+      await mkdir(emptyCallerRoot, { recursive: true })
+      process.env.PRAXIS_HOME = emptyCallerRoot
+      const emptyCallerFactory =
+        createDefaultDependencies().projectEval?.runtimeFactory
+      if (!emptyCallerFactory)
+        throw new Error('Empty-caller Project Eval runtime factory unavailable')
+      await expect(emptyCallerFactory.identify(options)).rejects.toMatchObject({
+        code: 'unknown_provider',
+      })
+    } finally {
+      if (previousHome === undefined) delete process.env.PRAXIS_HOME
+      else process.env.PRAXIS_HOME = previousHome
+      if (previousRelayKey === undefined) delete process.env.RELAY_KEY
+      else process.env.RELAY_KEY = previousRelayKey
+      if (previousBaseUrl === undefined) delete process.env.PRAXIS_BASE_URL
+      else process.env.PRAXIS_BASE_URL = previousBaseUrl
       await rm(root, { recursive: true, force: true })
     }
   })

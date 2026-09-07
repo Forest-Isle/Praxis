@@ -196,7 +196,16 @@ provider codex-relay`. Project Eval creates an empty per-case
   compatibility, efficiency, optimization, baseline, candidate, or
   qualification conclusion. The settings-forwarding gap must be resolved under
   a new change before any separately authorized future campaign. Task 8.2
-  remains incomplete and Phase 9 stays locked. A bounded DeepSeek baseline for
+  remains incomplete and Phase 9 stays locked. Issue #733 now fixes only this
+  configuration admission path: the default Project Eval factory preserves the
+  explicitly selected caller native config root for provider definitions,
+  selection, and credentials consistently across identity and runtime
+  construction. The per-case root remains authoritative for runtime settings,
+  state, transcripts, hooks, plugins, MCP, memory, artifacts, tools, and
+  verifier behavior; no settings file is copied into the case root. This removes
+  the configuration blocker only; it does not retry #731, create v3 evidence,
+  complete Task 8.2, unlock Phase 9, or authorize a future provider request. A
+  bounded DeepSeek baseline for
   the exact
   `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
   33/36 passes (91.7%) and 36/36 safety passes. The

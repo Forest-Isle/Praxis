@@ -54,6 +54,7 @@ flowchart LR
 | `cli-composes-session` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
 | `cli-configures-tool-security` | `src/cli-runtime.ts#defaultPluginEvalRuntimeFactory` | **confirmed** |
 | `cli-configures-tool-security` | `src/evals/eval-tool-admission.ts#isEvalToolCallPreapproved` | **confirmed** |
+| `cli-resolves-provider` | `src/cli-runtime.ts#createDefaultProjectEvalRuntimeFactory` | **confirmed** |
 | `cli-resolves-provider` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
 | `cli-resolves-provider` | `src/providers/provider-registry.ts#resolveProviderRegistry` | **confirmed** |
 | `cli-composes-integrations` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
@@ -89,6 +90,7 @@ flowchart LR
 | `cli-composition` | `src/evals/held-out-corpus.ts#loadHeldOutCorpus` | **confirmed** |
 | `cli-composition` | `src/evals/held-out-qualification.ts#executeHeldOutQualificationCommand` | **confirmed** |
 | `cli-composition` | `src/cli-runtime.ts#defaultPluginEvalRuntimeFactory` | **confirmed** |
+| `cli-composition` | `src/cli-runtime.ts#createDefaultProjectEvalRuntimeFactory` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#InteractiveApp` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#runInteractive` | **confirmed** |
 | `tui-adapter` | `docs/ARCHITECTURE.md` | **confirmed** |
