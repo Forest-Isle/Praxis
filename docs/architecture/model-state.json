@@ -10,7 +10,7 @@
     "docs/adr/0005-workspace-executable-trust.md": "1130f5d3f70c9ba7d5f1138d103d6845051c199043a91ab18751b5f897ccc128",
     "docs/adr/0006-native-provider-authentication.md": "789dc1cf5d77b87d6c1074c15de5f5d2a36600142d365fd00fe96e5b6cd81488",
     "docs/adr/0007-openai-chat-responses-portability.md": "84baa6e026216d7be5760c436bd94d716de9eaf55bda1029842b030ca3cd68a9",
-    "package.json": "069a22f5cca2a81dd7bd7a1d98d1bf7ffd7c3a0f8fa041ed5f535b99a6708bd3",
+    "package.json": "74a193bfaadb0ca6eab7e3836bba7726d62d8bf5501899400d145951afed5066",
     "scripts/build-release-artifacts.mjs": "bbf90f8105a6c82709d83bbf12fea0703b7016c8188383d7730f044049ba137d",
     "scripts/check-boundaries.mjs": "70ffd84a9586ac49ddae4af889b74d7b8acdf78262bfb3e384e5e96e91e07076",
     "scripts/document-governance.mjs": "c02e77c7718f40d2a410e9bbd4031e11f04b0f78535f6ed229a2c84f740f476f",
