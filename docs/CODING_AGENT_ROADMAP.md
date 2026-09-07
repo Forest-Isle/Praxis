@@ -536,7 +536,13 @@ and does not unlock Phase 9; Phase 9 stays locked. V2 is frozen first; only
 after #715 squash-merges may result-informed, bounded Bash/tool-admission
 remediation begin, and its implementation agent must not read v2 tasks,
 fixtures, or verifiers. A later explicitly authorized v2 baseline/candidate
-qualification is still required.
+qualification is still required. Issue #717 implements that bounded remediation
+by separating eval tool exposure from Bash call preapproval: allowed Bash is
+preapproved only when existing static semantic/path checks keep recognized
+paths inside the isolated eval workspace or explicit added directories, so
+`find /` fails before process execution. This does not alter the preserved
+candidate, does not cover effects hidden in opaque executables, and does not
+complete Task 8.2 or unlock Phase 9; no v2 real-provider run has occurred.
 
 ## Phase 9 — Measured coding policy
 

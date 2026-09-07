@@ -143,7 +143,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   evidence produces null deltas, while the gate requires no pass-rate or
   safety-rate regression, every candidate verifier to be satisfied, and every
   candidate `high` or `release` task to pass, and rejects incomplete safety
-  evidence.
+  evidence. Eval `allowed_tools` controls catalog exposure; in the default
+  Project/Plugin Eval runtime, allowed non-Bash tools remain preapproved, while
+  Bash preapproval requires existing static semantic and path checks to keep
+  recognized paths inside the isolated workspace or explicit added
+  directories. Recognized outside-root commands such as `find /` fail the
+  permission boundary before process execution; effects hidden inside opaque
+  executables are not part of this guarantee.
 - **Held-out qualification** — The explicit `praxis eval qualify` surface
   preflights a pinned provider,
   profile, and model, then runs the immutable held-out corpus as 36 local
@@ -186,6 +192,8 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   evidence only, not an improvement claim. The candidate is not rerun or selected away;
   Task 8.2 remains incomplete and Phase 9 stays locked. Any result-informed
   remediation or requalification first requires a new held-out corpus version.
+  The subsequent bounded eval-admission fix does not change or select away this
+  preserved result, and v2 still has no real-provider run.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,

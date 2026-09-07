@@ -15,6 +15,7 @@ flowchart LR
     n_6c6f63616c2d6f726368657374726174696f6e["Local orchestration\n(local-orchestration)"]
     n_636c692d636f6d706f736974696f6e -->|presents| n_7475692d61646170746572
     n_636c692d636f6d706f736974696f6e -->|composes| n_73657373696f6e2d6170706c69636174696f6e
+    n_636c692d636f6d706f736974696f6e -->|configures| n_746f6f6c2d73656375726974792d72756e74696d65
     n_636c692d636f6d706f736974696f6e -->|resolves| n_70726f76696465722d67617465776179
     n_636c692d636f6d706f736974696f6e -->|composes| n_696e746567726174696f6e2d6164617074657273
     n_636c692d636f6d706f736974696f6e -->|composes| n_6c6f63616c2d6f726368657374726174696f6e
@@ -51,6 +52,8 @@ flowchart LR
 | `cli-presents-through-tui` | `src/cli-runtime.ts#createDefaultDependencies` | **confirmed** |
 | `cli-presents-through-tui` | `src/cli/interactive.tsx#runInteractive` | **confirmed** |
 | `cli-composes-session` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
+| `cli-configures-tool-security` | `src/cli-runtime.ts#defaultPluginEvalRuntimeFactory` | **confirmed** |
+| `cli-configures-tool-security` | `src/evals/eval-tool-admission.ts#isEvalToolCallPreapproved` | **confirmed** |
 | `cli-resolves-provider` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
 | `cli-resolves-provider` | `src/providers/provider-registry.ts#resolveProviderRegistry` | **confirmed** |
 | `cli-composes-integrations` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
@@ -85,6 +88,7 @@ flowchart LR
 | `cli-composition` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
 | `cli-composition` | `src/evals/held-out-corpus.ts#loadHeldOutCorpus` | **confirmed** |
 | `cli-composition` | `src/evals/held-out-qualification.ts#executeHeldOutQualificationCommand` | **confirmed** |
+| `cli-composition` | `src/cli-runtime.ts#defaultPluginEvalRuntimeFactory` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#InteractiveApp` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#runInteractive` | **confirmed** |
 | `tui-adapter` | `docs/ARCHITECTURE.md` | **confirmed** |
@@ -101,6 +105,7 @@ flowchart LR
 | `core-runtime` | `src/core/transcript-event.ts#TranscriptEvent` | **confirmed** |
 | `tool-security-runtime` | `src/tools/local-tools.ts#LocalToolRegistry` | **confirmed** |
 | `tool-security-runtime` | `src/permissions/claude-permission-resolver.ts#ClaudePermissionResolver` | **confirmed** |
+| `tool-security-runtime` | `src/evals/eval-tool-admission.ts#isEvalToolCallPreapproved` | **confirmed** |
 | `tool-security-runtime` | `src/sandbox/claude-sandbox-runtime.ts#ClaudeSandboxRuntime` | **confirmed** |
 | `tool-security-runtime` | `src/platform/bounded-process-runner.ts#BoundedProcessRunner` | **confirmed** |
 | `provider-gateway` | `src/providers/provider-registry.ts#resolveProviderRegistry` | **confirmed** |

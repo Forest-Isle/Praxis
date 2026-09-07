@@ -155,6 +155,16 @@ praxis eval --allow-tools Bash --run-verification --output-dir ./eval-results ./
 praxis eval --json ./my-project
 ```
 
+`--allow-tools` controls which gated tools are exposed to the eval runtime; it
+does not preapprove arbitrary Bash arguments. The default Project/Plugin Eval
+runtime preapproves an allowed Bash call only when the existing static semantic
+and path checks keep every recognized path inside the isolated eval working
+directory or an explicit added directory. A recognized outside-root call such
+as `find /` therefore produces a model-visible permission failure before
+process execution under the eval runtime's `dontAsk` mode. Allowed non-Bash
+tools keep their existing preapproval behavior. This boundary does not claim to
+contain effects hidden inside opaque interpreters or unknown executables.
+
 Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in,
 separately versioned `praxis-held-out-v1` and `praxis-held-out-v2` corpora each
 contain three directly runnable repositories, twelve tasks, and 36 planned
@@ -253,7 +263,9 @@ unknown runs. Candidate median/p95 turns were 6/9 and median/p95 duration was
 not an improvement claim. The
 candidate is preserved without rerun or selection; Task 8.2 remains
 incomplete, Phase 9 remains locked, and any result-informed remediation or
-requalification requires a new held-out corpus version first.
+requalification requires a new held-out corpus version first. The later bounded
+eval-admission fix does not change this preserved result and has not been used
+for a real-provider v2 run.
 
 A minimal case is:
 
