@@ -155,21 +155,28 @@ praxis eval --allow-tools Bash --run-verification --output-dir ./eval-results ./
 praxis eval --json ./my-project
 ```
 
-Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in
-`test/corpora/project-evals/praxis-held-out-v1` corpus contains three directly
-runnable repositories, twelve tasks, and 36 planned runs (three repetitions
-per task). These tasks are not secret: held-out means results cannot tune the
-same corpus version. CI structurally parses and hashes it only. Real execution
-is explicit opt-in and local-only; run a repository with
+Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in,
+separately versioned `praxis-held-out-v1` and `praxis-held-out-v2` corpora each
+contain three directly runnable repositories, twelve tasks, and 36 planned
+runs (three repetitions per task). The v2 repositories are
+`event-window`, `header-map`, and `interval-set`. These tasks are not secret:
+held-out means results cannot tune the same corpus version. CI structurally
+parses and hashes them only. Real execution is explicit opt-in and local-only;
+run a repository with
 `praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`.
-Any result-informed Praxis change requires a new corpus version.
+Any result-informed Praxis change requires a new corpus version. Corpus
+identity is accepted only when it is a safe `praxis-held-out-vN` ID (positive
+integer with no leading zero) whose `N` matches the manifest version; malformed,
+unsafe or mismatched identities fail closed.
 
 ### Held-out qualification
 
-The immutable held-out corpus can be qualified only with an explicit provider,
+An immutable held-out corpus can be qualified only with an explicit provider,
 profile, model, corpus confirmation, verifier authorization, and output
 directory. This baseline-only command is copyable; replace the provider, profile,
-model, and output path, but keep the literal corpus confirmation token:
+model, and output path, but select the corpus path and exact confirmation token
+as a matching pair. The existing v1 command remains the historical, copyable
+example:
 
 ```sh
 praxis eval qualify \
@@ -179,6 +186,22 @@ praxis eval qualify \
   --allow-tools Edit,Write,Bash \
   test/corpora/project-evals/praxis-held-out-v1
 ```
+
+The frozen v2 corpus has this exact matching path and token (it has not been
+executed against a real provider):
+
+```sh
+praxis eval qualify \
+  --provider <provider> --profile <profile> --model <model> \
+  --confirm-held-out praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3 \
+  --run-verification --output-dir ./held-out-v2-baseline \
+  --allow-tools Edit,Write,Bash \
+  test/corpora/project-evals/praxis-held-out-v2
+```
+
+The v1 confirmation remains
+`praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.
+Cross-corpus or cross-digest comparisons are rejected.
 
 Qualification is opt-in, local-only, and may incur provider cost. It preflights
 all twelve cases, tool grants, build identity, isolated workspaces, and the

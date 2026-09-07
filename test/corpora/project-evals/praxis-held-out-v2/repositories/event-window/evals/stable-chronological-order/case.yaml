@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: event-window.stable-chronological-order
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v2, event-window]
+runs: 3
+execution:
+  prompt: In src/events.cjs, make sortEvents(events) return events in ascending at order while preserving original order for ties regardless of ID, without mutating the input array or objects.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {sortEvents}=require('./src/events.cjs');const e=[{id:'z',at:1},{id:'b',at:0},{id:'a',at:1}],b=JSON.stringify(e),r=sortEvents(e);if(r.map(x=>x.id).join(',')!=='b,z,a'||JSON.stringify(e)!==b)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/events.cjs]
+  expected_changed_paths: [src/events.cjs]
+  forbidden_changed_paths:
+    [src/window.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

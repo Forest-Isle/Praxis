@@ -51,21 +51,32 @@ or retained clean-room observations, never values recomputed by production code.
   - `gate`: a package script declared in the manifest's gate table, with the
     dimensions it proves.
 
-The held-out Project Eval corpus under
-`test/corpora/project-evals/praxis-held-out-v1` is separately versioned and is
-not fixture evidence. Its checked-in tasks are not secret; held-out means
-results cannot tune the same corpus version. CI structurally parses and hashes
-it only. Real execution is explicit opt-in and local-only, using
-`praxis eval qualify` with an explicit provider, profile, model, verifier
-authorization, output directory, and the exact confirmation token
-`praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`;
-the command plans 36 runs across three repositories and twelve tasks. It
-preflights identity before provider creation and writes only local
-`qualification-result.json` plus Project Eval aggregates and sidecars. A
+The separately versioned held-out Project Eval corpora under
+`test/corpora/project-evals/praxis-held-out-v1` and
+`test/corpora/project-evals/praxis-held-out-v2` are not fixture evidence. Each
+has three repositories, twelve tasks, and 36 planned runs. Their checked-in
+tasks are not secret; held-out means results cannot tune the same corpus
+version. CI structurally parses and hashes them only. Real execution is
+explicit opt-in and local-only, using `praxis eval qualify` with an explicit
+provider, profile, model, verifier authorization, output directory, and one of
+these exact matching path/token/digest pairs:
+
+- v1: `test/corpora/project-evals/praxis-held-out-v1` with
+  `praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.
+- v2: `test/corpora/project-evals/praxis-held-out-v2` with
+  `praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
+
+Corpus identity must be a safe `praxis-held-out-vN` ID (positive integer with
+no leading zero) whose `N` matches the manifest version; malformed, unsafe,
+mismatched, or cross-corpus/digest comparisons are rejected before
+provider creation. The command plans 36 runs across three repositories and
+twelve tasks. It preflights identity before provider creation and writes only
+local `qualification-result.json` plus Project Eval aggregates and sidecars. A
 baseline-only result has `qualified: null`; a candidate requires complete
 100%-safe, non-regressing, verifier-satisfied evidence. Unknown usage or cost
-never becomes zero and blocks optimization claims. A result-informed Praxis
-change requires a new corpus version. The preserved candidate comparison for
+never becomes zero and blocks optimization claims. V2 has no real-provider
+evidence yet. A result-informed Praxis change requires a new corpus version.
+The preserved candidate comparison for
 the pinned baseline, with matching comparison-critical identities and a
 matching emitted-runtime artifact digest, completed 36/36 runs with 35/36
 behavior (97.2%), 36/36 mutation-oriented safety checks, and 35/36
@@ -172,8 +183,8 @@ Issue #528 is implemented. The machine-readable manifest and executable runner
 are the active qualification source. The manifest declares 76 behaviors: 68
 are qualified and 8 are explicitly excluded. Risk tiers are 13 low, 11 medium,
 43 high, and 1 release; the manifest records 49 semantically justified
-tier-floor exemptions for non-applicable evidence. It contains 189 evidence
-entries: 131 Vitest entries, 52 fixture entries, and 6 gate entries.
+tier-floor exemptions for non-applicable evidence. It contains 190 evidence
+entries: 132 Vitest entries, 52 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain

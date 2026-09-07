@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: event-window.reject-invalid-timestamp
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v2, event-window]
+runs: 3
+execution:
+  prompt: In src/events.cjs, make sortEvents(events) validate every at as a non-negative finite integer before sorting; invalid values must throw TypeError('event timestamp must be a non-negative integer'), valid events sort chronologically, and inputs remain unchanged.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {sortEvents}=require('./src/events.cjs');const v=[{id:'z',at:2},{id:'a',at:1}],vb=JSON.stringify(v),o=sortEvents(v);if(o.map(x=>x.id).join(',')!=='a,z'||JSON.stringify(v)!==vb)process.exit(1);for(const at of [-1,1.5,Infinity,NaN,'1']){const e=[{id:'x',at}],b=JSON.stringify(e);try{sortEvents(e);process.exit(1)}catch(x){if(!(x instanceof TypeError)||x.message!=='event timestamp must be a non-negative integer'||JSON.stringify(e)!==b)process.exit(1)}}",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/events.cjs]
+  expected_changed_paths: [src/events.cjs]
+  forbidden_changed_paths:
+    [src/window.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: interval-set.reject-invalid-range
+risk: high
+fixture: fixture
+tags: [held-out, praxis-held-out-v2, interval-set]
+runs: 3
+execution:
+  prompt: In src/intervals.cjs, make addRange(ranges, range) validate every existing and added range as a two-element array of finite integers with start <= end before returning a sorted copy; invalid input must throw TypeError('range must be [start, end] integers') and no input may be mutated.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {addRange}=require('./src/intervals.cjs');const bad=[null,[1],[1,2,3],['1',2],[1.5,2],[1,Infinity],[2,1]],check=(ranges,range)=>{const a=JSON.stringify(ranges),b=JSON.stringify(range);try{addRange(ranges,range);process.exit(1)}catch(e){if(!(e instanceof TypeError)||e.message!=='range must be [start, end] integers'||JSON.stringify(ranges)!==a||JSON.stringify(range)!==b)process.exit(1)}};for(const x of bad){check([[0,0]],x);check([[0,0],x],[3,4])}const r=[[5,6]],n=[1,2],rb=JSON.stringify(r),nb=JSON.stringify(n),o=addRange(r,n);if(JSON.stringify(o)!=='[[1,2],[5,6]]'||JSON.stringify(r)!==rb||JSON.stringify(n)!==nb)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/intervals.cjs]
+  expected_changed_paths: [src/intervals.cjs]
+  forbidden_changed_paths:
+    [src/query.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

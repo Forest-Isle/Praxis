@@ -26,8 +26,11 @@ import {
 
 const roots: string[] = []
 const corpus = resolve('test/corpora/project-evals/praxis-held-out-v1')
+const corpusV2 = resolve('test/corpora/project-evals/praxis-held-out-v2')
 const corpusDigest =
   'sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb'
+const corpusV2Digest =
+  'sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3'
 const baselineBuild = {
   schema_version: '1.0' as const,
   source_revision: `git:${'a'.repeat(40)}` as `git:${string}`,
@@ -60,6 +63,7 @@ function qualificationArgs(
     confirm?: string
     allowTools?: string
     model?: string
+    corpus?: string
   } = {},
 ): string[] {
   return [
@@ -77,7 +81,7 @@ function qualificationArgs(
     '--output-dir',
     outputDir,
     ...(overrides.baseline ? ['--baseline', overrides.baseline] : []),
-    corpus,
+    overrides.corpus ?? corpus,
   ]
 }
 
@@ -314,6 +318,22 @@ describe.sequential('held-out qualification command', () => {
       model: 'fixture/model:qualified@v1',
       runVerification: true,
     })
+    const v2 = parseHeldOutQualificationOptions(
+      qualificationArgs('/tmp/qualification', {
+        confirm: `praxis-held-out-v2@sha256:${'a'.repeat(64)}`,
+      }),
+    )
+    expect(v2.confirmHeldOut).toMatch(/^praxis-held-out-v2@/u)
+    for (const identity of [
+      `praxis-held-out-v0@sha256:${'a'.repeat(64)}`,
+      `praxis-held-out-v01@sha256:${'a'.repeat(64)}`,
+      `praxis-held-out-v2@sha256:${'A'.repeat(64)}`,
+    ])
+      expect(() =>
+        parseHeldOutQualificationOptions(
+          qualificationArgs('/tmp/qualification', { confirm: identity }),
+        ),
+      ).toThrow('confirm-held-out')
     expect(() =>
       parseHeldOutQualificationOptions([
         ...qualificationArgs('/tmp/qualification').slice(0, 2),
@@ -478,6 +498,115 @@ describe.sequential('held-out qualification command', () => {
       'repositories/task-store/aggregate-result.json',
     ])
   }, 30_000)
+
+  it('admits a complete v2 baseline and reloads it before comparison without provider execution', async () => {
+    const baselineOutput = await newPath(
+      'praxis-qualification-v2-baseline-',
+      'result',
+    )
+    const baselineHarness = factoryHarness()
+    const baseline = await executeQualification({
+      output: baselineOutput,
+      harness: baselineHarness,
+      argv: qualificationArgs(baselineOutput, {
+        corpus: corpusV2,
+        confirm: 'praxis-held-out-v2@' + corpusV2Digest,
+      }),
+    })
+    expect(baseline.code).toBe(0)
+    expect(baselineHarness.counts).toEqual({
+      identify: 48,
+      create: 36,
+      run: 36,
+    })
+    expect(baseline.result).toMatchObject({
+      corpus: {
+        id: 'praxis-held-out-v2',
+        version: 2,
+        content_sha256: corpusV2Digest,
+      },
+      completed_run_count: 36,
+      passed: 0,
+      failed: 36,
+      qualified: null,
+    })
+    const baselinePath = join(baselineOutput, 'qualification-result.json')
+    const tampered = JSON.parse(
+      await readFile(baselinePath, 'utf8'),
+    ) as HeldOutQualificationResult
+    tampered.corpus.version = 3
+    const tamperedPath = join(baselineOutput, 'tampered.json')
+    await writeFile(tamperedPath, JSON.stringify(tampered))
+    const malformedHarness = factoryHarness()
+    const malformedOutput = await newPath(
+      'praxis-qualification-v2-malformed-',
+      'result',
+    )
+    await expect(
+      executeQualification({
+        output: malformedOutput,
+        harness: malformedHarness,
+        argv: qualificationArgs(malformedOutput, {
+          corpus: corpusV2,
+          confirm: 'praxis-held-out-v2@' + corpusV2Digest,
+          baseline: tamperedPath,
+        }),
+      }),
+    ).rejects.toThrow('Qualification corpus fields are invalid')
+    expect(malformedHarness.counts).toEqual({
+      identify: 0,
+      create: 0,
+      run: 0,
+    })
+    const mismatchHarness = factoryHarness()
+    const mismatchOutput = await newPath(
+      'praxis-qualification-v1-mismatch-',
+      'result',
+    )
+    await expect(
+      executeQualification({
+        output: mismatchOutput,
+        harness: mismatchHarness,
+        baseline: baselinePath,
+      }),
+    ).rejects.toThrow(
+      'Baseline qualification corpus does not match candidate corpus',
+    )
+    expect(mismatchHarness.counts).toEqual({
+      identify: 0,
+      create: 0,
+      run: 0,
+    })
+    const controller = new AbortController()
+    const candidateHarness = factoryHarness({
+      abortController: controller,
+      abortOnRun: 1,
+    })
+    const candidateOutput = await newPath(
+      'praxis-qualification-v2-candidate-',
+      'result',
+    )
+    const candidate = await executeQualification({
+      output: candidateOutput,
+      harness: candidateHarness,
+      baseline: baselinePath,
+      build: candidateBuild,
+      version: 'v2-candidate',
+      signal: controller.signal,
+      argv: qualificationArgs(candidateOutput, {
+        corpus: corpusV2,
+        confirm: 'praxis-held-out-v2@' + corpusV2Digest,
+        baseline: baselinePath,
+      }),
+    })
+    expect(candidate.code).toBe(130)
+    expect(candidate.result).toBeUndefined()
+    expect(candidateHarness.counts).toMatchObject({
+      identify: 13,
+      create: 1,
+      run: 1,
+    })
+  }, 60_000)
 
   it('qualifies comparable cross-build evidence, detects regressions, and blocks unknown optimization claims', async () => {
     expect(sharedBaselineResult).toMatchObject({

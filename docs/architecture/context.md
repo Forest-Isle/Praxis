@@ -138,6 +138,8 @@ flowchart LR
 | `cli-composition` | `src/cli.ts#run` | **confirmed** |
 | `cli-composition` | `src/cli-runtime.ts#createDefaultDependencies` | **confirmed** |
 | `cli-composition` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
+| `cli-composition` | `src/evals/held-out-corpus.ts#loadHeldOutCorpus` | **confirmed** |
+| `cli-composition` | `src/evals/held-out-qualification.ts#executeHeldOutQualificationCommand` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#InteractiveApp` | **confirmed** |
 | `tui-adapter` | `src/cli/interactive.tsx#runInteractive` | **confirmed** |
 | `tui-adapter` | `docs/ARCHITECTURE.md` | **confirmed** |

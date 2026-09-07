@@ -13,7 +13,6 @@ const MAX_MANIFEST_BYTES = 1024 * 1024
 const MAX_FILES = 4096
 const MAX_TOTAL_BYTES = 64 * 1024 * 1024
 const MAX_ENTRIES = 16_384
-const REQUIRED_TAGS = ['held-out', 'praxis-held-out-v1'] as const
 const FORBIDDEN_TAGS = new Set([
   'tuning',
   'calibration',
@@ -45,8 +44,8 @@ export interface HeldOutCorpusRepository {
 export interface HeldOutCorpus {
   readonly root: string
   readonly schemaVersion: '1.0'
-  readonly id: 'praxis-held-out-v1'
-  readonly version: 1
+  readonly id: `praxis-held-out-v${number}`
+  readonly version: number
   readonly split: 'held-out'
   readonly repetitions: 3
   readonly policy: HeldOutCorpusPolicy
@@ -60,6 +59,26 @@ interface RawRepository {
   id?: unknown
   path?: unknown
   tasks?: unknown
+}
+
+function validateCorpusIdentity(
+  id: unknown,
+  version: unknown,
+): { id: `praxis-held-out-v${number}`; version: number } {
+  if (typeof id !== 'string' || !/^praxis-held-out-v[1-9]\d*$/u.test(id))
+    throw new Error('Unsupported corpus id')
+  if (
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version <= 0
+  )
+    throw new Error('Unsupported corpus version')
+  if (id === 'praxis-held-out-v1' && version !== 1)
+    throw new Error('Unsupported corpus version')
+  const suffix = Number(id.slice('praxis-held-out-v'.length))
+  if (!Number.isSafeInteger(suffix) || suffix !== version)
+    throw new Error('Corpus id and version do not match')
+  return { id: id as `praxis-held-out-v${number}`, version }
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -250,9 +269,7 @@ export async function loadHeldOutCorpus(root: string): Promise<HeldOutCorpus> {
   )
   if (manifest.schema_version !== '1.0')
     throw new Error('Unsupported corpus schema_version')
-  if (manifest.id !== 'praxis-held-out-v1')
-    throw new Error('Unsupported corpus id')
-  if (manifest.version !== 1) throw new Error('Unsupported corpus version')
+  const identity = validateCorpusIdentity(manifest.id, manifest.version)
   if (manifest.split !== 'held-out')
     throw new Error('corpus split must be held-out')
   if (manifest.repetitions !== 3)
@@ -387,7 +404,8 @@ export async function loadHeldOutCorpus(root: string): Promise<HeldOutCorpus> {
       )
         throw new Error(`${item.name} mutation paths overlap`)
       if (
-        !REQUIRED_TAGS.every((tag) => item.tags.includes(tag)) ||
+        !item.tags.includes('held-out') ||
+        !item.tags.includes(identity.id) ||
         !item.tags.includes(repository.id)
       )
         throw new Error(`${item.name} is missing required held-out tags`)
@@ -405,8 +423,8 @@ export async function loadHeldOutCorpus(root: string): Promise<HeldOutCorpus> {
   return {
     root: corpusRoot,
     schemaVersion: '1.0',
-    id: 'praxis-held-out-v1',
-    version: 1,
+    id: identity.id,
+    version: identity.version,
     split: 'held-out',
     repetitions: 3,
     policy: {

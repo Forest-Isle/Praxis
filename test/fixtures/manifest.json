@@ -2162,20 +2162,20 @@
       "status": "qualified",
       "modules": ["src/evals/held-out-corpus.ts"],
       "outcomes": [
-        "Three repositories and twelve three-repeat tasks are structurally loadable without model execution.",
-        "Unsafe, incomplete, contaminated, or content-drifted corpora fail closed before execution."
+        "Immutable v1 and v2 corpora each load as three repositories, twelve three-repeat tasks, and thirty-six planned runs without model execution.",
+        "Unsafe, incomplete, contaminated, version-mismatched, tag-drifted, or content-drifted corpora fail closed before execution."
       ],
       "evidence": [
         {
           "kind": "vitest",
           "file": "src/evals/held-out-corpus.test.ts",
-          "testName": "held-out corpus contract > loads three versioned repositories and twelve three-repeat tasks without executing them",
+          "testName": "held-out corpus contract > loads immutable v1 and v2 corpora without executing them",
           "covers": ["success", "persistence"]
         },
         {
           "kind": "vitest",
           "file": "src/evals/held-out-corpus.test.ts",
-          "testName": "held-out corpus contract > rejects unsafe, incomplete, contaminated, and content-drifted corpora",
+          "testName": "held-out corpus contract > rejects unsafe, incomplete, contaminated, version-mismatched, and content-drifted corpora",
           "covers": ["negative"]
         }
       ],
@@ -2198,10 +2198,16 @@
       "modules": ["src/evals/held-out-qualification.ts"],
       "outcomes": [
         "Help and preflight failures do not create a provider runtime, while the pinned identity is reported before execution.",
-        "All twelve held-out cases execute three repetitions and unsafe or incomplete evidence fails closed.",
+        "All twelve held-out cases execute three repetitions; complete v2 baseline evidence reloads before candidate execution, and unsafe, malformed, or cross-version evidence fails closed.",
         "Baseline comparison only qualifies complete safe comparable evidence and requires known usage and cost for optimization claims."
       ],
       "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/evals/held-out-qualification.test.ts",
+          "testName": "held-out qualification command > admits a complete v2 baseline and reloads it before comparison without provider execution",
+          "covers": ["success", "negative", "persistence"]
+        },
         {
           "kind": "vitest",
           "file": "src/evals/held-out-qualification.test.ts",

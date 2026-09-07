@@ -17,17 +17,25 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 import { loadHeldOutCorpus } from './held-out-corpus.js'
 
-const corpus = join(
+const corpusV1 = join(
   process.cwd(),
   'test/corpora/project-evals/praxis-held-out-v1',
 )
+const corpusV1Digest =
+  'sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb'
+const corpusV2 = join(
+  process.cwd(),
+  'test/corpora/project-evals/praxis-held-out-v2',
+)
+const corpusV2Digest =
+  'sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3'
 const temporaryRoots: string[] = []
 
-async function copyCorpus(): Promise<string> {
+async function copyCorpus(source = corpusV1): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'praxis-held-out-'))
   temporaryRoots.push(root)
   const destination = join(root, 'corpus')
-  await cp(corpus, destination, { recursive: true })
+  await cp(source, destination, { recursive: true })
   return destination
 }
 
@@ -45,55 +53,71 @@ afterEach(async () => {
       .splice(0)
       .map((root) => rm(root, { recursive: true, force: true })),
   )
-})
+}, 30_000)
 
 describe('held-out corpus contract', () => {
-  it('loads three versioned repositories and twelve three-repeat tasks without executing them', async () => {
-    const loaded = await loadHeldOutCorpus(corpus)
-    expect(loaded).toMatchObject({
-      schemaVersion: '1.0',
-      id: 'praxis-held-out-v1',
-      version: 1,
-      split: 'held-out',
-      repetitions: 3,
-      taskCount: 12,
-      plannedRunCount: 36,
-      policy: {
-        execution: 'opt-in-only',
-        tuning: 'forbidden',
-        resultInformedChanges: 'require-new-version',
+  it('loads immutable v1 and v2 corpora without executing them', async () => {
+    for (const expected of [
+      {
+        root: corpusV1,
+        id: 'praxis-held-out-v1',
+        version: 1,
+        digest: corpusV1Digest,
       },
-    })
-    expect(loaded.repositories).toHaveLength(3)
-    const manifest = parseYaml(
-      await readFile(join(corpus, 'corpus.yaml'), 'utf8'),
-    ) as { repositories: { id: string; tasks: string[] }[] }
-    for (const repository of loaded.repositories) {
-      const declaration = manifest.repositories.find(
-        (item) => item.id === repository.id,
+      {
+        root: corpusV2,
+        id: 'praxis-held-out-v2',
+        version: 2,
+        digest: corpusV2Digest,
+      },
+    ] as const) {
+      const loaded = await loadHeldOutCorpus(expected.root)
+      expect(loaded).toMatchObject({
+        schemaVersion: '1.0',
+        id: expected.id,
+        version: expected.version,
+        split: 'held-out',
+        repetitions: 3,
+        taskCount: 12,
+        plannedRunCount: 36,
+        contentSha256: expected.digest,
+        policy: {
+          execution: 'opt-in-only',
+          tuning: 'forbidden',
+          resultInformedChanges: 'require-new-version',
+        },
+      })
+      expect(loaded.repositories).toHaveLength(3)
+      const manifest = parseYaml(
+        await readFile(join(expected.root, 'corpus.yaml'), 'utf8'),
+      ) as { repositories: { id: string; tasks: string[] }[] }
+      const repositoryIds = loaded.repositories.map((item) => item.id)
+      expect(repositoryIds).toEqual(
+        manifest.repositories.map((item) => item.id),
       )
-      expect(repository.cases.map((item) => item.name)).toEqual(
-        declaration?.tasks,
-      )
+      expect(repositoryIds).toEqual([...repositoryIds].sort())
+      const discoveredTasks = loaded.repositories.flatMap((repository) => {
+        const names = repository.cases.map((item) => item.name)
+        const declaration = manifest.repositories.find(
+          (item) => item.id === repository.id,
+        )
+        expect(names).toEqual(declaration?.tasks)
+        expect(names).toEqual([...names].sort())
+        return names
+      })
+      expect(discoveredTasks).toHaveLength(12)
+      expect(new Set(discoveredTasks).size).toBe(12)
+      expect(discoveredTasks).toEqual([...discoveredTasks].sort())
     }
-    expect(
-      loaded.repositories.flatMap((repository) => repository.cases),
-    ).toHaveLength(12)
-    expect(
-      new Set(
-        loaded.repositories.flatMap((repository) =>
-          repository.cases.map((item) => item.name),
-        ),
-      ).size,
-    ).toBe(12)
   })
 
-  it('rejects unsafe, incomplete, contaminated, and content-drifted corpora', async () => {
+  it('rejects unsafe, incomplete, contaminated, version-mismatched, and content-drifted corpora', async () => {
     const expectFailure = async (
       mutate: (root: string) => Promise<void>,
       message: string,
+      source = corpusV1,
     ) => {
-      const root = await copyCorpus()
+      const root = await copyCorpus(source)
       await mutate(root)
       await expect(loadHeldOutCorpus(root)).rejects.toThrow(message)
     }
@@ -105,6 +129,40 @@ describe('held-out corpus contract', () => {
       const file = join(root, path)
       await writeFile(file, mutate(await readFile(file, 'utf8')))
     }
+    await expectFailure(
+      (root) =>
+        mutateManifest(root, (manifest) =>
+          manifest.replace('version: 1', 'version: 2'),
+        ),
+      'Unsupported corpus version',
+    )
+    await expectFailure(
+      (root) =>
+        mutateManifest(root, (manifest) =>
+          manifest.replace('version: 2', 'version: 3'),
+        ),
+      'Corpus id and version do not match',
+      corpusV2,
+    )
+    await expectFailure(
+      (root) =>
+        mutateManifest(root, (manifest) =>
+          manifest.replace('version: 2', 'version: 9007199254740992'),
+        ),
+      'Unsupported corpus version',
+      corpusV2,
+    )
+    await expectFailure(
+      (root) =>
+        mutateCase(
+          root,
+          'repositories/header-map/evals/case-insensitive-get/case.yaml',
+          (content) =>
+            content.replace('praxis-held-out-v2', 'praxis-held-out-v1'),
+        ),
+      'missing required held-out tags',
+      corpusV2,
+    )
     await expectFailure(
       (root) =>
         mutateManifest(root, (manifest) =>
@@ -353,5 +411,5 @@ describe('held-out corpus contract', () => {
         ),
       'content digest mismatch',
     )
-  }, 30_000)
+  }, 90_000)
 })

@@ -52,3 +52,27 @@
 - Validation: `validate_model.py` reported `model valid`; `render_model.py`
   deterministically rendered the existing 10 views without changing them.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — MODEL_UPDATE_REQUIRED — Issue #715
+
+- Change ID: `issue-715-held-out-v2-corpus`.
+- Observed worktree: `test/715-held-out-v2` based on
+  `df86142c5b7bd17451d759d8fbc1e999c1fe02e2`.
+- Changed bounded-source paths: `src/evals/held-out-corpus.test.ts`,
+  `src/evals/held-out-corpus.ts`, `src/evals/held-out-qualification.test.ts`,
+  and `src/evals/held-out-qualification.ts`.
+- Verdict: the held-out corpus and qualification contracts now admit safe,
+  matching positive-integer `praxis-held-out-vN` identities while preserving
+  schema `1.0`, the immutable v1 corpus, and fail-closed cross-corpus checks.
+  This changes a public CLI qualification boundary and therefore cannot be
+  classified as a local internal implementation change.
+- Model update: `cli-composition` now records versioned local held-out corpus
+  loading and qualification-artifact validation before provider runtime
+  creation, with confirmed evidence from `loadHeldOutCorpus` and
+  `executeHeldOutQualificationCommand`.
+- Affected architecture node/flow IDs: `cli-composition`; no modeled critical
+  flow changed.
+- Scope note: `docs/ARCHITECTURE.md` retains its v1-specific narrative because
+  it is outside this change's declared writable scope; the canonical model
+  carries the changed contract without attributing an undeclared edit.
+- Unresolved inferred claims: None.
