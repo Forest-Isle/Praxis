@@ -291,3 +291,28 @@
   `render_model.py` runs produced the same hashes for all 10 views; the
   established bounded source checkpoint was advanced only after both passed.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Release 0.70.1 checkpoint catch-up
+
+- Change ID: `release-0701-architecture-checkpoint-catchup`.
+- Reviewed revision: `c3f2038fee80e4d969eb6c95918cb4cabbbd7108`,
+  merged by release PR #735 after Issue #733.
+- Changed bounded-source path: `package.json` only. The release changes the
+  package version from 0.70.0 to 0.70.1; its `bin` entry is unchanged.
+- Verdict: package version metadata does not change the installed CLI process,
+  startup wiring, runtime boundary, public contract, persistence/data shape,
+  provider integration, registration, deployment unit, relation, or modeled
+  critical flow.
+- Inspected architecture evidence: `installed-cli-process`,
+  `installed-process-starts-cli`, and `installed-package-startup` continue to
+  use the unchanged `package.json` `bin` contract.
+- Affected architecture node/relation/flow IDs: none.
+- Issue #733 boundary: the caller provider-root and per-case runtime/data-plane
+  isolation facts remain unchanged and no provider or held-out request ran.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  `render_model.py` runs each rendered 10 views and produced byte-identical
+  SHA-256 hashes for all 10 generated views; no generated-view diff exists.
+- Checkpoint: the bounded source checkpoint was advanced successfully after
+  validation and render evidence; the post-checkpoint bounded assessment
+  reported `added=0`, `modified=0`, and `deleted=0`.
+- Unresolved inferred claims: None.
