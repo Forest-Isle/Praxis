@@ -1,0 +1,32 @@
+schema_version: '1.0'
+id: praxis-held-out-v2
+version: 2
+split: held-out
+repetitions: 3
+policy:
+  execution: opt-in-only
+  tuning: forbidden
+  result_informed_changes: require-new-version
+content_sha256: sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3
+repositories:
+  - id: event-window
+    path: repositories/event-window
+    tasks:
+      - event-window.count-inclusive-window
+      - event-window.dedupe-latest
+      - event-window.reject-invalid-timestamp
+      - event-window.stable-chronological-order
+  - id: header-map
+    path: repositories/header-map
+    tasks:
+      - header-map.case-insensitive-get
+      - header-map.merge-vary-tokens
+      - header-map.reject-invalid-name
+      - header-map.stable-serialize
+  - id: interval-set
+    path: repositories/interval-set
+    tasks:
+      - interval-set.add-merged-range
+      - interval-set.find-first-gap
+      - interval-set.reject-invalid-range
+      - interval-set.use-inclusive-boundaries

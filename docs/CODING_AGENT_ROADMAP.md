@@ -487,14 +487,18 @@ dependent teardown.
 
 ## Phase 8 — Controlled real coding qualification
 
-### Task 8.1: Held-out coding corpus — implemented by #705 [depends: Tasks 6.5, 7.1]
+### Task 8.1: Held-out coding corpus — implemented by #705, extended by #715 [depends: Tasks 6.5, 7.1]
 
 Assemble at least three fixture repositories and twelve held-out coding tasks
 with three repetitions each. Acceptance: the corpus is versioned locally and
 the tasks remain held out from tuning. The checked-in `praxis-held-out-v1`
-corpus has three repositories, twelve tasks, and 36 planned runs. CI performs
-structural parsing and hashing only; real execution is explicit opt-in and
-local-only, and result-informed changes require a new corpus version.
+corpus has three repositories, twelve tasks, and 36 planned runs. Issue #715
+adds the frozen, separately versioned `praxis-held-out-v2` corpus with three
+repositories, twelve tasks, 36 planned runs, and digest
+`sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
+V2 has not been executed against a real provider and makes no quality or
+optimization claim. CI performs structural parsing and hashing only; real
+execution is explicit opt-in and local-only.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
@@ -528,8 +532,11 @@ Candidate median/p95 turns were 6/9 and median/p95 duration was 22,938.5/54,918
 ms; versus baseline, deltas were +1/+2 turns and -5,715/+2,721 ms. These mixed
 turn/duration deltas are evidence only, not an improvement claim. The
 candidate is preserved without rerun or selection. Task 8.2 remains incomplete
-and does not unlock Phase 9; Phase 9 stays locked. Any result-informed
-remediation or requalification requires a new held-out corpus version first.
+and does not unlock Phase 9; Phase 9 stays locked. V2 is frozen first; only
+after #715 squash-merges may result-informed, bounded Bash/tool-admission
+remediation begin, and its implementation agent must not read v2 tasks,
+fixtures, or verifiers. A later explicitly authorized v2 baseline/candidate
+qualification is still required.
 
 ## Phase 9 — Measured coding policy
 

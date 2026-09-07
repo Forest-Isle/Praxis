@@ -15,6 +15,7 @@ modules:
       - Resolve native runtime settings and data-plane paths.
       - Create default session dependencies and background-worker runtimes.
       - Handle version and help before provider initialization.
+      - Load versioned local held-out corpora and validate qualification artifacts before provider runtime creation.
     evidence:
       - path: docs/ARCHITECTURE.md
         confidence: confirmed
@@ -26,6 +27,12 @@ modules:
         confidence: confirmed
       - path: src/cli-runtime.ts
         symbol: createDefaultService
+        confidence: confirmed
+      - path: src/evals/held-out-corpus.ts
+        symbol: loadHeldOutCorpus
+        confidence: confirmed
+      - path: src/evals/held-out-qualification.ts
+        symbol: executeHeldOutQualificationCommand
         confidence: confirmed
 
   - id: tui-adapter

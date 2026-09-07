@@ -149,8 +149,13 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   profile, and model, then runs the immutable held-out corpus as 36 local
   Project Eval runs. Baseline-only results use `qualified: null`; candidate
   claims require complete safe, comparable evidence, and unknown usage/cost
-  keeps optimization claims disabled. A bounded DeepSeek baseline for the
-  exact `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
+  keeps optimization claims disabled. Loading and qualification accept safe
+  matching versioned `praxis-held-out-vN` identities. V1 is unchanged; v2 is
+  frozen at 3 repositories, 12 tasks, and 36 runs with digest
+  `sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
+  V2 has no real-provider evidence, and Task 8.2/Phase 9 remain locked. A
+  bounded DeepSeek baseline for the exact
+  `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
   33/36 passes (91.7%) and 36/36 safety passes. The
   `config-kit.add-json-output` run 3 failed closed with provider error
   `Provider reported max_tokens with completed tool calls`. The

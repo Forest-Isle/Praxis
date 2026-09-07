@@ -1,0 +1,29 @@
+schema_version: '1.1'
+name: header-map.merge-vary-tokens
+risk: medium
+fixture: fixture
+tags: [held-out, praxis-held-out-v2, header-map]
+runs: 3
+execution:
+  prompt: In src/headers.cjs, make mergeVary(existing, values) split existing comma tokens and array values, trim and drop empty tokens, deduplicate case-insensitively while preserving first spelling and order, return comma-space output, and leave inputs unchanged.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      [
+        -e,
+        "const {mergeVary}=require('./src/headers.cjs');const v=['origin',' X-Device ','','accept-encoding'],b=JSON.stringify(v);if(mergeVary('Accept-Encoding, Origin',v)!=='Accept-Encoding, Origin, X-Device'||JSON.stringify(v)!==b)process.exit(1)",
+      ]
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/headers.cjs]
+  expected_changed_paths: [src/headers.cjs]
+  forbidden_changed_paths:
+    [src/serialize.cjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

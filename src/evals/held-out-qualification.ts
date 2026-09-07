@@ -196,7 +196,7 @@ export function parseHeldOutQualificationOptions(
   if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/u.test(options.model ?? ''))
     throw new Error('--model is not a safe eval identifier')
   if (
-    !/^praxis-held-out-v1@sha256:[0-9a-f]{64}$/u.test(
+    !/^praxis-held-out-v[1-9]\d*@sha256:[0-9a-f]{64}$/u.test(
       options.confirmHeldOut ?? '',
     )
   )
@@ -983,8 +983,13 @@ function validateQualificationResult(
     Array.isArray(corpusObject) ||
     Object.keys(corpusObject).length !== corpusKeys.length ||
     Object.keys(corpusObject).some((key) => !corpusKeys.includes(key)) ||
-    corpusObject.id !== 'praxis-held-out-v1' ||
-    corpusObject.version !== 1 ||
+    typeof corpusObject.id !== 'string' ||
+    !/^praxis-held-out-v[1-9]\d*$/u.test(corpusObject.id) ||
+    typeof corpusObject.version !== 'number' ||
+    !Number.isSafeInteger(corpusObject.version) ||
+    corpusObject.version <= 0 ||
+    Number(corpusObject.id.slice('praxis-held-out-v'.length)) !==
+      corpusObject.version ||
     corpusObject.repetitions !== 3 ||
     !DIGEST.test(String(corpusObject.content_sha256))
   )
