@@ -53,6 +53,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.70.0](https://github.com/Forest-Isle/Praxis/compare/v0.69.1...v0.70.0) (2026-09-07)
+
+
+### Features
+
+* add explicit Codex-native relay provider protocol ([#729](https://github.com/Forest-Isle/Praxis/issues/729)) ([1a7575d](https://github.com/Forest-Isle/Praxis/commit/1a7575d05d2de0b2da23a9dbcce48b150e9e53d5)), closes [#728](https://github.com/Forest-Isle/Praxis/issues/728)
+
 ## [0.69.1](https://github.com/Forest-Isle/Praxis/compare/v0.69.0...v0.69.1) (2026-09-07)
 
 
