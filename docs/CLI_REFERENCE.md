@@ -210,8 +210,7 @@ praxis eval qualify \
   test/corpora/project-evals/praxis-held-out-v2
 ```
 
-The v3 corpus is frozen but has never been executed; this illustrative,
-explicit opt-in command has produced no provider evidence:
+The v3 corpus is frozen and this is the copyable, explicit opt-in command:
 
 ```sh
 praxis eval qualify \
@@ -221,6 +220,24 @@ praxis eval qualify \
   --allow-tools Edit,Write,Bash \
   test/corpora/project-evals/praxis-held-out-v3
 ```
+
+Issue #731's corrected no-tool/no-file smoke selected
+`codex-relay/default/codex-responses/gpt-5.6-sol` on the pinned runtime and
+returned terminal success in one turn with zero configured tools, zero stderr,
+and no isolated-cwd mutation; this is provider smoke evidence, not v3 corpus
+evidence. The exactly-once baseline then exited 1 after 810 ms during first-case
+provider identity preflight with `Invalid provider settings: unknown provider
+codex-relay`. Project Eval creates an empty per-case `workspace.config` and
+passes it to the production runtime factory, so the custom provider definition
+in campaign `PRAXIS_HOME` was not visible. It completed 0/36 runs, emitted no
+qualification result or run artifacts, and did not admit or run a candidate, so
+no baseline/candidate regression comparison exists. The no-retry/no-substitution
+contract was honored. There is no v3 behavior,
+mutation-oriented safety, verifier, usage, subscription-cost, duration/latency,
+quality, security, compatibility, efficiency, optimization, baseline,
+candidate, or qualification conclusion. Resolve the settings-forwarding gap in
+a new change before any separately authorized future campaign. Task 8.2 remains
+incomplete and Phase 9 remains locked.
 
 The v1 confirmation remains
 `praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.
@@ -301,8 +318,9 @@ failing and one newly passing run, pass-rate delta −5.56 percentage points,
 safety delta 0, turn delta 0/+2, and duration delta +4,432/+27,866 ms; no
 quality, security, cost, latency, or efficiency claim is permitted. The
 candidate is preserved without rerun or selection; Task 8.2 remains
-incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen but has
-not been run or used for result-informed remediation; any later
+incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen but no
+corpus completion run has succeeded or been used for result-informed
+remediation; any later
 result-informed remediation or requalification requires a new corpus version.
 During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
 smoke with `model_not_found` and was not used for the v2 campaign. This is
@@ -319,10 +337,10 @@ Responses request returned HTTP 404 after 2,995 ms with
 `is_error: true`, zero input/output tokens, zero API duration, no tool call,
 and no file access. The 404 source is unestablished; this does not establish
 `model_not_found`, a relay outage, request-shape defect, or edge-route defect.
-The predeclared no-retry/no-substitution rule was honored. No v3 baseline,
-candidate, or qualification run occurred, no output roots were created, and
-there is no v3 verdict, pass/safety/verifier/cost/latency/model-quality
-evidence.
+The predeclared no-retry/no-substitution rule was honored. This historical
+smoke did not execute a v3 corpus run; the later Issue #731 baseline preflight
+stopped before any corpus completion request, so no v3 verdict,
+pass/safety/verifier/cost/latency/model-quality evidence exists.
 Task 8.2 remains incomplete and Phase 9 remains locked.
 
 A minimal case is:

@@ -234,3 +234,29 @@
   advanced only after both passed.
 - Unresolved inferred claims: None. Live relay compatibility remains
   unverified rather than inferred.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Issue #731
+
+- Change ID: `issue-731-held-out-v3-codex-relay`.
+- Observed worktree: `test/731-held-out-v3-codex-relay`, based on
+  `origin/main` `1a7575d05d2de0b2da23a9dbcce48b150e9e53d5`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records a successful no-tool/no-file Codex-native relay
+  smoke followed by the single v3 baseline attempt failing closed during the
+  first Project Eval identity preflight. It changes no CLI or provider
+  contract, runtime boundary, persistence/data shape, integration,
+  registration, deployment unit, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for `CONTEXT.md`, `docs/ARCHITECTURE.md`,
+  `docs/adr`, `package.json`, `scripts`, and `src`.
+- Qualification boundary: the isolated per-case config root did not expose the
+  campaign custom-provider settings, so baseline completed 0/36 runs, no
+  candidate was admitted, and no v3 qualification result exists. The campaign
+  was not retried or substituted; Task 8.2 remains incomplete and Phase 9
+  remains locked.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing views without changing them. The
+  bounded source checkpoint was refreshed only after both passed.
+- Unresolved inferred claims: None.
