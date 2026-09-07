@@ -265,11 +265,29 @@ Responses request returned HTTP 404 after 2,995 ms with
 `is_error: true`, zero input/output tokens, zero API duration, no tool call,
 and no file access. The 404 source is unestablished; no model-not-found,
 relay-outage, request-shape, or edge-route cause is inferred. The predeclared
-no-retry/no-substitution rule was honored. No v3 baseline, candidate, or
-qualification run occurred and no output roots exist, so there is no v3
-qualification verdict, pass/safety/verifier/cost/latency/model-quality
-evidence. Task
+no-retry/no-substitution rule was honored. This historical smoke did not execute
+a v3 corpus run; the later Issue #731 baseline preflight stopped before any
+corpus completion request, so no v3 qualification verdict,
+pass/safety/verifier/cost/latency/model-quality evidence exists. Task
 8.2 remains incomplete and Phase 9 stays locked.
+
+Issue #731's corrected no-tool/no-file smoke selected
+`codex-relay/default/codex-responses/gpt-5.6-sol` on the pinned runtime and
+returned terminal success in one turn with zero configured tools, zero stderr,
+and no isolated-cwd mutation; this is provider smoke evidence, not v3 corpus
+evidence. The exactly-once baseline then exited 1 after 810 ms during first-case
+provider identity preflight with `Invalid provider settings: unknown provider
+codex-relay`. Project Eval creates an empty per-case `workspace.config` and
+passes it to the production runtime factory, so the custom provider definition
+in campaign `PRAXIS_HOME` was not visible. The baseline completed 0/36 runs,
+emitted no qualification result or run artifacts, and no candidate was admitted
+or run. The no-retry/no-substitution contract was honored. There is no v3
+behavior, mutation-oriented safety, verifier, usage,
+subscription-cost, duration/latency, quality, security, compatibility,
+efficiency, optimization, baseline, candidate, or qualification conclusion.
+Resolve this settings-forwarding gap under a new change before any separately
+authorized future campaign. Task 8.2 remains incomplete and Phase 9 stays
+locked.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the

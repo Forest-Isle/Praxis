@@ -179,9 +179,24 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `frame-codec`, `graph-craft`, and `route-forge`: 12 repository-qualified
   tasks, 3 repetitions each, and 36 planned runs with digest
   `sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
-  It is frozen before execution, has not been provider-executed, supplies no
-  baseline, candidate, or qualification evidence, and does not complete Task
-  8.2 or unlock Phase 9. A bounded DeepSeek baseline for the exact
+  The corpus is frozen before execution. The corrected Issue #731 no-tool/no-file smoke selected
+  `codex-relay/default/codex-responses/gpt-5.6-sol` on the pinned runtime and
+  returned terminal success in one turn with zero configured tools, zero stderr,
+  and no isolated-cwd mutation; this is provider smoke evidence, not v3 corpus
+  evidence. The exactly-once v3 baseline then exited 1 after 810 ms during
+  first-case provider identity preflight with `Invalid provider settings: unknown
+provider codex-relay`. Project Eval creates an empty per-case
+  `workspace.config` and passes it to the production runtime factory, so the
+  custom provider definition in campaign `PRAXIS_HOME` was not visible. The
+  baseline completed 0/36 runs, emitted no qualification result or run
+  artifacts, and no candidate was admitted or run. The no-retry/no-substitution
+  contract was honored; there is no v3 behavior, mutation-oriented safety,
+  verifier, usage, subscription-cost, duration/latency, quality, security,
+  compatibility, efficiency, optimization, baseline, candidate, or
+  qualification conclusion. The settings-forwarding gap must be resolved under
+  a new change before any separately authorized future campaign. Task 8.2
+  remains incomplete and Phase 9 stays locked. A bounded DeepSeek baseline for
+  the exact
   `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
   33/36 passes (91.7%) and 36/36 safety passes. The
   `config-kit.add-json-output` run 3 failed closed with provider error
