@@ -210,6 +210,14 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   remediation or requalification first requires a new held-out corpus version.
   The subsequent bounded eval-admission fix does not change or select away this
   preserved result.
+  Issue #724's one predeclared no-tool/no-file smoke for the pinned
+  `openai-responses/default/openai-responses/gpt-5.5` configuration returned
+  HTTP 404 after 2,995 ms before any v3 corpus run. Relay health and model-list
+  reads were healthy and advertised `gpt-5.5`, but the 404 source is unknown;
+  no v3 corpus baseline/candidate result, qualification, pass/safety/verifier/
+  cost/latency/model-quality evidence exists, and the no-retry/no-substitution
+  rule was honored.
+  Task 8.2 remains incomplete and Phase 9 stays locked.
 - **Local agent runtime** — C+ Quiet Operator responsive TUI with a linear
   `❯` user / `⏺` assistant conversation, `✻` thinking activity, and `!` shell
   composer grammar, compact stable tool rows, responsive density,
