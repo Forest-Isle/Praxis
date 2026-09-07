@@ -260,3 +260,34 @@
   deterministically rendered the existing views without changing them. The
   bounded source checkpoint was refreshed only after both passed.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — MODEL_UPDATE_REQUIRED — Issue #733
+
+- Change ID: `issue-733-project-eval-provider-settings`.
+- Observed worktree: `fix/733-project-eval-provider-settings`, based on
+  `origin/main` `d85508d48d3f0fdcd1d71fb4d931439ac04a934b`.
+- Changed bounded-source paths: `package.json`, `src/cli-runtime.ts`, and
+  `src/cli.test.ts`. The `package.json` difference is the inherited 0.70.0
+  checkpoint freshness change and is not attributed to Issue #733.
+- Verdict: Project Eval now captures the caller native provider configuration
+  root and uses it consistently for provider definitions, provider/profile/model
+  selection, credential resolution, identity preflight, and runtime creation,
+  while each case root remains authoritative for runtime settings and local
+  data-plane state. This changes a security-sensitive configuration boundary
+  and the provider-resolution relation rather than only an internal detail.
+- Model update: `cli-composition` records the Project Eval dual-root isolation
+  rule, and `cli-resolves-provider` adds confirmed evidence from
+  `createDefaultProjectEvalRuntimeFactory` alongside `createDefaultService`.
+- Affected architecture node/relation/flow IDs: `cli-composition` and
+  `cli-resolves-provider`; flows none.
+- Compatibility boundary: the public eval factory contract is unchanged;
+  Plugin Eval retains its existing single-root behavior; the per-case root
+  still owns runtime settings, state, transcripts, hooks, plugins, MCP, memory,
+  artifacts, tools, verifiers, and workspace trust state.
+- Qualification boundary: Issue #731 remains an immutable 0/36 failure with
+  no retry, candidate, comparison, or qualification result. Task 8.2 remains
+  incomplete and Phase 9 remains locked.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  `render_model.py` runs produced the same hashes for all 10 views; the
+  established bounded source checkpoint was advanced only after both passed.
+- Unresolved inferred claims: None.

@@ -288,7 +288,15 @@ subscription-cost, duration/latency, quality, security, compatibility,
 efficiency, optimization, baseline, candidate, or qualification conclusion.
 Resolve this settings-forwarding gap under a new change before any separately
 authorized future campaign. Task 8.2 remains incomplete and Phase 9 stays
-locked.
+locked. Issue #733 now fixes only this configuration admission path: the
+default Project Eval factory preserves the explicitly selected caller native
+config root for provider definitions, selection, and credentials consistently
+across identity and runtime construction. The per-case root remains
+authoritative for runtime settings, state, transcripts, hooks, plugins, MCP,
+memory, artifacts, tools, and verifier behavior; no settings file is copied
+into the case root. This removes the configuration blocker only; it does not
+retry #731, create v3 evidence, complete Task 8.2, unlock Phase 9, or authorize
+a future provider request.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the

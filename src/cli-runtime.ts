@@ -280,6 +280,8 @@ import {
   type ProjectEvalDependencies,
 } from './evals/project-eval.js'
 import type {
+  EvalRuntime,
+  EvalRuntimeFactoryOptions,
   EvalRuntimeFactoryIdentityOptions,
   IdentifiedEvalRuntimeFactory,
 } from './evals/eval-contract.js'
@@ -1546,6 +1548,10 @@ export function resolveUnknownCostSidecarPath(
   return join(configRoot, 'state', 'unknown-cost-sidecar.json')
 }
 
+type DefaultServiceOptions = Parameters<CliDependencies['createService']>[0] & {
+  providerConfigRoot?: string
+}
+
 const createDefaultService: CliDependencies['createService'] = async ({
   eventSink,
   requireProvider,
@@ -1570,9 +1576,10 @@ const createDefaultService: CliDependencies['createService'] = async ({
   cwd: requestedCwd,
   sandboxOriginalCwd,
   configRoot: requestedConfigRoot,
+  providerConfigRoot: requestedProviderConfigRoot,
   environment,
   providerEnvironment: requestedProviderEnvironment,
-}) => {
+}: DefaultServiceOptions) => {
   const runtimeEnvironment = requestedProviderEnvironment ?? process.env
   const sandboxEnvironment = { ...runtimeEnvironment, ...environment }
   const claudeVersion = VERIFIED_CLAUDE_SCHEMA_VERSION
@@ -1588,6 +1595,12 @@ const createDefaultService: CliDependencies['createService'] = async ({
   )
   const configRoot = resolveDataPlaneRoot({
     ...(requestedConfigRoot === undefined ? {} : { root: requestedConfigRoot }),
+    environment: runtimeEnvironment,
+  })
+  const providerConfigRoot = resolveDataPlaneRoot({
+    ...(requestedProviderConfigRoot === undefined
+      ? { root: configRoot }
+      : { root: requestedProviderConfigRoot }),
     environment: runtimeEnvironment,
   })
   const claudeStatePath = join(configRoot, 'state.json')
@@ -1750,7 +1763,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   let workspaceProviderSettingsTrusted = false
   if (!hooksOnly && !cli.safeMode && !simpleMode) {
     const assessment = await assessCurrentWorkspaceProviderSelection({
-      configRoot,
+      configRoot: providerConfigRoot,
       statePath: claudeStatePath,
       cwd,
       environment: runtimeEnvironment,
@@ -1770,7 +1783,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
   if (!hooksOnly) {
     try {
       const registry = await resolveProviderRegistry({
-        configRoot,
+        configRoot: providerConfigRoot,
         cwd,
         environment: runtimeEnvironment,
         ...((interactiveModel ?? controls.model) === undefined
@@ -1786,7 +1799,7 @@ const createDefaultService: CliDependencies['createService'] = async ({
         includeProjectSettings: workspaceProviderSettingsTrusted,
         context,
         vault: new ProviderCredentialVault({
-          configRoot,
+          configRoot: providerConfigRoot,
           environment: runtimeEnvironment,
         }),
         anthropicThinking: {
@@ -3139,118 +3152,118 @@ const createDefaultAutoModeCritic: NonNullable<
   return registry.create(model ?? registry.target.modelId)
 }
 
-const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] =
-  {
-    create: async (options) => {
-      let turns = 0
-      let historySessionId: string | undefined
-      if (options.historyFile) {
-        const source = await readFile(options.historyFile, 'utf8')
-        for (const line of source.split(/\r?\n/u)) {
-          if (!line.trim()) continue
-          let entry: unknown
-          try {
-            entry = JSON.parse(line)
-          } catch (error) {
-            throw new Error(
-              `Invalid history_file JSONL: ${options.historyFile}`,
-              {
-                cause: error,
-              },
-            )
-          }
-          if (!entry || typeof entry !== 'object' || Array.isArray(entry))
-            throw new Error(
-              `Invalid history_file entry: ${options.historyFile}`,
-            )
-          const candidate = (entry as Record<string, unknown>).sessionId
-          if (typeof candidate === 'string' && isClaudeSessionId(candidate)) {
-            historySessionId ??= candidate
-          }
-        }
-        if (!historySessionId)
-          throw new Error('history_file must contain a Claude sessionId')
-        const sessionFile = resolveDataPlanePaths({
-          dataPlane: 'native',
-          root: options.configRoot,
-          cwd: options.cwd,
-          sessionId: historySessionId,
-        }).sessionFile
-        await mkdir(dirname(sessionFile), { recursive: true })
-        await copyFile(options.historyFile, sessionFile)
+const createDefaultEvalRuntime = async (
+  options: EvalRuntimeFactoryOptions,
+  providerConfigRoot = options.configRoot,
+): Promise<EvalRuntime> => {
+  let turns = 0
+  let historySessionId: string | undefined
+  if (options.historyFile) {
+    const source = await readFile(options.historyFile, 'utf8')
+    for (const line of source.split(/\r?\n/u)) {
+      if (!line.trim()) continue
+      let entry: unknown
+      try {
+        entry = JSON.parse(line)
+      } catch (error) {
+        throw new Error(`Invalid history_file JSONL: ${options.historyFile}`, {
+          cause: error,
+        })
       }
-      const service = await createDefaultService({
-        eventSink: (event) => {
-          if (event.type === 'state' && event.state === 'awaiting-model')
-            turns += 1
-          options.eventSink(event)
-        },
-        requireProvider: true,
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+        throw new Error(`Invalid history_file entry: ${options.historyFile}`)
+      const candidate = (entry as Record<string, unknown>).sessionId
+      if (typeof candidate === 'string' && isClaudeSessionId(candidate)) {
+        historySessionId ??= candidate
+      }
+    }
+    if (!historySessionId)
+      throw new Error('history_file must contain a Claude sessionId')
+    const sessionFile = resolveDataPlanePaths({
+      dataPlane: 'native',
+      root: options.configRoot,
+      cwd: options.cwd,
+      sessionId: historySessionId,
+    }).sessionFile
+    await mkdir(dirname(sessionFile), { recursive: true })
+    await copyFile(options.historyFile, sessionFile)
+  }
+  const service = await createDefaultService({
+    eventSink: (event) => {
+      if (event.type === 'state' && event.state === 'awaiting-model') turns += 1
+      options.eventSink(event)
+    },
+    requireProvider: true,
+    cwd: options.cwd,
+    configRoot: options.configRoot,
+    providerConfigRoot,
+    environment: {
+      ...options.env,
+      HOME: options.home,
+      USERPROFILE: options.home,
+    },
+    providerEnvironment: process.env,
+    isSessionActionApproved: (call) =>
+      isEvalToolCallPreapproved(call, {
         cwd: options.cwd,
-        configRoot: options.configRoot,
-        environment: {
-          ...options.env,
-          HOME: options.home,
-          USERPROFILE: options.home,
-        },
-        providerEnvironment: process.env,
-        isSessionActionApproved: (call) =>
-          isEvalToolCallPreapproved(call, {
-            cwd: options.cwd,
-            homeDirectory: options.home,
-            allowedTools: options.allowedTools,
-            additionalDirectories: options.addDirs,
-          }),
-        controls: {
-          ...DEFAULT_CLI_CONTROLS,
-          dataPlane: options.dataPlane,
-          sessionPersistence: false,
-          maxTurns: options.maxTurns,
-          pluginDirectories: [...(options.pluginDirectories ?? [])],
-          addDirectories: [...options.addDirs],
-          allowedTools: [...options.allowedTools],
-          disallowedTools: [],
-          tools: [...options.allowedTools],
-          permissionMode: 'dontAsk',
-          ...(options.model ? { model: options.model } : {}),
-          ...(options.provider ? { provider: options.provider } : {}),
-          ...(options.providerProfile
-            ? { providerProfile: options.providerProfile }
-            : {}),
-          ...(options.appendSystemPrompt
-            ? { appendSystemPrompt: options.appendSystemPrompt }
-            : {}),
-        },
-      })
+        homeDirectory: options.home,
+        allowedTools: options.allowedTools,
+        additionalDirectories: options.addDirs,
+      }),
+    controls: {
+      ...DEFAULT_CLI_CONTROLS,
+      dataPlane: options.dataPlane,
+      sessionPersistence: false,
+      maxTurns: options.maxTurns,
+      pluginDirectories: [...(options.pluginDirectories ?? [])],
+      addDirectories: [...options.addDirs],
+      allowedTools: [...options.allowedTools],
+      disallowedTools: [],
+      tools: [...options.allowedTools],
+      permissionMode: 'dontAsk',
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.provider ? { provider: options.provider } : {}),
+      ...(options.providerProfile
+        ? { providerProfile: options.providerProfile }
+        : {}),
+      ...(options.appendSystemPrompt
+        ? { appendSystemPrompt: options.appendSystemPrompt }
+        : {}),
+    },
+  } as DefaultServiceOptions)
+  return {
+    run: async (prompt, signal) => {
+      const result = historySessionId
+        ? await service.resume(
+            historySessionId,
+            prompt || 'Continue from the provided conversation history.',
+            signal,
+          )
+        : await service.run(prompt, signal)
       return {
-        run: async (prompt, signal) => {
-          const result = historySessionId
-            ? await service.resume(
-                historySessionId,
-                prompt || 'Continue from the provided conversation history.',
-                signal,
-              )
-            : await service.run(prompt, signal)
-          return {
-            text: result.text,
-            turns,
-            ...(result.costUsd === undefined
-              ? {}
-              : { costUsd: result.costUsd }),
-            usage: result.usage,
-          }
-        },
-        close: () => service.close?.() ?? Promise.resolve(),
+        text: result.text,
+        turns,
+        ...(result.costUsd === undefined ? {} : { costUsd: result.costUsd }),
+        usage: result.usage,
       }
     },
+    close: () => service.close?.() ?? Promise.resolve(),
+  }
+}
+
+const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] =
+  {
+    create: (options) => createDefaultEvalRuntime(options),
   }
 
-const defaultProjectEvalRuntimeFactory: IdentifiedEvalRuntimeFactory = {
-  create: (options) => defaultPluginEvalRuntimeFactory.create(options),
+const createDefaultProjectEvalRuntimeFactory = (
+  providerConfigRoot: string,
+): IdentifiedEvalRuntimeFactory => ({
+  create: (options) => createDefaultEvalRuntime(options, providerConfigRoot),
   identify: async (options: EvalRuntimeFactoryIdentityOptions) => {
     const environment = process.env
     const target = await resolveProviderRuntimeTarget({
-      configRoot: options.configRoot,
+      configRoot: providerConfigRoot,
       cwd: options.cwd,
       environment,
       ...(options.model === undefined ? {} : { model: options.model }),
@@ -3269,7 +3282,7 @@ const defaultProjectEvalRuntimeFactory: IdentifiedEvalRuntimeFactory = {
       modelId: target.modelId,
     }
   },
-}
+})
 
 const defaultPluginEvalJudge: NonNullable<PluginEvalDependencies['judge']> = {
   vote: async ({ criteria, focus, baseline, model, signal }) => {
@@ -3537,6 +3550,7 @@ export async function resolveInteractiveProviderStartup(options: {
 export function createDefaultDependencies(
   entrypoint: string = fileURLToPath(import.meta.url),
 ): CliDependencies {
+  const projectEvalConfigRoot = resolveDataPlaneRoot()
   const dependencies: CliDependencies = {
     createService: createDefaultService,
     createAutoModeCritic: createDefaultAutoModeCritic,
@@ -3545,10 +3559,12 @@ export function createDefaultDependencies(
       judge: defaultPluginEvalJudge,
     },
     projectEval: {
-      runtimeFactory: defaultProjectEvalRuntimeFactory,
+      runtimeFactory: createDefaultProjectEvalRuntimeFactory(
+        projectEvalConfigRoot,
+      ),
       loadBuildIdentity: () => loadPraxisBuildIdentity(),
       version: VERSION,
-      configRoot: resolveDataPlaneRoot(),
+      configRoot: projectEvalConfigRoot,
     },
     cliPath: entrypoint,
     runInteractive: async ({
