@@ -352,6 +352,36 @@ wrong exports. V4 is frozen but unexecuted: no provider request, baseline,
 candidate, result, or qualification evidence exists. Task 8.2 remains
 incomplete and Phase 9 stays locked.
 
+Issue #742 records the exactly-once v4 relay smoke as a failed-closed
+pre-corpus event. It used clean runtime source
+`git:2dfb43e9ea00b38cbc4ca85ce7c2307042140880`, emitted artifact
+`sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+and `codex-relay/default/codex-responses/gpt-5.6-sol`; the fixed smoke
+configuration was high effort, 32,768 context, 4,096 reserve,
+provider-managed output, no fallback, 30/60/180-second clocks, and no tools.
+Process exit was 1; the terminal result subtype was `success` with `is_error: true`,
+`terminal_reason: api_error`, and HTTP 404 after 1,969 ms (API duration 0 ms).
+There was one attempted turn, zero input/output tokens, zero tools/tool calls,
+zero isolated-workspace entries, and empty stderr. The public redacted error
+was `API Error: 404 Codex Responses provider request failed with HTTP 404`.
+The cause is unestablished; this evidence does not claim an edge, relay,
+upstream, model-route, request-shape, or provider defect. Baseline and
+candidate did not execute; zero of 36 planned runs occurred for each. Provider-
+free preflight passed with clean `npm ci` (0 vulnerabilities), the build
+identity frozen before smoke, and six focused files / 84 tests passed. The
+smoke envelope reported zero input/output token counters, but this is not corpus
+usage; subscription cost is unavailable. No corpus completion request or case
+behavior, mutation-oriented safety, verifier, regression, result aggregate, run
+artifact, comparison, or qualification verdict evidence exists. Smoke stdout
+digest is `sha256:c8c3372f62b252e551b5c6df41720a146c7ccf1c6b35e55850a27e3a03442e3b`;
+stderr is the empty-file digest
+`sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
+and outputs did not contain a credential value. No retry, substitution, or
+result selection occurred. The v4 corpus remains unexecuted. #742 is immutable
+and not retried; separate diagnosis of the unestablished HTTP 404 source and
+new explicit authorization are required for a future v4 campaign. Task 8.2
+remains incomplete and Phase 9 stays locked.
+
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
 production bounded-ripgrep candidate. Both variants pass 4/4 task and safety

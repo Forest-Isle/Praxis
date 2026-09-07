@@ -213,6 +213,11 @@ provider codex-relay`. Project Eval creates an empty per-case
   only permits a separately scoped future evidence process. Exact identities,
   digests, usage, timing, and evidence boundaries are recorded in [Native
   Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md).
+  Issue #742's exactly-once pre-corpus smoke returned HTTP 404 and failed closed;
+  the baseline and candidate did not run, and no qualification exists. No
+  retry, substitution, or result selection occurred. The v4 corpus remains
+  unexecuted, so Task 8.2/Phase 9 remain locked; see [Native Fixture
+  Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md) for exact evidence.
   A
   bounded DeepSeek baseline for
   the exact

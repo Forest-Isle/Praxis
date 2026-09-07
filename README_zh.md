@@ -130,6 +130,10 @@ praxis doctor
   v4 在任何由 v3 结果驱动的修复或重新资格认定之前冻结；Issue #740 未运行任何
   provider/model，也没有产生基线、候选、结果或 qualification 证据。Task 8.2 与
   Phase 9 仍保持锁定；冻结 v4 只为未来另行限定范围的证据流程提供前提。
+  Issue #742 的唯一一次 v4 语料前 smoke 返回 HTTP 404 并失败关闭；基线和候选均未运行，
+  也没有 qualification 结果。未发生重试、替换或结果选择。v4 语料仍未执行，因此
+  Task 8.2/Phase 9 继续锁定；详见 [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md)
+  中的精确证据。
   Issue #731 修正后的无工具、无文件 smoke 在固定 runtime 上选择了
   `codex-relay/default/codex-responses/gpt-5.6-sol`，一回合终态成功，配置工具数为 0、stderr 为 0，隔离 cwd 未发生变更；这只是 provider smoke 证据，不是 v3 语料证据。随后唯一一次 v3 基线在首个 case 的 provider identity preflight 阶段于 810 毫秒后以 1 退出，错误为 `Invalid provider settings: unknown provider codex-relay`。Project Eval 为每个 case 创建空的 `workspace.config` 并传给 production runtime factory，因此 campaign `PRAXIS_HOME` 中的自定义 provider 定义未被看到。基线完成 0/36 次运行，没有 qualification result 或运行产物，也没有接纳或运行 candidate，因此不存在基线/候选回归比较。遵守了不重试、不替换规则；不存在 v3 行为、面向 mutation 的安全、验证器、用量、订阅成本、时长/延迟、质量、安全性、兼容性、效率、优化、基线、候选或 qualification 结论。该 settings 转发缺口必须在新的 change 中解决，之后才能另行授权未来 campaign。Task 8.2 仍未完成，Phase 9 继续锁定。Issue #733 现在只修复这一配置接纳路径：默认 Project Eval factory 会在 identity 和 runtime 构造过程中一致地保留调用方明确选择的 native config root，用于 provider 定义、选择和凭据。每个 case 的 root 仍是 runtime settings、state、transcripts、hooks、plugins、MCP、memory、artifacts、工具和 verifier 行为的权威位置；不会向 case root 复制 settings 文件。这只移除了配置阻塞，不会重试 #731、产生 v3 证据、完成 Task 8.2、解锁 Phase 9，也不会授权未来的 provider 请求。
   Issue #724 预先声明的唯一一次无工具、无文件 smoke 针对固定的
