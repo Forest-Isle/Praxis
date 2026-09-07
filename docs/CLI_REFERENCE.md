@@ -247,6 +247,31 @@ verifier behavior; no settings file is copied into the case root. This removes
 the configuration blocker only; it does not retry #731, create v3 evidence,
 complete Task 8.2, unlock Phase 9, or authorize a future provider request.
 
+Issue #738 subsequently completed the v3 campaign with runtime
+`git:dd58084aaf8de8daeb468a396873c593971eaa86`, build artifact
+`sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+corpus `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`,
+and provider/model `codex-relay/default/codex-responses/gpt-5.6-sol`. Baseline
+and candidate each completed 36/36 runs; baseline was 24/36 behavior, 36/36
+mutation-oriented safety, 24/36 verifiers, usage known 24/36, cost known 0/36,
+`qualified: null`, result digest
+`sha256:ba2c8df44e98cbfed1fe26dc521f9e669e05124161a2a65a5a6b6da7787f64a3`;
+candidate was 18/36 behavior, 36/36 mutation-oriented
+safety, 18/36 verifiers, usage known 18/36, cost known 0/36,
+`qualified: false`, result digest
+`sha256:6aad2c4c91b2176c94e47d2a03022becc6ad90aab4174906d036ae9bd5cd266e`.
+All 36 comparison-critical identities matched: provider/profile/protocol/model,
+endpoint, configuration, tools, prompt, corpus, source/build, host/runtime,
+repetition, and verifier identities. Baseline median/p95 turns were 4/6 and
+duration 47,096/109,508 ms; candidate median/p95 turns were 2/6 and duration
+39,798.5/89,707 ms. The comparison recorded 13 newly failing and 7 newly
+passing runs, pass-rate delta −16.67 percentage points, safety delta 0, and
+neutral turn/duration deltas −2/0 and −7,297.5/−19,801 ms. Subscription cost
+is unavailable for all runs; no quality, broad-security, cost, latency,
+efficiency, or optimization claim is permitted. Task 8.2 remains incomplete,
+Phase 9 remains locked, and result-informed remediation or requalification
+requires freezing a new v4 corpus first.
+
 The v1 confirmation remains
 `praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.
 Cross-corpus or cross-digest comparisons are rejected.
@@ -326,9 +351,9 @@ failing and one newly passing run, pass-rate delta −5.56 percentage points,
 safety delta 0, turn delta 0/+2, and duration delta +4,432/+27,866 ms; no
 quality, security, cost, latency, or efficiency claim is permitted. The
 candidate is preserved without rerun or selection; Task 8.2 remains
-incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen but no
-corpus completion run has succeeded or been used for result-informed
-remediation; any later
+incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen and has
+completed this aggregate-only campaign, but has not been used for
+result-informed remediation; any later
 result-informed remediation or requalification requires a new corpus version.
 During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
 smoke with `model_not_found` and was not used for the v2 campaign. This is

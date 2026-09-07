@@ -316,3 +316,35 @@
   validation and render evidence; the post-checkpoint bounded assessment
   reported `added=0`, `modified=0`, and `deleted=0`.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #738
+
+- Change ID: `issue-738-held-out-v3-requalification`.
+- Observed worktree: `test/738-held-out-v3-after-provider-root-fix`, based
+  exactly on `origin/main` `dd58084aaf8de8daeb468a396873c593971eaa86`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records the terminal aggregate-only result of the one
+  authorized held-out-v3 baseline/candidate campaign. It changes no CLI or
+  qualification contract, runtime boundary, persistence/data shape, provider
+  integration, registration, deployment unit, relation, or modeled critical
+  flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for `CONTEXT.md`, `docs/ARCHITECTURE.md`,
+  `docs/adr`, `package.json`, `scripts`, and `src`.
+- Qualification boundary: all 36 comparison-critical identities matched across
+  provider/profile/protocol/model, endpoint, configuration, tools, prompt,
+  corpus, source/build, host/runtime, repetition, and verifier identity.
+  Baseline and candidate each completed 36/36 runs; the candidate recorded
+  18/36 behavior and verifier satisfactions, 13 newly failing runs, 7 newly
+  passing runs, and `qualified: false`. Task 8.2 remains incomplete, Phase 9
+  remains locked, and result-informed remediation or requalification requires
+  freezing a new v4 corpus first.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  `render_model.py` runs rendered 10 views into temporary output with
+  byte-identical hashes, without changing the canonical model or any tracked
+  view. The bounded source checkpoint was refreshed only after validation and
+  rendering, and the post-checkpoint assessment remained `added=0`,
+  `modified=0`, `deleted=0`.
+- Unresolved inferred claims: None.

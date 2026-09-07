@@ -71,9 +71,25 @@ these exact matching path/token/digest pairs:
   `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
 
 `praxis-held-out-v3` consists of the new `frame-codec`, `graph-craft`, and
-`route-forge` repositories. It is frozen but unexecuted and supplies no
-baseline, candidate, or qualification evidence; Task 8.2 and Phase 9 remain
-locked.
+`route-forge` repositories. Issue #738 completed its aggregate-only campaign
+with pinned runtime `git:dd58084aaf8de8daeb468a396873c593971eaa86`, build
+artifact `sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+and `codex-relay/default/codex-responses/gpt-5.6-sol`. Baseline and candidate
+each completed 36/36 runs: baseline 24/36 behavior, 36/36 mutation-oriented
+safety, 24/36 verifiers, usage known 24/36, cost known 0/36, `qualified: null`;
+candidate 18/36 behavior, 36/36 mutation-oriented safety, 18/36 verifiers,
+usage known 18/36, cost known 0/36, `qualified: false`.
+All 36 comparison-critical identities matched: provider/profile/protocol/model,
+endpoint, configuration, tools, prompt, corpus, source/build, host/runtime,
+repetition, and verifier identities. Baseline median/p95 turns were 4/6 and
+duration 47,096/109,508 ms; candidate median/p95 turns were 2/6 and duration
+39,798.5/89,707 ms. The comparison had 13 newly failing and 7 newly passing
+runs, pass-rate delta −16.67 percentage
+points, safety delta 0, and neutral turn/duration deltas −2/0 and
+−7,297.5/−19,801 ms. Subscription cost is unavailable for all runs; no
+quality, broad-security, cost, latency, efficiency, or optimization claim is
+permitted. Task 8.2 and Phase 9 remain locked; result-informed remediation or
+requalification requires a new v4 corpus first.
 
 Corpus identity must be a safe `praxis-held-out-vN` ID (positive integer with
 no leading zero) whose `N` matches the manifest version; malformed, unsafe,
@@ -296,7 +312,26 @@ authoritative for runtime settings, state, transcripts, hooks, plugins, MCP,
 memory, artifacts, tools, and verifier behavior; no settings file is copied
 into the case root. This removes the configuration blocker only; it does not
 retry #731, create v3 evidence, complete Task 8.2, unlock Phase 9, or authorize
-a future provider request.
+a future provider request. Issue #738 subsequently completed the v3
+aggregate-only campaign with runtime `git:dd58084aaf8de8daeb468a396873c593971eaa86`,
+build artifact `sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+corpus `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`,
+and provider/model `codex-relay/default/codex-responses/gpt-5.6-sol`. Baseline
+and candidate each completed 36/36 runs: baseline 24/36 behavior, 36/36
+mutation-oriented safety, 24/36 verifiers, usage known 24/36, cost known 0/36,
+`qualified: null`; candidate 18/36 behavior, 36/36 mutation-oriented safety,
+18/36 verifiers, usage known 18/36, cost known 0/36, `qualified: false`.
+All 36 comparison-critical identities matched: provider/profile/protocol/model,
+endpoint, configuration, tools, prompt, corpus, source/build, host/runtime,
+repetition, and verifier identities. Baseline median/p95 turns were 4/6 and
+duration 47,096/109,508 ms; candidate median/p95 turns were 2/6 and duration
+39,798.5/89,707 ms. The comparison recorded 13 newly failing and 7 newly
+passing runs, pass-rate delta
+−16.67 percentage points, safety delta 0, and neutral turn/duration deltas
+−2/0 and −7,297.5/−19,801 ms. Subscription cost is unavailable for all runs;
+no quality, broad-security, cost, latency, efficiency, or optimization claim is
+permitted. Task 8.2 remains incomplete and Phase 9 stays locked; any
+result-informed remediation or requalification requires a new v4 corpus first.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
@@ -322,8 +357,8 @@ parity or external qualification.
 - Native-only architecture and clean-room TUI reference behavior remain intact.
 - All required local and protected CI gates pass.
 - The held-out corpus contract reports three repositories, twelve tasks, and
-  36 planned runs; the preserved v2 campaign remains aggregate-only in this
-  contract, with Task 8.2 incomplete and Phase 9 locked.
+  36 planned runs; the preserved v2 and Issue #738 v3 campaigns remain
+  aggregate-only in this contract, with Task 8.2 incomplete and Phase 9 locked.
 - The qualification implementation and hermetic evidence are complete, and a
   bounded DeepSeek baseline plus the preserved v2 comparison are recorded.
   Fixture tests and these baselines must not be interpreted as universal
