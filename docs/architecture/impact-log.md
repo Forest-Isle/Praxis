@@ -147,3 +147,32 @@
 - Validation: `validate_model.py` reported `model valid`; `render_model.py`
   deterministically rendered the existing 10 views without changing them.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Issue #722
+
+- Change ID: `issue-722-held-out-v3-corpus`.
+- Reviewed revision: `b31de0a0c2f3a423788ce1d92a7fdf785349e9bf` on
+  `test/722-held-out-v3`, based on `origin/main`
+  `1e911cba24f275020e57e1133a6cebb516b557b6`.
+- Changed bounded-source paths: `package.json` and
+  `src/evals/held-out-corpus-v3.test.ts`. The full reviewed change also adds
+  the frozen `praxis-held-out-v3` test corpus and synchronizes its project
+  documentation.
+- Verdict: the change adds deterministic evaluation assets and extends the
+  held-out contract test command. It does not change the generic corpus loader,
+  qualification command, installed `bin`, runtime boundary, public CLI
+  contract, persistence/data shape, provider integration, registration,
+  deployment unit, or modeled critical flow.
+- Evidence assessment: `collect_changes.py` reported `added=1`, `modified=1`,
+  and `deleted=0` for the checkpointed include scope. The canonical model's
+  `package.json` evidence refers only to the unchanged `bin` field;
+  `loadHeldOutCorpus` and `executeHeldOutQualificationCommand` are unchanged.
+- Qualification boundary: v3 has 12 repository-qualified tasks and 36 planned
+  runs but remains unexecuted; it supplies no provider, baseline, candidate,
+  qualification, or optimization evidence. Task 8.2 is incomplete and Phase 9
+  remains locked.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing 10 views without changing them; the
+  bounded source checkpoint was advanced after both passed.
+- Unresolved inferred claims: None.

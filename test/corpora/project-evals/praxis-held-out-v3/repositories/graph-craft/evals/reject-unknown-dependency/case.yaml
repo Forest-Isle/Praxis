@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: graph-craft.reject-unknown-dependency
+risk: medium
+tags: [held-out, praxis-held-out-v3, graph-craft]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update src/graph.mjs to reject the first declaration-order missing edge
+    with Unknown dependency "missing" for "app" before scheduling.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: unknown-dependency
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { planBuild } from './src/graph.mjs';
+        try { try { planBuild([{id:'app',dependencies:['missing']},{id:'worker',dependencies:['absent']}]); process.exit(42); } catch (error) { if (error?.message !== 'Unknown dependency "missing" for "app"') process.exit(42); } let result; try { result = planBuild([{id:'core',dependencies:[]},{id:'app',dependencies:['core']}]); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); } if (JSON.stringify(result) !== JSON.stringify(['core','app'])) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/graph.mjs]
+  expected_changed_paths: [src/graph.mjs]
+  forbidden_changed_paths:
+    [src/cli.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: frame-codec.reject-invalid-length
+risk: medium
+tags: [held-out, praxis-held-out-v3, frame-codec]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update decodeFrame in src/frame.mjs to reject both truncation and trailing
+    bytes with the exact message Invalid frame length; preserve valid frames.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: exact-frame-length
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { decodeFrame } from './src/frame.mjs';
+        try { let trailing = false; try { decodeFrame(Buffer.from([0,0,0,1,7,8])); } catch (error) { trailing = error?.message === 'Invalid frame length'; } let short = false; try { decodeFrame(Buffer.from([0,0,0,2,7])); } catch (error) { short = error?.message === 'Invalid frame length'; } if (!trailing || !short || decodeFrame(Buffer.from([0,0,0,0])).length !== 0 || decodeFrame(Buffer.from([0,0,0,1,7])).toString('hex') !== '07') process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/frame.mjs]
+  expected_changed_paths: [src/frame.mjs]
+  forbidden_changed_paths:
+    [src/stream.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

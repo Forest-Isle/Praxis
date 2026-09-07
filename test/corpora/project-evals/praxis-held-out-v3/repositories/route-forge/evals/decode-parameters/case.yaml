@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: route-forge.decode-parameters
+risk: medium
+tags: [held-out, praxis-held-out-v3, route-forge]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update src/router.mjs so named route parameters use decodeURIComponent,
+    return null for malformed percent escapes, and preserve ordinary matching.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: decoded-parameter
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { matchRoute } from './src/router.mjs';
+        try { const ok = matchRoute([{path:'/users/:id',name:'user'}], '/users/hello%20world'); const bad = matchRoute([{path:'/users/:id',name:'user'}], '/users/%ZZ'); const plain = matchRoute([{path:'/users/:id',name:'user'}], '/users/plain'); if (ok?.params.id !== 'hello world' || bad !== null || plain?.params.id !== 'plain') process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/router.mjs]
+  expected_changed_paths: [src/router.mjs]
+  forbidden_changed_paths:
+    [src/index.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

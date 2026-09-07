@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: route-forge.fix-static-precedence
+risk: medium
+tags: [held-out, praxis-held-out-v3, route-forge]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update src/router.mjs so an all-static route wins over a competing
+    parameter route regardless of registration order, without mutating routes.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: static-precedence
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { matchRoute } from './src/router.mjs';
+        try { const routes = [{path:'/:id',name:'param'},{path:'/new',name:'static'}]; const before = JSON.stringify(routes); const first = matchRoute(routes, '/new'); const second = matchRoute(routes, '/42'); if (first?.name !== 'static' || second?.name !== 'param' || JSON.stringify(routes) !== before) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/router.mjs]
+  expected_changed_paths: [src/router.mjs]
+  forbidden_changed_paths:
+    [src/index.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

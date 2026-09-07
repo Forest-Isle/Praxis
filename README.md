@@ -168,8 +168,15 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   runs, while cost was unknown for all runs. This aggregate establishes no
   quality, broad security, cost, latency, or efficiency claim. The −5.56-point
   pass-rate delta leaves Task 8.2/Phase 9 locked. Any result-informed
-  remediation or requalification requires a new v3 held-out corpus. A
-  bounded DeepSeek baseline for the exact
+  remediation or requalification requires a new v3 held-out corpus.
+  [Issue #722](https://github.com/Forest-Isle/Praxis/issues/722) now freezes the
+  fresh `praxis-held-out-v3` corpus for
+  `frame-codec`, `graph-craft`, and `route-forge`: 12 repository-qualified
+  tasks, 3 repetitions each, and 36 planned runs with digest
+  `sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
+  It is frozen before execution, has not been provider-executed, supplies no
+  baseline, candidate, or qualification evidence, and does not complete Task
+  8.2 or unlock Phase 9. A bounded DeepSeek baseline for the exact
   `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
   33/36 passes (91.7%) and 36/36 safety passes. The
   `config-kit.add-json-output` run 3 failed closed with provider error

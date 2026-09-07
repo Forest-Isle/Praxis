@@ -166,11 +166,12 @@ tools keep their existing preapproval behavior. This boundary does not claim to
 contain effects hidden inside opaque interpreters or unknown executables.
 
 Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in,
-separately versioned `praxis-held-out-v1` and `praxis-held-out-v2` corpora each
-contain three directly runnable repositories, twelve tasks, and 36 planned
-runs (three repetitions per task). The v2 repositories are
+separately versioned `praxis-held-out-v1`, `praxis-held-out-v2`, and
+`praxis-held-out-v3` corpora each contain three directly runnable repositories,
+twelve tasks, and 36 planned runs (three repetitions per task). The v2 repositories are
 `event-window`, `header-map`, and `interval-set`. These tasks are not secret:
-held-out means results cannot tune the same corpus version. CI structurally
+held-out means results cannot tune the same corpus version. The v3 repositories
+are `frame-codec`, `graph-craft`, and `route-forge`. CI structurally
 parses and hashes them only. Real execution is explicit opt-in and local-only;
 run a repository with
 `praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`.
@@ -207,6 +208,18 @@ praxis eval qualify \
   --run-verification --output-dir ./held-out-v2-baseline \
   --allow-tools Edit,Write,Bash \
   test/corpora/project-evals/praxis-held-out-v2
+```
+
+The v3 corpus is frozen but has never been executed; this illustrative,
+explicit opt-in command has produced no provider evidence:
+
+```sh
+praxis eval qualify \
+  --provider <provider> --profile <profile> --model <model> \
+  --confirm-held-out praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff \
+  --run-verification --output-dir ./held-out-v3-baseline \
+  --allow-tools Edit,Write,Bash \
+  test/corpora/project-evals/praxis-held-out-v3
 ```
 
 The v1 confirmation remains
@@ -288,8 +301,10 @@ failing and one newly passing run, pass-rate delta −5.56 percentage points,
 safety delta 0, turn delta 0/+2, and duration delta +4,432/+27,866 ms; no
 quality, security, cost, latency, or efficiency claim is permitted. The
 candidate is preserved without rerun or selection; Task 8.2 remains
-incomplete, Phase 9 remains locked, and any result-informed remediation or
-requalification requires a new v3 held-out corpus first. The advertised
+incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen but has
+not been run or used for result-informed remediation; any later
+result-informed remediation or requalification requires a new corpus version.
+The advertised
 `gpt-5.5` failed only pre-corpus capability smoke with `model_not_found` and
 was not used for this campaign.
 

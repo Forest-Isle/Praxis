@@ -1,0 +1,34 @@
+schema_version: '1.1'
+name: route-forge.add-terminal-splat
+risk: medium
+tags: [held-out, praxis-held-out-v3, route-forge]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Extend src/router.mjs so matchRoute supports a named terminal *rest splat,
+    capturing and percent-decoding the remaining path while preserving existing
+    static and parameter matching; splats are valid only as the terminal pattern
+    segment, and malformed escapes must return null.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: terminal-splat
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { matchRoute } from './src/router.mjs';
+        try { const result = matchRoute([{path:'/assets/*rest',name:'assets'}], '/assets/css/app%20icon.svg'); const malformed = matchRoute([{path:'/assets/*rest',name:'assets'}], '/assets/%ZZ'); const nonTerminal = matchRoute([{path:'/assets/*rest/edit',name:'invalid'}], '/assets/css/edit'); const parameter = matchRoute([{path:'/users/:id',name:'user'}], '/users/plain'); if (result?.name !== 'assets' || result.params.rest !== 'css/app icon.svg' || malformed !== null || nonTerminal !== null || parameter?.params.id !== 'plain') process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/router.mjs]
+  expected_changed_paths: [src/router.mjs]
+  forbidden_changed_paths:
+    [src/index.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: frame-codec.add-encode-frame
+risk: medium
+tags: [held-out, praxis-held-out-v3, frame-codec]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Add encodeFrame(payload) to src/frame.mjs. It must return a new Buffer with
+    a four-byte unsigned big-endian length prefix and copied Buffer/Uint8Array bytes.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: encode-frame
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import * as frameModule from './src/frame.mjs';
+        try { if (typeof frameModule.encodeFrame !== 'function') process.exit(42); const payload = Uint8Array.from([0,255,4]); const frame = frameModule.encodeFrame(payload); payload[0] = 9; const bufferFrame = frameModule.encodeFrame(Buffer.from([5,6])); if (!Buffer.isBuffer(frame) || frame.length !== 7 || frame.readUInt32BE(0) !== 3 || frame[4] !== 0 || frame[5] !== 255 || frame[6] !== 4 || !Buffer.isBuffer(bufferFrame) || bufferFrame.length !== 6 || bufferFrame.readUInt32BE(0) !== 2 || bufferFrame[4] !== 5 || bufferFrame[5] !== 6) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/frame.mjs]
+  expected_changed_paths: [src/frame.mjs]
+  forbidden_changed_paths:
+    [src/stream.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

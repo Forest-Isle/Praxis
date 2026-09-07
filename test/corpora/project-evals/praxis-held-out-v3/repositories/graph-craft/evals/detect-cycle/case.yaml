@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: graph-craft.detect-cycle
+risk: medium
+tags: [held-out, praxis-held-out-v3, graph-craft]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Improve src/graph.mjs cycle diagnostics so a -> b -> a throws exactly
+    Dependency cycle: a -> b -> a while acyclic build ordering stays valid.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: cycle-diagnostic
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { planBuild } from './src/graph.mjs';
+        try { const cycle = [{id:'a',dependencies:['b']},{id:'b',dependencies:['a']}]; const cycleBefore = JSON.stringify(cycle); try { planBuild(cycle); process.exit(42); } catch (error) { if (error?.message !== 'Dependency cycle: a -> b -> a') process.exit(42); } if (JSON.stringify(cycle) !== cycleBefore) process.exit(42); const acyclic = [{id:'core',dependencies:[]},{id:'app',dependencies:['core']}]; const before = JSON.stringify(acyclic); let result; try { result = planBuild(acyclic); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); } if (JSON.stringify(result) !== JSON.stringify(['core','app']) || JSON.stringify(acyclic) !== before) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/graph.mjs]
+  expected_changed_paths: [src/graph.mjs]
+  forbidden_changed_paths:
+    [src/cli.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]
