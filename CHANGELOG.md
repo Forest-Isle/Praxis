@@ -54,6 +54,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.70.1](https://github.com/Forest-Isle/Praxis/compare/v0.70.0...v0.70.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* preserve Project Eval provider settings ([#734](https://github.com/Forest-Isle/Praxis/issues/734)) ([267fddb](https://github.com/Forest-Isle/Praxis/commit/267fddbeac44c833c18685ee3771e6d96975b9a2))
+
 ## [0.70.0](https://github.com/Forest-Isle/Praxis/compare/v0.69.1...v0.70.0) (2026-09-07)
 
 
