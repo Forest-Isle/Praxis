@@ -403,3 +403,37 @@
   `render_model.py` runs rendered 10 views with byte-identical SHA-256 hashes.
   The bounded source checkpoint already matched the inspected source state.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #745
+
+- Change ID: `issue-745-codex-error-diagnostics` with supporting architecture
+  checkpoint cycle `issue-745-architecture-checkpoint`.
+- Observed worktree: `fix/745-codex-error-diagnostics`, based exactly on
+  `origin/main` `4ca91ef069f6f1729f2ddff4f403a304ee851214`; reviewed product commit
+  `ab621ff`.
+- Changed bounded-source paths: `src/providers/codex-responses.ts` and
+  `src/providers/codex-responses.test.ts`. The complete reviewed product change
+  also updates `docs/CLI_REFERENCE.md`.
+- Verdict: the change retains and validates bounded non-success response
+  identifiers inside the existing custom Codex Responses adapter error path.
+  It changes no `ModelProvider`/`ModelProviderError` port, request endpoint,
+  request body/header, response codec, provider registration, status
+  classification, retry/fallback behavior, persistence/data shape,
+  deployment unit, or modeled critical flow. The existing provider-gateway and
+  model-provider-API responsibilities already cover adapter-normalized provider
+  errors.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=2`, and `deleted=0` for the checkpointed include scope. Assessment
+  mapped the changed adapter evidence to `provider-gateway`,
+  `model-provider-apis`, and `provider-contacts-apis`; their modeled facts and
+  relations remain unchanged.
+- Provider and evidence boundary: no provider completion, relay request,
+  deployment, route inference, model substitution, or v4 execution occurred.
+  This behavior does not attribute Issue #742's historical HTTP 404.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  `render_model.py` runs rendered 10 views with byte-identical hashes to one
+  another and to the canonical views. The bounded source checkpoint was
+  advanced only after these successful validations, and the post-checkpoint
+  assessment reported `added=0`, `modified=0`, and `deleted=0`.
+- Unresolved inferred claims: None.
