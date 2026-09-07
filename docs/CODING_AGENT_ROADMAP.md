@@ -503,9 +503,12 @@ local-only. Issue #722 adds the frozen `praxis-held-out-v3` corpus for
 `frame-codec`, `graph-craft`, and `route-forge`, with 12 tasks, 3 repetitions,
 36 planned runs, and digest
 `sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
-It is frozen before provider execution and remains unexecuted; it supplies no
-v3 corpus provider-result, baseline/candidate, qualification, or remediation
-evidence.
+It was frozen before provider execution. Issue #738 subsequently completed the
+terminal aggregate-only v3 campaign under the pinned runtime
+`git:dd58084aaf8de8daeb468a396873c593971eaa86`, emitted artifact
+`sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+the corpus digest above, and
+`codex-relay/default/codex-responses/gpt-5.6-sol` provider/model identity.
 Issue #731's corrected no-tool/no-file smoke selected
 `codex-relay/default/codex-responses/gpt-5.6-sol` on the pinned runtime and
 returned terminal success in one turn with zero configured tools, zero stderr,
@@ -529,9 +532,9 @@ root for provider definitions, selection, and credentials consistently across
 identity and runtime construction. The per-case root remains authoritative for
 runtime settings, state, transcripts, hooks, plugins, MCP, memory, artifacts,
 tools, and verifier behavior; no settings file is copied into the case root.
-This removes the configuration blocker only. It does not retry #731, create v3
-evidence, complete Task 8.2, unlock Phase 9, or authorize a future provider
-request.
+This removes the configuration blocker only. It does not retry #731 or
+authorize a future provider request. Issue #738 is the separately authorized
+v3 campaign described under Task 8.2 below.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
@@ -597,10 +600,10 @@ for every run in both sets. The comparison recorded three newly failing and one
 newly passing run, pass-rate −5.56 percentage points, safety 0, turns 0/+2,
 and duration +4,432/+27,866 ms. These are neutral evidence only and establish
 no quality, security, cost, latency, or efficiency claim. The candidate remains
-preserved without rerun or selection. Issue #722 supplies the fresh frozen v3
-corpus, but it remains unexecuted; no result-informed remediation or
-requalification has occurred, so Task 8.2 is incomplete and Phase 9 remains
-locked. During #720, the advertised `gpt-5.5` failed the earlier pre-corpus
+preserved without rerun or selection. Issue #722 supplied the fresh frozen v3
+corpus; Issue #738 later completed its aggregate-only campaign. No
+result-informed remediation has occurred, so Task 8.2 is incomplete and Phase
+9 remains locked. During #720, the advertised `gpt-5.5` failed the earlier pre-corpus
 capability smoke with `model_not_found` and was not used for the v2 campaign.
 This is separate from the later #724 preflight below. Issue #724 then ran the
 one predeclared no-tool/no-file smoke for the
@@ -620,6 +623,38 @@ a v3 corpus run; the later Issue #731 baseline preflight stopped before any
 corpus completion request, so no v3 qualification verdict,
 pass/safety/verifier/cost/latency/model-quality evidence exists. Task
 8.2 remains incomplete and does not unlock Phase 9; Phase 9 stays locked.
+
+Issue #738 completed the v3 baseline/candidate campaign with matching
+comparison identities, pinned runtime `git:dd58084aaf8de8daeb468a396873c593971eaa86`,
+emitted artifact `sha256:f6e99df40f107902d2670c0e6d6a783f980371cbc464ff8e0f90483c7bd56c41`,
+corpus `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`,
+and `codex-relay/default/codex-responses/gpt-5.6-sol`. The fixed configuration
+was high effort, 32,768 context, 4,096 reserve, provider-managed output
+limit, no fallback, 30/60/180-second connect/idle/absolute clocks,
+`Edit,Write,Bash`, verifier enabled, three repetitions, one baseline, and one
+candidate. A single smoke completed once with terminal success; this admits
+execution but is not corpus-quality evidence. Baseline: 36/36 complete,
+24/36 behavior, 36/36 mutation-oriented safety, 24/36 required verifiers,
+usage known 24/36, cost known 0/36, `qualified: null`, result digest
+`sha256:ba2c8df44e98cbfed1fe26dc521f9e669e05124161a2a65a5a6b6da7787f64a3`.
+Candidate: 36/36 complete, 18/36 behavior, 36/36 mutation-oriented safety,
+18/36 required verifiers, usage known 18/36, cost known 0/36,
+`qualified: false`, result digest
+`sha256:6aad2c4c91b2176c94e47d2a03022becc6ad90aab4174906d036ae9bd5cd266e`.
+All 36 comparison-critical identities matched: provider/profile/protocol/model,
+endpoint, configuration, tools, prompt, corpus, source/build, host/runtime,
+repetition, and verifier identities. Baseline median/p95 turns were 4/6 and
+duration 47,096/109,508 ms; candidate median/p95 turns were 2/6 and duration
+39,798.5/89,707 ms. The comparison recorded 13 newly failing and 7 newly
+passing runs, pass-rate
+66.67% to 50.00% (−16.67 percentage points), safety delta 0, and neutral
+median/p95 turn deltas −2/0 and duration deltas −7,297.5/−19,801 ms. These
+results fail the zero-new-regression, non-regressing pass-rate, and
+every-verifier gates; subscription cost is unavailable for all runs, so no
+quality, broad-security, cost, latency, efficiency, or optimization claim is
+permitted. Task 8.2 remains incomplete and Phase 9 stays locked. Any
+result-informed remediation or requalification requires freezing a new v4
+corpus first.
 
 ## Phase 9 — Measured coding policy
 

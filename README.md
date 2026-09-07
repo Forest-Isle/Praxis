@@ -179,7 +179,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   `frame-codec`, `graph-craft`, and `route-forge`: 12 repository-qualified
   tasks, 3 repetitions each, and 36 planned runs with digest
   `sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
-  The corpus is frozen before execution. The corrected Issue #731 no-tool/no-file smoke selected
+  The corpus was frozen before the campaign. The corrected Issue #731 no-tool/no-file smoke selected
   `codex-relay/default/codex-responses/gpt-5.6-sol` on the pinned runtime and
   returned terminal success in one turn with zero configured tools, zero stderr,
   and no isolated-cwd mutation; this is provider smoke evidence, not v3 corpus
@@ -187,24 +187,25 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   first-case provider identity preflight with `Invalid provider settings: unknown
 provider codex-relay`. Project Eval creates an empty per-case
   `workspace.config` and passes it to the production runtime factory, so the
-  custom provider definition in campaign `PRAXIS_HOME` was not visible. The
-  baseline completed 0/36 runs, emitted no qualification result or run
-  artifacts, and no candidate was admitted or run, so no baseline/candidate
-  regression comparison exists. The no-retry/no-substitution contract was
-  honored; there is no v3 behavior, mutation-oriented safety,
-  verifier, usage, subscription-cost, duration/latency, quality, security,
-  compatibility, efficiency, optimization, baseline, candidate, or
-  qualification conclusion. The settings-forwarding gap must be resolved under
-  a new change before any separately authorized future campaign. Task 8.2
-  remains incomplete and Phase 9 stays locked. Issue #733 now fixes only this
+  custom provider definition in campaign `PRAXIS_HOME` was not visible. This
+  historical #731 baseline completed 0/36 runs and admitted no candidate; its
+  no-retry/no-substitution contract was honored. Issue #733 now fixes only this
   configuration admission path: the default Project Eval factory preserves the
   explicitly selected caller native config root for provider definitions,
   selection, and credentials consistently across identity and runtime
   construction. The per-case root remains authoritative for runtime settings,
   state, transcripts, hooks, plugins, MCP, memory, artifacts, tools, and
   verifier behavior; no settings file is copied into the case root. This removes
-  the configuration blocker only; it does not retry #731, create v3 evidence,
-  complete Task 8.2, unlock Phase 9, or authorize a future provider request. A
+  the configuration blocker only; it does not retry #731 or authorize a future
+  provider request. Issue #738 completed the v3 campaign: candidate behavior
+  and verifier satisfaction fell from 24/36 to 18/36, with 13 newly failing
+  runs, while mutation-oriented safety remained 36/36. Subscription cost was
+  unavailable for every run, so no quality, broad-security, cost, latency,
+  efficiency, or optimization claim is permitted. Task 8.2 and Phase 9 remain
+  locked; result-informed remediation or requalification requires freezing a
+  new v4 corpus first. Exact identities, digests, usage, timing, and evidence
+  boundaries are recorded in [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md).
+  A
   bounded DeepSeek baseline for
   the exact
   `anthropic/default/deepseek-v4-flash` pin completed 36/36 runs with
