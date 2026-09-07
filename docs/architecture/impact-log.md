@@ -105,3 +105,21 @@
 - Qualification boundary: no held-out corpus changed, no v2 real-provider run
   occurred, and Task 8.2 and Phase 9 remain locked.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — NO_MODEL_CHANGE — Release 0.69.1 checkpoint catch-up
+
+- Change ID: `release-0691-architecture-checkpoint-catchup`.
+- Reviewed revision: `12b1ee6385af5b44620dacf57a70067018a1d5c6`.
+- Changed bounded-source path: `package.json` only, inherited from release PR
+  #719 after the Issue #717 architecture checkpoint.
+- Verdict: #719 changed only the package version from 0.69.0 to 0.69.1. The
+  `bin` entry, installed CLI process, startup relation, packaged-runtime flow,
+  runtime boundaries, contracts, integrations, and deployment facts are
+  unchanged.
+- Inspected architecture evidence: `installed-cli-process`,
+  `installed-process-starts-cli`, and `packaged-native-runtime` continue to use
+  the unchanged `package.json` `bin` wiring.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing 10 views without changing them.
+- Unresolved inferred claims: None.
