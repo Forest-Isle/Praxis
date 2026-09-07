@@ -37,15 +37,132 @@ function failure(
   )
 }
 
-function statusFailure(status: number): ModelProviderError {
+function statusFailure(
+  status: number,
+  diagnostics?: string,
+): ModelProviderError {
+  let result: ModelProviderError
   if (status === 401 || status === 403)
-    return failure('authentication_failed', false, status)
-  if (status === 402) return failure('billing_error', false, status)
-  if (status === 408) return failure('timeout', true, status)
-  if (status === 429) return failure('rate_limit', true, status)
-  if (status === 529) return failure('overloaded', true, status)
-  if (status >= 500) return failure('server_error', true, status)
-  return failure('invalid_request', false, status)
+    result = failure('authentication_failed', false, status)
+  else if (status === 402) result = failure('billing_error', false, status)
+  else if (status === 408) result = failure('timeout', true, status)
+  else if (status === 429) result = failure('rate_limit', true, status)
+  else if (status === 529) result = failure('overloaded', true, status)
+  else if (status >= 500) result = failure('server_error', true, status)
+  else result = failure('invalid_request', false, status)
+  if (diagnostics !== undefined)
+    return new ModelProviderError(`${result.message} (${diagnostics})`, {
+      retryable: result.retryable,
+      ...(result.kind === undefined ? {} : { kind: result.kind }),
+      ...(result.status === undefined ? {} : { status: result.status }),
+    })
+  return result
+}
+
+const safeDiagnostic = /^[A-Za-z0-9][A-Za-z0-9._-]*$/u
+
+function safeValue(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    safeDiagnostic.test(value)
+  )
+}
+
+function parseErrorDiagnostics(
+  body: string | undefined,
+  headers: Headers,
+): string | undefined {
+  let parsed: unknown
+  if (body !== undefined) {
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      parsed = undefined
+    }
+  }
+  const object =
+    typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined
+  const nested =
+    object?.error !== null &&
+    typeof object?.error === 'object' &&
+    !Array.isArray(object?.error)
+      ? (object?.error as Record<string, unknown>)
+      : undefined
+  const values: Array<[string, unknown]> = [
+    ['type', nested === undefined ? object?.type : nested.type],
+    ['code', nested === undefined ? object?.code : nested.code],
+    ['request_id', headers.get('x-request-id')],
+    ['cf_ray', headers.get('cf-ray')],
+  ]
+  const seen = new Set<string>()
+  const admitted: string[] = []
+  for (const [key, raw] of values) {
+    if (!safeValue(raw) || seen.has(raw)) continue
+    seen.add(raw)
+    admitted.push(`${key}=${raw}`)
+  }
+  return admitted.length === 0 ? undefined : admitted.join(', ')
+}
+
+async function readErrorBody(
+  response: Response,
+  maxBytes: number,
+  onChunk: () => void,
+): Promise<string | undefined> {
+  const reader = response.body?.getReader()
+  if (reader === undefined) return undefined
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let ended = false
+  let failed = false
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) {
+        ended = true
+        break
+      }
+      if (next.value.byteLength > 0) onChunk()
+      if (total + next.value.byteLength > maxBytes) {
+        if (total < maxBytes) chunks.push(next.value.slice(0, maxBytes - total))
+        total = maxBytes
+        break
+      }
+      chunks.push(next.value)
+      total += next.value.byteLength
+    }
+  } catch {
+    failed = true
+  } finally {
+    if (!ended) {
+      try {
+        await reader.cancel()
+      } catch {
+        failed = true
+      }
+    }
+    try {
+      reader.releaseLock()
+    } catch {
+      failed = true
+    }
+  }
+  if (failed || !ended) return undefined
+  try {
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } catch {
+    return undefined
+  }
 }
 
 export class CodexResponsesProvider implements ModelProvider {
@@ -145,36 +262,13 @@ export class CodexResponsesProvider implements ModelProvider {
       throw failure('transport_error', true)
     }
     if (!response.ok) {
-      const reader = response.body?.getReader()
-      if (reader) {
-        let total = 0
-        let ended = false
-        try {
-          while (true) {
-            const next = await reader.read()
-            if (next.done) {
-              ended = true
-              break
-            }
-            if (next.value.byteLength > 0)
-              reportProviderTransportActivity(request, 'response-chunk')
-            total += next.value.byteLength
-            if (total > this.maxErrorBodyBytes) break
-          }
-        } catch {
-          /* preserve the redacted HTTP status classification */
-        } finally {
-          if (!ended) {
-            try {
-              await reader.cancel()
-            } catch {
-              /* preserve the redacted HTTP status classification */
-            }
-          }
-          reader.releaseLock()
-        }
-      }
-      throw statusFailure(response.status)
+      const body = await readErrorBody(response, this.maxErrorBodyBytes, () =>
+        reportProviderTransportActivity(request, 'response-chunk'),
+      )
+      throw statusFailure(
+        response.status,
+        parseErrorDiagnostics(body, response.headers),
+      )
     }
     if (!response.body) throw failure('transport_error', true)
     yield* this.codec.stream(response.body, {
