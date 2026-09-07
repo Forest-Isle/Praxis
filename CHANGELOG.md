@@ -51,6 +51,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.69.1](https://github.com/Forest-Isle/Praxis/compare/v0.69.0...v0.69.1) (2026-09-07)
+
+
+### Bug Fixes
+
+* bound eval Bash preapproval ([#718](https://github.com/Forest-Isle/Praxis/issues/718)) ([4458fee](https://github.com/Forest-Isle/Praxis/commit/4458feef3efdfd53d1c6ccdaa8374ad60ee2a8b2))
+
 ## [0.69.0](https://github.com/Forest-Isle/Praxis/compare/v0.68.0...v0.69.0) (2026-09-06)
 
 
