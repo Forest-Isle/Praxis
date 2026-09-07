@@ -68,7 +68,7 @@ these exact matching path/token/digest pairs:
 - v2: `test/corpora/project-evals/praxis-held-out-v2` with
   `praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
 - v3: `test/corpora/project-evals/praxis-held-out-v3` with
-  `praxis-held-out-v3@sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671`.
+  `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
 
 `praxis-held-out-v3` consists of the new `frame-codec`, `graph-craft`, and
 `route-forge` repositories. It is frozen but unexecuted and supplies no

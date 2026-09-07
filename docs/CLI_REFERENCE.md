@@ -216,7 +216,7 @@ explicit opt-in command has produced no provider evidence:
 ```sh
 praxis eval qualify \
   --provider <provider> --profile <profile> --model <model> \
-  --confirm-held-out praxis-held-out-v3@sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671 \
+  --confirm-held-out praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff \
   --run-verification --output-dir ./held-out-v3-baseline \
   --allow-tools Edit,Write,Bash \
   test/corpora/project-evals/praxis-held-out-v3

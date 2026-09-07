@@ -11,7 +11,7 @@ const ROOT = fileURLToPath(
   ),
 )
 const EXPECTED_DIGEST =
-  'sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671'
+  'sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff'
 const EXPECTED_REPOSITORIES = [
   [
     'frame-codec',

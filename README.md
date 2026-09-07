@@ -173,7 +173,7 @@ troubleshooting. Run `praxis --help` for the authoritative command surface.
   fresh `praxis-held-out-v3` corpus for
   `frame-codec`, `graph-craft`, and `route-forge`: 12 repository-qualified
   tasks, 3 repetitions each, and 36 planned runs with digest
-  `sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671`.
+  `sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
   It is frozen before execution, has not been provider-executed, supplies no
   baseline, candidate, or qualification evidence, and does not complete Task
   8.2 or unlock Phase 9. A bounded DeepSeek baseline for the exact
