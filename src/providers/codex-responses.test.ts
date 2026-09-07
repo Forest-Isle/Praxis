@@ -114,6 +114,181 @@ describe('CodexResponsesProvider', () => {
     },
   )
 
+  it('surfaces the required 404 model-not-found diagnostics exactly', async () => {
+    const provider = providerFor(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              type: 'invalid_request_error',
+              code: 'model_not_found',
+              message: 'secret',
+            },
+          }),
+          {
+            status: 404,
+            headers: { 'x-request-id': 'req_123', 'cf-ray': 'ray-456' },
+          },
+        ),
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message:
+        'Codex Responses provider request failed with HTTP 404 (type=invalid_request_error, code=model_not_found, request_id=req_123, cf_ray=ray-456)',
+      status: 404,
+      kind: 'invalid_request',
+      retryable: false,
+    })
+    expect(String(error)).not.toContain('secret')
+  })
+
+  it('uses top-level identifiers and omits unsafe or duplicate values', async () => {
+    const provider = providerFor(
+      async () =>
+        new Response(
+          JSON.stringify({ type: 'same', code: 'same', message: 'password' }),
+          {
+            status: 422,
+            headers: {
+              'x-request-id': 'bad value',
+              'cf-ray': 'same',
+              'x-secret': 'hidden',
+            },
+          },
+        ),
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message:
+        'Codex Responses provider request failed with HTTP 422 (type=same)',
+    })
+    expect(String(error)).not.toContain('password')
+    expect(String(error)).not.toContain('hidden')
+  })
+
+  it('does not parse partial JSON and preserves the exact status-only message', async () => {
+    const provider = providerFor(async () =>
+      response('{"error":{"type":"partial"}', 404),
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message: 'Codex Responses provider request failed with HTTP 404',
+      status: 404,
+      kind: 'invalid_request',
+      retryable: false,
+    })
+  })
+
+  it('omits non-string, oversized, unsafe, and arbitrary identifiers exactly', async () => {
+    const provider = providerFor(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              type: 123,
+              code: 'x'.repeat(129),
+              message: 'body-secret',
+            },
+          }),
+          {
+            status: 400,
+            headers: {
+              'x-request-id': 'bad value',
+              'cf-ray': 'y'.repeat(129),
+              'x-arbitrary': 'arbitrary-secret',
+            },
+          },
+        ),
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message: 'Codex Responses provider request failed with HTTP 400',
+    })
+    expect(String(error)).not.toContain('body-secret')
+    expect(String(error)).not.toContain('arbitrary-secret')
+  })
+
+  it('preserves safe headers when body reading rejects', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('secret-read-failure'))
+      },
+      cancel() {
+        throw new Error('secret-cancel-failure')
+      },
+    })
+    const provider = providerFor(
+      async () =>
+        new Response(body, {
+          status: 503,
+          headers: { 'x-request-id': 'read-safe' },
+        }),
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message:
+        'Codex Responses provider request failed with HTTP 503 (request_id=read-safe)',
+      status: 503,
+      kind: 'server_error',
+    })
+    expect(String(error)).not.toContain('secret-')
+  })
+
+  it('preserves safe headers when cancelling an oversized body rejects', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('body-secret'))
+      },
+      cancel() {
+        throw new Error('secret-cancel-failure')
+      },
+    })
+    const provider = providerFor(
+      async () =>
+        new Response(body, {
+          status: 502,
+          headers: { 'cf-ray': 'cancel-safe' },
+        }),
+      { maxErrorBodyBytes: 4 },
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message:
+        'Codex Responses provider request failed with HTTP 502 (cf_ray=cancel-safe)',
+      status: 502,
+      kind: 'server_error',
+    })
+    expect(String(error)).not.toContain('secret-')
+    expect(String(error)).not.toContain('body-secret')
+  })
+
+  it('keeps safe headers when an oversized body is cancelled', async () => {
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"type":"hidden"}'))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const provider = providerFor(
+      async () =>
+        new Response(body, {
+          status: 500,
+          headers: { 'x-request-id': 'req-safe' },
+        }),
+      { maxErrorBodyBytes: 4 },
+    )
+    const error = await collect(provider).catch((value: unknown) => value)
+    expect(error).toMatchObject({
+      message:
+        'Codex Responses provider request failed with HTTP 500 (request_id=req-safe)',
+    })
+    expect(String(error)).not.toContain('hidden')
+    expect(cancelled).toBe(true)
+  })
+
   it('bounds and cancels unfinished error bodies without leaking them', async () => {
     let cancelled = false
     const body = new ReadableStream<Uint8Array>({
