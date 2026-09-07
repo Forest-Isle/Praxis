@@ -76,3 +76,32 @@
   it is outside this change's declared writable scope; the canonical model
   carries the changed contract without attributing an undeclared edit.
 - Unresolved inferred claims: None.
+
+## 2026-09-07 — MODEL_UPDATE_REQUIRED — Issue #717
+
+- Change ID: `issue-717-bounded-eval-bash-admission`.
+- Observed worktree: `fix/717-bounded-eval-bash` based on
+  `e2bc451eb8974cd9e67ccba8e82327d7572a830e`.
+- Changed bounded-source paths: `src/evals/eval-tool-admission.test.ts`,
+  `src/evals/eval-tool-admission.ts`, and `src/cli-runtime.ts`.
+- Verdict: the default Project/Plugin Eval runtime now separates allowed-tool
+  catalog exposure from Bash call preapproval. Allowed Bash calls must pass
+  existing static semantic and path checks against the isolated eval working
+  directory and explicit added directories before the permission resolver can
+  preapprove them; rejected calls fail closed under `dontAsk` without process
+  execution. This changes permission registration and the modeled critical
+  tool-admission flow.
+- Model update: `cli-composition` records default eval admission composition;
+  `tool-security-runtime` records the bounded Bash preapproval rule; relation
+  `cli-configures-tool-security` records the wiring; and
+  `tool-admission-and-settlement` records the fail-closed eval path.
+- Affected architecture node/relation/flow IDs: `cli-composition`,
+  `tool-security-runtime`, `cli-configures-tool-security`, and
+  `tool-admission-and-settlement`.
+- Compatibility boundary: allowed non-Bash eval tools retain their existing
+  preapproval behavior. Interactive permission modes, sandbox configuration,
+  the Bash parser, persistence, providers, and deployment units are unchanged.
+  Effects hidden inside opaque executables are outside this static guarantee.
+- Qualification boundary: no held-out corpus changed, no v2 real-provider run
+  occurred, and Task 8.2 and Phase 9 remain locked.
+- Unresolved inferred claims: None.

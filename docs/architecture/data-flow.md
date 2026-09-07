@@ -82,6 +82,7 @@ flowchart LR
 | `session-application` | `src/application/turn-accounting.ts#TurnAccounting` | **confirmed** |
 | `tool-security-runtime` | `src/tools/local-tools.ts#LocalToolRegistry` | **confirmed** |
 | `tool-security-runtime` | `src/permissions/claude-permission-resolver.ts#ClaudePermissionResolver` | **confirmed** |
+| `tool-security-runtime` | `src/evals/eval-tool-admission.ts#isEvalToolCallPreapproved` | **confirmed** |
 | `tool-security-runtime` | `src/sandbox/claude-sandbox-runtime.ts#ClaudeSandboxRuntime` | **confirmed** |
 | `tool-security-runtime` | `src/platform/bounded-process-runner.ts#BoundedProcessRunner` | **confirmed** |
 | `provider-gateway` | `src/providers/provider-registry.ts#resolveProviderRegistry` | **confirmed** |

@@ -283,6 +283,7 @@ import type {
   EvalRuntimeFactoryIdentityOptions,
   IdentifiedEvalRuntimeFactory,
 } from './evals/eval-contract.js'
+import { isEvalToolCallPreapproved } from './evals/eval-tool-admission.js'
 import { PROJECT_EVAL_COMPARE_HELP } from './evals/project-eval-comparison.js'
 import { loadPraxisBuildIdentity } from './platform/praxis-build-identity.js'
 import {
@@ -3194,7 +3195,12 @@ const defaultPluginEvalRuntimeFactory: PluginEvalDependencies['runtimeFactory'] 
         },
         providerEnvironment: process.env,
         isSessionActionApproved: (call) =>
-          options.allowedTools.includes(call.name),
+          isEvalToolCallPreapproved(call, {
+            cwd: options.cwd,
+            homeDirectory: options.home,
+            allowedTools: options.allowedTools,
+            additionalDirectories: options.addDirs,
+          }),
         controls: {
           ...DEFAULT_CLI_CONTROLS,
           dataPlane: options.dataPlane,

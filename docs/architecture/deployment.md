@@ -32,6 +32,7 @@ flowchart LR
 | `cli-composition` | `src/cli-runtime.ts#createDefaultService` | **confirmed** |
 | `cli-composition` | `src/evals/held-out-corpus.ts#loadHeldOutCorpus` | **confirmed** |
 | `cli-composition` | `src/evals/held-out-qualification.ts#executeHeldOutQualificationCommand` | **confirmed** |
+| `cli-composition` | `src/cli-runtime.ts#defaultPluginEvalRuntimeFactory` | **confirmed** |
 | `installed-cli-process` | `package.json#bin` | **confirmed** |
 | `installed-cli-process` | `src/cli.ts#run` | **confirmed** |
 | `installed-cli-process` | `src/cli-runtime.ts#createBackgroundWorkerRuntime` | **confirmed** |

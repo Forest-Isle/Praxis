@@ -16,6 +16,7 @@ modules:
       - Create default session dependencies and background-worker runtimes.
       - Handle version and help before provider initialization.
       - Load versioned local held-out corpora and validate qualification artifacts before provider runtime creation.
+      - Configure default Project and Plugin Eval tool admission so catalog exposure and Bash call preapproval remain separate.
     evidence:
       - path: docs/ARCHITECTURE.md
         confidence: confirmed
@@ -33,6 +34,9 @@ modules:
         confidence: confirmed
       - path: src/evals/held-out-qualification.ts
         symbol: executeHeldOutQualificationCommand
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: defaultPluginEvalRuntimeFactory
         confidence: confirmed
 
   - id: tui-adapter
@@ -119,6 +123,7 @@ modules:
     actions:
       - Register and resolve local tools.
       - Resolve allow, ask, or deny permission decisions.
+      - Require static semantic and path safety inside eval-authorized roots before preapproving default-eval Bash calls.
       - Wrap admitted shell execution with sandbox and bounded process controls.
     evidence:
       - path: src/tools/local-tools.ts
@@ -126,6 +131,9 @@ modules:
         confidence: confirmed
       - path: src/permissions/claude-permission-resolver.ts
         symbol: ClaudePermissionResolver
+        confidence: confirmed
+      - path: src/evals/eval-tool-admission.ts
+        symbol: isEvalToolCallPreapproved
         confidence: confirmed
       - path: src/sandbox/claude-sandbox-runtime.ts
         symbol: ClaudeSandboxRuntime
@@ -380,6 +388,18 @@ relations:
     evidence:
       - path: src/cli-runtime.ts
         symbol: createDefaultService
+        confidence: confirmed
+
+  - id: cli-configures-tool-security
+    from: cli-composition
+    to: tool-security-runtime
+    kind: configures
+    evidence:
+      - path: src/cli-runtime.ts
+        symbol: defaultPluginEvalRuntimeFactory
+        confidence: confirmed
+      - path: src/evals/eval-tool-admission.ts
+        symbol: isEvalToolCallPreapproved
         confidence: confirmed
 
   - id: cli-resolves-provider
@@ -755,7 +775,7 @@ flows:
       - node: integration-adapters
         action: Run configured PreToolUse integration checks.
       - node: tool-security-runtime
-        action: Resolve permission and sandbox admission; malformed or denied calls fail closed without execution, otherwise admit the process-backed call under permission and sandbox policy.
+        action: Resolve permission and sandbox admission; default-eval Bash preapproval requires static semantic and path safety inside eval-authorized roots, and malformed or denied calls fail closed without execution.
       - node: local-process-boundary
         action: Execute only the admitted process-backed call.
       - node: project-workspace
@@ -770,6 +790,12 @@ flows:
         confidence: confirmed
       - path: src/permissions/claude-permission-resolver.ts
         symbol: ClaudePermissionResolver
+        confidence: confirmed
+      - path: src/evals/eval-tool-admission.ts
+        symbol: isEvalToolCallPreapproved
+        confidence: confirmed
+      - path: src/cli-runtime.ts
+        symbol: defaultPluginEvalRuntimeFactory
         confidence: confirmed
       - path: src/sandbox/claude-sandbox-runtime.ts
         symbol: ClaudeSandboxRuntime
