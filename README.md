@@ -189,8 +189,9 @@ provider codex-relay`. Project Eval creates an empty per-case
   `workspace.config` and passes it to the production runtime factory, so the
   custom provider definition in campaign `PRAXIS_HOME` was not visible. The
   baseline completed 0/36 runs, emitted no qualification result or run
-  artifacts, and no candidate was admitted or run. The no-retry/no-substitution
-  contract was honored; there is no v3 behavior, mutation-oriented safety,
+  artifacts, and no candidate was admitted or run, so no baseline/candidate
+  regression comparison exists. The no-retry/no-substitution contract was
+  honored; there is no v3 behavior, mutation-oriented safety,
   verifier, usage, subscription-cost, duration/latency, quality, security,
   compatibility, efficiency, optimization, baseline, candidate, or
   qualification conclusion. The settings-forwarding gap must be resolved under

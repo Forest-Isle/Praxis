@@ -230,8 +230,9 @@ provider identity preflight with `Invalid provider settings: unknown provider
 codex-relay`. Project Eval creates an empty per-case `workspace.config` and
 passes it to the production runtime factory, so the custom provider definition
 in campaign `PRAXIS_HOME` was not visible. It completed 0/36 runs, emitted no
-qualification result or run artifacts, and did not admit or run a candidate.
-The no-retry/no-substitution contract was honored. There is no v3 behavior,
+qualification result or run artifacts, and did not admit or run a candidate, so
+no baseline/candidate regression comparison exists. The no-retry/no-substitution
+contract was honored. There is no v3 behavior,
 mutation-oriented safety, verifier, usage, subscription-cost, duration/latency,
 quality, security, compatibility, efficiency, optimization, baseline,
 candidate, or qualification conclusion. Resolve the settings-forwarding gap in
