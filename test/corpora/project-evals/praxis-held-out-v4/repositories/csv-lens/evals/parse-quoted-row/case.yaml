@@ -1,0 +1,40 @@
+schema_version: '1.1'
+name: csv-lens.parse-quoted-row
+risk: medium
+tags: [held-out, praxis-held-out-v4, csv-lens]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/csv.mjs, export parseCsvRow(value). Parse comma-separated fields including quoted commas, doubled quote escapes, and empty fields: a,"b,c","d""e", must return ["a","b,c","d\"e",""] and "" must return [""]. Throw for an unterminated quoted field and for any character after a closing quote other than a comma or end of input, including "a"x,b.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/csv.mjs`).href)
+          if (!Object.hasOwn(m, 'parseCsvRow')) process.exit(42)
+          const f = m.parseCsvRow
+          assert.equal(typeof f, 'function')
+          assert.deepEqual(f('a,"b,c","d""e",'), ['a', 'b,c', 'd"e', ''])
+          assert.deepEqual(f('""'), [''])
+          assert.throws(() => f('"unterminated'))
+          assert.throws(() => f('"a"x,b'))
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/csv.mjs]
+  expected_changed_paths: [src/csv.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

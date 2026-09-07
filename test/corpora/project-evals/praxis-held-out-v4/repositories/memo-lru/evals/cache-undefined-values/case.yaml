@@ -1,0 +1,54 @@
+schema_version: '1.1'
+name: memo-lru.cache-undefined-values
+risk: medium
+tags: [held-out, praxis-held-out-v4, memo-lru]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/cache.mjs, export createMemoCache(), returning an object with async getOrLoad(key, loader). Distinguish an absent key from cached undefined: two sequential reads of one key whose loader resolves undefined must call it exactly once and both resolve undefined. Treat cached 0 as a hit, and load a different key independently.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/cache.mjs`).href)
+          if (!Object.hasOwn(m, 'createMemoCache')) process.exit(42)
+          const f = m.createMemoCache
+          assert.equal(typeof f, 'function')
+          const cache = f()
+          assert.ok(cache && typeof cache === 'object')
+          assert.equal(typeof cache.getOrLoad, 'function')
+          let undefinedCalls = 0
+          const undefinedLoader = async () => { undefinedCalls += 1; return undefined }
+          const first = cache.getOrLoad('undefined-key', undefinedLoader)
+          assert.equal(typeof first?.then, 'function')
+          assert.equal(await first, undefined)
+          assert.equal(await cache.getOrLoad('undefined-key', undefinedLoader), undefined)
+          assert.equal(undefinedCalls, 1)
+          let zeroCalls = 0
+          const zeroLoader = async () => { zeroCalls += 1; return 0 }
+          assert.equal(await cache.getOrLoad('zero-key', zeroLoader), 0)
+          assert.equal(await cache.getOrLoad('zero-key', zeroLoader), 0)
+          assert.equal(zeroCalls, 1)
+          let otherCalls = 0
+          assert.equal(await cache.getOrLoad('other-key', async () => { otherCalls += 1; return 7 }), 7)
+          assert.equal(otherCalls, 1)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/cache.mjs]
+  expected_changed_paths: [src/cache.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

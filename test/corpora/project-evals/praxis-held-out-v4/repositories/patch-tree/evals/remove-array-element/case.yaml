@@ -1,0 +1,61 @@
+schema_version: '1.1'
+name: patch-tree.remove-array-element
+risk: medium
+tags: [held-out, praxis-held-out-v4, patch-tree]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/patch.mjs, export removeAtPointer(document, pointer). Immutably remove an exact canonical numeric array index with left shift. Removing /items/1 from {"items":["a","b","c"],"keep":{"x":1}} must return {"items":["a","c"],"keep":{"x":1}} with independent outer and nested containers while preserving the input. Reject -, leading-zero, negative, out-of-range, and nonnumeric indices plus missing paths and intermediate non-containers, including /items/-, /items/01, /items/-1, /items/3, /items/x, /missing/0, and /keep/x/value, without mutating the input.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/patch.mjs`).href)
+          if (!Object.hasOwn(m, 'removeAtPointer')) process.exit(42)
+          const f = m.removeAtPointer
+          assert.equal(typeof f, 'function')
+          const document = { items: ['a', 'b', 'c'], keep: { x: 1 } }
+          const before = structuredClone(document)
+          const result = f(document, '/items/1')
+          assert.deepEqual(result, { items: ['a', 'c'], keep: { x: 1 } })
+          assert.deepEqual(document, before)
+          assert.notStrictEqual(result, document)
+          assert.notStrictEqual(result.items, document.items)
+          assert.notStrictEqual(result.keep, document.keep)
+          result.items.push('changed-result')
+          result.keep.x = 2
+          assert.deepEqual(document, before)
+          for (const pointer of [
+            '/items/-',
+            '/items/01',
+            '/items/-1',
+            '/items/3',
+            '/items/x',
+            '/missing/0',
+            '/keep/x/value',
+          ]) {
+            const invalidInput = structuredClone(before)
+            const invalidBefore = structuredClone(invalidInput)
+            assert.throws(() => f(invalidInput, pointer))
+            assert.deepEqual(invalidInput, invalidBefore)
+          }
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/patch.mjs]
+  expected_changed_paths: [src/patch.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

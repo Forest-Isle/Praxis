@@ -487,7 +487,7 @@ dependent teardown.
 
 ## Phase 8 — Controlled real coding qualification
 
-### Task 8.1: Held-out coding corpus — implemented by #705, extended by #715 and #722 [depends: Tasks 6.5, 7.1]
+### Task 8.1: Held-out coding corpus — implemented by #705, extended by #715, #722, and #740 [depends: Tasks 6.5, 7.1]
 
 Assemble at least three fixture repositories and twelve held-out coding tasks
 with three repetitions each. Acceptance: the corpus is versioned locally and
@@ -534,7 +534,13 @@ runtime settings, state, transcripts, hooks, plugins, MCP, memory, artifacts,
 tools, and verifier behavior; no settings file is copied into the case root.
 This removes the configuration blocker only. It does not retry #731 or
 authorize a future provider request. Issue #738 is the separately authorized
-v3 campaign described under Task 8.2 below.
+v3 campaign described under Task 8.2 below. Issue #740 freezes
+`praxis-held-out-v4` for `csv-lens`, `memo-lru`, and `patch-tree`, with 12
+tasks, 3 repetitions, 36 planned runs, and digest
+`sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`.
+V4 was frozen before result-informed v3 remediation or requalification; no
+provider/model was run and no baseline, candidate, result, or qualification
+evidence was produced.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
@@ -652,9 +658,9 @@ median/p95 turn deltas −2/0 and duration deltas −7,297.5/−19,801 ms. These
 results fail the zero-new-regression, non-regressing pass-rate, and
 every-verifier gates; subscription cost is unavailable for all runs, so no
 quality, broad-security, cost, latency, efficiency, or optimization claim is
-permitted. Task 8.2 remains incomplete and Phase 9 stays locked. Any
-result-informed remediation or requalification requires freezing a new v4
-corpus first.
+permitted. Issue #740 has now frozen v4 before remediation, but performed no result-informed
+change or provider run. Task 8.2 remains incomplete and Phase 9 stays locked;
+separately scoped work and evidence are still required.
 
 ## Phase 9 — Measured coding policy
 

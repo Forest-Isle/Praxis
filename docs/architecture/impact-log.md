@@ -348,3 +348,32 @@
   rendering, and the post-checkpoint assessment remained `added=0`,
   `modified=0`, `deleted=0`.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #740
+
+- Change ID: `issue-740-held-out-v4-corpus`.
+- Observed worktree: `test/740-held-out-v4`, based exactly on `origin/main`
+  `874e77e55ecb3db568b19afa0e3e4b4d5cfef28a`.
+- Changed bounded-source paths: `package.json` and
+  `src/evals/held-out-corpus-v4.test.ts`. The full reviewed change also adds
+  the frozen `praxis-held-out-v4` test corpus and synchronizes its project
+  documentation.
+- Verdict: the change adds deterministic evaluation assets and extends the
+  held-out contract test command. It does not change the generic corpus loader,
+  qualification command, installed `bin`, runtime boundary, public CLI
+  contract, persistence/data shape, provider integration, registration,
+  deployment unit, relation, or modeled critical flow.
+- Evidence assessment: `collect_changes.py` reported `added=1`, `modified=1`,
+  and `deleted=0` for the checkpointed include scope. The canonical model's
+  `package.json` evidence refers only to the unchanged `bin` field;
+  `loadHeldOutCorpus` and `executeHeldOutQualificationCommand` are unchanged.
+- Qualification boundary: v4 has 12 repository-qualified tasks and 36 planned
+  runs but remains unexecuted; it supplies no provider, baseline, candidate,
+  qualification, or optimization evidence. Task 8.2 remains incomplete and
+  Phase 9 remains locked.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; `render_model.py`
+  deterministically rendered the existing 10 views with byte-identical
+  SHA-256 hashes. The bounded source checkpoint was advanced only after both
+  passed.
+- Unresolved inferred claims: None.

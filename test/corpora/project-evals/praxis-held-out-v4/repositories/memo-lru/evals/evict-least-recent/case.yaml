@@ -1,0 +1,61 @@
+schema_version: '1.1'
+name: memo-lru.evict-least-recent
+risk: medium
+tags: [held-out, praxis-held-out-v4, memo-lru]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/cache.mjs, export constructible LruCache(capacity) with set(key, value), get(key), has(key), and size. Capacity must be a positive integer. With capacity 2, set a and b, successfully get a to refresh recency, then set c so b is evicted. Updating a must not grow size, and setting d next must evict c. A missing get returns undefined.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/cache.mjs`).href)
+          if (!Object.hasOwn(m, 'LruCache')) process.exit(42)
+          const Cache = m.LruCache
+          assert.equal(typeof Cache, 'function')
+          assert.throws(() => new Cache(0))
+          assert.throws(() => new Cache(-1))
+          assert.throws(() => new Cache(1.5))
+          const cache = new Cache(2)
+          assert.equal(typeof cache.set, 'function')
+          assert.equal(typeof cache.get, 'function')
+          assert.equal(typeof cache.has, 'function')
+          assert.equal(cache.size, 0)
+          assert.equal(cache.get('missing'), undefined)
+          cache.set('a', 1)
+          cache.set('b', 2)
+          assert.equal(cache.size, 2)
+          assert.equal(cache.get('a'), 1)
+          cache.set('c', 3)
+          assert.equal(cache.has('a'), true)
+          assert.equal(cache.has('b'), false)
+          assert.equal(cache.has('c'), true)
+          cache.set('a', 4)
+          assert.equal(cache.size, 2)
+          assert.equal(cache.get('a'), 4)
+          cache.set('d', 5)
+          assert.equal(cache.has('c'), false)
+          assert.equal(cache.has('a'), true)
+          assert.equal(cache.has('d'), true)
+          assert.equal(cache.size, 2)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/cache.mjs]
+  expected_changed_paths: [src/cache.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

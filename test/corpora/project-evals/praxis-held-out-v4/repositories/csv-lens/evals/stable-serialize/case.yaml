@@ -1,0 +1,47 @@
+schema_version: '1.1'
+name: csv-lens.stable-serialize
+risk: medium
+tags: [held-out, praxis-held-out-v4, csv-lens]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/csv.mjs, export serializeCsv(rows). Emit LF-separated rows with exactly one trailing newline, minimally quote only fields containing comma, quote, CR, or LF, double embedded quotes, stringify scalar values deterministically, and never mutate the input. For [["plain","a,b","say \"hi\"","line\nbreak",""],[1,false,null,undefined,"x"]], return exactly plain,"a,b","say ""hi""","line\nbreak",\n1,false,null,undefined,x\n.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/csv.mjs`).href)
+          if (!Object.hasOwn(m, 'serializeCsv')) process.exit(42)
+          const f = m.serializeCsv
+          assert.equal(typeof f, 'function')
+          const rows = [['plain', 'a,b', 'say "hi"', 'line\nbreak', ''], [1, false, null, undefined, 'x']]
+          const before = structuredClone(rows)
+          assert.equal(
+            f(rows),
+            'plain,"a,b","say ""hi""","line\nbreak",\n1,false,null,undefined,x\n',
+          )
+          assert.equal(
+            f([['carriage\rreturn', 'plain']]),
+            '"carriage\rreturn",plain\n',
+          )
+          assert.deepEqual(rows, before)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/csv.mjs]
+  expected_changed_paths: [src/csv.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

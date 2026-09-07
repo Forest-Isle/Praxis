@@ -1,0 +1,68 @@
+schema_version: '1.1'
+name: memo-lru.expire-with-clock
+risk: medium
+tags: [held-out, praxis-held-out-v4, memo-lru]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/cache.mjs, export constructible TimedLruCache(capacity, { now }) with set(key, value, ttlMs), get(key), has(key), and size. Capacity must be a positive integer and TTL must be finite and nonnegative. Expiry occurs exactly when now() >= expiresAt; expired entries act absent and are removed. A successful read before expiry refreshes LRU recency without extending expiry. With capacity 2 at time 0, set a with TTL 10 and b with TTL 100; at time 5 get a then set c with TTL 100 so b is evicted; at time 10 a is expired while c remains.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/cache.mjs`).href)
+          if (!Object.hasOwn(m, 'TimedLruCache')) process.exit(42)
+          const Cache = m.TimedLruCache
+          assert.equal(typeof Cache, 'function')
+          assert.throws(() => new Cache(0, { now: () => 0 }))
+          assert.throws(() => new Cache(-1, { now: () => 0 }))
+          assert.throws(() => new Cache(1.5, { now: () => 0 }))
+          let time = 0
+          const cache = new Cache(2, { now: () => time })
+          assert.equal(typeof cache.set, 'function')
+          assert.equal(typeof cache.get, 'function')
+          assert.equal(typeof cache.has, 'function')
+          cache.set('a', 1, 10)
+          cache.set('b', 2, 100)
+          assert.equal(cache.size, 2)
+          time = 5
+          assert.equal(cache.get('a'), 1)
+          cache.set('c', 3, 100)
+          assert.equal(cache.has('b'), false)
+          assert.equal(cache.has('a'), true)
+          assert.equal(cache.has('c'), true)
+          time = 10
+          assert.equal(cache.get('a'), undefined)
+          assert.equal(cache.has('a'), false)
+          assert.equal(cache.get('c'), 3)
+          assert.equal(cache.size, 1)
+          assert.equal(cache.get('missing'), undefined)
+          const invalid = new Cache(2, { now: () => 0 })
+          for (const ttl of [-1, Infinity, NaN]) {
+            assert.throws(() => invalid.set('x', 1, ttl))
+          }
+          const immediate = new Cache(1, { now: () => 0 })
+          immediate.set('zero', 1, 0)
+          assert.equal(immediate.get('zero'), undefined)
+          assert.equal(immediate.has('zero'), false)
+          assert.equal(immediate.size, 0)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/cache.mjs]
+  expected_changed_paths: [src/cache.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

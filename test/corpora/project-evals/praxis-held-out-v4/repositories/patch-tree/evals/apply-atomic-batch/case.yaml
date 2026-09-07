@@ -1,0 +1,69 @@
+schema_version: '1.1'
+name: patch-tree.apply-atomic-batch
+risk: high
+tags: [held-out, praxis-held-out-v4, patch-tree]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/patch.mjs, export applyPatch(document, operations) for JSON-compatible add, replace, and remove operations on object keys and array indices. Return a structurally independent result and never mutate the input. Replacing /user/name with Lin, adding /user/active true, then removing /list/0 from {"user":{"name":"Ada"},"list":["a","b"]} must return {"user":{"name":"Lin","active":true},"list":["b"]}. Array add inserts, array replace replaces, and object remove deletes. If any later operation is invalid, including replace /missing/value, throw without mutating the original or exposing a partial result.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/patch.mjs`).href)
+          if (!Object.hasOwn(m, 'applyPatch')) process.exit(42)
+          const f = m.applyPatch
+          assert.equal(typeof f, 'function')
+          const document = { user: { name: 'Ada' }, list: ['a', 'b'] }
+          const before = structuredClone(document)
+          const result = f(document, [
+            { op: 'replace', path: '/user/name', value: 'Lin' },
+            { op: 'add', path: '/user/active', value: true },
+            { op: 'remove', path: '/list/0' },
+          ])
+          assert.deepEqual(result, { user: { name: 'Lin', active: true }, list: ['b'] })
+          assert.deepEqual(document, before)
+          assert.notStrictEqual(result, document)
+          assert.notStrictEqual(result.user, document.user)
+          assert.notStrictEqual(result.list, document.list)
+          result.user.name = 'changed-result'
+          result.list.push('changed-result')
+          assert.deepEqual(document, before)
+
+          const primitives = { object: { keep: 1, remove: 2 }, array: ['a', 'c'] }
+          const primitivesBefore = structuredClone(primitives)
+          const primitivesResult = f(primitives, [
+            { op: 'add', path: '/array/1', value: 'b' },
+            { op: 'replace', path: '/array/0', value: 'A' },
+            { op: 'remove', path: '/object/remove' },
+          ])
+          assert.deepEqual(primitivesResult, { object: { keep: 1 }, array: ['A', 'b', 'c'] })
+          assert.deepEqual(primitives, primitivesBefore)
+
+          const atomic = { user: { name: 'Ada' }, list: ['a', 'b'] }
+          const atomicBefore = structuredClone(atomic)
+          assert.throws(() => f(atomic, [
+            { op: 'add', path: '/user/active', value: true },
+            { op: 'replace', path: '/missing/value', value: 1 },
+          ]))
+          assert.deepEqual(atomic, atomicBefore)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/patch.mjs]
+  expected_changed_paths: [src/patch.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

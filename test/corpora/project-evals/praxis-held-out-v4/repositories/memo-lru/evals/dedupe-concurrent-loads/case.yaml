@@ -1,0 +1,78 @@
+schema_version: '1.1'
+name: memo-lru.dedupe-concurrent-loads
+risk: high
+tags: [held-out, praxis-held-out-v4, memo-lru]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/cache.mjs, export createMemoCache(), returning an object with async getOrLoad(key, loader). Calls for the same key made before one deferred loader settles must invoke that loader exactly once and all resolve the same value identity. If a shared loader rejects, all waiters must reject with that same error, pending state must clear, and the next call for that key must invoke a new loader and be able to succeed.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/cache.mjs`).href)
+          if (!Object.hasOwn(m, 'createMemoCache')) process.exit(42)
+          const f = m.createMemoCache
+          assert.equal(typeof f, 'function')
+          const cache = f()
+          assert.ok(cache && typeof cache === 'object')
+          assert.equal(typeof cache.getOrLoad, 'function')
+          let resolveLoad
+          let loadCalls = 0
+          const deferred = new Promise((resolve) => { resolveLoad = resolve })
+          const loader = () => { loadCalls += 1; return deferred }
+          const first = cache.getOrLoad('shared', loader)
+          const second = cache.getOrLoad('shared', loader)
+          assert.equal(typeof first?.then, 'function')
+          assert.equal(typeof second?.then, 'function')
+          await Promise.resolve()
+          assert.equal(loadCalls, 1)
+          const sharedValue = { value: 1 }
+          resolveLoad(sharedValue)
+          const values = await Promise.all([first, second])
+          assert.strictEqual(values[0], sharedValue)
+          assert.strictEqual(values[1], sharedValue)
+
+          let rejectLoad
+          let rejectCalls = 0
+          const rejected = new Promise((_, reject) => { rejectLoad = reject })
+          const rejectingLoader = () => { rejectCalls += 1; return rejected }
+          const waiterOne = cache.getOrLoad('retry', rejectingLoader)
+          const waiterTwo = cache.getOrLoad('retry', rejectingLoader)
+          const settlement = Promise.allSettled([waiterOne, waiterTwo])
+          await Promise.resolve()
+          assert.equal(rejectCalls, 1)
+          const sharedError = new Error('shared loader failed')
+          rejectLoad(sharedError)
+          const outcomes = await settlement
+          for (const outcome of outcomes) {
+            assert.equal(outcome.status, 'rejected')
+            assert.strictEqual(outcome.reason, sharedError)
+          }
+          let retryCalls = 0
+          const recovered = { recovered: true }
+          assert.strictEqual(
+            await cache.getOrLoad('retry', async () => { retryCalls += 1; return recovered }),
+            recovered,
+          )
+          assert.equal(retryCalls, 1)
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/cache.mjs]
+  expected_changed_paths: [src/cache.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

@@ -1,0 +1,42 @@
+schema_version: '1.1'
+name: patch-tree.decode-pointer-tokens
+risk: medium
+tags: [held-out, praxis-held-out-v4, patch-tree]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/patch.mjs, export parsePointer(pointer). Return [] for the empty root pointer. Require every non-root pointer to begin with /, preserve empty path segments, and decode valid JSON Pointer escapes left-to-right so /a~1b/~0c/ returns ["a/b","~c",""] by mapping ~1 to / and ~0 to ~. Reject malformed escapes and non-leading-slash inputs, including /a~2b, a/b, and /~.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/patch.mjs`).href)
+          if (!Object.hasOwn(m, 'parsePointer')) process.exit(42)
+          const f = m.parsePointer
+          assert.equal(typeof f, 'function')
+          assert.deepEqual(f(''), [])
+          assert.deepEqual(f('/a~1b/~0c/'), ['a/b', '~c', ''])
+          assert.deepEqual(f('/~01'), ['~1'])
+          assert.throws(() => f('/a~2b'))
+          assert.throws(() => f('a/b'))
+          assert.throws(() => f('/~'))
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/patch.mjs]
+  expected_changed_paths: [src/patch.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]
