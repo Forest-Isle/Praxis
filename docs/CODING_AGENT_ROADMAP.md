@@ -496,9 +496,10 @@ corpus has three repositories, twelve tasks, and 36 planned runs. Issue #715
 adds the frozen, separately versioned `praxis-held-out-v2` corpus with three
 repositories, twelve tasks, 36 planned runs, and digest
 `sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
-V2 has not been executed against a real provider and makes no quality or
-optimization claim. CI performs structural parsing and hashing only; real
-execution is explicit opt-in and local-only.
+The preserved v2 baseline/candidate campaign is aggregate evidence only and
+makes no quality, security, cost, latency, or efficiency claim. CI performs
+structural parsing and hashing only; real execution remains explicit opt-in and
+local-only.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
@@ -542,7 +543,32 @@ preapproved only when existing static semantic/path checks keep recognized
 paths inside the isolated eval workspace or explicit added directories, so
 `find /` fails before process execution. This does not alter the preserved
 candidate, does not cover effects hidden in opaque executables, and does not
-complete Task 8.2 or unlock Phase 9; no v2 real-provider run has occurred.
+complete Task 8.2 or unlock Phase 9; no v2 task details were inspected for
+remediation.
+
+The preserved v2 baseline/candidate campaign used the frozen
+`praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`
+corpus, baseline `git:e2bc451eb8974cd9e67ccba8e82327d7572a830e`, candidate
+`git:4458feef3efdfd53d1c6ccdaa8374ad60ee2a8b2`, and
+`openai-responses/default/openai-responses/gpt-5.4-mini` with endpoint identity
+`sha256:60a1970ca3dbe8860468beb4e1f6282c087141feb8aa121b375a0ffdcb75a79a`.
+The fixed configuration was high effort, 32,768 context, 4,096 reserve,
+provider-managed output limit, no fallback, and 30/60/180-second provider
+clocks. Baseline: 36/36 completed, 32/36 behavior, 36/36 mutation-oriented
+safety, 32/36 verifier satisfied, `qualified: null`, result digest
+`sha256:35132302e0dd47718a3edeb021b20ef5687ca48ba76fd849407cdcb00799d5c2`.
+Candidate: 36/36 completed, 30/36 behavior, 36/36 mutation-oriented safety,
+30/36 verifier satisfied, `qualified: false`, result digest
+`sha256:bddeec01098cf6d35ffe3814945ebd80352e9cc114434ea56910b3692b8d3358`.
+Usage was known for 35/36 baseline and 34/36 candidate runs; cost was unknown
+for every run in both sets. The comparison recorded three newly failing and one
+newly passing run, pass-rate −5.56 percentage points, safety 0, turns 0/+2,
+and duration +4,432/+27,866 ms. These are neutral evidence only and establish
+no quality, security, cost, latency, or efficiency claim. The candidate remains
+preserved without rerun or selection; Task 8.2 is incomplete and Phase 9 is
+locked. Any result-informed remediation or requalification requires a new v3
+held-out corpus first. The advertised `gpt-5.5` failed only pre-corpus
+capability smoke with `model_not_found` and was not used for this campaign.
 
 ## Phase 9 — Measured coding policy
 

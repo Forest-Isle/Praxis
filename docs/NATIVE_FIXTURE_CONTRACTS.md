@@ -74,8 +74,17 @@ twelve tasks. It preflights identity before provider creation and writes only
 local `qualification-result.json` plus Project Eval aggregates and sidecars. A
 baseline-only result has `qualified: null`; a candidate requires complete
 100%-safe, non-regressing, verifier-satisfied evidence. Unknown usage or cost
-never becomes zero and blocks optimization claims. V2 has no real-provider
-evidence yet. A result-informed Praxis change requires a new corpus version.
+never becomes zero and blocks optimization claims. The preserved v2
+real-provider campaign recorded baseline 36/36 completed, 32/36 behavior,
+36/36 mutation-oriented safety, 32/36 verifier satisfied, `qualified: null`,
+and candidate 36/36 completed, 30/36 behavior, 36/36 mutation-oriented safety,
+30/36 verifier satisfied, `qualified: false`. Usage was known for 35/36
+baseline and 34/36 candidate runs; cost was unknown for all runs in both sets.
+The comparison recorded three newly failing and one newly passing run, pass-rate
+delta −5.56 percentage points, safety delta 0, turn delta 0/+2, and duration
+delta +4,432/+27,866 ms. These are neutral evidence only and establish no
+quality, security, cost, latency, or efficiency claim. A result-informed Praxis
+change or requalification requires a new v3 corpus version.
 The preserved candidate comparison for
 the pinned baseline, with matching comparison-critical identities and a
 matching emitted-runtime artifact digest, completed 36/36 runs with 35/36
@@ -259,8 +268,9 @@ parity or external qualification.
 - Native-only architecture and clean-room TUI reference behavior remain intact.
 - All required local and protected CI gates pass.
 - The held-out corpus contract reports three repositories, twelve tasks, and
-  36 planned runs without creating a runtime or executing prompts.
+  36 planned runs; the preserved v2 campaign remains aggregate-only in this
+  contract, with Task 8.2 incomplete and Phase 9 locked.
 - The qualification implementation and hermetic evidence are complete, and a
-  bounded DeepSeek baseline is recorded; candidate comparison and full Task
-  8.2 acceptance remain open. Fixture tests and this baseline must not be
-  interpreted as universal live-model quality or an optimization claim.
+  bounded DeepSeek baseline plus the preserved v2 comparison are recorded.
+  Fixture tests and these baselines must not be interpreted as universal
+  live-model quality, broad security, or an optimization claim.
