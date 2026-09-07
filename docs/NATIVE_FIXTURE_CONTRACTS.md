@@ -52,9 +52,11 @@ or retained clean-room observations, never values recomputed by production code.
     dimensions it proves.
 
 The separately versioned held-out Project Eval corpora under
-`test/corpora/project-evals/praxis-held-out-v1` and
-`test/corpora/project-evals/praxis-held-out-v2` are not fixture evidence. Each
-has three repositories, twelve tasks, and 36 planned runs. Their checked-in
+`test/corpora/project-evals/praxis-held-out-v1`,
+`test/corpora/project-evals/praxis-held-out-v2`, and
+`test/corpora/project-evals/praxis-held-out-v3` are not fixture evidence. Each
+has three repositories, twelve tasks, and 36 planned runs; all three versions
+use this standard 3/12/36 shape. Their checked-in
 tasks are not secret; held-out means results cannot tune the same corpus
 version. CI structurally parses and hashes them only. Real execution is
 explicit opt-in and local-only, using `praxis eval qualify` with an explicit
@@ -65,6 +67,13 @@ these exact matching path/token/digest pairs:
   `praxis-held-out-v1@sha256:47dfad705f94463ce885e06a61601724be309f9d423241a4df91afde1503ccdb`.
 - v2: `test/corpora/project-evals/praxis-held-out-v2` with
   `praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
+- v3: `test/corpora/project-evals/praxis-held-out-v3` with
+  `praxis-held-out-v3@sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671`.
+
+`praxis-held-out-v3` consists of the new `frame-codec`, `graph-craft`, and
+`route-forge` repositories. It is frozen but unexecuted and supplies no
+baseline, candidate, or qualification evidence; Task 8.2 and Phase 9 remain
+locked.
 
 Corpus identity must be a safe `praxis-held-out-vN` ID (positive integer with
 no leading zero) whose `N` matches the manifest version; malformed, unsafe,

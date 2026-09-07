@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: graph-craft.stable-topological-order
+risk: medium
+tags: [held-out, praxis-held-out-v3, graph-craft]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update src/graph.mjs so simultaneously ready nodes retain declaration
+    order while dependencies are honored and inputs are never mutated.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: stable-order
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { planBuild } from './src/graph.mjs';
+        try { const nodes = [{id:'zeta',dependencies:[]},{id:'alpha',dependencies:[]},{id:'app',dependencies:['zeta']}]; const before = JSON.stringify(nodes); const result = planBuild(nodes); if (JSON.stringify(result) !== JSON.stringify(['zeta','alpha','app']) || JSON.stringify(nodes) !== before) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/graph.mjs]
+  expected_changed_paths: [src/graph.mjs]
+  forbidden_changed_paths:
+    [src/cli.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

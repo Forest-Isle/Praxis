@@ -1,0 +1,32 @@
+schema_version: '1.0'
+id: praxis-held-out-v3
+version: 3
+split: held-out
+repetitions: 3
+policy:
+  execution: opt-in-only
+  tuning: forbidden
+  result_informed_changes: require-new-version
+content_sha256: sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671
+repositories:
+  - id: frame-codec
+    path: repositories/frame-codec
+    tasks:
+      - frame-codec.add-encode-frame
+      - frame-codec.copy-decoded-payload
+      - frame-codec.reject-invalid-length
+      - frame-codec.stream-partial-frames
+  - id: graph-craft
+    path: repositories/graph-craft
+    tasks:
+      - graph-craft.add-affected-targets
+      - graph-craft.detect-cycle
+      - graph-craft.reject-unknown-dependency
+      - graph-craft.stable-topological-order
+  - id: route-forge
+    path: repositories/route-forge
+    tasks:
+      - route-forge.add-terminal-splat
+      - route-forge.decode-parameters
+      - route-forge.fix-static-precedence
+      - route-forge.match-request-target

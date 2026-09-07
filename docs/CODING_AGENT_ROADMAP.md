@@ -487,7 +487,7 @@ dependent teardown.
 
 ## Phase 8 — Controlled real coding qualification
 
-### Task 8.1: Held-out coding corpus — implemented by #705, extended by #715 [depends: Tasks 6.5, 7.1]
+### Task 8.1: Held-out coding corpus — implemented by #705, extended by #715 and #722 [depends: Tasks 6.5, 7.1]
 
 Assemble at least three fixture repositories and twelve held-out coding tasks
 with three repetitions each. Acceptance: the corpus is versioned locally and
@@ -499,7 +499,12 @@ repositories, twelve tasks, 36 planned runs, and digest
 The preserved v2 baseline/candidate campaign is aggregate evidence only and
 makes no quality, security, cost, latency, or efficiency claim. CI performs
 structural parsing and hashing only; real execution remains explicit opt-in and
-local-only.
+local-only. Issue #722 adds the frozen `praxis-held-out-v3` corpus for
+`frame-codec`, `graph-craft`, and `route-forge`, with 12 tasks, 3 repetitions,
+36 planned runs, and digest
+`sha256:e28454a8d4ec0b7661991211932aa3f7b61475cae6ac75f4b826524091d5a671`.
+It is frozen before provider execution and remains unexecuted; it supplies no
+provider-result, baseline/candidate, qualification, or remediation evidence.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
 
@@ -565,9 +570,10 @@ for every run in both sets. The comparison recorded three newly failing and one
 newly passing run, pass-rate −5.56 percentage points, safety 0, turns 0/+2,
 and duration +4,432/+27,866 ms. These are neutral evidence only and establish
 no quality, security, cost, latency, or efficiency claim. The candidate remains
-preserved without rerun or selection; Task 8.2 is incomplete and Phase 9 is
-locked. Any result-informed remediation or requalification requires a new v3
-held-out corpus first. The advertised `gpt-5.5` failed only pre-corpus
+preserved without rerun or selection. Issue #722 supplies the fresh frozen v3
+corpus, but it remains unexecuted; no result-informed remediation or
+requalification has occurred, so Task 8.2 is incomplete and Phase 9 remains
+locked. The advertised `gpt-5.5` failed only pre-corpus
 capability smoke with `model_not_found` and was not used for this campaign.
 
 ## Phase 9 — Measured coding policy

@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: frame-codec.stream-partial-frames
+risk: medium
+tags: [held-out, praxis-held-out-v3, frame-codec]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Update src/stream.mjs FrameDecoder to retain copied partial bytes across
+    push calls and emit every complete decoded frame in order without aliasing chunks.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: partial-frames
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { FrameDecoder } from './src/stream.mjs';
+        try { const decoder = new FrameDecoder(); const first = Buffer.from([0,0,0,3,1]); if (decoder.push(first).length !== 0) process.exit(42); first[4] = 9; const rest = Buffer.from([2,3,0,0,0,1,8]); const output = decoder.push(rest); if (output.length !== 2 || output[0].toString('hex') !== '010203' || output[1].toString('hex') !== '08') process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/stream.mjs]
+  expected_changed_paths: [src/stream.mjs]
+  forbidden_changed_paths:
+    [src/frame.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

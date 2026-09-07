@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: graph-craft.add-affected-targets
+risk: medium
+tags: [held-out, praxis-held-out-v3, graph-craft]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Extend src/graph.mjs with affectedTargets(nodes, changedIds), returning
+    changed nodes and every transitive reverse dependent once in declaration order.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: affected-targets
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import * as graph from './src/graph.mjs';
+        try { if (typeof graph.affectedTargets !== 'function') process.exit(42); const nodes = [{id:'deploy',dependencies:['cli']},{id:'docs',dependencies:[]},{id:'core',dependencies:[]},{id:'ui',dependencies:['core']},{id:'cli',dependencies:['ui']}]; const changedIds = ['core']; const beforeNodes = JSON.stringify(nodes); const beforeChanged = JSON.stringify(changedIds); const result = graph.affectedTargets(nodes, changedIds); if (JSON.stringify(result) !== JSON.stringify(['deploy','core','ui','cli']) || JSON.stringify(nodes) !== beforeNodes || JSON.stringify(changedIds) !== beforeChanged) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/graph.mjs]
+  expected_changed_paths: [src/graph.mjs]
+  forbidden_changed_paths:
+    [src/cli.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

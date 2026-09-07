@@ -1,0 +1,32 @@
+schema_version: '1.1'
+name: frame-codec.copy-decoded-payload
+risk: medium
+tags: [held-out, praxis-held-out-v3, frame-codec]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    Change decodeFrame in src/frame.mjs to return an independent Buffer copy of
+    the payload while retaining exact-length validation.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: copied-payload
+    command: node
+    args:
+      - --input-type=module
+      - -e
+      - >-
+        import { decodeFrame } from './src/frame.mjs';
+        try { const frame = Buffer.from([0,0,0,3,1,2,3]); const payload = decodeFrame(frame); frame[4] = 9; let trailing = false; try { decodeFrame(Buffer.from([0,0,0,1,7,8])); } catch (error) { trailing = error?.message === 'Invalid frame length'; } if (!Buffer.isBuffer(payload) || payload[0] !== 1 || payload.toString('hex') !== '010203' || !trailing) process.exit(42); process.exit(0); } catch (error) { console.error(String(error?.message ?? error)); process.exit(1); }
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/frame.mjs]
+  expected_changed_paths: [src/frame.mjs]
+  forbidden_changed_paths:
+    [src/stream.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]
