@@ -1,0 +1,104 @@
+schema_version: '1.1'
+name: patch-tree.prevent-prototype-pollution
+risk: high
+tags: [held-out, praxis-held-out-v4, patch-tree]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/patch.mjs, export applyPatch(document, operations). Before cloning, reading, or writing the document, reject every patch path containing an exact decoded token __proto__, prototype, or constructor. Dangerous add operations must throw while leaving the input and global object prototypes unchanged. Similar ordinary keys remain valid: adding /constructorName is allowed, returns an independent result, and does not mutate the input.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/patch.mjs`).href)
+          if (!Object.hasOwn(m, 'applyPatch')) process.exit(42)
+          const f = m.applyPatch
+          assert.equal(typeof f, 'function')
+          const pollutionKey = '__praxis_v4_pollution_probe__'
+          const globalTargets = [Object.prototype, Function.prototype, Object]
+          const savedDescriptors = globalTargets.map((target) =>
+            Object.getOwnPropertyDescriptor(target, pollutionKey),
+          )
+          try {
+            for (const token of ['__proto__', 'prototype', 'constructor']) {
+              let reads = 0
+              const guarded = {}
+              Object.defineProperty(guarded, 'observable', {
+                enumerable: true,
+                configurable: true,
+                get() { reads += 1; return 'unchanged' },
+              })
+              const descriptors = Object.getOwnPropertyDescriptors(guarded)
+              const prototype = Object.getPrototypeOf(guarded)
+              assert.throws(() => f(guarded, [
+                { op: 'add', path: `/${token}/${pollutionKey}`, value: true },
+              ]))
+              assert.equal(reads, 0)
+              assert.deepEqual(Object.getOwnPropertyDescriptors(guarded), descriptors)
+              assert.strictEqual(Object.getPrototypeOf(guarded), prototype)
+              globalTargets.forEach((target, index) => {
+                assert.deepEqual(
+                  Object.getOwnPropertyDescriptor(target, pollutionKey),
+                  savedDescriptors[index],
+                )
+              })
+            }
+            let delayedReads = 0
+            const delayed = {}
+            Object.defineProperty(delayed, 'observable', {
+              enumerable: true,
+              configurable: true,
+              get() { delayedReads += 1; return 'unchanged' },
+            })
+            const delayedDescriptors = Object.getOwnPropertyDescriptors(delayed)
+            const delayedPrototype = Object.getPrototypeOf(delayed)
+            assert.throws(() => f(delayed, [
+              { op: 'add', path: '/safe', value: true },
+              { op: 'add', path: `/__proto__/${pollutionKey}`, value: true },
+            ]))
+            assert.equal(delayedReads, 0)
+            assert.deepEqual(Object.getOwnPropertyDescriptors(delayed), delayedDescriptors)
+            assert.strictEqual(Object.getPrototypeOf(delayed), delayedPrototype)
+            assert.equal(Object.hasOwn(delayed, 'safe'), false)
+            globalTargets.forEach((target, index) => {
+              assert.deepEqual(
+                Object.getOwnPropertyDescriptor(target, pollutionKey),
+                savedDescriptors[index],
+              )
+            })
+            const ordinary = { constructorName: 'old', keep: { value: 1 } }
+            const before = structuredClone(ordinary)
+            const result = f(ordinary, [
+              { op: 'add', path: '/constructorName', value: 'new' },
+            ])
+            assert.deepEqual(result, { constructorName: 'new', keep: { value: 1 } })
+            assert.deepEqual(ordinary, before)
+            assert.notStrictEqual(result, ordinary)
+            assert.notStrictEqual(result.keep, ordinary.keep)
+          } finally {
+            globalTargets.forEach((target, index) => {
+              const descriptor = savedDescriptors[index]
+              if (descriptor === undefined) delete target[pollutionKey]
+              else Object.defineProperty(target, pollutionKey, descriptor)
+            })
+          }
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/patch.mjs]
+  expected_changed_paths: [src/patch.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

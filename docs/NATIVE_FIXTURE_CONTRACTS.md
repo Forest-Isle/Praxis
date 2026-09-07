@@ -53,9 +53,10 @@ or retained clean-room observations, never values recomputed by production code.
 
 The separately versioned held-out Project Eval corpora under
 `test/corpora/project-evals/praxis-held-out-v1`,
-`test/corpora/project-evals/praxis-held-out-v2`, and
-`test/corpora/project-evals/praxis-held-out-v3` are not fixture evidence. Each
-has three repositories, twelve tasks, and 36 planned runs; all three versions
+`test/corpora/project-evals/praxis-held-out-v2`,
+`test/corpora/project-evals/praxis-held-out-v3`, and
+`test/corpora/project-evals/praxis-held-out-v4` are not fixture evidence. Each
+has three repositories, twelve tasks, and 36 planned runs; all four versions
 use this standard 3/12/36 shape. Their checked-in
 tasks are not secret; held-out means results cannot tune the same corpus
 version. CI structurally parses and hashes them only. Real execution is
@@ -69,6 +70,15 @@ these exact matching path/token/digest pairs:
   `praxis-held-out-v2@sha256:1ae6e3485684db143ead1983479500f7fb80d13fd99769d8e202d4c7c35881b3`.
 - v3: `test/corpora/project-evals/praxis-held-out-v3` with
   `praxis-held-out-v3@sha256:9380f5ccd9b920bf9767381f2d36d91dc04abe645db0a7c1a5f1597279d579ff`.
+- v4: `test/corpora/project-evals/praxis-held-out-v4` with
+  `praxis-held-out-v4@sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`.
+
+`praxis-held-out-v4` consists of the `csv-lens`, `memo-lru`, and `patch-tree`
+repositories, with four fully qualified deterministic tasks per repository,
+three repetitions, and 36 planned runs. Each pristine verifier returns 42,
+correct reference behavior returns 0, and present-but-wrong exports return 1.
+Issue #740 froze v4 before any result-informed v3 remediation or
+requalification; no provider/model execution or qualification evidence exists.
 
 `praxis-held-out-v3` consists of the new `frame-codec`, `graph-craft`, and
 `route-forge` repositories. Issue #738 completed its aggregate-only campaign
@@ -330,8 +340,17 @@ passing runs, pass-rate delta
 −16.67 percentage points, safety delta 0, and neutral turn/duration deltas
 −2/0 and −7,297.5/−19,801 ms. Subscription cost is unavailable for all runs;
 no quality, broad-security, cost, latency, efficiency, or optimization claim is
-permitted. Task 8.2 remains incomplete and Phase 9 stays locked; any
-result-informed remediation or requalification requires a new v4 corpus first.
+permitted. Task 8.2 remains incomplete and Phase 9 stays locked. V4 is now
+frozen, but no result-informed remediation, requalification, or provider
+execution has occurred; a separately scoped process and evidence are still
+required.
+
+Issue #740's v4 corpus structurally loads and hashes with three repositories,
+12 tasks, and 36 planned runs. Its fixed verifier audit returns 42 for each
+pristine verifier, 0 for correct reference behavior, and 1 for present-but-
+wrong exports. V4 is frozen but unexecuted: no provider request, baseline,
+candidate, result, or qualification evidence exists. Task 8.2 remains
+incomplete and Phase 9 stays locked.
 
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
@@ -357,7 +376,8 @@ parity or external qualification.
 - Native-only architecture and clean-room TUI reference behavior remain intact.
 - All required local and protected CI gates pass.
 - The held-out corpus contract reports three repositories, twelve tasks, and
-  36 planned runs; the preserved v2 and Issue #738 v3 campaigns remain
+  36 planned runs; v4 structurally loads and hashes with the fixed 42/1/0
+  verifier audit. The preserved v2 and Issue #738 v3 campaigns remain
   aggregate-only in this contract, with Task 8.2 incomplete and Phase 9 locked.
 - The qualification implementation and hermetic evidence are complete, and a
   bounded DeepSeek baseline plus the preserved v2 comparison are recorded.

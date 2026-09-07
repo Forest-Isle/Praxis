@@ -166,12 +166,14 @@ tools keep their existing preapproval behavior. This boundary does not claim to
 contain effects hidden inside opaque interpreters or unknown executables.
 
 Cases are discovered under `<target>/evals/**/case.yaml`. The checked-in,
-separately versioned `praxis-held-out-v1`, `praxis-held-out-v2`, and
-`praxis-held-out-v3` corpora each contain three directly runnable repositories,
+separately versioned `praxis-held-out-v1`, `praxis-held-out-v2`,
+`praxis-held-out-v3`, and `praxis-held-out-v4` corpora each contain three
+directly runnable repositories,
 twelve tasks, and 36 planned runs (three repetitions per task). The v2 repositories are
 `event-window`, `header-map`, and `interval-set`. These tasks are not secret:
 held-out means results cannot tune the same corpus version. The v3 repositories
-are `frame-codec`, `graph-craft`, and `route-forge`. CI structurally
+are `frame-codec`, `graph-craft`, and `route-forge`; v4 repositories are
+`csv-lens`, `memo-lru`, and `patch-tree`. CI structurally
 parses and hashes them only. Real execution is explicit opt-in and local-only;
 run a repository with
 `praxis eval --run-verification --allow-tools Edit,Write,Bash <repository>`.
@@ -219,6 +221,19 @@ praxis eval qualify \
   --run-verification --output-dir ./held-out-v3-baseline \
   --allow-tools Edit,Write,Bash \
   test/corpora/project-evals/praxis-held-out-v3
+```
+
+The v4 corpus is frozen but unexecuted. Documentation does not authorize a
+provider request; any execution requires a separate explicit decision. If that
+decision is made, this is the matching, copyable opt-in command:
+
+```sh
+praxis eval qualify \
+  --provider <provider> --profile <profile> --model <model> \
+  --confirm-held-out praxis-held-out-v4@sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53 \
+  --run-verification --output-dir ./held-out-v4-baseline \
+  --allow-tools Edit,Write,Bash \
+  test/corpora/project-evals/praxis-held-out-v4
 ```
 
 Issue #731's corrected no-tool/no-file smoke selected
@@ -355,6 +370,9 @@ incomplete, Phase 9 remains locked. `praxis-held-out-v3` is now frozen and has
 completed this aggregate-only campaign, but has not been used for
 result-informed remediation; any later
 result-informed remediation or requalification requires a new corpus version.
+Issue #740 has now frozen v4 before any result-informed remediation, but no
+remediation, requalification, or provider request occurred; the v4 freeze does
+not unlock Task 8.2 or Phase 9.
 During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
 smoke with `model_not_found` and was not used for the v2 campaign. This is
 separate from the later #724 preflight below.

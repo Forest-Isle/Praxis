@@ -1,0 +1,49 @@
+schema_version: '1.1'
+name: csv-lens.select-columns
+risk: medium
+tags: [held-out, praxis-held-out-v4, csv-lens]
+runs: 3
+fixture: fixture
+execution:
+  prompt: >-
+    In src/csv.mjs, export selectColumns(rows, names). Treat row zero as the header, preserve requested column order, and return new outer and inner arrays without mutating or aliasing the input. For [["id","name","role"],["1","Ada","admin"],["2","Lin","dev"]] and ["role","id"], return [["role","id"],["admin","1"],["dev","2"]]. Duplicate requested id must throw exactly Duplicate column: id, and missing requested missing must throw exactly Unknown column: missing.
+  max_turns: 12
+  timeout_seconds: 180
+  allowed_tools: [Read, Glob, Grep, Edit, Write, Bash]
+  env: {}
+verification:
+  - name: behavior
+    command: node
+    args:
+      - -e
+      - |
+        const assert = require('node:assert/strict')
+        const { pathToFileURL } = require('node:url')
+        ;(async () => {
+          const m = await import(pathToFileURL(`${process.argv[1]}/src/csv.mjs`).href)
+          if (!Object.hasOwn(m, 'selectColumns')) process.exit(42)
+          const f = m.selectColumns
+          assert.equal(typeof f, 'function')
+          const rows = [['id', 'name', 'role'], ['1', 'Ada', 'admin'], ['2', 'Lin', 'dev']]
+          const before = structuredClone(rows)
+          const selected = f(rows, ['role', 'id'])
+          assert.deepEqual(selected, [['role', 'id'], ['admin', '1'], ['dev', '2']])
+          assert.deepEqual(rows, before)
+          assert.notStrictEqual(selected, rows)
+          selected.forEach((row, index) => assert.notStrictEqual(row, rows[index]))
+          selected[1][0] = 'changed-result'
+          assert.deepEqual(rows, before)
+          rows[2][2] = 'changed-input'
+          assert.equal(selected[2][0], 'dev')
+          assert.throws(() => f(before, ['id', 'id']), { message: 'Duplicate column: id' })
+          assert.throws(() => f(before, ['missing']), { message: 'Unknown column: missing' })
+        })().then(() => process.exit(0), () => process.exit(1))
+    timeout_seconds: 30
+    required: true
+    expect: pass
+graders: []
+expect:
+  allowed_changed_paths: [src/csv.mjs]
+  expected_changed_paths: [src/csv.mjs]
+  forbidden_changed_paths:
+    [src/other.mjs, .git/**, .praxis/**, .env, '**/.env', secrets/**]

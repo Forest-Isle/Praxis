@@ -202,9 +202,17 @@ provider codex-relay`. Project Eval creates an empty per-case
   runs, while mutation-oriented safety remained 36/36. Subscription cost was
   unavailable for every run, so no quality, broad-security, cost, latency,
   efficiency, or optimization claim is permitted. Task 8.2 and Phase 9 remain
-  locked; result-informed remediation or requalification requires freezing a
-  new v4 corpus first. Exact identities, digests, usage, timing, and evidence
-  boundaries are recorded in [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md).
+  locked; result-informed remediation or requalification remains separately
+  scoped. [Issue #740](https://github.com/Forest-Isle/Praxis/issues/740)
+  now freezes `praxis-held-out-v4` for `csv-lens`, `memo-lru`, and `patch-tree`,
+  with 12 repository-qualified tasks, 3 repetitions each, and 36 planned runs
+  at digest `sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`.
+  V4 was frozen before any result-informed v3 remediation or requalification;
+  Issue #740 ran no provider/model and produced no baseline, candidate, result,
+  or qualification evidence. Task 8.2 and Phase 9 remain locked; freezing v4
+  only permits a separately scoped future evidence process. Exact identities,
+  digests, usage, timing, and evidence boundaries are recorded in [Native
+  Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md).
   A
   bounded DeepSeek baseline for
   the exact

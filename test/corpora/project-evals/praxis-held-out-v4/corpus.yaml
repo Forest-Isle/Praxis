@@ -1,0 +1,32 @@
+schema_version: '1.0'
+id: praxis-held-out-v4
+version: 4
+split: held-out
+repetitions: 3
+policy:
+  execution: opt-in-only
+  tuning: forbidden
+  result_informed_changes: require-new-version
+content_sha256: sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53
+repositories:
+  - id: csv-lens
+    path: repositories/csv-lens
+    tasks:
+      - csv-lens.parse-quoted-row
+      - csv-lens.reject-ragged-records
+      - csv-lens.select-columns
+      - csv-lens.stable-serialize
+  - id: memo-lru
+    path: repositories/memo-lru
+    tasks:
+      - memo-lru.cache-undefined-values
+      - memo-lru.dedupe-concurrent-loads
+      - memo-lru.evict-least-recent
+      - memo-lru.expire-with-clock
+  - id: patch-tree
+    path: repositories/patch-tree
+    tasks:
+      - patch-tree.apply-atomic-batch
+      - patch-tree.decode-pointer-tokens
+      - patch-tree.prevent-prototype-pollution
+      - patch-tree.remove-array-element

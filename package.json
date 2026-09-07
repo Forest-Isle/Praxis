@@ -63,7 +63,7 @@
     "verify:fixture-contracts": "node scripts/verify-fixture-contracts.mjs",
     "test:fixtures": "node scripts/run-fixture-contracts.mjs",
     "test:eval:baseline": "vitest run src/evals/coding-baseline.test.ts src/evals/project-eval-comparison.test.ts src/evals/apply-patch-admission.test.ts src/evals/lsp-diagnostics-admission.test.ts src/evals/glob-ripgrep-admission.test.ts",
-    "test:eval:held-out-contract": "vitest run src/evals/held-out-corpus.test.ts src/evals/held-out-corpus-v3.test.ts",
+    "test:eval:held-out-contract": "vitest run src/evals/held-out-corpus.test.ts src/evals/held-out-corpus-v3.test.ts src/evals/held-out-corpus-v4.test.ts",
     "test:eval:held-out-qualification": "vitest run src/evals/held-out-qualification.test.ts"
   },
   "engines": {
