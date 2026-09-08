@@ -218,6 +218,15 @@ provider codex-relay`. Project Eval creates an empty per-case
   retry, substitution, or result selection occurred. The v4 corpus remains
   unexecuted, so Task 8.2/Phase 9 remain locked; see [Native Fixture
   Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md) for exact evidence.
+  Issue #748 then ran one authorized pre-corpus smoke against clean runtime
+  source `git:e152a2b1c1f2aba150cb28cbf577780d699b0011`, artifact
+  `sha256:80a4bc792f727b75ab1259c4c6d9fdc4e93dad333d112f2f75bab143c7ea9cdd`,
+  and `codex-relay/default/codex-responses/gpt-5.5` at the fixed adapter
+  endpoint. It failed closed with HTTP 404 and bounded `model_not_found`
+  diagnostics; baseline and candidate remained 0/36 and absent, with no
+  verdict. No retry or substitution occurred, v4 remains unexecuted, and
+  Task 8.2/Phase 9 remain locked. This diagnostic applies only to #748's
+  response and does not establish its producing layer or explain #742.
   A
   bounded DeepSeek baseline for
   the exact

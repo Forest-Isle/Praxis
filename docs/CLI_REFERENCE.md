@@ -394,6 +394,36 @@ retry, substitution, or result selection occurred. The v4 corpus remains
 unexecuted, and #742 is immutable and not retried. Separate diagnosis of the
 unestablished HTTP 404 source and new explicit authorization are required for
 any future v4 campaign; Task 8.2 remains incomplete and Phase 9 remains locked.
+Issue #748 records a separate authorized exactly-once pre-corpus smoke using clean
+runtime source `git:e152a2b1c1f2aba150cb28cbf577780d699b0011`, artifact
+`sha256:80a4bc792f727b75ab1259c4c6d9fdc4e93dad333d112f2f75bab143c7ea9cdd`,
+corpus `praxis-held-out-v4@sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`,
+and `codex-relay/default/codex-responses/gpt-5.5` at the fixed adapter endpoint
+`https://codex.senyu.blog/responses`.
+The fixed configuration was high effort, 32,768 context, 4,096 reserve,
+provider-managed output, no fallback, 30/60/180-second clocks, zero smoke tools,
+and one maximum turn. Provider-free gates passed: clean `npm ci` with zero
+vulnerabilities, clean build, 66 focused tests, one focused Project Eval
+regression, doctor 12/12, sanitized Worker v9 root healthy, and a valid catalog
+with eight records including fixed gpt-5.5. The sole smoke child exited 1 after
+3,350 ms; terminal `result/success` had `is_error: true`,
+`terminal_reason: api_error`, HTTP 404, result duration 2,478 ms, API duration
+0 ms, and zero input/output tokens, tools/tool calls, stderr, or cwd entries.
+There was no signal, timeout, overflow, mutation, or credential occurrence.
+Safe diagnostics were only `type=invalid_request_error`, `code=model_not_found`,
+and `cf_ray=a37a43e08dfd086a-YYZ`; no request identifier was present. Smoke
+stdout digest is `sha256:11abbf1e74138acd57311c3702ef5e6777165712c71d76503307be2556b051e2`;
+stderr is the empty-file digest
+`sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Exactly one attempt occurred, with no retry, substitution, or selection. Baseline
+and candidate authorizations were not admitted; their markers and roots are
+absent and each remains 0/36. No qualification result, corpus aggregate,
+comparison, or qualification verdict exists, and v4 was not executed. These smoke counters are not corpus
+usage, timing, latency, or cost evidence; subscription cost is unavailable.
+The `model_not_found` diagnostic is bounded to this response and does not
+establish its producing layer or explain historical #742. Issue #742 remains
+immutable and is not retried; Task 8.2 remains incomplete and Phase 9 remains
+locked.
 During #720, the advertised `gpt-5.5` failed the earlier pre-corpus capability
 smoke with `model_not_found` and was not used for the v2 campaign. This is
 separate from the later #724 preflight below.
