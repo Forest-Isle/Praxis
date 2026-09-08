@@ -507,3 +507,38 @@
   after those successful checks, and post-checkpoint collection reported zero
   drift.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #751
+
+- Change ID: `issue-751-post-deploy-relay-smoke`.
+- Observed worktree: `test/751-post-deploy-relay-smoke`, based exactly on
+  `origin/main` `ab812daa7c617077f6d7b6960690be42bef67621`; reviewed product diff
+  records the accepted terminal evidence from one explicitly authorized
+  post-deploy smoke.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, `docs/NATIVE_FIXTURE_CONTRACTS.md`, and this
+  impact record.
+- Verdict: the change records one aggregate-only, no-tool/no-file terminal
+  provider result. It changes no CLI or qualification contract, runtime or
+  persistence/data boundary, provider adapter or registration, request or
+  response shape, deployment unit, architecture relation, or modeled critical
+  flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for the checkpointed exact include scope
+  (`CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/adr`, `package.json`, `scripts`,
+  and `src`). The existing source checkpoint already matches the inspected
+  Praxis revision.
+- Provider and qualification boundary: the exact
+  `codex-relay/default/codex-responses/gpt-5.6-sol` request completed once with
+  terminal success, one turn, zero tools, no isolated-cwd mutation, and no
+  retry, fallback, or substitution. No API error or relay request ID occurred,
+  so the ordinary-4xx correlation path was not exercised. No v4 corpus case,
+  baseline, candidate, comparison, or qualification verdict was executed;
+  Task 8.2 remains incomplete and Phase 9 remains locked. Success admits only
+  planning of a separately scoped and explicitly authorized v4 campaign.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  temporary `render_model.py` runs rendered 10 byte-identical views that also
+  matched all canonical views. The bounded source checkpoint required no
+  update because its inspected scope had zero drift.
+- Unresolved inferred claims: None.

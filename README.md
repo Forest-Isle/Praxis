@@ -227,6 +227,14 @@ provider codex-relay`. Project Eval creates an empty per-case
   verdict. No retry or substitution occurred, v4 remains unexecuted, and
   Task 8.2/Phase 9 remain locked. This diagnostic applies only to #748's
   response and does not establish its producing layer or explain #742.
+  Issue #751 completed one successful post-deploy no-tool/no-file smoke after
+  fresh exact-identity authorization and provider-free admission passed. The
+  `codex-relay/default/codex-responses/gpt-5.6-sol` smoke used one turn with no
+  retry, fallback, substitution, or workspace mutation. This is connectivity-
+  only evidence; 4xx correlation was not exercised, v4 remains unexecuted, and
+  Task 8.2/Phase 9 remain locked. Detailed identities and exact evidence are in
+  [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md); only planning of
+  a separately scoped, explicitly authorized v4 campaign is next.
   A
   bounded DeepSeek baseline for
   the exact
