@@ -55,6 +55,13 @@ this file from merged Conventional Commit pull requests.
 * persist Bash working directories and allow 10-minute commands ([#535](https://github.com/Forest-Isle/Praxis/issues/535))
 * require prior reads before mutating existing files ([#532](https://github.com/Forest-Isle/Praxis/issues/532))
 
+## [0.70.3](https://github.com/Forest-Isle/Praxis/compare/v0.70.2...v0.70.3) (2026-09-08)
+
+
+### Bug Fixes
+
+* preserve relay correlation ID ([#753](https://github.com/Forest-Isle/Praxis/issues/753)) ([ab812da](https://github.com/Forest-Isle/Praxis/commit/ab812daa7c617077f6d7b6960690be42bef67621))
+
 ## [0.70.2](https://github.com/Forest-Isle/Praxis/compare/v0.70.1...v0.70.2) (2026-09-07)
 
 
