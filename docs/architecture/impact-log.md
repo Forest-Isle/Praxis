@@ -472,3 +472,38 @@
   deterministic rendering, then the post-checkpoint assessment reported
   `added=0`, `modified=0`, and `deleted=0`.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #752
+
+- Change ID: `issue-752-relay-correlation-id` with Change Control cycle
+  `issue-752-relay-correlation-id-v2`.
+- Observed worktree: `fix/752-relay-correlation-id`, based exactly on
+  `origin/main` `3fe5cd35ba0222ec1d899e831c96b47fa22212e1`; reviewed product head
+  `62466a0f06bd1d4573edc35372da1b13aedd0f0c`.
+- Changed bounded-source paths: `src/providers/codex-responses.ts` and
+  `src/providers/codex-responses.test.ts`. The complete reviewed product change
+  also updates `docs/CLI_REFERENCE.md`.
+- Verdict: the change admits one additional bounded, syntactically safe relay
+  correlation header inside the existing custom Codex Responses non-success
+  error path. It changes no `ModelProvider`/`ModelProviderError` port, request
+  endpoint/body/headers, response codec, provider registration, status
+  classification, retry/fallback behavior, persistence/data shape, deployment
+  unit, relation, or modeled critical flow. Existing `provider-gateway` and
+  model-provider API responsibilities already cover adapter-normalized provider
+  errors and their bounded diagnostics.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=2`, and `deleted=0` for the established exact include scope. The
+  changed evidence maps to `provider-gateway`, `model-provider-apis`, and
+  `provider-contacts-apis`; their modeled facts and relations remain unchanged.
+- Security and evidence boundary: the existing 1-128 character ASCII
+  allowlist, value deduplication, complete-body bound, redaction, exact fallback,
+  and error classification remain in force. No provider completion, relay or
+  deployment mutation, model substitution, or held-out-v4 access/execution
+  occurred. Issue #751 remains unexecuted at 0/1 requests.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  temporary `render_model.py` runs rendered 10 byte-identical views that also
+  matched all canonical views. The bounded source checkpoint was advanced only
+  after those successful checks, and post-checkpoint collection reported zero
+  drift.
+- Unresolved inferred claims: None.
