@@ -171,48 +171,56 @@ describe('CodexResponsesProvider', () => {
     expect(String(error)).not.toContain('hidden')
   })
 
-  it('does not parse partial JSON and preserves the exact status-only message', async () => {
-    const provider = providerFor(async () =>
-      response('{"error":{"type":"partial"}', 404),
+  it('does not parse partial JSON and preserves a safe relay header', async () => {
+    const provider = providerFor(
+      async () =>
+        new Response('{"error":{"type":"partial"}', {
+          status: 404,
+          headers: { 'x-relay-request-id': 'relay-partial-safe' },
+        }),
     )
     const error = await collect(provider).catch((value: unknown) => value)
     expect(error).toMatchObject({
-      message: 'Codex Responses provider request failed with HTTP 404',
+      message:
+        'Codex Responses provider request failed with HTTP 404 (relay_request_id=relay-partial-safe)',
       status: 404,
       kind: 'invalid_request',
       retryable: false,
     })
   })
 
-  it('omits non-string, oversized, unsafe, and arbitrary identifiers exactly', async () => {
-    const provider = providerFor(
-      async () =>
-        new Response(
-          JSON.stringify({
-            error: {
-              type: 123,
-              code: 'x'.repeat(129),
-              message: 'body-secret',
+  it.each(['bad value', '', 'z'.repeat(129)])(
+    'omits non-string, oversized, unsafe, and arbitrary identifiers exactly (%s relay ID)',
+    async (relayRequestId) => {
+      const provider = providerFor(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                type: 123,
+                code: 'x'.repeat(129),
+                message: 'body-secret',
+              },
+            }),
+            {
+              status: 400,
+              headers: {
+                'x-relay-request-id': relayRequestId,
+                'x-request-id': 'bad value',
+                'cf-ray': 'y'.repeat(129),
+                'x-arbitrary': 'arbitrary-secret',
+              },
             },
-          }),
-          {
-            status: 400,
-            headers: {
-              'x-relay-request-id': 'z'.repeat(129),
-              'x-request-id': 'bad value',
-              'cf-ray': 'y'.repeat(129),
-              'x-arbitrary': 'arbitrary-secret',
-            },
-          },
-        ),
-    )
-    const error = await collect(provider).catch((value: unknown) => value)
-    expect(error).toMatchObject({
-      message: 'Codex Responses provider request failed with HTTP 400',
-    })
-    expect(String(error)).not.toContain('body-secret')
-    expect(String(error)).not.toContain('arbitrary-secret')
-  })
+          ),
+      )
+      const error = await collect(provider).catch((value: unknown) => value)
+      expect(error).toMatchObject({
+        message: 'Codex Responses provider request failed with HTTP 400',
+      })
+      expect(String(error)).not.toContain('body-secret')
+      expect(String(error)).not.toContain('arbitrary-secret')
+    },
+  )
 
   it('preserves safe headers when body reading rejects', async () => {
     const body = new ReadableStream<Uint8Array>({
