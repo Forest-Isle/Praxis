@@ -127,14 +127,18 @@ describe('CodexResponsesProvider', () => {
           }),
           {
             status: 404,
-            headers: { 'x-request-id': 'req_123', 'cf-ray': 'ray-456' },
+            headers: {
+              'x-relay-request-id': 'relay_123',
+              'x-request-id': 'req_123',
+              'cf-ray': 'ray-456',
+            },
           },
         ),
     )
     const error = await collect(provider).catch((value: unknown) => value)
     expect(error).toMatchObject({
       message:
-        'Codex Responses provider request failed with HTTP 404 (type=invalid_request_error, code=model_not_found, request_id=req_123, cf_ray=ray-456)',
+        'Codex Responses provider request failed with HTTP 404 (type=invalid_request_error, code=model_not_found, relay_request_id=relay_123, request_id=req_123, cf_ray=ray-456)',
       status: 404,
       kind: 'invalid_request',
       retryable: false,
@@ -150,7 +154,8 @@ describe('CodexResponsesProvider', () => {
           {
             status: 422,
             headers: {
-              'x-request-id': 'bad value',
+              'x-relay-request-id': 'shared-request',
+              'x-request-id': 'shared-request',
               'cf-ray': 'same',
               'x-secret': 'hidden',
             },
@@ -160,7 +165,7 @@ describe('CodexResponsesProvider', () => {
     const error = await collect(provider).catch((value: unknown) => value)
     expect(error).toMatchObject({
       message:
-        'Codex Responses provider request failed with HTTP 422 (type=same)',
+        'Codex Responses provider request failed with HTTP 422 (type=same, relay_request_id=shared-request)',
     })
     expect(String(error)).not.toContain('password')
     expect(String(error)).not.toContain('hidden')
@@ -193,6 +198,7 @@ describe('CodexResponsesProvider', () => {
           {
             status: 400,
             headers: {
+              'x-relay-request-id': 'z'.repeat(129),
               'x-request-id': 'bad value',
               'cf-ray': 'y'.repeat(129),
               'x-arbitrary': 'arbitrary-secret',
@@ -221,13 +227,16 @@ describe('CodexResponsesProvider', () => {
       async () =>
         new Response(body, {
           status: 503,
-          headers: { 'x-request-id': 'read-safe' },
+          headers: {
+            'x-relay-request-id': 'relay-read-safe',
+            'x-request-id': 'read-safe',
+          },
         }),
     )
     const error = await collect(provider).catch((value: unknown) => value)
     expect(error).toMatchObject({
       message:
-        'Codex Responses provider request failed with HTTP 503 (request_id=read-safe)',
+        'Codex Responses provider request failed with HTTP 503 (relay_request_id=relay-read-safe, request_id=read-safe)',
       status: 503,
       kind: 'server_error',
     })

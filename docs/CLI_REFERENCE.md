@@ -760,10 +760,13 @@ API-key credential, and trusted relay; Praxis provides no relay/default and does
 not silently fall back to another protocol.
 
 For non-success responses, Praxis may surface only validated `type`, `code`,
-`request_id`, and `cf_ray` identifiers, each bounded to 128 ASCII characters;
-raw error messages and bodies, other headers, and unsafe values remain redacted.
-HTTP classification and retry behavior are unchanged. This diagnostic behavior
-does not establish the historical source described by #742.
+`relay_request_id` (from `X-Relay-Request-ID`), `request_id`, and `cf_ray`
+identifiers, each bounded to 128 ASCII characters; raw error messages and
+bodies, other headers, and unsafe values remain redacted. The relay identifier
+supports correlation when supplied, but does not establish relay availability
+or response causality. HTTP classification and retry behavior are unchanged.
+This diagnostic behavior does not establish the historical source described by
+#742.
 
 Subscription usage retains token and model usage but omits `costUsd`; API
 pricing does not apply. Numeric USD budgets and plugin-eval paid LLM judges

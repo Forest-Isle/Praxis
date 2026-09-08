@@ -95,6 +95,7 @@ function parseErrorDiagnostics(
   const values: Array<[string, unknown]> = [
     ['type', nested === undefined ? object?.type : nested.type],
     ['code', nested === undefined ? object?.code : nested.code],
+    ['relay_request_id', headers.get('x-relay-request-id')],
     ['request_id', headers.get('x-request-id')],
     ['cf_ray', headers.get('cf-ray')],
   ]
