@@ -140,6 +140,11 @@ praxis doctor
   语料前 smoke。它以 HTTP 404 失败关闭，并仅暴露有界的 `model_not_found` 诊断；基线和候选均为
   0/36 且没有产物，也不存在 verdict。没有发生重试或替换，v4 仍未执行，Task 8.2/Phase 9 继续锁定。
   该诊断仅适用于 #748 的这次响应，不能确定产生响应的外部层，也不能解释 #742。
+  Issue #751 在新的精确 identity 获准且 provider-free admission 通过后，完成了唯一一次部署后、
+  无工具且无文件的 smoke。`codex-relay/default/codex-responses/gpt-5.6-sol` 仅执行一回合，
+  未发生重试、回退、替换或工作区变更。这只是连通性证据；未执行 4xx 关联，v4 仍未执行，
+  Task 8.2/Phase 9 继续锁定。详细 identity 与精确证据见 [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md)。
+  下一步只能规划一个另行限定范围且明确获准的 v4 campaign。
   Issue #731 修正后的无工具、无文件 smoke 在固定 runtime 上选择了
   `codex-relay/default/codex-responses/gpt-5.6-sol`，一回合终态成功，配置工具数为 0、stderr 为 0，隔离 cwd 未发生变更；这只是 provider smoke 证据，不是 v3 语料证据。随后唯一一次 v3 基线在首个 case 的 provider identity preflight 阶段于 810 毫秒后以 1 退出，错误为 `Invalid provider settings: unknown provider codex-relay`。Project Eval 为每个 case 创建空的 `workspace.config` 并传给 production runtime factory，因此 campaign `PRAXIS_HOME` 中的自定义 provider 定义未被看到。基线完成 0/36 次运行，没有 qualification result 或运行产物，也没有接纳或运行 candidate，因此不存在基线/候选回归比较。遵守了不重试、不替换规则；不存在 v3 行为、面向 mutation 的安全、验证器、用量、订阅成本、时长/延迟、质量、安全性、兼容性、效率、优化、基线、候选或 qualification 结论。该 settings 转发缺口必须在新的 change 中解决，之后才能另行授权未来 campaign。Task 8.2 仍未完成，Phase 9 继续锁定。Issue #733 现在只修复这一配置接纳路径：默认 Project Eval factory 会在 identity 和 runtime 构造过程中一致地保留调用方明确选择的 native config root，用于 provider 定义、选择和凭据。每个 case 的 root 仍是 runtime settings、state、transcripts、hooks、plugins、MCP、memory、artifacts、工具和 verifier 行为的权威位置；不会向 case root 复制 settings 文件。这只移除了配置阻塞，不会重试 #731、产生 v3 证据、完成 Task 8.2、解锁 Phase 9，也不会授权未来的 provider 请求。
   Issue #724 预先声明的唯一一次无工具、无文件 smoke 针对固定的
