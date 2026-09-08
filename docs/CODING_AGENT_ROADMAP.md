@@ -563,8 +563,39 @@ unexecuted; #742 is immutable and is not retried. A separate diagnosis of the
 unestablished HTTP 404 source and a newly authorized future campaign are
 required before any v4 evidence can be collected. Task 8.2 remains incomplete
 and Phase 9 stays locked.
+Issue #748 is a separate authorized pre-corpus smoke against clean runtime
+source `git:e152a2b1c1f2aba150cb28cbf577780d699b0011`, artifact
+`sha256:80a4bc792f727b75ab1259c4c6d9fdc4e93dad333d112f2f75bab143c7ea9cdd`,
+corpus `praxis-held-out-v4@sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`,
+and `codex-relay/default/codex-responses/gpt-5.5` at the fixed adapter endpoint
+`https://codex.senyu.blog/responses`.
+The fixed configuration was high effort, 32,768 context, 4,096 reserve,
+provider-managed output, no fallback, 30/60/180-second clocks, zero smoke tools,
+and one maximum turn. Provider-free gates passed (clean `npm ci` with zero vulnerabilities, clean build,
+66 focused tests, one focused Project Eval regression, doctor 12/12, healthy
+sanitized Worker v9 root, and valid eight-record catalog). Its sole smoke child
+exited 1 after 3,350 ms with terminal `result/success`, `is_error: true`,
+`terminal_reason: api_error`, HTTP 404, and bounded diagnostics
+`type=invalid_request_error`, `code=model_not_found`, `cf_ray=a37a43e08dfd086a-YYZ`.
+Result duration was 2,478 ms and API duration 0 ms. The one attempt had zero
+tokens, tools, tool calls, stderr, and cwd entries; there was no signal, timeout,
+overflow, mutation, or credential occurrence, and no request identifier.
+stdout/stderr digests were `sha256:11abbf1e74138acd57311c3702ef5e6777165712c71d76503307be2556b051e2`
+and `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+No retry, substitution, or selection happened;
+baseline/candidate authorizations were not admitted, markers/roots are absent,
+and each remains 0/36. No verdict exists and v4 remains unexecuted. The diagnostic
+is specific to #748's response, does not identify its producing layer, and does
+not explain immutable #742. Smoke counters are not corpus usage/latency/cost
+evidence; subscription cost is unavailable. Task 8.2 remains incomplete and
+Phase 9 stays locked.
 
 ### Task 8.2: Real-model qualification [depends: Task 8.1]
+
+Issue #748's failed-closed gpt-5.5 pre-corpus smoke did not admit baseline or
+candidate (both 0/36 with absent outputs), so this task remains incomplete;
+v4 was not executed and Phase 9 remains locked. Its bounded `model_not_found`
+diagnostic applies only to that response and does not explain immutable #742.
 
 The qualification mechanism is implemented by #708: `praxis eval qualify`
 preflights one pinned, opt-in provider/model configuration, executes the fixed

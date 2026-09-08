@@ -382,6 +382,34 @@ and not retried; separate diagnosis of the unestablished HTTP 404 source and
 new explicit authorization are required for a future v4 campaign. Task 8.2
 remains incomplete and Phase 9 stays locked.
 
+Issue #748 records a separate authorized exactly-once pre-corpus smoke using
+clean runtime source `git:e152a2b1c1f2aba150cb28cbf577780d699b0011`, artifact
+`sha256:80a4bc792f727b75ab1259c4c6d9fdc4e93dad333d112f2f75bab143c7ea9cdd`,
+corpus `praxis-held-out-v4@sha256:a32cb478cd6a99971cb57964c82affa3296546c387a4f1dacf4df7d313480b53`,
+and identity `codex-relay/default/codex-responses/gpt-5.5` at the fixed adapter
+endpoint `https://codex.senyu.blog/responses`. It used high effort, 32,768 context,
+4,096 reserve, provider-managed
+output, no fallback, 30/60/180-second clocks, zero smoke tools, and one maximum
+turn. Provider-free preflight passed with clean `npm ci` (zero vulnerabilities),
+clean build, 66 focused tests, one focused Project Eval regression, doctor 12/12,
+healthy sanitized Worker v9 root, and a valid eight-record catalog with fixed
+gpt-5.5. The sole child exited 1; harness elapsed 3,350 ms, parsed terminal
+`result/success` had `is_error: true`, `terminal_reason: api_error`, HTTP 404,
+result duration 2,478 ms, API duration 0 ms, and zero tokens, tools/tool calls,
+stderr, or cwd entries. There was no signal, timeout, overflow, mutation, or
+credential occurrence. Safe diagnostics were only
+`type=invalid_request_error`, `code=model_not_found`, and
+`cf_ray=a37a43e08dfd086a-YYZ`; no request identifier appeared. Stdout and stderr
+digests were `sha256:11abbf1e74138acd57311c3702ef5e6777165712c71d76503307be2556b051e2`
+and `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+Exactly one attempt occurred with no retry, substitution, or selection. Baseline
+and candidate authorizations were not admitted; their markers/roots are absent
+and each remains 0/36. No qualification result, corpus aggregate, comparison, or
+qualification verdict exists; v4 remains unexecuted. Smoke counters are not corpus usage/latency/cost
+evidence, and subscription cost is unavailable. The diagnostic is bounded to this
+response and does not identify its producing layer or explain immutable #742.
+Task 8.2 remains incomplete and Phase 9 remains locked.
+
 The native project-eval evidence also includes the Glob ripgrep admission lane.
 Its four fixtures compare a test-local legacy directory walker baseline with the
 production bounded-ripgrep candidate. Both variants pass 4/4 task and safety

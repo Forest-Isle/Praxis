@@ -437,3 +437,38 @@
   advanced only after these successful validations, and the post-checkpoint
   assessment reported `added=0`, `modified=0`, and `deleted=0`.
 - Unresolved inferred claims: None.
+
+## 2026-09-08 — NO_MODEL_CHANGE — Issue #748
+
+- Change ID: `issue-748-held-out-v4-gpt55-repeatability` with supporting
+  architecture checkpoint cycle `issue-748-architecture-checkpoint`.
+- Observed worktree: `test/748-held-out-v4-gpt55`, based exactly on
+  `origin/main` `e152a2b1c1f2aba150cb28cbf577780d699b0011`; reviewed evidence commit
+  `3664565`.
+- Changed paths: `README.md`, `README_zh.md`, `docs/CLI_REFERENCE.md`,
+  `docs/CODING_AGENT_ROADMAP.md`, and `docs/NATIVE_FIXTURE_CONTRACTS.md`.
+- Verdict: the change records the terminal aggregate-only result of one newly
+  authorized held-out-v4 pre-corpus smoke. It changes no CLI or qualification
+  contract, runtime boundary, persistence/data shape, provider integration,
+  registration, deployment unit, relation, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=1`, and `deleted=0` for the existing exact include scope. The sole
+  modified path is `package.json`, whose preceding `origin/main` release commit
+  changes only version metadata from 0.70.1 to 0.70.2. The canonical model's
+  `package.json` evidence points to the unchanged `bin` field; the Issue #748
+  branch adds no modeled-source change.
+- Qualification boundary: the exactly-once smoke returned HTTP 404 with the
+  bounded diagnostic code `model_not_found`. This does not establish the
+  response-producing external layer or explain immutable Issue #742. Baseline
+  and candidate authorization were not admitted, zero of 36 planned runs
+  occurred for each, v4 remains unexecuted, and no corpus behavior,
+  mutation-oriented safety, verifier, usage, subscription-cost, comparison,
+  or qualification verdict evidence exists. Task 8.2 remains incomplete and
+  Phase 9 remains locked.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two consecutive
+  temporary renders produced 10 byte-identical views matching all canonical
+  views. The bounded source checkpoint was advanced only after validation and
+  deterministic rendering, then the post-checkpoint assessment reported
+  `added=0`, `modified=0`, and `deleted=0`.
+- Unresolved inferred claims: None.
