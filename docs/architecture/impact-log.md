@@ -542,3 +542,33 @@
   matched all canonical views. The bounded source checkpoint required no
   update because its inspected scope had zero drift.
 - Unresolved inferred claims: None.
+
+## 2026-09-14 — NO_MODEL_CHANGE — Dependabot audit recovery
+
+- Change ID: `dependabot-audit-recovery`.
+- Observed worktree: `fix/dependabot-audit-recovery`, based exactly on
+  `origin/main` `6bfefda60c37215805201d2822b41b900ea97ec2`; reviewed product change is
+  the uncommitted `package-lock.json` diff before PR creation.
+- Changed path: `package-lock.json`.
+- Verdict: the change updates only the installed Hono resolution from 4.12.34
+  to 4.13.7 and the Sharp resolution from 0.35.3 to 0.35.4 with Sharp-owned
+  optional platform, libvips, and WASM packages. It changes no direct
+  dependency range, MCP SDK identity, Sharp or MCP caller, public contract,
+  runtime or persistence/data boundary, registration, deployment unit,
+  architecture relation, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=0`, and `deleted=0` for the checkpointed exact include scope
+  (`CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/adr`, `package.json`, `scripts`,
+  and `src`). `package.json` is unchanged, and an object-level lockfile diff
+  found 28 changed package objects, all within Hono or the Sharp dependency
+  closure.
+- Dependency and failure boundary: fresh installation, the Sharp-backed image
+  read and MCP server tests, the complete check, native release package,
+  performance gates, and the production dependency audit pass. Rollback is a
+  single lockfile commit revert with no migration or persisted-state effect.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two temporary
+  `render_model.py` runs rendered 10 byte-identical views matching all
+  canonical views. The existing source checkpoint already matches the
+  inspected bounded source scope and required no update.
+- Unresolved inferred claims: None.
