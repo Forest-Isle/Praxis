@@ -1,5 +1,21 @@
 # Native Fixture Contracts
 
+## Qualification contract recovery (#763)
+
+The native CLI footprint is executable evidence: a real hermetic child process
+uses a local Codex Responses SSE endpoint and proves the bounded settings,
+memory, and cost/accounting footprint for `--no-session-persistence`.
+Issue #756 is consumed at its sole authorized P1 completion; its frozen
+validator rejected the valid runtime footprint, while P2/P3 never executed.
+No v4 corpus run or qualification verdict exists. A complete valid held-out
+baseline unlocks measured Phase 9 experiments; adoption or release/improvement
+claims additionally require a genuinely changed build with strict candidate
+`qualified: true`. The next separately authorized campaign is fresh-root,
+provider-free-harness-qualified, baseline-only (v4 remains 0/36), with no
+same-build candidate. Phase 9 is not currently unlocked. #756 establishes no
+corpus quality, broad-safety, cost, latency, efficiency, optimization, or
+qualification conclusion.
+
 ## Goal
 
 Praxis qualifies supported behavior through executable, native-only evidence.
@@ -224,11 +240,11 @@ ownership and repository search proved them unowned.
 ## Current status
 
 Issue #528 is implemented. The machine-readable manifest and executable runner
-are the active qualification source. The manifest declares 76 behaviors: 68
+are the active qualification source. The manifest declares 77 behaviors: 69
 are qualified and 8 are explicitly excluded. Risk tiers are 13 low, 11 medium,
-43 high, and 1 release; the manifest records 49 semantically justified
-tier-floor exemptions for non-applicable evidence. It contains 190 evidence
-entries: 132 Vitest entries, 52 fixture entries, and 6 gate entries.
+44 high, and 1 release; the manifest records 50 semantically justified
+tier-floor exemptions for non-applicable evidence. It contains 191 evidence
+entries: 133 Vitest entries, 52 fixture entries, and 6 gate entries.
 
 The OpenAI protocol evidence is a versioned, hermetic comparison of the public
 Chat Completions and Responses adapters. It qualifies only the tested plain

@@ -129,7 +129,7 @@
     "src/application/workflow-token-target.test.ts": "b60ce2b3af618430b21d9c3c067866666a00f2e3a8aa071c835ec4807c651ce8",
     "src/application/workflow-worktree.test.ts": "df757261db8391f23e66ed62e1309602bb583b785c6f1986e37637fb56da7d2f",
     "src/application/workflow-worktree.ts": "c3f8730f071dcbd3e4f5793b759b1620d9ddf874495ee1d011a919d207a59129",
-    "src/cli-process.test.ts": "f60055e6fbceab79b412af57fc2706b16f2dd2899cec08bf80b8dbda828111d3",
+    "src/cli-process.test.ts": "b94d55062dca1740e2b70b493e8e9ba1ec3007424f6a1552700706ed1c44ca6f",
     "src/cli-runtime.ts": "9045c784a39558a3df03b2b62b81d75e574f73d80233baff1af92d2a649a4198",
     "src/cli.mcp.test.ts": "2383c794890f9c29f82cb838a364dadc305d377b93e9a19e601cfc4b4baa8d0a",
     "src/cli.plugin.test.ts": "6a8f102f9567ca4ea7207c73db802fdf1e14f10efca66c6cf91448aa712a1c0e",

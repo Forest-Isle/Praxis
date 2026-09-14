@@ -232,9 +232,12 @@ provider codex-relay`. Project Eval creates an empty per-case
   `codex-relay/default/codex-responses/gpt-5.6-sol` smoke used one turn with no
   retry, fallback, substitution, or workspace mutation. This is connectivity-
   only evidence; 4xx correlation was not exercised, v4 remains unexecuted, and
-  Task 8.2/Phase 9 remain locked. Detailed identities and exact evidence are in
-  [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md); only planning of
-  a separately scoped, explicitly authorized v4 campaign is next.
+  Task 8.2/Phase 9 remain locked. Issue #756 is retained as an immutable harness-
+  contract failure rather than qualification evidence; v4 remains 0/36. A
+  complete valid held-out baseline unlocks Phase 9 measurement, while adoption
+  or release still requires a changed-build candidate with `qualified: true`.
+  Detailed evidence and the next-campaign authorization boundary are in
+  [Native Fixture Contracts](docs/NATIVE_FIXTURE_CONTRACTS.md).
   A
   bounded DeepSeek baseline for
   the exact
@@ -542,7 +545,7 @@ normal/low-capability full-frame p95 budgets of `<16.7/<33 ms`.
 `npm run test:coverage` measures all production code under `src/**` with V8 and
 enforces global floors of 79% statements, 70% branches, 85% functions, and 81% lines,
 and rejects any production runtime module with zero covered statements (while allowing
-type-only modules). `npm run test:fixtures` executes the 76-behavior native contract; 68 behaviors
+type-only modules). `npm run test:fixtures` executes the 77-behavior native contract; 69 behaviors
 are qualified and 8 are explicitly excluded. Schema-v2 risk tiers and executable evidence dimensions
 are enforced fail-closed. `npm run verify:fixture-contracts` performs the structural check and is part
 of `npm run check`.

@@ -219,6 +219,40 @@
       }
     },
     {
+      "id": "persistence.native.clifootprint",
+      "seam": "Native CLI process lifecycle",
+      "contract": "A successful no-session-persistence CLI run uses only the bounded native settings, memory, and cost/accounting footprint.",
+      "status": "qualified",
+      "modules": [
+        "src/cli-runtime.ts",
+        "src/application/session-service.ts",
+        "src/platform/project-memory-paths.ts",
+        "src/persistence/claude-cost-state-store.ts",
+        "src/persistence/unknown-cost-sidecar.ts"
+      ],
+      "outcomes": [
+        "A hermetic local Codex Responses run exits successfully without session, history, task, lock, symlink, cwd, or credential artifacts."
+      ],
+      "evidence": [
+        {
+          "kind": "vitest",
+          "file": "src/cli-process.test.ts",
+          "testName": "direct process lifecycle > preserves the native footprint when session persistence is disabled",
+          "covers": ["success", "negative", "persistence"]
+        }
+      ],
+      "risk": "high",
+      "evidenceRequirements": {
+        "required": ["success", "negative", "persistence"],
+        "exemptions": [
+          {
+            "dimension": "recovery",
+            "reason": "The one-shot successful process has no retry or resume transition."
+          }
+        ]
+      }
+    },
+    {
       "id": "persistence.native.sessions",
       "seam": "Native data plane",
       "contract": "Native sessions resolve entirely from Praxis-owned state without consulting Claude configuration.",

@@ -720,7 +720,18 @@ separately scoped work and evidence are still required.
 
 ## Phase 9 — Measured coding policy
 
-### Task 9.1: Measured coding policy [depends: Task 8.2]
+Qualification contract recovery (#763): the native CLI footprint is now covered
+by a hermetic real child-process fixture against a local Codex Responses SSE
+endpoint. Issue #756 remains consumed at its single authorized P1 completion;
+its frozen validator rejected the valid runtime footprint, while P2/P3 did not
+execute. No v4 corpus run or qualification verdict exists. A complete valid
+held-out baseline is the gate to begin measured Phase 9 experiments; adoption
+or release/improvement claims additionally require a genuinely changed build
+with strict candidate `qualified: true`. The next separately authorized v4
+campaign is fresh-root, provider-free-harness-qualified, and baseline-only;
+there is no same-build candidate and Phase 9 is not currently unlocked.
+
+### Task 9.1: Measured coding policy [depends: complete valid held-out baseline]
 
 Measure the exploration, plan, edit, diagnose, test, review, and repair loop.
 Acceptance: every policy change predeclares effect thresholds and reports
@@ -732,7 +743,7 @@ Run controlled experiments for automatic diagnostics, cache and route
 stability, and long-context behavior. Acceptance: no policy is adopted
 without its predeclared threshold and local evidence.
 
-### Task 9.3: Local multi-agent experiment [depends: Task 8.2]
+### Task 9.3: Local multi-agent experiment [depends: complete valid held-out baseline]
 
 Measure the value and safety of local multi-agent coding workflows.
 Acceptance: adoption requires predeclared effect thresholds and no safety or
