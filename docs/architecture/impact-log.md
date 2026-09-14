@@ -1,5 +1,34 @@
 # Architecture model impact log
 
+## 2026-09-14 — NO_MODEL_CHANGE — Issue #763
+
+- Change ID: `issue-763-qualification-contract-recovery`.
+- Observed worktree: `test/763-qualification-contract-recovery`, based on
+  `origin/main` `abd2f356b7d6ee743c7fad8cec0c0ce10bd56088` after the independent
+  dependency-audit recovery merged in PR #764.
+- Changed bounded-source path: `src/cli-process.test.ts`. The full reviewed
+  change also registers executable fixture evidence and synchronizes the
+  qualification roadmap and user documentation.
+- Verdict: the new hermetic child-process fixture proves the existing native
+  settings, Project-memory, and private cost/accounting footprint for
+  `--no-session-persistence`. It changes no runtime boundary, public contract,
+  persistence/data shape, provider integration, registration, deployment unit,
+  or modeled critical flow.
+- Existing evidence inspected: `createDefaultService` in `src/cli-runtime.ts`,
+  `ClaudeSessionService` in `src/application/session-service.ts`,
+  `resolveProjectMemoryDirectory`, `ClaudeCostStateStore`, and
+  `UnknownCostSidecar` retain their prior wiring and contracts.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=1`, and `deleted=0` for the checkpointed include scope.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two temporary
+  `render_model.py` runs rendered 10 byte-identical views that also matched
+  every canonical view.
+- Checkpoint: advanced only after the post-#764 fresh install, focused/full,
+  package, performance, and zero-vulnerability production-audit gates passed;
+  `model-state.json` now matches the inspected bounded source scope.
+- Unresolved inferred claims: None.
+
 ## 2026-09-06 — BOOTSTRAP — Issue #692
 
 - Change ID: `issue-692-architecture-model-v3`
