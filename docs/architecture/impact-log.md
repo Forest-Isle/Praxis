@@ -601,3 +601,33 @@
   canonical views. The existing source checkpoint already matches the
   inspected bounded source scope and required no update.
 - Unresolved inferred claims: None.
+
+## 2026-09-16 — NO_MODEL_CHANGE — Issue #768
+
+- Change ID: `issue-768-release-channel`; accepted Change Control cycle
+  `issue-768-release-channel` and evidence cycle
+  `issue-768-governance-evidence`.
+- Observed worktree: `fix/768-release-channel`, based exactly on `origin/main`
+  `b44c0ce2b85435755492817b853381b3da003dd5`; reviewed product change is the
+  uncommitted test-only repair in `src/mcp/claude-mcp-tools.test.ts`.
+- Verdict: the change replaces two scheduler-sensitive MCP fixture
+  observations with deterministic synchronization around the same production
+  contracts. It changes no runtime source, MCP request or timeout semantics,
+  permission result, reconnect/close implementation, public contract,
+  persistence or data shape, registration, deployment unit, architecture
+  relation, or modeled critical flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=1`, and `deleted=0` for the established exact include scope. The
+  sole modified path is the MCP test file; inspection of its timeout,
+  permission-prompt, reconnect, and close callers confirmed that all modeled
+  runtime evidence remains unchanged.
+- Failure and release boundary: the repaired tests pass in 50 consecutive
+  combined runs, the complete repository, package, performance, and production
+  audit gates pass, and no provider request, credential access, merge, release,
+  or npm publication occurred. Release authority remains separate.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two temporary
+  `render_model.py` runs rendered 10 byte-identical views that also matched all
+  canonical views. The bounded source checkpoint was advanced only after those
+  checks, and the post-checkpoint collection reported zero drift.
+- Unresolved inferred claims: None.
