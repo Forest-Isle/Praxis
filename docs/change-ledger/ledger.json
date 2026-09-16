@@ -8321,7 +8321,7 @@
         "R4",
         "R5"
       ],
-      "review_status": "pending",
+      "review_status": "accepted",
       "risk": "release",
       "schema_version": "2",
       "scopes": [
