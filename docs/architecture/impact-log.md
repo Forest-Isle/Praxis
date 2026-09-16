@@ -631,3 +631,43 @@
   canonical views. The bounded source checkpoint was advanced only after those
   checks, and the post-checkpoint collection reported zero drift.
 - Unresolved inferred claims: None.
+
+## 2026-09-16 — NO_MODEL_CHANGE — Release 0.70.3
+
+- Change ID: `release-0703-ledger-freshness`; accepted release Change Control
+  cycle `release-0703` and governance cycle `release-0703-governance`.
+- Observed worktree: `docs/release-0703-evidence`, based exactly on
+  `origin/main` and release tag `v0.70.3` at
+  `4fd3c4ef9402e26c4358e8192333ef9b23468fb0`; reviewed release PR head is
+  `80dc1e2eb3783215958d44a1a29bb23d7ae37870`.
+- Changed release paths: `.release-please-manifest.json`, `CHANGELOG.md`,
+  `package-lock.json`, and `package.json`.
+- Verdict: the generated release change advances the package, lockfile, and
+  manifest version from 0.70.2 to 0.70.3 and appends release notes for the two
+  publishable fixes since v0.70.2. It changes no CLI entrypoint or `bin`
+  mapping, dependency range or resolved dependency, public contract, runtime
+  or persistence/data boundary, provider integration, registration,
+  deployment workflow or unit, architecture relation, or modeled critical
+  flow.
+- Bounded source assessment: `collect_changes.py` reported `added=0`,
+  `modified=1`, and `deleted=0` for the established exact include scope
+  (`CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/adr`, `package.json`, `scripts`,
+  and `src`). The sole modified path is `package.json`, where the only change
+  is the package version from 0.70.2 to 0.70.3.
+- Release evidence: PR #754 exact-head CI, CodeQL, and Dependency Review
+  passed; Release Please created `v0.70.3` at the exact merge revision; Publish
+  run `35052421913` passed release-ref verification, the complete check,
+  package and performance regressions, the production dependency audit,
+  artifact build, attestation, upload, and npm publication. npm `latest` and an
+  isolated installed CLI both report 0.70.3.
+- Affected architecture node/relation/flow IDs: none.
+- Validation: `validate_model.py` reported `model valid`; two temporary
+  `render_model.py` runs rendered byte-identical views that matched all
+  canonical views. The bounded source checkpoint was advanced only after
+  those checks, and post-checkpoint collection reported zero drift.
+- Checkpoint normalization: the fingerprint helper ran from the isolated
+  linked worktree, after which `model-state.json.repo_root` was restored to the
+  established canonical project root `/Users/wuqisen/dev/Praxis`; include
+  scope and file fingerprints were unchanged, and bounded collection from the
+  reviewed worktree still reported zero drift.
+- Unresolved inferred claims: None.
