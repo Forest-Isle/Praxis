@@ -404,7 +404,7 @@
     "src/mcp/claude-mcp-management.ts": "426d211755d162f2022b4a274e9ccbc79c44f5a2a6057e2e5d8cde22c754822e",
     "src/mcp/claude-mcp-oauth.test.ts": "6c64feab9d8c8d09d600cce503feecf1e0a845bb832b58935847f89f81f51792",
     "src/mcp/claude-mcp-oauth.ts": "6b117f2f62104f9a5b7e85e5bc1563c2145d0a4bac0b294d3bce39349f18b960",
-    "src/mcp/claude-mcp-tools.test.ts": "2eba1657eb104232a329c245227775ece68ff2900e4993b509812639474ff482",
+    "src/mcp/claude-mcp-tools.test.ts": "a2eb2ddaf7d21c013a07201dcf6faa50c3a8d3d130c4885755bc6a920b930a1c",
     "src/mcp/claude-mcp-tools.ts": "adef65e13aa678f3ac9422f4ccb500c2591322e7ace95f375f1c37fd7c0c126d",
     "src/mcp/mcp-server-session.test.ts": "c379dd4d706488315b876d2e5d1866d0d705b00f1d2e29e732ac6a7c0d1dae99",
     "src/mcp/mcp-server-session.ts": "9c1d3a20da77c4d2bcb93932e3dff7bfaa7e8e56d2e480a71a0f2a0db08949f6",
